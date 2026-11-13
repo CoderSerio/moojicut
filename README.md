@@ -60,6 +60,8 @@ make dev
 
 构建后会启动 Mooji Cut 并打开设置。
 
+仓库根目录是 MoonBit 项目，`src/` 中的编辑核心默认编译为 native。也可以单独运行 `moon check`、`moon test` 和 `moon build`，检查、测试与构建核心；`make dev` 会将它与 macOS 原生界面一起打包。
+
 ## 关于 Mooji Cut
 
 Mooji Cut 使用 MoonBit 编写编辑核心，搭配 macOS 原生界面。从日常截图与录屏出发，逐步完善编辑体验，并为更多平台带来同样的使用方式。
