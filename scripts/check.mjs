@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 let checked = 0;
-for (const folder of ['src', 'scripts', 'test']) {
+for (const folder of ['src', 'scripts', 'test', 'agent']) {
   for (const filename of readdirSync(join(root, folder), { recursive: true })) {
     if (!/\.(?:mjs|cjs|js)$/.test(filename)) continue;
     const result = spawnSync(process.execPath, ['--check', join(root, folder, filename)], { stdio: 'inherit' });

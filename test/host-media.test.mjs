@@ -82,7 +82,8 @@ test('FFmpeg integration: streamed original survives restart, cuts/crop/mute exp
     const { id } = await store.begin({ mimeType: 'video/webm;codecs=vp8,opus' });
     let sequence = 0;
     for (let offset = 0; offset < bytes.length; offset += 8192) await store.append(id, sequence++, bytes.subarray(offset, offset + 8192));
-    const finished = await store.finish(id);
+    const finished = await store.finish(id, { interruptedReason: "测试：音频设备中断" });
+    assert.equal(finished.interruptedReason, "测试：音频设备中断");
     assert.equal(finished.width, 320);
     assert.equal(finished.height, 240);
     assert.equal(finished.hasAudio, true);
@@ -92,6 +93,20 @@ test('FFmpeg integration: streamed original survives restart, cuts/crop/mute exp
     const reloaded = new RecordingStore(path.join(directory, 'recordings'), { ffprobe });
     await reloaded.initialize();
     assert.equal((await reloaded.list())[0].id, id);
+    assert.equal(reloaded.describe(reloaded.get(id)).interruptedReason, "测试：音频设备中断");
+    const originalDraft = { schemaVersion: 1, source: finished, trim: { startMs: 0, endMs: 3500 }, cuts: [], crop: null, muted: false, preset: 'share' };
+    await Promise.all([
+      reloaded.saveDraft(id, originalDraft),
+      reloaded.saveDraft(id, { ...originalDraft, cuts: [{ startMs: 500, endMs: 1000 }, { startMs: 2000, endMs: 2500 }], muted: true }),
+    ]);
+    const draftStore = new RecordingStore(path.join(directory, 'recordings'), { ffprobe });
+    await draftStore.initialize();
+    const restoredDraft = await draftStore.loadDraft(id);
+    assert.equal(restoredDraft.muted, true);
+    assert.equal(restoredDraft.cuts.length, 2);
+    await assert.rejects(draftStore.saveDraft(id, { ...restoredDraft, trim: { startMs: 5000, endMs: 6000 } }), /integer/);
+    assert.deepEqual(await draftStore.loadDraft(id), restoredDraft, 'rejected draft cannot overwrite last valid edit');
+
     const segments = [{ sourceStartMs: 250, sourceEndMs: 1250, outputStartMs: 0, outputEndMs: 1000 }, { sourceStartMs: 2250, sourceEndMs: 3250, outputStartMs: 1000, outputEndMs: 2000 }];
     const plan = { segments, crop: { x: 10, y: 10, width: 200, height: 150 }, muted: true, profile: { videoBitrateKbps: 400, audioBitrateKbps: 64, maxWidth: 160 } };
     const output = path.join(directory, 'trimmed.mp4');
@@ -118,5 +133,13 @@ test('FFmpeg integration: streamed original survives restart, cuts/crop/mute exp
     const recovered = await probeMedia(live, ffprobe);
     assert.ok(recovered.durationMs > 3900 && recovered.durationMs < 4200, JSON.stringify(recovered));
     assert.deepEqual(await readFile(reloaded.get(id).filename), bytes, 'export never modifies the original');
+    const threeSegments = [{ sourceStartMs: 250, sourceEndMs: 750 }, { sourceStartMs: 1500, sourceEndMs: 2000 }, { sourceStartMs: 2500, sourceEndMs: 3250 }];
+    const three = path.join(directory, 'three-segments.mp4');
+    await exportRecording(reloaded.get(id), three, { segments: threeSegments, muted: true }, { ffmpeg, ffprobe });
+    assert.ok(Math.abs((await probeMedia(three, ffprobe)).durationMs - 1750) <= 150);
+    const existing = await readFile(three);
+    await assert.rejects(exportRecording(reloaded.get(id), three, { segments: threeSegments }, { ffmpeg, ffprobe }), /already exists/);
+    assert.deepEqual(await readFile(three), existing, 'export rejection must never remove an existing file');
+
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
