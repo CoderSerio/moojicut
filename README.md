@@ -1,5 +1,9 @@
 # Mooncap
 
+**实现方向已调整为 MoonBit native + 原生 macOS 菜单栏工具，见 [原生路线决策](docs/native-direction.md)。** 下文记录已完成的 Electron 参考实现；完整原生迁移尚未完成，独立首页不再属于目标产品形态。
+
+原生入口：`npm run dev:native`。当前可运行菜单栏与 AppKit 设置面板，外观选项会保存；`npm run test:native` 验证 MoonBit 原生核心与 Objective-C 嵌入。构建方式和已实现范围见 [native/README.md](native/README.md)。
+
 供人和 Agent 共用的本地截图与录屏工具。平时驻留菜单栏或系统托盘；截图框选后原地标注，确认复制图片；录屏停止后编辑，确认生成并复制 MP4 文件。
 
 当前已经接通截图、录屏、编辑、历史和 Agent 服务，不再使用早期的大窗口工作台作为产品入口。[PRD](docs/prd.md) 定义产品范围和验收条件，[架构说明](docs/architecture.md) 记录当前实现。代码中的能力与实机验收分开记录，首版完整验收仍在进行。

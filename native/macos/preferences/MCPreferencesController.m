@@ -1,0 +1,166 @@
+#import "MCPreferencesController.h"
+
+static NSString *const MCAppearanceKey = @"appearance";
+static NSTextField *MCLabel(NSString *text, CGFloat size, BOOL secondary) {
+    NSTextField *label = [NSTextField wrappingLabelWithString:text];
+    label.font = [NSFont systemFontOfSize:size];
+    label.textColor = secondary ? NSColor.secondaryLabelColor : NSColor.labelColor;
+    return label;
+}
+static NSTextField *MCHeading(NSString *text) {
+    NSTextField *label = MCLabel(text, 13, NO); label.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold]; return label;
+}
+static NSStackView *MCStack(NSArray<NSView *> *views, NSUserInterfaceLayoutOrientation orientation, CGFloat spacing) {
+    NSStackView *stack = [NSStackView stackViewWithViews:views];
+    stack.orientation = orientation; stack.spacing = spacing;
+    stack.alignment = orientation == NSUserInterfaceLayoutOrientationVertical ? NSLayoutAttributeLeading : NSLayoutAttributeCenterY;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    return stack;
+}
+static void MCPin(NSView *view, NSView *container) {
+    [container addSubview:view];
+    [NSLayoutConstraint activateConstraints:@[
+        [view.topAnchor constraintEqualToAnchor:container.topAnchor constant:24],
+        [view.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:24],
+        [view.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-24],
+        [view.bottomAnchor constraintLessThanOrEqualToAnchor:container.bottomAnchor constant:-24]
+    ]];
+}
+static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
+    NSGridView *grid = [NSGridView gridViewWithViews:rows];
+    grid.rowSpacing = 10; grid.columnSpacing = 12; grid.xPlacement = NSGridCellPlacementLeading; grid.yPlacement = NSGridCellPlacementCenter;
+    [grid columnAtIndex:0].width = 72;
+    return grid;
+}
+
+@interface MCPreferencesController ()
+@property (nonatomic, readwrite, nullable) NSWindow *window;
+@property NSUserDefaults *defaults;
+@property NSString *coreVersion;
+@property NSDictionary *diagnostics;
+@property NSTabView *pages;
+@property NSPopUpButton *appearancePopup;
+@property NSView *technicalDetails;
+@property NSButton *disclosure;
+@end
+
+@implementation MCPreferencesController
+- (instancetype)initWithDefaults:(NSUserDefaults *)defaults coreVersion:(NSString *)coreVersion diagnostics:(NSDictionary *)diagnostics {
+    if ((self = [super init])) { _defaults = defaults; _coreVersion = coreVersion; _diagnostics = diagnostics; }
+    return self;
+}
++ (void)applySavedAppearance:(NSUserDefaults *)defaults {
+    NSString *choice = [defaults stringForKey:MCAppearanceKey] ?: @"system";
+    NSApp.appearance = [choice isEqualToString:@"dark"] ? [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua] :
+        [choice isEqualToString:@"light"] ? [NSAppearance appearanceNamed:NSAppearanceNameAqua] : nil;
+}
+- (NSString *)appearanceChoice { return [self.defaults stringForKey:MCAppearanceKey] ?: @"system"; }
+- (BOOL)technicalDetailsVisible { return self.technicalDetails && !self.technicalDetails.hidden; }
+- (void)buildWindow {
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 340)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+    window.title = @"Mooncap 设置"; window.releasedWhenClosed = NO; window.delegate = self;
+    window.restorable = NO; window.tabbingMode = NSWindowTabbingModeDisallowed;
+    window.toolbarStyle = NSWindowToolbarStylePreference;
+    NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"MooncapPreferences"];
+    toolbar.delegate = self; toolbar.allowsUserCustomization = NO; toolbar.autosavesConfiguration = NO;
+    toolbar.displayMode = NSToolbarDisplayModeIconAndLabel; window.toolbar = toolbar;
+    self.window = window;
+    NSTabView *pages = [[NSTabView alloc] initWithFrame:window.contentView.bounds];
+    pages.tabViewType = NSNoTabsNoBorder; pages.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    NSTabViewItem *general = [[NSTabViewItem alloc] initWithIdentifier:@"general"]; general.label = @"通用"; general.view = [self generalPage];
+    NSTabViewItem *about = [[NSTabViewItem alloc] initWithIdentifier:@"about"]; about.label = @"关于"; about.view = [self aboutPage];
+    [pages addTabViewItem:general]; [pages addTabViewItem:about]; [window.contentView addSubview:pages]; self.pages = pages;
+    [self selectPage:@"general"]; [window center];
+}
+- (NSView *)generalPage {
+    NSView *page = [NSView new];
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [popup addItemsWithTitles:@[@"跟随系统", @"浅色", @"深色"]];
+    popup.target = self; popup.action = @selector(appearanceChanged:); self.appearancePopup = popup;
+    NSInteger index = [@[@"system", @"light", @"dark"] indexOfObject:self.appearanceChoice];
+    [popup selectItemAtIndex:index == NSNotFound ? 0 : index];
+    [popup.widthAnchor constraintEqualToConstant:190].active = YES;
+    NSTextField *description = MCLabel(@"跟随系统时，Mooncap 使用当前 macOS 外观。", 12, YES);
+    NSGridView *grid = MCGrid(@[@[MCLabel(@"主题", 13, NO), popup], @[NSGridCell.emptyContentView, description]]);
+    NSBox *separator = [NSBox new]; separator.boxType = NSBoxSeparator;
+    NSTextField *background = MCLabel(@"关闭设置窗口后，Mooncap 会继续在菜单栏运行。", 13, NO);
+    NSStackView *stack = MCStack(@[MCHeading(@"外观"), grid, separator, MCHeading(@"后台运行"), background, MCLabel(@"设置会自动保存。", 11, YES)], NSUserInterfaceLayoutOrientationVertical, 14);
+    [stack setCustomSpacing:22 afterView:grid]; [stack setCustomSpacing:22 afterView:separator]; [stack setCustomSpacing:30 afterView:background];
+    [separator.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    MCPin(stack, page); return page;
+}
+- (NSView *)aboutPage {
+    NSView *page = [NSView new];
+    NSImageView *icon = [[NSImageView alloc] initWithFrame:NSZeroRect];
+    icon.image = [[NSImage imageWithSystemSymbolName:@"camera.viewfinder" accessibilityDescription:@"Mooncap"] imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:38 weight:NSFontWeightRegular]];
+    icon.contentTintColor = NSColor.controlAccentColor;
+    [icon.widthAnchor constraintEqualToConstant:56].active = YES; [icon.heightAnchor constraintEqualToConstant:56].active = YES;
+    NSTextField *name = MCLabel(@"Mooncap", 21, NO); name.font = [NSFont systemFontOfSize:21 weight:NSFontWeightSemibold];
+    NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版本";
+    NSStackView *identity = MCStack(@[name, MCLabel([@"版本 " stringByAppendingString:version], 12, YES)], NSUserInterfaceLayoutOrientationVertical, 4);
+    NSStackView *header = MCStack(@[icon, identity], NSUserInterfaceLayoutOrientationHorizontal, 16);
+    NSButton *disclosure = [NSButton new]; disclosure.bezelStyle = NSBezelStyleDisclosure; disclosure.buttonType = NSButtonTypeOnOff;
+    disclosure.title = @""; disclosure.target = self; disclosure.action = @selector(toggleTechnicalDetails:); disclosure.accessibilityLabel = @"展开技术信息";
+    self.disclosure = disclosure;
+    NSStackView *disclosureRow = MCStack(@[disclosure, MCLabel(@"技术信息", 12, YES)], NSUserInterfaceLayoutOrientationHorizontal, 4);
+    NSString *arch = @"arm64";
+#if defined(__x86_64__)
+    arch = @"x86_64";
+#endif
+    NSString *core = [NSString stringWithFormat:@"MoonBit Native · %@", self.coreVersion];
+    NSGridView *details = MCGrid(@[
+        @[MCLabel(@"核心", 12, YES), MCLabel(core, 12, NO)],
+        @[MCLabel(@"宿主", 12, YES), MCLabel([@"AppKit · " stringByAppendingString:arch], 12, NO)],
+        @[MCLabel(@"状态", 12, YES), MCLabel([self.diagnostics[@"passed"] boolValue] ? @"核心连接正常" : @"核心连接未通过检查", 12, NO)],
+        @[MCLabel(@"当前范围", 12, YES), MCLabel(@"菜单栏与设置；截图、录屏采集尚未迁移。", 12, NO)]
+    ]);
+    details.hidden = YES; self.technicalDetails = details;
+    NSStackView *stack = MCStack(@[header, MCLabel(@"为本地截图与录屏设计。", 13, NO), disclosureRow, details], NSUserInterfaceLayoutOrientationVertical, 18);
+    stack.detachesHiddenViews = YES; MCPin(stack, page); return page;
+}
+- (void)appearanceChanged:(NSPopUpButton *)sender {
+    NSArray *values = @[@"system", @"light", @"dark"];
+    [self setAppearanceChoice:values[(NSUInteger)sender.indexOfSelectedItem]];
+}
+- (void)setAppearanceChoice:(NSString *)choice {
+    NSArray *values = @[@"system", @"light", @"dark"];
+    NSUInteger index = [values indexOfObject:choice]; if (index == NSNotFound) return;
+    [self.defaults setObject:choice forKey:MCAppearanceKey];
+    [self.appearancePopup selectItemAtIndex:(NSInteger)index];
+    [MCPreferencesController applySavedAppearance:self.defaults];
+}
+- (void)toggleTechnicalDetails:(__unused id)sender {
+    self.technicalDetails.hidden = !self.technicalDetails.hidden;
+    self.disclosure.state = self.technicalDetails.hidden ? NSControlStateValueOff : NSControlStateValueOn;
+    self.disclosure.accessibilityLabel = self.technicalDetails.hidden ? @"展开技术信息" : @"收起技术信息";
+}
+- (void)show { if (!self.window) [self buildWindow]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+- (void)selectPage:(NSString *)identifier {
+    if (![@[@"general", @"about"] containsObject:identifier]) return;
+    [self.pages selectTabViewItemWithIdentifier:identifier]; self.window.toolbar.selectedItemIdentifier = identifier;
+}
+- (void)toolbarSelected:(NSToolbarItem *)sender { [self selectPage:sender.itemIdentifier]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"about"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"about"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarSelectableItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"about"]; }
+- (nullable NSToolbarItem *)toolbar:(__unused NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)identifier willBeInsertedIntoToolbar:(__unused BOOL)flag {
+    if (![@[@"general", @"about"] containsObject:identifier]) return nil;
+    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
+    BOOL general = [identifier isEqualToString:@"general"];
+    item.label = general ? @"通用" : @"关于"; item.paletteLabel = item.label;
+    item.image = [NSImage imageWithSystemSymbolName:general ? @"gearshape" : @"info.circle" accessibilityDescription:item.label];
+    item.target = self; item.action = @selector(toolbarSelected:); return item;
+}
+- (void)windowWillClose:(NSNotification *)notification {
+    if (notification.object != self.window) return;
+    // Preference toolbars keep AppKit view/validation state. Detach that state
+    // before relinquishing the one settings window owned by this controller.
+    self.window.toolbar.delegate = nil;
+    for (NSToolbarItem *item in self.window.toolbar.items) item.target = nil;
+    self.window.toolbar = nil;
+    self.window.contentView = nil;
+    self.window.delegate = nil; self.window = nil; self.pages = nil; self.appearancePopup = nil; self.technicalDetails = nil; self.disclosure = nil;
+    if (self.onClose) self.onClose();
+}
+@end
