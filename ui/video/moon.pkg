@@ -1,8 +1,0 @@
-supported_targets = "js"
-import {
-  "moonbit-community/rabbita",
-  "moonbit-community/rabbita/html",
-  "moonbit-community/rabbita/cmd",
-}
-pkgtype(kind: "executable")
-options(link: { "js": { "format": "esm" } })

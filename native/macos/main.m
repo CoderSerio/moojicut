@@ -56,7 +56,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 }
 - (void)writeReport {
     if (!self.outputDirectory) return;
-    self.report[@"memoryMeasurement"] = @"Own-process TASK_VM_INFO: resident_size is RSS bytes; phys_footprint is macOS physical footprint bytes. These differ from summed Electron process working sets.";
+    self.report[@"memoryMeasurement"] = @"Own-process TASK_VM_INFO: resident_size is RSS bytes; phys_footprint is macOS physical footprint bytes.";
     self.report[@"scope"] = @"AppKit menu bar and native settings connected to MoonBit native core; capture and recording have not been migrated.";
     NSData *data = [NSJSONSerialization dataWithJSONObject:self.report options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:NULL];
     [data writeToFile:[self.outputDirectory stringByAppendingPathComponent:@"report.json"] atomically:YES];
