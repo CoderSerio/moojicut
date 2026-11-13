@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +16,7 @@ if (options.has('--preferences') && !options.has('--run')) {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sourceDirectory = join(root, 'native', 'macos');
+const brandDirectory = join(root, 'assets', 'brand', 'lunar-frame');
 const localHome = join(root, '.tools', 'moon');
 const localBinary = join(localHome, 'bin', 'moon');
 // Match the core build/check: repository toolchain, MOON_HOME, then PATH.
@@ -78,8 +79,9 @@ if (!archive || !archive.path.endsWith('.a') || !existsSync(archive.path)) {
   throw new Error('MoonBit did not report the expected native foreign_library static archive.');
 }
 
-const appName = 'Mooncap Native.app';
-const outputDirectory = join(root, 'dist', 'native-app');
+const appName = 'Mooncap.app';
+// Finder/Spotlight should list the installed application, not build artifacts.
+const outputDirectory = join(root, 'dist', 'native-app.noindex');
 const appPath = join(outputDirectory, appName);
 const staging = mkdtempSync(join(buildDirectory, 'staging-'));
 const stagedApp = join(staging, appName);
@@ -91,15 +93,24 @@ try {
   mkdirSync(join(contents, 'Resources'), { recursive: true });
   run('xcrun', ['clang', '-fobjc-arc', '-O2', '-Wall', '-Wextra', '-Werror',
     '-I', includeDirectory, '-I', sourceDirectory, ...objectiveC, archive.path,
-    '-framework', 'AppKit', '-framework', 'Foundation', '-o', executable]);
+    '-framework', 'AppKit', '-framework', 'Foundation', '-framework', 'Carbon', '-o', executable]);
+  const iconGenerator = join(buildDirectory, 'generate-app-icon');
+  const iconset = join(staging, 'Mooncap.iconset');
+  run('xcrun', ['clang', '-fobjc-arc', '-O2', '-Wall', '-Wextra', '-Werror',
+    join(root, 'native', 'tools', 'generate-app-icon.m'), '-framework', 'AppKit', '-o', iconGenerator]);
+  run(iconGenerator, [join(brandDirectory, 'app-icon-rounded-preview.png'), iconset]);
+  run('/usr/bin/iconutil', ['-c', 'icns', iconset, '-o', join(contents, 'Resources', 'Mooncap.icns')]);
+  copyFileSync(join(brandDirectory, 'menubar-18.png'), join(contents, 'Resources', 'MooncapStatusTemplate.png'));
+  copyFileSync(join(brandDirectory, 'menubar-18@2x.png'), join(contents, 'Resources', 'MooncapStatusTemplate@2x.png'));
   writeFileSync(join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
-  <key>CFBundleName</key><string>Mooncap Native</string>
+  <key>CFBundleName</key><string>Mooncap</string>
   <key>CFBundleDisplayName</key><string>Mooncap</string>
   <key>CFBundleIdentifier</key><string>dev.mooncap.native</string>
   <key>CFBundleExecutable</key><string>MooncapNative</string>
+  <key>CFBundleIconFile</key><string>Mooncap.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${xml(project.version)}</string>
   <key>CFBundleVersion</key><string>${xml(project.version)}</string>
@@ -116,7 +127,7 @@ try {
   }
   writeFileSync(join(contents, 'Resources', 'build.json'), JSON.stringify({
     version: project.version, coreVersion, compilerVersion, clangVersion, arch: process.arch,
-    frameworks: ['AppKit', 'Foundation'], signing: 'ad-hoc', notarized: false,
+    frameworks: ['AppKit', 'Foundation', 'Carbon'], signing: 'ad-hoc', notarized: false,
   }, null, 2) + '\n');
   // Local development signature only; no signing identity or network is used.
   run('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none', stagedApp]);
@@ -131,6 +142,6 @@ console.log(`Native app: ${appPath}`);
 console.log(`Executable: ${(statSync(join(appPath, 'Contents', 'MacOS', 'MooncapNative')).size / 1024).toFixed(0)} KiB; ${objectiveC.length} Objective-C files + MoonBit static core; ad-hoc signed.`);
 if (options.has('--run')) {
   // Launch Services starts the standalone app; Node exits after launching it.
-  run('/usr/bin/open', ['-n', appPath, ...(options.has('--preferences') ? ['--args', '--preferences'] : [])]);
+  run('/usr/bin/open', [appPath, ...(options.has('--preferences') ? ['--args', '--preferences'] : [])]);
   console.log(options.has('--preferences') ? 'Opened native preferences.' : 'Started the native menu bar app.');
 }

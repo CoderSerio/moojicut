@@ -19,6 +19,7 @@
     "mcp": "node agent/mcp.mjs",
     "test": "node scripts/build-core.mjs --test && node --test test/*.test.mjs",
     "test:native": "node scripts/check-native-core.mjs",
+    "test:native-shortcuts": "node scripts/check-native-shortcuts.mjs",
     "check": "node scripts/check.mjs"
   },
   "devDependencies": {

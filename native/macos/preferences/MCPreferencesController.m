@@ -1,4 +1,5 @@
 #import "MCPreferencesController.h"
+#import "MCShortcutRecorder.h"
 
 static NSString *const MCAppearanceKey = @"appearance";
 static NSTextField *MCLabel(NSString *text, CGFloat size, BOOL secondary) {
@@ -42,11 +43,15 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 @property NSPopUpButton *appearancePopup;
 @property NSView *technicalDetails;
 @property NSButton *disclosure;
+@property (nonatomic, readwrite) MCShortcutStore *shortcutStore;
+@property NSMutableDictionary<NSString *, MCShortcutRecorder *> *shortcutRecorders;
+@property NSMutableDictionary<NSString *, NSButton *> *shortcutClearButtons;
+@property NSTextField *shortcutFeedback;
 @end
 
 @implementation MCPreferencesController
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults coreVersion:(NSString *)coreVersion diagnostics:(NSDictionary *)diagnostics {
-    if ((self = [super init])) { _defaults = defaults; _coreVersion = coreVersion; _diagnostics = diagnostics; }
+    if ((self = [super init])) { _defaults = defaults; _coreVersion = coreVersion; _diagnostics = diagnostics; _shortcutStore = [[MCShortcutStore alloc] initWithDefaults:defaults]; }
     return self;
 }
 + (void)applySavedAppearance:(NSUserDefaults *)defaults {
@@ -69,8 +74,9 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSTabView *pages = [[NSTabView alloc] initWithFrame:window.contentView.bounds];
     pages.tabViewType = NSNoTabsNoBorder; pages.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     NSTabViewItem *general = [[NSTabViewItem alloc] initWithIdentifier:@"general"]; general.label = @"通用"; general.view = [self generalPage];
+    NSTabViewItem *shortcuts = [[NSTabViewItem alloc] initWithIdentifier:@"shortcuts"]; shortcuts.label = @"快捷键"; shortcuts.view = [self shortcutsPage];
     NSTabViewItem *about = [[NSTabViewItem alloc] initWithIdentifier:@"about"]; about.label = @"关于"; about.view = [self aboutPage];
-    [pages addTabViewItem:general]; [pages addTabViewItem:about]; [window.contentView addSubview:pages]; self.pages = pages;
+    [pages addTabViewItem:general]; [pages addTabViewItem:shortcuts]; [pages addTabViewItem:about]; [window.contentView addSubview:pages]; self.pages = pages;
     [self selectPage:@"general"]; [window center];
 }
 - (NSView *)generalPage {
@@ -90,11 +96,98 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     [separator.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     MCPin(stack, page); return page;
 }
+- (void)setShortcutFeedback:(NSString *)message error:(BOOL)error {
+    self.shortcutFeedback.stringValue = message;
+    self.shortcutFeedback.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+    if (error) NSAccessibilityPostNotification(self.shortcutFeedback, NSAccessibilityValueChangedNotification);
+}
+- (void)cancelShortcutRecording {
+    for (MCShortcutRecorder *recorder in self.shortcutRecorders.allValues) [recorder cancelRecording];
+}
+- (NSView *)shortcutsPage {
+    NSView *page = [NSView new];
+    self.shortcutRecorders = [NSMutableDictionary dictionary];
+    self.shortcutClearButtons = [NSMutableDictionary dictionary];
+    NSMutableArray *rows = [NSMutableArray array];
+    NSArray *actions = @[@"capture", @"record", @"stop"];
+    NSArray *names = @[@"截图", @"开始录屏", @"停止录屏"];
+    __weak MCPreferencesController *weakSelf = self;
+    for (NSUInteger index = 0; index < actions.count; index++) {
+        NSString *action = actions[index]; NSString *name = names[index];
+        MCShortcutRecorder *recorder = [[MCShortcutRecorder alloc] initWithFrame:NSZeroRect];
+        recorder.shortcut = [self.shortcutStore shortcutForAction:action];
+        recorder.accessibilityLabel = [name stringByAppendingString:@"快捷键"];
+        [recorder.widthAnchor constraintEqualToConstant:320].active = YES;
+        [recorder.heightAnchor constraintEqualToConstant:28].active = YES;
+        recorder.onChange = ^BOOL(NSDictionary *shortcut) {
+            MCPreferencesController *controller = weakSelf; if (!controller) return NO;
+            NSString *error = nil;
+            if (![controller.shortcutStore setShortcut:shortcut forAction:action error:&error]) {
+                [controller setShortcutFeedback:error ?: @"无法保存这个快捷键。" error:YES]; return NO;
+            }
+            controller.shortcutClearButtons[action].enabled = shortcut != nil;
+            [controller setShortcutFeedback:shortcut ? @"快捷键已保存。" : @"已清除这个快捷键。" error:NO];
+            return YES;
+        };
+        recorder.onError = ^(NSString *message) { [weakSelf setShortcutFeedback:message error:YES]; };
+        recorder.onRecordingChanged = ^(BOOL recording) {
+            MCPreferencesController *controller = weakSelf;
+            if (!recording) {
+                if ([controller.shortcutFeedback.stringValue hasPrefix:@"按下"] || [controller.shortcutFeedback.textColor isEqual:NSColor.systemRedColor])
+                    [controller setShortcutFeedback:@"录入已结束，未更改的快捷键保持原样。" error:NO];
+                return;
+            }
+            for (NSString *other in controller.shortcutRecorders) if (![other isEqual:action]) [controller.shortcutRecorders[other] cancelRecording];
+            [controller setShortcutFeedback:@"按下组合键；Esc 取消，Delete 清除。" error:NO];
+        };
+        NSButton *clear = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"xmark.circle.fill" accessibilityDescription:@"清除"] target:self action:@selector(clearShortcut:)];
+        clear.bordered = NO; clear.contentTintColor = NSColor.tertiaryLabelColor;
+        clear.identifier = action; clear.toolTip = [@"清除" stringByAppendingString:name]; clear.accessibilityLabel = [name stringByAppendingString:@"：清除快捷键"];
+        clear.enabled = recorder.shortcut != nil;
+        [clear.widthAnchor constraintEqualToConstant:24].active = YES;
+        self.shortcutRecorders[action] = recorder; self.shortcutClearButtons[action] = clear;
+        [rows addObject:@[MCLabel(name, 13, NO), recorder, clear]];
+    }
+    NSGridView *grid = MCGrid(rows); grid.rowSpacing = 8;
+    NSTextField *feedback = MCLabel(@"Esc 取消录入，Delete 清除。设置会自动保存。", 12, YES);
+    [feedback.heightAnchor constraintGreaterThanOrEqualToConstant:30].active = YES; self.shortcutFeedback = feedback;
+    NSButton *reset = [NSButton buttonWithTitle:@"恢复默认" target:self action:@selector(resetShortcuts:)];
+    reset.bezelStyle = NSBezelStyleRounded; reset.accessibilityLabel = @"恢复所有快捷键为默认值";
+    NSView *spacer = [NSView new];
+    NSStackView *resetRow = MCStack(@[spacer, reset], NSUserInterfaceLayoutOrientationHorizontal, 0);
+    [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [reset setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSTextField *availability = MCLabel(@"当前可保存按键配置；截图与录屏功能可用后启用。\n系统快捷键冲突会提示，其他应用的占用情况仍需留意。", 11, YES);
+    NSStackView *stack = MCStack(@[MCHeading(@"全局快捷键"), MCLabel(@"点按按键框，然后按下你想使用的组合键。", 12, YES), grid, feedback, resetRow, availability], NSUserInterfaceLayoutOrientationVertical, 12);
+    [resetRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    [feedback.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    [availability.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    MCPin(stack, page); return page;
+}
+- (void)clearShortcut:(NSButton *)sender {
+    [self cancelShortcutRecording];
+    NSString *action = sender.identifier; NSString *error = nil;
+    if ([self.shortcutStore setShortcut:nil forAction:action error:&error]) {
+        self.shortcutRecorders[action].shortcut = nil; sender.enabled = NO;
+        [self setShortcutFeedback:@"已清除这个快捷键。" error:NO];
+    } else [self setShortcutFeedback:error ?: @"无法清除快捷键。" error:YES];
+}
+- (void)resetShortcuts:(__unused id)sender {
+    [self cancelShortcutRecording]; NSString *error = nil;
+    if (![self.shortcutStore restoreDefaultsWithError:&error]) {
+        [self setShortcutFeedback:error ?: @"无法恢复默认快捷键。" error:YES]; return;
+    }
+    for (NSString *action in self.shortcutRecorders) {
+        self.shortcutRecorders[action].shortcut = [self.shortcutStore shortcutForAction:action];
+        self.shortcutClearButtons[action].enabled = YES;
+    }
+    [self setShortcutFeedback:@"已恢复默认快捷键。" error:NO];
+}
 - (NSView *)aboutPage {
     NSView *page = [NSView new];
     NSImageView *icon = [[NSImageView alloc] initWithFrame:NSZeroRect];
-    icon.image = [[NSImage imageWithSystemSymbolName:@"camera.viewfinder" accessibilityDescription:@"Mooncap"] imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:38 weight:NSFontWeightRegular]];
-    icon.contentTintColor = NSColor.controlAccentColor;
+    icon.image = NSApp.applicationIconImage;
+    icon.accessibilityLabel = @"Mooncap 月窗标志";
     [icon.widthAnchor constraintEqualToConstant:56].active = YES; [icon.heightAnchor constraintEqualToConstant:56].active = YES;
     NSTextField *name = MCLabel(@"Mooncap", 21, NO); name.font = [NSFont systemFontOfSize:21 weight:NSFontWeightSemibold];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版本";
@@ -137,23 +230,26 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 }
 - (void)show { if (!self.window) [self buildWindow]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
 - (void)selectPage:(NSString *)identifier {
-    if (![@[@"general", @"about"] containsObject:identifier]) return;
+    if (![@[@"general", @"shortcuts", @"about"] containsObject:identifier]) return;
+    [self cancelShortcutRecording];
     [self.pages selectTabViewItemWithIdentifier:identifier]; self.window.toolbar.selectedItemIdentifier = identifier;
 }
 - (void)toolbarSelected:(NSToolbarItem *)sender { [self selectPage:sender.itemIdentifier]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"about"]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"about"]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarSelectableItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"about"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarSelectableItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about"]; }
 - (nullable NSToolbarItem *)toolbar:(__unused NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)identifier willBeInsertedIntoToolbar:(__unused BOOL)flag {
-    if (![@[@"general", @"about"] containsObject:identifier]) return nil;
+    if (![@[@"general", @"shortcuts", @"about"] containsObject:identifier]) return nil;
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
     BOOL general = [identifier isEqualToString:@"general"];
-    item.label = general ? @"通用" : @"关于"; item.paletteLabel = item.label;
-    item.image = [NSImage imageWithSystemSymbolName:general ? @"gearshape" : @"info.circle" accessibilityDescription:item.label];
+    BOOL shortcuts = [identifier isEqualToString:@"shortcuts"];
+    item.label = general ? @"通用" : shortcuts ? @"快捷键" : @"关于"; item.paletteLabel = item.label;
+    item.image = [NSImage imageWithSystemSymbolName:general ? @"gearshape" : shortcuts ? @"keyboard" : @"info.circle" accessibilityDescription:item.label];
     item.target = self; item.action = @selector(toolbarSelected:); return item;
 }
 - (void)windowWillClose:(NSNotification *)notification {
     if (notification.object != self.window) return;
+    [self cancelShortcutRecording];
     // Preference toolbars keep AppKit view/validation state. Detach that state
     // before relinquishing the one settings window owned by this controller.
     self.window.toolbar.delegate = nil;
@@ -161,6 +257,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.window.toolbar = nil;
     self.window.contentView = nil;
     self.window.delegate = nil; self.window = nil; self.pages = nil; self.appearancePopup = nil; self.technicalDetails = nil; self.disclosure = nil;
+    self.shortcutRecorders = nil; self.shortcutClearButtons = nil; self.shortcutFeedback = nil;
     if (self.onClose) self.onClose();
 }
 @end

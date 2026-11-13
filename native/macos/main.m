@@ -71,6 +71,12 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [self.preferences show];
     self.report[@"windowNumber"] = @(self.preferences.window.windowNumber); [self writeReport];
 }
+- (BOOL)applicationShouldHandleReopen:(__unused NSApplication *)sender hasVisibleWindows:(__unused BOOL)flag {
+    // Finder and Spotlight send a reopen event to an already running menu bar
+    // app. Reuse (or recreate) settings so opening Mooncap has a visible result.
+    [self showPreferences:nil];
+    return NO;
+}
 - (void)applicationDidFinishLaunching:(__unused NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     self.smoke = [NSProcessInfo.processInfo.arguments containsObject:@"--smoke"];
@@ -81,7 +87,11 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.outputDirectory = NSProcessInfo.processInfo.environment[@"MOONCAP_NATIVE_OUTPUT"];
     if (self.outputDirectory) [[NSFileManager defaultManager] createDirectoryAtPath:self.outputDirectory withIntermediateDirectories:YES attributes:nil error:NULL];
     self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.image = [NSImage imageWithSystemSymbolName:@"camera.viewfinder" accessibilityDescription:@"Mooncap"];
+    NSImage *statusImage = [NSImage imageNamed:@"MooncapStatusTemplate"];
+    statusImage.template = YES;
+    statusImage.size = NSMakeSize(18, 18);
+    self.statusItem.button.image = statusImage;
+    self.statusItem.button.accessibilityLabel = @"Mooncap";
     if (!self.statusItem.button.image) self.statusItem.button.title = @"Mooncap";
     self.statusItem.button.toolTip = @"Mooncap";
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Mooncap"];
@@ -123,7 +133,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
             self.report[@"lifecyclePolicy"] = @"AppKit may retain its last key NSWindow. Closed controllers, content views and toolbars are released; each prior window is released after opening its successor; five cycles must remain bounded to at most one cached empty NSWindow.";
             self.report[@"final"] = [self snapshot]; self.report[@"phase"] = @"complete";
             BOOL passed = [self.diagnostics[@"passed"] boolValue] && bounded;
-            for (NSString *key in @[@"lightAppearancePassed", @"darkAppearancePassed", @"appearanceRestoredOnReopen", @"aboutDisclosurePassed"])
+            for (NSString *key in @[@"lightAppearancePassed", @"darkAppearancePassed", @"appearanceRestoredOnReopen", @"aboutDisclosurePassed", @"applicationReopenPassed"])
                 passed = passed && [self.report[key] boolValue];
             passed = passed && [self.report[@"startup"][@"contentWindows"] integerValue] == 0 && [self.report[@"final"][@"contentWindows"] integerValue] == 0;
             self.report[@"smokePassed"] = @(passed); [self writeReport];
@@ -149,7 +159,10 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
                     self.report[@"open"] = [self snapshot]; [self closeForSmoke];
                     MCAfter(1, ^{
                         self.report[@"afterClose"] = [self snapshot]; self.report[@"firstCloseLifecycle"] = [self closedSnapshot];
-                        [self showPreferences:nil];
+                        [self applicationShouldHandleReopen:NSApp hasVisibleWindows:NO];
+                        NSWindow *reopenedWindow = self.preferences.window;
+                        [self applicationShouldHandleReopen:NSApp hasVisibleWindows:YES];
+                        self.report[@"applicationReopenPassed"] = @(reopenedWindow.visible && self.preferences.window == reopenedWindow);
                         self.report[@"appearanceRestoredOnReopen"] = @([self.preferences.appearanceChoice isEqualToString:@"dark"]);
                         self.report[@"phase"] = @"reopened"; [self writeReport];
                         MCAfter(1, ^{
