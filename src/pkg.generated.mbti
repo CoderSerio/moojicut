@@ -14,7 +14,11 @@ pub fn image_create(String) -> String
 
 pub fn image_finalize(String) -> String
 
+pub fn preview_core_check() -> Int32
+
 pub fn recording_transition(String, String) -> String
+
+pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
 pub fn video_command(Int32, String) -> String
 

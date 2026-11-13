@@ -9,22 +9,30 @@
 
 Mooji Cut 面向日常沟通里的小片段：一张需要圈出重点的截图，一段需要说明操作的录屏。捕捉后编辑，确认后复制，再回到原来的工作。
 
-**当前版本为 v0.1.0-alpha.1，macOS 原生开发预览版。** 可以体验菜单栏、偏好设置和快捷键配置；截图与录屏的完整流程尚不可用。
+**当前版本为 v0.1.0-alpha.2，原生桌面开发预览版。** 可以体验菜单栏／托盘、偏好设置和快捷键配置；截图与录屏的完整流程尚不可用。
 
 ## 下载与体验
 
-前往 [v0.1.0-alpha.1 发布页](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.1) 下载预览包。本次构建适用于 **Apple Silicon Mac，要求 macOS 26.0 或更新版本**。解压后将 Mooji Cut 放入「应用程序」并打开；应用平时驻留菜单栏，可从菜单栏进入设置。
+前往 [v0.1.0-alpha.2 发布页](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.2)，按系统下载预览包。各包附 SHA256 校验文件。
 
-预览包采用本地签名（ad-hoc），尚未使用 Developer ID 签名或完成 Apple 公证。首次打开时，macOS 可能要求在「系统设置 → 隐私与安全性」中确认打开。
+| 系统 | 支持范围 | 打开方式 |
+| --- | --- | --- |
+| Windows | Windows 10/11，Intel / AMD x64 | 解压 ZIP，双击 `MoojiCut.exe`；在任务栏托盘中双击图标打开设置 |
+| Linux | Ubuntu 22.04/24.04 x86_64 及兼容发行版，glibc ≥ 2.35 | 解压 tar.gz，在目录中运行 `./launch.sh` 打开设置 |
+| macOS | Apple Silicon，macOS 26.0 或更新版本 | 解压 ZIP，将 Mooji Cut 放入「应用程序」并打开 |
+
+Windows 包免安装，无需另装 MoonBit、Python 或 Node；当前尚未代码签名，系统可能显示未知发布者提示。macOS 包采用本地签名（ad-hoc），尚未完成 Apple 公证，首次打开可能需要在「系统设置 → 隐私与安全性」中确认。
+
+Linux 需要 GTK 3 和 Ayatana AppIndicator；Ubuntu 可执行 `sudo apt install libgtk-3-0 libayatana-appindicator3-1` 安装。部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘图标；未显示时，可再次运行 `./launch.sh` 打开设置。程序不会自动安装依赖或修改桌面配置。
 
 | 部分 | 当前状态 |
 | --- | --- |
-| 原生菜单栏与设置 | 已可体验「通用／快捷键／关于」，外观与按键配置自动保存 |
+| 原生菜单栏／托盘与设置 | 已可体验「通用／快捷键／关于」，偏好与按键配置保存在本机 |
 | 快捷键配置 | 支持录入、清除、恢复默认和冲突提示；尚未接通全局采集动作 |
 | 截图与录屏 | 采集、标注与剪辑、确认后复制的完整流程仍在开发中 |
-| 更多平台 | 优先打磨 macOS，后续接入 Windows 与 Linux |
+| 桌面平台 | macOS、Windows 与 Linux 均提供预览包；采集与编辑流程仍在开发中 |
 
-关闭设置不会退出应用；完全退出请使用菜单栏中的「退出 Mooji Cut」。
+关闭设置不会退出应用；完全退出请使用菜单栏或托盘中的「退出 Mooji Cut」。
 
 ## 正在完善的使用流程
 
@@ -44,7 +52,7 @@ Mooji Cut 面向日常沟通里的小片段：一张需要圈出重点的截图�
 
 ## 日常使用，尽量少打扰
 
-- **从菜单栏开始。** 截图与录屏有各自的快捷键；关闭设置后继续在后台待命。
+- **从菜单栏或托盘开始。** 截图与录屏有各自的快捷键；关闭设置后继续在后台待命。
 - **编辑完成，再确认。** 捕捉之后留出调整内容的机会，确认的默认动作是复制到剪贴板。
 - **围绕本地文件设计。** 素材、可编辑草稿和导出成品保存在本机，方便继续修改与再次分享。
 
@@ -52,16 +60,16 @@ Mooji Cut 面向日常沟通里的小片段：一张需要圈出重点的截图�
 
 ## 从源码构建
 
-在 macOS 上准备好 MoonBit 工具链、Xcode Command Line Tools 和 Python 3，然后在仓库根目录运行：
+准备 MoonBit 工具链和 Python 3.12 或更新版本。macOS 需要 Xcode Command Line Tools，Windows 需要 MSVC C++ Build Tools 与 Windows SDK，Linux 需要 C 编译器、GTK 3 和 Ayatana AppIndicator 的开发包。在仓库根目录运行：
 
 ```sh
-make dev
+python3 scripts/desktop.py dev
 ```
 
-构建后会启动 Mooji Cut 并打开设置。
+构建后会启动 Mooji Cut 并打开设置。Windows 开发终端可将命令中的 `python3` 换成 `python`；macOS 与 Linux 也可使用 `make dev`。
 
-仓库根目录是 MoonBit 项目，`src/` 中的编辑核心默认编译为 native。也可以单独运行 `moon check`、`moon test` 和 `moon build`，检查、测试与构建核心；`make dev` 会将它与 macOS 原生界面一起打包。
+仓库根目录是 MoonBit 项目，`src/` 中的编辑核心默认编译为 native。也可以单独运行 `moon check`、`moon test` 和 `moon build`，检查、测试与构建核心。各平台共用这一核心，并由各自的原生界面调用。
 
 ## 关于 Mooji Cut
 
-Mooji Cut 使用 MoonBit 编写编辑核心，搭配 macOS 原生界面。从日常截图与录屏出发，逐步完善编辑体验，并为更多平台带来同样的使用方式。
+Mooji Cut 使用 MoonBit 编写编辑核心，搭配各平台的原生界面。从日常截图与录屏出发，逐步完善捕捉、编辑与分享的体验。

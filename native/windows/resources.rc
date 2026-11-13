@@ -1,0 +1,55 @@
+#pragma code_page(65001)
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDI_MOOJICUT ICON "app.ico"
+1 RT_MANIFEST "app.manifest"
+
+IDD_GENERAL DIALOGEX 0, 0, 320, 207
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_CAPTION
+CAPTION "通用"
+FONT 9, "Segoe UI"
+BEGIN
+    ICON IDI_MOOJICUT, -1, 17, 18, 32, 32
+    LTEXT "Mooji Cut", -1, 62, 18, 230, 16
+    LTEXT "这一幕，我截下了。", -1, 62, 37, 230, 15
+    GROUPBOX "日常使用", -1, 14, 64, 292, 68
+    LTEXT "平时驻留在通知区域。双击托盘图标打开设置。\n关闭设置后继续待命；退出请使用托盘菜单。", -1, 25, 81, 267, 26
+    CONTROL "启动时打开设置", IDC_START_SETTINGS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 25, 111, 267, 13
+    GROUPBOX "开发预览版", -1, 14, 145, 292, 48
+    LTEXT "已支持托盘、原生设置与快捷键配置。\n截图、录屏、编辑与导出尚未接入。", -1, 25, 161, 267, 27
+END
+
+IDD_SHORTCUTS DIALOGEX 0, 0, 320, 207
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_CAPTION
+CAPTION "快捷键"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "点击输入框，然后按下快捷键组合。", -1, 17, 17, 285, 13
+    LTEXT "截图", -1, 17, 47, 65, 14
+    CONTROL "", IDC_HOTKEY_CAPTURE, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 89, 43, 163, 19
+    PUSHBUTTON "清除", IDC_CLEAR_CAPTURE, 260, 43, 43, 19
+    LTEXT "开始录屏", -1, 17, 78, 65, 14
+    CONTROL "", IDC_HOTKEY_RECORD, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 89, 74, 163, 19
+    PUSHBUTTON "清除", IDC_CLEAR_RECORD, 260, 74, 43, 19
+    LTEXT "结束录屏", -1, 17, 109, 65, 14
+    CONTROL "", IDC_HOTKEY_STOP, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 89, 105, 163, 19
+    PUSHBUTTON "清除", IDC_CLEAR_STOP, 260, 105, 43, 19
+    LTEXT "", IDC_SHORTCUT_STATUS, 17, 138, 190, 31
+    PUSHBUTTON "恢复默认", IDC_RESET_SHORTCUTS, 231, 139, 72, 20
+    LTEXT "当前仅保存配置，尚未接通全局截图与录屏动作。\n冲突检查仅覆盖本应用内的三个组合。", -1, 17, 174, 285, 26
+END
+
+IDD_ABOUT DIALOGEX 0, 0, 320, 207
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_CAPTION
+CAPTION "关于"
+FONT 9, "Segoe UI"
+BEGIN
+    ICON IDI_MOOJICUT, -1, 17, 18, 32, 32
+    LTEXT "Mooji Cut", -1, 62, 18, 230, 16
+    LTEXT "", IDC_VERSION, 62, 37, 230, 16
+    LTEXT "以 MoonBit 为核心的本地截图与录屏工具。\n捕捉后编辑，确认后复制。", -1, 17, 75, 285, 28
+    LTEXT "", IDC_CORE_STATUS, 17, 115, 285, 15
+    LTEXT "本预览包尚未进行 Windows 代码签名。\n当前可体验原生托盘、设置和快捷键配置。\n完整采集、编辑与分享流程仍在开发中。", -1, 17, 150, 285, 40
+END

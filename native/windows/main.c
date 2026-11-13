@@ -1,0 +1,475 @@
+#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
+#define _UNICODE
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <windowsx.h>
+#include <commctrl.h>
+#include <shellapi.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <wchar.h>
+#include "moonbit.h"
+#include "resource.h"
+
+#ifndef MOOJICUT_VERSION
+#define MOOJICUT_VERSION "0.1.0-alpha.2"
+#endif
+#define WIDE_IMPL(x) L##x
+#define WIDE(x) WIDE_IMPL(x)
+#define WM_TRAY (WM_APP + 1)
+#define WM_SHOW_SETTINGS (WM_APP + 2)
+#define SETTINGS_SUBCLASS 1
+
+extern int32_t preview_core_check(void);
+extern int32_t shortcut_validate(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
+
+static const wchar_t *HOST_CLASS = L"MoojiCut.Native.TrayHost";
+static wchar_t registry_path[160] = L"Software\\MoojiCut";
+static const wchar_t *HOTKEY_NAMES[3] = {L"Capture", L"Record", L"Stop"};
+static const WORD DEFAULT_KEYS[3] = {
+    MAKEWORD('1', HOTKEYF_CONTROL | HOTKEYF_SHIFT),
+    MAKEWORD('2', HOTKEYF_CONTROL | HOTKEYF_SHIFT),
+    MAKEWORD('X', HOTKEYF_CONTROL | HOTKEYF_SHIFT)
+};
+static HINSTANCE instance;
+static HWND host, settings;
+static HICON app_icon;
+static UINT taskbar_created;
+static NOTIFYICONDATAW tray;
+static BOOL tray_added, smoke_mode, updating;
+static WORD hotkeys[3];
+static BOOL open_on_start;
+static int core_ok;
+
+static int normalized_key(WORD combination) {
+    int vk = LOBYTE(combination);
+    if (vk >= VK_F1 && vk <= VK_F24) return 256 + vk - VK_F1;
+    return vk;
+}
+
+static int normalized_modifiers(WORD combination) {
+    BYTE flags = HIBYTE(combination);
+    return ((flags & HOTKEYF_CONTROL) ? 1 : 0) |
+           ((flags & HOTKEYF_ALT) ? 2 : 0) |
+           ((flags & HOTKEYF_SHIFT) ? 4 : 0);
+}
+
+static int validate_keys(const WORD keys[3]) {
+    int i;
+    for (i = 0; i < 3; i++) {
+        int a = (i + 1) % 3, b = (i + 2) % 3;
+        int result;
+        if (HIBYTE(keys[i]) & ~(HOTKEYF_CONTROL | HOTKEYF_ALT | HOTKEYF_SHIFT | HOTKEYF_EXT)) return 3;
+        result = shortcut_validate(normalized_key(keys[i]), normalized_modifiers(keys[i]),
+            normalized_key(keys[a]), normalized_modifiers(keys[a]),
+            normalized_key(keys[b]), normalized_modifiers(keys[b]));
+        if (result != 0) return result;
+    }
+    return 0;
+}
+
+static void load_preferences(void) {
+    HKEY key;
+    int i;
+    for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
+    open_on_start = FALSE;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, registry_path, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
+        DWORD value, size;
+        for (i = 0; i < 3; i++) {
+            size = sizeof(value);
+            if (RegGetValueW(key, NULL, HOTKEY_NAMES[i], RRF_RT_REG_DWORD, NULL, &value, &size) == ERROR_SUCCESS && value <= 0xffff)
+                hotkeys[i] = (WORD)value;
+        }
+        size = sizeof(value);
+        if (RegGetValueW(key, NULL, L"OpenSettingsOnStart", RRF_RT_REG_DWORD, NULL, &value, &size) == ERROR_SUCCESS)
+            open_on_start = value != 0;
+        RegCloseKey(key);
+    }
+    if (validate_keys(hotkeys) != 0) for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
+}
+
+static BOOL save_preferences(void) {
+    HKEY key;
+    DWORD value;
+    int i;
+    BOOL succeeded = TRUE;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, registry_path, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS)
+        return FALSE;
+    for (i = 0; i < 3; i++) {
+        value = hotkeys[i];
+        if (RegSetValueExW(key, HOTKEY_NAMES[i], 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) != ERROR_SUCCESS) succeeded = FALSE;
+    }
+    value = open_on_start ? 1 : 0;
+    if (RegSetValueExW(key, L"OpenSettingsOnStart", 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) != ERROR_SUCCESS) succeeded = FALSE;
+    RegCloseKey(key);
+    return succeeded;
+}
+
+static void fill_shortcuts(HWND page) {
+    int i;
+    updating = TRUE;
+    for (i = 0; i < 3; i++) {
+        SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE + i, HKM_SETRULES, 0, 0);
+        SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE + i, HKM_SETHOTKEY, hotkeys[i], 0);
+    }
+    updating = FALSE;
+}
+
+static void update_shortcuts(HWND page) {
+    WORD proposed[3];
+    int i, result;
+    if (updating) return;
+    for (i = 0; i < 3; i++) proposed[i] = (WORD)SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE + i, HKM_GETHOTKEY, 0, 0);
+    result = validate_keys(proposed);
+    if (result != 0) {
+        SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, result == 1 ? L"字母与数字需搭配 Ctrl 或 Alt。尚未保存。" :
+            result == 2 ? L"快捷键重复，请使用不同的组合。尚未保存。" : L"请使用字母、数字或 F1–F24。尚未保存。");
+        return;
+    }
+    for (i = 0; i < 3; i++) hotkeys[i] = proposed[i];
+    SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, save_preferences() ? L"已保存" : L"保存失败，请检查账户权限。");
+}
+
+static INT_PTR CALLBACK general_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    (void)lp;
+    if (message == WM_INITDIALOG) {
+        CheckDlgButton(window, IDC_START_SETTINGS, open_on_start ? BST_CHECKED : BST_UNCHECKED);
+        return TRUE;
+    }
+    if (message == WM_COMMAND && LOWORD(wp) == IDC_START_SETTINGS && HIWORD(wp) == BN_CLICKED) {
+        BOOL previous = open_on_start;
+        open_on_start = IsDlgButtonChecked(window, IDC_START_SETTINGS) == BST_CHECKED;
+        if (!save_preferences()) {
+            open_on_start = previous;
+            CheckDlgButton(window, IDC_START_SETTINGS, previous ? BST_CHECKED : BST_UNCHECKED);
+            MessageBoxW(window, L"设置未能保存，请检查账户权限。", L"Mooji Cut", MB_OK | MB_ICONWARNING);
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static INT_PTR CALLBACK shortcuts_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    (void)lp;
+    if (message == WM_INITDIALOG) { fill_shortcuts(window); return TRUE; }
+    if (message == WM_COMMAND) {
+        int id = LOWORD(wp);
+        if (id >= IDC_HOTKEY_CAPTURE && id <= IDC_HOTKEY_STOP && HIWORD(wp) == EN_CHANGE) {
+            update_shortcuts(window);
+            return TRUE;
+        }
+        if (HIWORD(wp) == BN_CLICKED && id >= IDC_CLEAR_CAPTURE && id <= IDC_CLEAR_STOP) {
+            SendDlgItemMessageW(window, IDC_HOTKEY_CAPTURE + id - IDC_CLEAR_CAPTURE, HKM_SETHOTKEY, 0, 0);
+            update_shortcuts(window);
+            return TRUE;
+        }
+        if (id == IDC_RESET_SHORTCUTS && HIWORD(wp) == BN_CLICKED) {
+            int i;
+            for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
+            fill_shortcuts(window);
+            update_shortcuts(window);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static INT_PTR CALLBACK about_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    (void)wp; (void)lp;
+    if (message == WM_INITDIALOG) {
+        SetDlgItemTextW(window, IDC_VERSION, WIDE(MOOJICUT_VERSION) L" · Windows x64");
+        SetDlgItemTextW(window, IDC_CORE_STATUS, core_ok ? L"MoonBit native 核心已连接" : L"MoonBit 核心检查失败");
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static LRESULT CALLBACK settings_subclass(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
+    (void)id; (void)data;
+    if (message == WM_CLOSE || (message == WM_COMMAND && (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL))) {
+        DestroyWindow(window);
+        return 0;
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(window, settings_subclass, SETTINGS_SUBCLASS);
+        settings = NULL;
+    }
+    return DefSubclassProc(window, message, wp, lp);
+}
+
+static BOOL show_settings(void) {
+    if (!settings) {
+        PROPSHEETPAGEW pages[3];
+        PROPSHEETHEADERW header;
+        const DLGPROC procedures[3] = {general_page, shortcuts_page, about_page};
+        int i;
+        ZeroMemory(pages, sizeof(pages));
+        for (i = 0; i < 3; i++) {
+            pages[i].dwSize = sizeof(pages[i]);
+            pages[i].dwFlags = PSP_DEFAULT;
+            pages[i].hInstance = instance;
+            pages[i].pszTemplate = MAKEINTRESOURCEW(IDD_GENERAL + i);
+            pages[i].pfnDlgProc = procedures[i];
+        }
+        ZeroMemory(&header, sizeof(header));
+        header.dwSize = sizeof(header);
+        header.dwFlags = PSH_PROPSHEETPAGE | PSH_MODELESS | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP;
+        header.hwndParent = host;
+        header.hInstance = instance;
+        header.pszCaption = L"Mooji Cut 设置";
+        header.nPages = 3;
+        header.ppsp = pages;
+        settings = (HWND)PropertySheetW(&header);
+        if (settings == (HWND)-1) settings = NULL;
+        if (!settings) return FALSE;
+        SetWindowSubclass(settings, settings_subclass, SETTINGS_SUBCLASS, 0);
+        SendMessageW(settings, WM_SETICON, ICON_BIG, (LPARAM)app_icon);
+        SendMessageW(settings, WM_SETICON, ICON_SMALL, (LPARAM)app_icon);
+        SetDlgItemTextW(settings, IDOK, L"关闭");
+        ShowWindow(GetDlgItem(settings, IDCANCEL), SW_HIDE);
+    }
+    ShowWindow(settings, SW_SHOWNORMAL);
+    SetForegroundWindow(settings);
+    return TRUE;
+}
+
+static BOOL add_tray(void) {
+    ZeroMemory(&tray, sizeof(tray));
+    tray.cbSize = sizeof(tray);
+    tray.hWnd = host;
+    tray.uID = 1;
+    tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+    tray.uCallbackMessage = WM_TRAY;
+    tray.hIcon = app_icon;
+    wcscpy_s(tray.szTip, ARRAYSIZE(tray.szTip), L"Mooji Cut · 设置与快捷键");
+    tray_added = Shell_NotifyIconW(NIM_ADD, &tray);
+    if (tray_added) {
+        tray.uVersion = NOTIFYICON_VERSION_4;
+        Shell_NotifyIconW(NIM_SETVERSION, &tray);
+    }
+    return tray_added;
+}
+
+static void tray_menu(void) {
+    HMENU menu = CreatePopupMenu();
+    POINT point;
+    UINT chosen;
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"设置…");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, IDM_QUIT, L"退出 Mooji Cut");
+    SetMenuDefaultItem(menu, IDM_SETTINGS, FALSE);
+    GetCursorPos(&point);
+    SetForegroundWindow(host);
+    chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, host, NULL);
+    PostMessageW(host, WM_NULL, 0, 0);
+    DestroyMenu(menu);
+    if (chosen == IDM_SETTINGS) show_settings();
+    else if (chosen == IDM_QUIT) DestroyWindow(host);
+}
+
+static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == taskbar_created && taskbar_created != 0 && !smoke_mode) {
+        if (!add_tray()) show_settings();
+        return 0;
+    }
+    switch (message) {
+    case WM_TRAY:
+        switch (LOWORD(lp)) {
+        case WM_CONTEXTMENU: tray_menu(); break;
+        case NIN_SELECT: case NIN_KEYSELECT: case WM_LBUTTONDBLCLK: show_settings(); break;
+        }
+        return 0;
+    case WM_SHOW_SETTINGS: show_settings(); return 0;
+    case WM_CLOSE: DestroyWindow(window); return 0;
+    case WM_DESTROY:
+        if (settings) DestroyWindow(settings);
+        if (tray_added) Shell_NotifyIconW(NIM_DELETE, &tray);
+        tray_added = FALSE;
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wp, lp);
+}
+
+static BOOL save_smoke_screenshot(HWND window) {
+    wchar_t path[32768];
+    DWORD path_length = GetEnvironmentVariableW(L"MOOJICUT_SMOKE_SCREENSHOT", path, ARRAYSIZE(path));
+    RECT bounds;
+    HDC screen = NULL, memory = NULL;
+    HBITMAP bitmap = NULL;
+    HGDIOBJ previous = NULL;
+    BITMAPINFO info;
+    BITMAPFILEHEADER header;
+    BYTE *pixels = NULL;
+    HANDLE file = INVALID_HANDLE_VALUE;
+    DWORD size, written;
+    int width, height;
+    BOOL passed = FALSE;
+    if (path_length == 0) return TRUE;
+    if (path_length >= ARRAYSIZE(path) || !GetWindowRect(window, &bounds)) return FALSE;
+    width = bounds.right - bounds.left;
+    height = bounds.bottom - bounds.top;
+    if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return FALSE;
+    size = (DWORD)width * (DWORD)height * 4;
+    ZeroMemory(&info, sizeof(info));
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    screen = GetWindowDC(window);
+    if (!screen) goto cleanup;
+    memory = CreateCompatibleDC(screen);
+    bitmap = CreateCompatibleBitmap(screen, width, height);
+    if (!memory || !bitmap) goto cleanup;
+    previous = SelectObject(memory, bitmap);
+    RedrawWindow(window, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    if (!PrintWindow(window, memory, 0) && !BitBlt(memory, 0, 0, width, height, screen, 0, 0, SRCCOPY)) goto cleanup;
+    SelectObject(memory, previous);
+    previous = NULL;
+    pixels = HeapAlloc(GetProcessHeap(), 0, size);
+    if (!pixels || !GetDIBits(memory, bitmap, 0, (UINT)height, pixels, &info, DIB_RGB_COLORS)) goto cleanup;
+    ZeroMemory(&header, sizeof(header));
+    header.bfType = 0x4D42;
+    header.bfOffBits = sizeof(header) + sizeof(BITMAPINFOHEADER);
+    header.bfSize = header.bfOffBits + size;
+    file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) goto cleanup;
+    passed = WriteFile(file, &header, sizeof(header), &written, NULL) && written == sizeof(header) &&
+        WriteFile(file, &info.bmiHeader, sizeof(BITMAPINFOHEADER), &written, NULL) && written == sizeof(BITMAPINFOHEADER) &&
+        WriteFile(file, pixels, size, &written, NULL) && written == size;
+cleanup:
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    if (pixels) HeapFree(GetProcessHeap(), 0, pixels);
+    if (previous) SelectObject(memory, previous);
+    if (bitmap) DeleteObject(bitmap);
+    if (memory) DeleteDC(memory);
+    if (screen) ReleaseDC(window, screen);
+    return passed;
+}
+
+static int run_smoke(void) {
+    HWND page, first;
+    WORD changed = MAKEWORD(VK_F6, HOTKEYF_CONTROL);
+    int passed = 0;
+    load_preferences();
+    if (!show_settings()) goto cleanup;
+    first = settings;
+    if (!show_settings() || settings != first) goto cleanup;
+    PropSheet_SetCurSel(settings, NULL, 1);
+    page = PropSheet_GetCurrentPageHwnd(settings);
+    if (!page || !GetDlgItem(page, IDC_HOTKEY_CAPTURE)) goto cleanup;
+    SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE, HKM_SETHOTKEY, changed, 0);
+    update_shortcuts(page);
+    if (hotkeys[0] != changed) goto cleanup;
+    SendDlgItemMessageW(page, IDC_HOTKEY_RECORD, HKM_SETHOTKEY, changed, 0);
+    update_shortcuts(page);
+    if (hotkeys[1] != DEFAULT_KEYS[1]) goto cleanup;
+    SendDlgItemMessageW(page, IDC_HOTKEY_RECORD, HKM_SETHOTKEY, 0, 0);
+    update_shortcuts(page);
+    if (hotkeys[1] != 0) goto cleanup;
+    SendMessageW(settings, WM_CLOSE, 0, 0);
+    if (settings != NULL) goto cleanup;
+    load_preferences();
+    if (hotkeys[0] != changed || hotkeys[1] != 0 || !show_settings()) goto cleanup;
+    PropSheet_SetCurSel(settings, NULL, 1);
+    page = PropSheet_GetCurrentPageHwnd(settings);
+    if ((WORD)SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE, HKM_GETHOTKEY, 0, 0) != changed) goto cleanup;
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_RESET_SHORTCUTS, BN_CLICKED), 0);
+    if (hotkeys[0] != DEFAULT_KEYS[0] || hotkeys[1] != DEFAULT_KEYS[1]) goto cleanup;
+    PropSheet_SetCurSel(settings, NULL, 2);
+    page = PropSheet_GetCurrentPageHwnd(settings);
+    if (!page || !GetDlgItem(page, IDC_CORE_STATUS)) goto cleanup;
+    passed = core_ok && save_smoke_screenshot(settings);
+cleanup:
+    if (settings) DestroyWindow(settings);
+    RegDeleteTreeW(HKEY_CURRENT_USER, registry_path);
+    printf("Windows settings smoke: %s\n", passed ? "passed" : "FAILED");
+    return passed ? 0 : 1;
+}
+
+int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, int show) {
+    INITCOMMONCONTROLSEX controls = {sizeof(controls), ICC_WIN95_CLASSES | ICC_HOTKEY_CLASS};
+    WNDCLASSEXW klass;
+    MSG message;
+    HANDLE mutex = NULL;
+    BOOL preferences_requested = FALSE, self_test = FALSE;
+    int count, i, result = 0;
+    wchar_t **args = CommandLineToArgvW(GetCommandLineW(), &count);
+    (void)previous; (void)command; (void)show;
+    for (i = 1; args && i < count; i++) {
+        if (wcscmp(args[i], L"--self-test") == 0) self_test = TRUE;
+        else if (wcscmp(args[i], L"--smoke") == 0) smoke_mode = TRUE;
+        else if (wcscmp(args[i], L"--preferences") == 0) preferences_requested = TRUE;
+    }
+    if (args) LocalFree(args);
+    moonbit_init();
+    core_ok = preview_core_check() == 1;
+    if (self_test) {
+        for (i = 0; i < 1000 && core_ok; i++) core_ok = preview_core_check() == 1;
+        return core_ok ? 0 : 1;
+    }
+    if (!core_ok) {
+        MessageBoxW(NULL, L"MoonBit 核心初始化失败。请重新解压完整的预览包。", L"Mooji Cut", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    if (smoke_mode) {
+        _snwprintf_s(registry_path, ARRAYSIZE(registry_path), _TRUNCATE, L"Software\\MoojiCut.Smoke.%lu", GetCurrentProcessId());
+    } else {
+        mutex = CreateMutexW(NULL, FALSE, L"Local\\MoojiCut.Native.Preview");
+        if (!mutex) return 1;
+        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+            HWND existing = NULL;
+            for (i = 0; i < 20 && !existing; i++) {
+                existing = FindWindowW(HOST_CLASS, NULL);
+                if (!existing) Sleep(100);
+            }
+            if (existing) {
+                DWORD process_id;
+                GetWindowThreadProcessId(existing, &process_id);
+                AllowSetForegroundWindow(process_id);
+                PostMessageW(existing, WM_SHOW_SETTINGS, 0, 0);
+            }
+            CloseHandle(mutex);
+            return existing ? 0 : 1;
+        }
+    }
+    instance = application;
+    if (!InitCommonControlsEx(&controls)) { if (mutex) CloseHandle(mutex); return 1; }
+    app_icon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_MOOJICUT));
+    ZeroMemory(&klass, sizeof(klass));
+    klass.cbSize = sizeof(klass);
+    klass.hInstance = instance;
+    klass.lpfnWndProc = host_proc;
+    klass.lpszClassName = HOST_CLASS;
+    klass.hIcon = app_icon;
+    klass.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    if (!RegisterClassExW(&klass)) { if (mutex) CloseHandle(mutex); return 1; }
+    host = CreateWindowExW(WS_EX_TOOLWINDOW, HOST_CLASS, L"Mooji Cut", WS_OVERLAPPED,
+        CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, NULL, NULL, instance, NULL);
+    if (!host) { if (mutex) CloseHandle(mutex); return 1; }
+    load_preferences();
+    if (smoke_mode) {
+        result = run_smoke();
+        DestroyWindow(host);
+    } else {
+        taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
+        if (!add_tray() || preferences_requested || open_on_start) show_settings();
+        while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {
+            if (!settings || !PropSheet_IsDialogMessage(settings, &message)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            if (settings && PropSheet_GetCurrentPageHwnd(settings) == NULL) DestroyWindow(settings);
+        }
+        result = result == -1 ? 1 : (int)message.wParam;
+    }
+    if (mutex) CloseHandle(mutex);
+    return result;
+}

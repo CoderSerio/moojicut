@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mooji Cut
+Comment=MoonBit screenshot and recording tool — native preview
+Exec="@APP_DIR@/moojicut" --preferences
+Icon=@APP_DIR@/moojicut.png
+Terminal=false
+Categories=Graphics;Utility;
+StartupNotify=true

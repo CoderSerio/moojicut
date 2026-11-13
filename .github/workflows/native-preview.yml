@@ -1,0 +1,84 @@
+name: Native desktop previews
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Preview release version
+        required: true
+        default: 0.1.0-alpha.2
+  push:
+    branches: [main]
+    paths:
+      - src/**
+      - native/windows/**
+      - native/linux/**
+      - scripts/desktop.py
+      - scripts/install_moon.py
+      - moon.mod
+      - .github/workflows/native-preview.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} x64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-2022
+          - platform: linux
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      PREVIEW_VERSION: ${{ inputs.version || '0.1.0-alpha.2' }}
+      MOOJICUT_SMOKE_SCREENSHOT: ${{ github.workspace }}/.artifacts/${{ matrix.platform }}/smoke.${{ matrix.platform == 'windows' && 'bmp' || 'png' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Set up MSVC x64
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'MSVC x64 tools not found' }
+          & "$vs\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'VCToolsInstallDir', 'WindowsSdkDir')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) { "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append }
+          }
+      - name: Install Linux native libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev xvfb dbus-x11 fonts-noto-cjk
+      - name: Install pinned MoonBit compiler and core
+        run: python scripts/install_moon.py "${{ runner.temp }}/moonbit"
+      - name: Build, test and package Windows
+        if: runner.os == 'Windows'
+        run: python scripts/desktop.py release --release-version "$env:PREVIEW_VERSION"
+      - name: Build, test and package Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- python scripts/desktop.py release --release-version "$PREVIEW_VERSION"
+      - name: Upload tested packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-${{ matrix.platform }}-x64
+          path: dist/releases/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload UI smoke screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.platform }}
+          path: .artifacts/${{ matrix.platform }}/smoke.*
+          if-no-files-found: ignore
+          retention-days: 14
