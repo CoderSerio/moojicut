@@ -1,0 +1,8 @@
+node_modules/
+.tools/
+dist/
+core/_build/
+core/target/
+.DS_Store
+*.log
+.artifacts/

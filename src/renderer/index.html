@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mooncap-media:; connect-src 'self'; object-src 'none'; base-uri 'none'">
+  <title>MoonCap — 开发验证界面</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header>
+    <div><h1>MoonCap <span>开发验证界面 · 截图 / 录屏 / 分享</span></h1></div>
+    <button id="home" class="quiet">返回采集</button>
+  </header>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <main>
+    <section id="capture-view">
+      <div class="section-title"><div><h2>选择要分享的内容</h2><p>选择屏幕或窗口。截图后标注，录屏后剪辑。</p></div><button id="refresh">刷新来源</button></div>
+      <div id="sources" class="sources" aria-label="屏幕与窗口"></div>
+      <div class="capture-actions">
+        <button id="screenshot" class="primary" disabled>截图</button>
+        <button id="record" class="record" disabled>开始录屏</button>
+        <label><input id="system-audio" type="checkbox"> 系统声音</label>
+        <label><input id="microphone" type="checkbox"> 麦克风</label>
+      </div>
+      <p class="hint">录制时会显示置顶的停止按钮，也可以按 ⌘ / Ctrl + Shift + X 停止。</p>
+      <section class="history"><h3>本机录像</h3><p class="hint">原始录像保存在本机，可重新打开继续剪辑。<button id="recordings-folder" class="quiet">打开原始录像文件夹</button></p><div id="history"></div></section>
+    </section>
+    <section id="recording-view" hidden>
+      <div class="recording-card"><span class="record-dot"></span><h2>正在录屏</h2><div id="elapsed">00:00</div><p>停止后即可预览、剪辑和导出。</p><button id="stop" class="record">■ 停止录屏</button><p class="hint">⌘ / Ctrl + Shift + X</p></div>
+    </section>
+    <section id="image-view" hidden>
+      <div class="section-title"><h2>截图标注</h2><div class="actions"><button id="copy-image">复制图片</button><button id="save-image" class="primary">保存 PNG</button></div></div>
+      <div class="toolbar" aria-label="标注工具">
+        <button data-tool="rectangle" aria-pressed="true">方框</button><button data-tool="arrow" aria-pressed="false">箭头</button><button data-tool="text" aria-pressed="false">文字</button><button data-tool="redact" aria-pressed="false">遮挡</button><button data-tool="crop" aria-pressed="false">框选裁剪</button>
+        <label>颜色 <input id="color" type="color" value="#ff5449"></label><label>粗细 <input id="stroke" type="number" min="1" max="24" value="4"></label><input id="annotation-text" type="text" placeholder="输入文字，再点击图片" aria-label="标注文字" maxlength="300"><button id="undo-image" disabled>撤销</button><button id="apply-crop" hidden>应用裁剪</button>
+      </div>
+      <div class="canvas-wrap"><canvas id="image-canvas" aria-label="截图编辑画布"></canvas></div>
+      <p class="hint">拖动画框或箭头。遮挡使用不透明色块。框选裁剪后点击“应用裁剪”。</p>
+    </section>
+    <section id="video-view" hidden>
+      <div class="section-title"><h2>剪辑录像</h2><button id="export-video" class="primary">导出 MP4</button></div>
+      <video id="preview" controls preload="metadata"></video>
+      <div class="editor-grid">
+        <fieldset><legend>保留范围（秒）</legend><label>开始 <input id="trim-start" type="number" min="0" step="0.1" value="0"></label><label>结束 <input id="trim-end" type="number" min="0" step="0.1"></label><button id="set-start">以当前播放位置为开始</button><button id="set-end">以当前播放位置为结束</button></fieldset>
+        <fieldset><legend><label><input id="cut-enabled" type="checkbox"> 删除中间一段</label></legend><label>从 <input id="cut-start" type="number" min="0" step="0.1" value="0"></label><label>到 <input id="cut-end" type="number" min="0" step="0.1" value="0"></label><p class="hint">导出时拼接剩余片段。</p></fieldset>
+        <fieldset><legend><label><input id="video-crop-enabled" type="checkbox"> 画面裁剪（像素）</label></legend><label>X <input id="crop-x" type="number" min="0" value="0"></label><label>Y <input id="crop-y" type="number" min="0" value="0"></label><label>宽 <input id="crop-width" type="number" min="2"></label><label>高 <input id="crop-height" type="number" min="2"></label></fieldset>
+        <fieldset><legend>分享设置</legend><label>画质 <select id="preset"><option value="share">轻量分享 · 最大宽度 1280</option><option value="quality">清晰优先 · 最大宽度 1920</option></select></label><label>目标体积 <input id="target-mb" type="number" min="1" max="2048" value="25"> MiB</label><label><input id="mute" type="checkbox"> 导出时静音</label><p id="export-estimate" class="hint"></p></fieldset>
+      </div>
+      <div id="export-status" hidden><progress id="export-progress" max="100" value="0"></progress><span id="export-message">正在导出…</span></div>
+      <button id="reveal-export" hidden>在文件夹中显示</button>
+    </section>
+  </main>
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>

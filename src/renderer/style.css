@@ -1,0 +1,35 @@
+:root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e8ebf0; background: #15181e; font-size: 14px; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+[hidden] { display: none !important; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 22px 28px; border-bottom: 1px solid #303640; }
+h1 { font-size: 23px; margin: 0; letter-spacing: -.5px; }
+h1 span { color: #9aa5b5; font-size: 13px; font-weight: 400; margin-left: 14px; letter-spacing: 0; }
+h2 { font-size: 21px; margin: 0 0 8px; } h3 { font-size: 16px; }
+p { color: #aab5c4; line-height: 1.6; }
+main { max-width: 1440px; margin: auto; padding: 24px 28px; }
+button, input, select { font: inherit; }
+button { border: 1px solid #414b5a; border-radius: 7px; color: #e8ebf0; background: #252c36; padding: 9px 14px; cursor: pointer; }
+button:hover { background: #343e4d; } button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #8dabff; outline-offset: 3px; }
+button:disabled { opacity: .4; cursor: not-allowed; } button.primary { background: #a5c1ff; color: #122345; border-color: #a5c1ff; font-weight: 600; }
+button.record { background: #d14e49; border-color: #d14e49; color: white; font-weight: 600; } button.quiet { background: transparent; }
+input, select { color: #e8ebf0; background: #171c23; border: 1px solid #495361; border-radius: 4px; padding: 7px; }
+input[type="checkbox"] { accent-color: #a5c1ff; } input[type="number"] { width: 90px; } input[type="color"] { width: 35px; height: 32px; padding: 2px; }
+label { display: inline-flex; align-items: center; gap: 6px; }
+.section-title, .actions, .capture-actions, .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.section-title { justify-content: space-between; margin-bottom: 18px; } .section-title p { margin: 0; }
+.sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; max-height: 50vh; overflow: auto; padding: 4px; margin: 0 -4px 22px; }
+.source { padding: 9px; text-align: left; background: #1e242d; overflow: hidden; }
+.source img { width: 100%; height: 125px; object-fit: contain; background: #11151a; display: block; border-radius: 3px; }
+.source span { display: block; margin-top: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.source[aria-pressed="true"], .toolbar button[aria-pressed="true"] { border-color: #a5c1ff; background: #2e405f; }
+.hint { font-size: 12px; color: #9aa7b8; } .history { margin-top: 30px; border-top: 1px solid #303640; padding-top: 10px; }
+#history { display: flex; gap: 10px; flex-wrap: wrap; } #notice { padding: 12px 28px; background: #253448; color: #d0e0ff; line-height: 1.5; white-space: pre-wrap; } #notice.error { background: #502c31; color: #ffd5d5; }
+.recording-card { padding: 70px 20px; text-align: center; } .record-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: #ff6963; margin-bottom: 20px; } #elapsed { font-size: 52px; font-variant-numeric: tabular-nums; margin: 25px; }
+.toolbar { margin-bottom: 16px; gap: 8px; } #annotation-text { width: 200px; }
+.canvas-wrap { background: #0d1117; padding: 20px; text-align: center; overflow: auto; border-radius: 8px; } canvas { max-width: 100%; max-height: 65vh; width: auto; height: auto; cursor: crosshair; touch-action: none; box-shadow: 0 0 0 1px #4d5867; }
+#preview { display: block; width: 100%; max-height: 48vh; background: #080b10; border-radius: 7px; }
+.editor-grid { display: grid; grid-template-columns: repeat(2, minmax(250px, 1fr)); gap: 16px; margin-top: 20px; }
+fieldset { border: 1px solid #3a4452; border-radius: 7px; padding: 15px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 10px; min-width: 0; } legend { color: #c2cee0; padding: 0 6px; } fieldset p { width: 100%; margin: 0; } fieldset button { font-size: 12px; }
+#export-status { display: flex; gap: 16px; align-items: center; margin: 20px 0; } progress { width: 240px; accent-color: #a5c1ff; }
+@media (max-width: 760px) { main { padding: 18px; } .editor-grid { grid-template-columns: 1fr; } h1 span { display: none; } }

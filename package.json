@@ -1,0 +1,21 @@
+{
+  "name": "mooncap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first screenshot and screen recording editor with a MoonBit core.",
+  "type": "module",
+  "main": "src/main/main.mjs",
+  "scripts": {
+    "build:core": "node scripts/build-core.mjs",
+    "start": "npm run build:core && electron .",
+    "dev": "npm run build:core && electron . --workbench",
+    "test": "node scripts/build-core.mjs --test && node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "devDependencies": {
+    "electron": "45.3.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
