@@ -2,6 +2,7 @@ import { lstat, mkdir, open, readFile, readdir, rename, writeFile } from 'node:f
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { validateBytes } from './media-input.mjs';
+import { video_open, video_dispose } from '../../dist/core/core.mjs';
 import { findExecutable, probeMedia } from './media-tools.mjs';
 
 const MAX_PENDING_BYTES = 64 * 1024 * 1024;
@@ -33,7 +34,8 @@ export class RecordingStore {
           id: entry.name, filename, state: complete ? 'complete' : 'incomplete', bytes: fileInfo.size,
           mimeType: typeof metadata.mimeType === 'string' && /^video\/webm(?:;[a-zA-Z0-9=, ."_-]+)?$/.test(metadata.mimeType) ? metadata.mimeType : 'video/webm',
           createdAt: typeof metadata.createdAt === 'string' && Number.isFinite(Date.parse(metadata.createdAt)) ? new Date(metadata.createdAt).toISOString() : fileInfo.birthtime.toISOString(),
-          ...(complete ? { durationMs: metadata.durationMs, width: metadata.width, height: metadata.height, hasAudio: metadata.hasAudio } : {}),
+          ...(typeof metadata.interruptedReason === 'string' ? { interruptedReason: metadata.interruptedReason.slice(0, 2000) } : {}),
+          ...(complete ? { durationMs: metadata.durationMs, width: metadata.width, height: metadata.height, frameRate: metadata.frameRate || 30, hasAudio: metadata.hasAudio } : {}),
         };
         this.records.set(entry.name, record);
       } catch { /* Unfinished files are retained, even if their metadata is unreadable. */ }
@@ -46,8 +48,8 @@ export class RecordingStore {
   }
 
   describe(record) {
-    const { id, durationMs, width, height, hasAudio, createdAt, state, bytes = 0 } = record;
-    return { id, durationMs, width, height, hasAudio, createdAt, state, bytes, url: `mooncap-media://recording/${id}` };
+    const { id, durationMs, width, height, frameRate = 30, hasAudio, createdAt, state, bytes = 0, interruptedReason } = record;
+    return { id, durationMs, width, height, frameRate, hasAudio, createdAt, state, bytes, ...(interruptedReason ? { interruptedReason } : {}), url: `mooncap-media://recording/${id}` };
   }
 
   async metadata(record) {
@@ -107,9 +109,11 @@ export class RecordingStore {
     return operation;
   }
 
-  async finish(id) {
+  async finish(id, { interruptedReason } = {}) {
     const record = this.get(id);
     if (record.state !== 'recording' || this.activeId !== id) throw new Error('This recording is not active.');
+    if (interruptedReason !== undefined && (typeof interruptedReason !== 'string' || interruptedReason.length > 2000)) throw new Error('Invalid recording interruption reason.');
+    if (interruptedReason) record.interruptedReason = interruptedReason;
     record.state = 'finishing';
     try {
       await record.tail;
@@ -142,6 +146,43 @@ export class RecordingStore {
     await this.metadata(record);
   }
 
+  validateDraft(id, document) {
+    const record = this.get(id);
+    if (record.state !== 'complete') throw new Error('请先恢复或完成录像。');
+    const text = JSON.stringify(document);
+    if (!text || text.length > 65536) throw new Error('编辑草稿格式无效或过大。');
+    const result = JSON.parse(video_open(JSON.stringify(this.describe(record)), text));
+    if (!result.ok) throw new Error(result.error.message);
+    video_dispose(result.session);
+    return result.document;
+  }
+
+  async loadDraft(id) {
+    const record = this.get(id);
+    await record.draftTail;
+    try {
+      const document = JSON.parse(await readFile(path.join(this.directory, id, 'draft.json'), 'utf8'));
+      return this.validateDraft(id, document);
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  async saveDraft(id, document) {
+    const normalized = this.validateDraft(id, document);
+    const record = this.get(id);
+    const operation = (record.draftTail || Promise.resolve()).then(async () => {
+      const filename = path.join(this.directory, id, 'draft.json');
+      const temporary = `${filename}.tmp`;
+      await writeFile(temporary, JSON.stringify(normalized, null, 2));
+      await rename(temporary, filename);
+      return { ok: true };
+    });
+    record.draftTail = operation.catch(() => {});
+    return operation;
+  }
+
   async list() {
     for (const record of this.records.values()) {
       if (record.state !== 'incomplete' || record.recoveryAttempted) continue;
@@ -149,6 +190,7 @@ export class RecordingStore {
       try {
         Object.assign(record, await probeMedia(record.filename, this.ffprobe || await findExecutable('ffprobe')));
         record.state = 'complete';
+        record.interruptedReason ||= '上次录制未正常完成，已恢复可播放原件。';
         await this.metadata(record);
       } catch { /* Incomplete recordings stay visible and remain on disk. */ }
     }

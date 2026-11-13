@@ -1,0 +1,116 @@
+#import <Foundation/Foundation.h>
+#include <assert.h>
+#include "moonbit.h"
+
+// Signatures observed in native foreign_library output from moonc 0.10.20.
+// This test deliberately checks the real boundary instead of a mocked core.
+extern moonbit_string_t image_create(moonbit_string_t request);
+extern moonbit_string_t image_apply(moonbit_string_t request);
+extern moonbit_string_t image_finalize(moonbit_string_t request);
+extern moonbit_string_t video_open(moonbit_string_t source, moonbit_string_t draft);
+extern moonbit_string_t video_command(int32_t session, moonbit_string_t command);
+extern moonbit_string_t video_seek(int32_t session, double milliseconds);
+extern moonbit_string_t video_snapshot(int32_t session);
+extern int32_t video_dispose(int32_t session);
+
+// UTF-16 code units, not UTF-8 bytes. Inputs stay caller-owned; outputs are
+// copied into Foundation before releasing their MoonBit reference.
+static moonbit_string_t MoonString(NSString *text) {
+  NSCAssert(text.length <= INT32_MAX, @"Input too large");
+  moonbit_string_t value = moonbit_make_string_raw((int32_t)text.length);
+  [text getCharacters:value range:NSMakeRange(0, text.length)];
+  return value;
+}
+static NSString *JSONText(id value) {
+  NSError *error = nil;
+  NSData *bytes = [NSJSONSerialization dataWithJSONObject:value options:0 error:&error];
+  NSCAssert(bytes && !error, @"JSON input: %@", error);
+  return [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
+}
+static NSDictionary *TakeJSON(moonbit_string_t value) {
+  NSString *text = [[NSString alloc] initWithCharacters:value length:(NSUInteger)Moonbit_array_length(value)];
+  moonbit_decref(value);
+  NSError *error = nil;
+  NSDictionary *result = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:&error];
+  NSCAssert(result && !error, @"JSON output: %@, %@", text, error);
+  return result;
+}
+static NSDictionary *Call(moonbit_string_t (*function)(moonbit_string_t), NSDictionary *request) {
+  moonbit_string_t argument = MoonString(JSONText(request));
+  int32_t references = Moonbit_rc_count(Moonbit_object_header(argument));
+  moonbit_string_t result = function(argument);
+  NSCAssert(Moonbit_rc_count(Moonbit_object_header(argument)) == references, @"Inputs remain caller-owned");
+  moonbit_decref(argument);
+  return TakeJSON(result);
+}
+static NSDictionary *EditImage(NSDictionary *document, NSDictionary *command) {
+  NSDictionary *result = Call(image_apply, @{ @"document":document, @"command":command, @"expectedRevision":document[@"revision"] });
+  NSCAssert([result[@"ok"] boolValue], @"Image command failed: %@", result);
+  return result[@"document"];
+}
+static NSDictionary *EditVideo(int32_t session, NSDictionary *command) {
+  moonbit_string_t input = MoonString(JSONText(command));
+  moonbit_string_t output = video_command(session, input);
+  NSCAssert(Moonbit_rc_count(Moonbit_object_header(input)) == 1, @"Video input ownership");
+  moonbit_decref(input);
+  NSDictionary *result = TakeJSON(output);
+  NSCAssert([result[@"ok"] boolValue], @"Video command failed: %@", result);
+  return result;
+}
+int main(void) {
+  @autoreleasepool {
+    moonbit_init(); // Once per process, before allocations or exported calls.
+    moonbit_string_t unicode = MoonString(@"中文🦊");
+    assert(Moonbit_array_length(unicode) == 4);
+    assert(unicode[0] == 0x4e2d && unicode[1] == 0x6587 && unicode[2] == 0xd83e && unicode[3] == 0xdd8a);
+    moonbit_decref(unicode);
+
+    NSDictionary *created = Call(image_create, @{ @"width":@640, @"height":@360 });
+    NSCAssert([created[@"ok"] boolValue], @"Create failed");
+    NSString *text = @"中文截图 🦊\n第二行";
+    NSDictionary *annotation = @{ @"id":@"中文标注-🦊", @"type":@"text", @"x":@80, @"y":@70, @"width":@250, @"height":@80, @"text":text, @"fontSize":@24, @"color":@"#16a085" };
+    NSDictionary *document = EditImage(created[@"document"], @{ @"type":@"add", @"annotations":@[annotation] });
+    NSCAssert([document[@"annotations"][0][@"text"] isEqualToString:text], @"Unicode annotation roundtrip");
+    NSDictionary *conflict = Call(image_apply, @{ @"document":document, @"command":@{ @"type":@"undo" }, @"expectedRevision":@0 });
+    NSCAssert(![conflict[@"ok"] boolValue] && [conflict[@"error"][@"code"] isEqualToString:@"revision_conflict"], @"Stale edits are rejected across the bridge");
+    document = EditImage(document, @{ @"type":@"crop", @"rect":@{ @"x":@40, @"y":@30, @"width":@400, @"height":@250 } });
+    NSDictionary *finalized = Call(image_finalize, @{ @"document":document });
+    NSCAssert([finalized[@"ok"] boolValue], @"Finalize failed");
+    document = finalized[@"document"];
+    NSCAssert([document[@"width"] intValue] == 400 && [document[@"annotations"][0][@"x"] intValue] == 40, @"Crop rebases vectors");
+    NSCAssert([document[@"annotations"][0][@"text"] isEqualToString:text], @"Unicode survives finalize");
+
+    moonbit_string_t source = MoonString(JSONText(@{ @"durationMs":@6000, @"width":@640, @"height":@360, @"hasAudio":@YES }));
+    moonbit_string_t empty = MoonString(@"");
+    NSDictionary *opened = TakeJSON(video_open(source, empty));
+    assert(Moonbit_rc_count(Moonbit_object_header(source)) == 1);
+    assert(Moonbit_rc_count(Moonbit_object_header(empty)) == 1);
+    moonbit_decref(source); moonbit_decref(empty);
+    NSCAssert([opened[@"ok"] boolValue], @"Open video failed");
+    int32_t session = [opened[@"session"] intValue];
+    EditVideo(session, @{ @"type":@"cut", @"cut":@{ @"startMs":@1000, @"endMs":@2000 } });
+    NSDictionary *video = EditVideo(session, @{ @"type":@"cut", @"cut":@{ @"startMs":@3000, @"endMs":@4000 } });
+    NSCAssert([video[@"plan"][@"outputDurationMs"] intValue] == 4000 && [video[@"plan"][@"segments"] count] == 3, @"Multiple cuts");
+    video = EditVideo(session, @{ @"type":@"undo" });
+    NSCAssert([video[@"plan"][@"outputDurationMs"] intValue] == 5000, @"Undo cut");
+    video = EditVideo(session, @{ @"type":@"redo" });
+    NSCAssert([video[@"plan"][@"outputDurationMs"] intValue] == 4000, @"Redo cut");
+    video = EditVideo(session, @{ @"type":@"crop", @"crop":@{ @"x":@10, @"y":@10, @"width":@401, @"height":@201 } });
+    NSCAssert([video[@"document"][@"crop"][@"width"] intValue] == 400 && [video[@"document"][@"crop"][@"height"] intValue] == 200, @"Even crop");
+    video = EditVideo(session, @{ @"type":@"mute", @"muted":@YES });
+    NSCAssert([video[@"document"][@"muted"] boolValue], @"Mute");
+    NSCAssert([video[@"plan"][@"profile"][@"audioBitrateKbps"] intValue] == 0, @"Mute reaches the export plan");
+    NSDictionary *seek = TakeJSON(video_seek(session, 1500));
+    NSCAssert([seek[@"sourceMs"] intValue] == 2000 && [seek[@"outputMs"] intValue] == 1000, @"Preview skips deleted interval");
+    (void)video_dispose(session);
+    NSDictionary *closed = TakeJSON(video_snapshot(session));
+    NSCAssert(![closed[@"ok"] boolValue] && [closed[@"error"][@"message"] isEqualToString:@"视频编辑会话已关闭"], @"Chinese error roundtrip");
+
+    for (int i = 0; i < 1000; i++) { @autoreleasepool {
+      NSDictionary *result = Call(image_create, @{ @"width":@640, @"height":@360 });
+      NSCAssert([result[@"ok"] boolValue], @"Repeated bridge invocation");
+    } }
+    puts("PASS native embedding: UTF-16 Chinese/emoji, ownership, 1000 calls, image revisions/finalize, video edits/preview/dispose");
+  }
+  return 0;
+}

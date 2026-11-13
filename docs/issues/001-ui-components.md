@@ -2,6 +2,8 @@
 
 > 已发布：[GitHub Issue #1](https://github.com/CoderSerio/mooncap/issues/1)。本文保留可在仓库内修改的需求正文。
 
+> 2026 年 11 月 13 日更新：用户已明确 UI 库以能用、好维护为先，TSX 或特定声明式语法不再是选型要求。下文保留早期探索背景；当前产品范围以 [PRD](../prd.md) 为准。本次只更新仓库文档，未修改外部 Issue。
+
 ## 背景
 
 用户希望有一套更好理解、更好看、更容易使用的 MoonBit UI 能力。当前先提交 Mooncap 的 [交互初稿](../interaction-design.md) 和基础框架，后续由用户直接修改交互方案；UI 库的想法继续保留在本 Issue 中。

@@ -1,84 +1,148 @@
-# Mooncap
+<p align="center">
+  <img src="assets/brand/lunar-frame/app-icon-rounded-preview.png" width="144" alt="Mooncap 月窗 Logo：月牙与取景角" />
+</p>
 
-一个先把截图、录屏和简单剪辑做顺手的桌面工具。
+<h1 align="center">Mooncap</h1>
 
-项目处于基础框架阶段。正式产品希望平时只驻留菜单栏/托盘：截图在桌面选区内就地完成，录屏停止后才打开编辑窗。可直接修改的 [交互初稿](docs/interaction-design.md) 记录了完整流程、图标与文字的分工、取消和恢复行为。
+<p align="center">轻巧捕捉，编辑后分享。</p>
 
-**当前大窗口是开发工作台（workbench），不是正式产品界面。** 它用于验证采集、编辑和导出链路；桌面选区覆盖层、就地工具条、倒计时和独立紧凑预览窗尚未实现。界面暂用 HTML、JavaScript 和手写 CSS；MoonBit 编辑核心编译为 JavaScript ESM，由 Electron 宿主调用。
+Mooncap 是以 **MoonBit 为核心**的本地截图与录屏工具。平时驻留菜单栏；截图框选后原地标注，录屏停止后编辑，两条流程都以确认后复制到剪贴板为默认完成方式。
 
-## 当前框架能力
+当前开发方向是 **MoonBit native + AppKit 原生 macOS 应用**，从 macOS 开始验证，保留共用核心以支持后续跨平台适配。[PRD](docs/prd.md) 定义产品范围，[原生路线决策](docs/native-direction.md) 记录实现边界。
 
-以下能力通过开发工作台接入；它们不代表交互初稿已经落地。自动化验证与实机验证的状态单独记录。
+## 原生版进展
 
-| 场景 | 功能 |
+| 部分 | 当前状态 |
 | --- | --- |
-| 截图 | 选择屏幕或窗口，采集后框选裁剪；添加矩形、箭头、文字、不透明遮挡，撤销编辑 |
-| 图片保存 | 复制 PNG 到剪贴板，或保存为 PNG 文件 |
-| 录屏 | 可选系统声音和麦克风；提供常驻停止浮窗与 `⌘ / Ctrl + Shift + X` 快捷键 |
-| 视频编辑 | 裁去首尾、删除中间片段、按像素填写画面裁切范围、静音 |
-| 分享 | 导出 MP4；轻量分享默认以 25 MiB 估算码率，实际文件大小不保证低于目标 |
-| 本机历史 | 查看保留在本机的原始录像，重新打开已完成的录像继续剪辑 |
+| MoonBit 核心 | 图片文档、标注命令、裁剪、撤销重做、视频剪辑与导出计划；编译为原生静态库，由 AppKit 宿主直接调用 |
+| 菜单栏与设置 | 原生菜单入口，按需打开「通用／快捷键／关于」；外观设置自动保存 |
+| 快捷键配置 | 截图、开始录屏、停止录屏分别录入；支持清除、恢复默认、动作间重复与系统快捷键冲突提示 |
+| 截图与录屏流程 | 原生采集、编辑器、剪贴板与 Agent 接口仍在迁移中；目前快捷键保存配置，尚未注册为采集动作 |
 
-当前尚无桌面覆盖层截图、录制前自由框选区域、MP4 文件剪贴板分享或正式系统安装包。Windows / Linux 尚未完成实机验证；系统声音是否可用取决于平台能力与权限，当前 Linux 入口不开放系统声音。复制文件与复制路径的产品语义见 [交互初稿](docs/interaction-design.md#5-mp4-分享与文件语义)。
+原生应用不打包 Electron、Node.js 或 WebView；Node.js 只用于开发构建。当前构建可体验菜单栏和设置，完整截图与录屏流程仍需继续迁移。
 
-## 技术边界
+## 原生开发
 
-- **MoonBit**：保留片段、裁切范围、导出预算和录制状态转换等纯逻辑，输出 JavaScript ESM。
-- **Electron 45.3.1**：桌面窗口、原生采集、快捷键、剪贴板和文件操作。
-- **FFmpeg**：视频处理与 MP4 编码，需要本机安装。
-- **HTML / JavaScript / CSS**：当前开发工作台和交互接线；当前不引入独立 UI 框架。
-
-MoonBit 不负责原生采集，也不意味着当前产品已经具备全 Wasm 或跨平台原生实现。详细职责见 [架构说明](docs/architecture.md)。
-
-## 本地开发
-
-准备 Node.js 22 或更新版本、npm、[MoonBit 官方工具链](https://www.moonbitlang.com/download/)，以及可在终端执行的 FFmpeg（包含 ffprobe）：
+需要 macOS、Xcode Command Line Tools、Node.js 22+ 与 MoonBit 工具链。构建脚本依次从 `.tools/moon`、`MOON_HOME`、`PATH` 查找 MoonBit；工具链不包含在仓库中，配置见 [核心说明](core/README.md)。
 
 ```sh
-ffmpeg -version
-ffprobe -version
+npm run test:native
+npm run test:native-shortcuts
+npm run dev:native
 ```
 
-新 clone 的仓库不附带 MoonBit 或 FFmpeg。构建脚本优先使用本地 `.tools/moon`，其次使用 `MOON_HOME`，最后查找 `PATH` 中的 `moon`；详见 [核心构建说明](core/README.md)。本次开发安装位于 `.tools`，该目录被 Git 忽略，不属于产品源码，也不会随 clone 出现。
+| 命令 | 用途 |
+| --- | --- |
+| `npm run build:native-app` | 构建 `dist/native-app.noindex/Mooncap.app` |
+| `npm run dev:native` | 构建原生应用并打开设置 |
+| `npm run test:native` | MoonBit native 单测与 Objective-C 嵌入回归 |
+| `npm run test:native-shortcuts` | 快捷键保存、清除、恢复默认与冲突检查 |
 
-构建、启动和测试命令：
+开发包使用本机 ad-hoc 签名，未做 Developer ID 签名或公证。更多构建、界面检查与范围说明见 [原生宿主文档](native/README.md)。
+
+Logo **「月窗」**将月牙与取景角组合成独立标志。应用图标、可编辑 SVG 与适配小尺寸的单色菜单栏资源保存在 [视觉资产目录](assets/brand/lunar-frame/)。
+
+## Electron 参考实现
+
+仓库保留了已接通截图、录屏、编辑、历史和 Agent 服务的 Electron 版本，用于迁移时对照交互与验证核心行为。以下功能、开发命令和验收记录属于这份参考实现；原生版范围以上表为准。[架构说明](docs/architecture.md) 记录参考实现的结构。
+
+### 功能范围
+
+| 场景 | 已接入的功能 |
+| --- | --- |
+| 截图 | 当前显示器区域或全屏截图、窗口截图、导入 PNG / JPEG / WebP；区域截图在同一冻结画面中选区与标注 |
+| 标注 | 矩形、椭圆、直线与箭头、画笔、荧光笔、实色遮挡、实际像素化马赛克、文字、整对象橡皮擦 |
+| 对象编辑 | 单对象选择、移动、适用对象缩放、修改样式、删除和普通标注排序；选区调整保留原始坐标；会话内最多 100 步撤销重做 |
+| 图片完成 | 默认确认复制 PNG 图片；也可保存 PNG 或贴图；已完成截图保留可编辑对象，可从最近记录重开 |
+| 录屏 | 区域或全屏、声音选项、3 秒倒计时、独立采集视图、停止浮条和全局停止快捷键；区域在录制编码前裁出 |
+| 视频编辑 | 首尾裁剪、重复删除多个区间、拖动画面裁切框、静音、撤销重做；预览跳过删除区间，草稿保存在本机 |
+| 视频完成 | FFmpeg 生成 MP4，默认向剪贴板写入文件；支持另存为、取消编码和再次复制已生成文件 |
+| 最近记录与设置 | 重开截图和录像草稿、显示文件位置、明确删除原件或导出文件、修改快捷键和默认声音设置 |
+| Agent | CLI 与 MCP 共享截图文档：静默采集、标注、裁剪、撤销重做、预览、导出和复制；显式展示或贴图才打开窗口 |
+
+截图工具栏保留十三个入口：形状、线条、画笔、荧光笔、遮挡、文字、橡皮擦、撤销、重做、取消、贴图、保存、确认。对象选择和选区调整通过 `V`、`C` 或右键菜单进入。文字编辑保留输入法与多行输入行为，不把输入中的 Enter 当作整张截图的确认。
+
+视频文字、箭头和遮挡属于 **P1**，当前未实现；模糊、局部擦除笔迹、多选与图层面板也不属于本次 P0。轻量视频分享默认按 25 MiB 估算编码预算，实际文件大小可能超过预算。
+
+### 技术边界与常驻开销
+
+- **MoonBit 核心**：图片文档与命令、裁剪、版本校验、撤销重做，以及视频文档、保留片段、时间映射、裁切和导出计划；编译为 JavaScript ESM。
+- **Rabbita 0.17.0**：以 MoonBit 编写截图工具栏、属性区和视频编辑控件。JavaScript 仍承担 DOM 事件、Canvas 绘制、文字输入、媒体播放与宿主接口适配；准备录屏、最近记录等页面也保留标准 Web 实现。
+- **Electron 45.3.1**：参考实现的宿主，处理托盘、窗口、采集、权限、快捷键、剪贴板和文件。编辑器、准备页和临时渲染视图按需创建，关闭后销毁；录制视图独立于编辑窗，收尾后释放。
+- **FFmpeg / ffprobe**：处理和校验媒体；macOS 原生剪贴板辅助程序负责文件剪贴板。
+
+参考实现默认启动没有主窗口，但仍有 Chromium 和主进程的空闲开销。原生迁移已选择 AppKit + MoonBit native，继续复用文档格式、编辑命令与导出计划，逐步接入系统采集和编辑界面；具体边界见 [原生路线决策](docs/native-direction.md)。
+
+### 参考实现开发
+
+需要 Node.js 22 或更新版本、npm、MoonBit 工具链，以及 FFmpeg（包含 ffprobe）。macOS 构建原生剪贴板组件还需要 Xcode Command Line Tools 提供的 `clang`。
+
+构建脚本依次查找 `.tools/moon`、`MOON_HOME` 和 `PATH` 中的 MoonBit；`.tools` 被 Git 忽略，新 clone 不包含工具链。详细说明见 [core/README.md](core/README.md)。UI 依赖在各自 `ui/*/moon.mod` 中固定为 Rabbita 0.17.0，首次构建需要获取 MoonBit 包。
 
 ```sh
 npm install
-npm run build:core
+ffmpeg -version
+ffprobe -version
+npm run build
 npm start
-npm run dev
-npm test
-npm run check
 ```
 
-`build:core` 构建 MoonBit 编辑核心；`start` 默认仅显示菜单栏/托盘；`dev` 通过 `--workbench` 显式打开开发工作台。关闭工作台后进程继续驻留，退出需使用菜单栏/托盘菜单。
-
-`test` 先运行 MoonBit JS 后端单测，再运行宿主与集成测试；`check` 检查仓库中的 JavaScript 语法。正式截图/录屏覆盖层不在这次基础框架中实现；需要验证现有采集链路时使用 `npm run dev`。
-
-首次采集时，需要在系统设置中允许 Electron / Mooncap 录制屏幕；使用麦克风时还需要相应权限。权限变更后可能需要重启应用。
-
-原始录像保存在 Electron 的本机用户数据目录中，可通过“打开原始录像文件夹”进入。编辑导出产生新的 MP4，不覆盖原始 WebM。
-
-## 验证状态
-
-2026-11-13 模块拆分后的验证结果：
-
-| 检查 | 结果 |
+| 命令 | 用途 |
 | --- | --- |
-| `npm test`：MoonBit JS 后端 | 14/14 通过 |
-| `npm test`：Node 宿主、核心契约和写入集成 | 9/9 通过 |
-| `npm run check`：JavaScript 语法 | 24 个文件全部通过 |
-| macOS 后台生命周期 | 默认启动 0 窗口；显式工作台 1 窗口；关闭工作台后 0 窗口且进程继续 |
+| `npm run build:core` | 编译 MoonBit 核心到 `dist/core/core.mjs` |
+| `npm run build:ui` | 编译截图、视频 Rabbita 界面到 `dist/ui/` |
+| `npm run build:native` | macOS 编译文件剪贴板辅助程序；其他平台不执行该编译 |
+| `npm run build` | 依次构建核心、界面和原生组件 |
+| `npm start` | 构建后启动，默认只显示菜单栏/托盘入口 |
+| `npm run dev` | 构建后启动并打开最近记录与设置；保留的 `--workbench` 参数现在指向此页面 |
+| `npm run package` | 构建当前架构的 macOS 本地 `.app`，包含媒体工具及其依赖，输出到 `release/` |
+| `npm test` | MoonBit JS 后端单测与 Node 核心契约、宿主、存储和 Agent 测试 |
+| `npm run check` | 检查 JavaScript 语法 |
+| `npm run agent -- status` | 通过 CLI 读取本地应用状态 |
+| `npm run mcp` | 启动 stdio MCP 服务 |
 
-MoonBit native 后端曾在模块拆分前通过 14/14；拆分后尚未重跑 native。当前实际发行的 JS 后端已重新验证。
+默认快捷键为 `⌘ / Ctrl + Shift + 1` 截图、`⌘ / Ctrl + Shift + 2` 录屏、`⌘ / Ctrl + Shift + X` 停止录屏，可在设置中修改。关闭编辑或历史窗口后回到托盘，完全退出使用托盘菜单。
 
-## 已知限制与实机验证范围
+首次采集需要系统屏幕录制权限；麦克风和系统声音也受平台权限与能力限制。改变权限后可能需要重启。开发模式由 Electron 进程申请权限，本地打包应用使用自己的应用身份。
 
-- 在 macOS 26.4.1 / Electron 45.3.1 上，曾出现 PNG 系统保存对话框的 **Save 按钮禁用**，尚未定位并解决。因此不能声称 PNG 保存或完整 UI 导出链路已经验收通过。
-- 模块拆分前曾成功验证「真实窗口采集 → 矩形标注 → PNG 复制」；拆分后只重新检查了上述三个后台生命周期场景，尚未重跑这条采集链路。
-- 自动化媒体测试使用测试素材；屏幕/窗口来源、系统权限、真实录制停止和最终 MP4 播放仍需桌面验收，不能由逻辑测试或窗口数量检查代替。
+本地打包脚本目前只支持 macOS，默认从 `/opt/homebrew/bin` 取 FFmpeg 与 ffprobe，也可通过 `MOONCAP_FFMPEG`、`MOONCAP_FFPROBE` 指定用于打包的可执行文件。运行时可用 `MOONCAP_MEDIA_BIN` 指定媒体工具目录。脚本会搬移依赖并验证 H.264 / AAC 编码、探测和解码，但不执行 Developer ID 签名或公证；产物是本地测试包，不是已完成分发验收的正式安装包。
 
-## UI 的后续方向
+### Agent 接入
 
-先沿 [交互初稿](docs/interaction-design.md) 迭代产品，再从实际重复中提取组件。图标替换与菜单栏流程不意味着现在建设一个 UI 库。组件目录、API、可运行示例、视觉质量和偏 TSX 的声明式写法等要求，已记录在 [GitHub Issue #1](https://github.com/CoderSerio/mooncap/issues/1)，仓库保留 [需求正文](docs/issues/001-ui-components.md)。
+先构建项目。CLI 和 MCP 会连接托盘应用；应用未运行时尝试后台启动，可用 `MOONCAP_AUTOSTART=0` 禁止自动启动，用 `MOONCAP_EXECUTABLE` 指定应用可执行文件。
+
+```sh
+npm run agent -- status
+npm run agent -- list_windows '{"types":["window"]}'
+npm run agent -- list_captures
+```
+
+CLI 格式为 `npm run agent -- <方法名> '[JSON 参数]'`。MCP 客户端应直接以 `node` 启动本仓库的 `agent/mcp.mjs`，参数使用文件绝对路径；使用 stdio 传输。不要把 npm 输出混入客户端的协议流。
+
+Agent 使用与人工编辑相同的 `captureId` 和文档 `revision`。修改时携带 `expectedRevision`，遇到冲突重新读取；坐标始终以当前底图的物理像素为准。人工确认会裁定底图范围并转换坐标，之后需要重新读取文档。Agent 的普通复制不关闭人工编辑层。录屏控制与视频编辑的 Agent 工具属于 P1。
+
+### 本机数据
+
+默认使用系统应用数据目录：macOS 为 `~/Library/Application Support/mooncap`，Windows 为 `%APPDATA%/mooncap`，Linux 为 `${XDG_CONFIG_HOME:-~/.config}/mooncap`。设置 `MOONCAP_HOME` 可覆盖该路径；桌面应用、CLI 和 MCP 必须使用同一个值，例如：
+
+```sh
+MOONCAP_HOME="$PWD/.artifacts/local-profile" npm start
+MOONCAP_HOME="$PWD/.artifacts/local-profile" npm run agent -- status
+```
+
+- `images/`：已完成截图的最终选区底图和可编辑标注；普通 PNG 输出只包含最终像素。
+- `recordings/`：原始录像、录制元数据和剪辑草稿。
+- `exports/`：托管导出文件；用户另存为的文件保存在其选择的位置。
+- `preferences.json`：设置；`agent/connection.json`：本机服务连接信息与令牌。
+
+未确认的新截图只在当前会话保留；完成后重开仍可编辑对象，但不能恢复最终选区外的画面，撤销栈也不跨重开保留。原始录像与导出文件分开保存；关闭窗口、退出应用或开始下一次录制不会自动删除已复制的 MP4。清理必须由用户明确执行。
+
+### 验证状态与限制
+
+2026-11-13 参考实现的自动化记录：MoonBit JS 后端 **14 / 14**，Node 测试 **29 / 29** 通过。另有隔离素材的截图 UI 检查覆盖选区、标注、中文组合输入防护、历史重开、贴图同步及最终裁剪前后的像素一致性；它不等于真实输入法、桌面采集或跨应用粘贴验收。
+
+macOS 自建窗口采集已验证：640 × 480 逻辑窗口、缩放 1，输出 640 × 480 PNG，关闭后的来源会被拒绝。原生文件剪贴板与较新复制内容保护通过独立命名剪贴板验证，未改动用户剪贴板。Electron 45 完整宿主的 10 项集成检查以及截图、视频、区域录制和准备页烟测通过。
+
+macOS 是首轮验收平台，以下项目仍需按 [PRD 验收场景](docs/prd.md) 记录实际结果：不同实际应用窗口、多显示器和混合缩放、屏幕/音频权限、系统声音、10 分钟连续采集与音画同步、PNG 保存对话框、图片与 MP4 文件在目标聊天应用中的粘贴。编码期间若剪贴板已变化或无法可靠判断，应用保留成片并提示主动复制，避免覆盖新内容。
+
+Windows / Linux 的平台适配尚未完成实机验收；Linux 当前不开放系统声音，文件剪贴板兼容性也不能从 macOS 结果外推。自动化逻辑测试、测试素材编码和本地打包成功都不能替代完整平台验收。

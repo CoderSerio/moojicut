@@ -6,3 +6,9 @@ core/target/
 .DS_Store
 *.log
 .artifacts/
+ui/**/_build/
+ui/**/target/
+ui/**/.mooncakes/
+release/
+output/
+work/

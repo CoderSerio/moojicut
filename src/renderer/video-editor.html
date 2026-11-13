@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; media-src 'self' blob: mooncap-media:; img-src 'self' data:; connect-src 'self'"><link rel="stylesheet" href="./video-editor.css"><title>Mooncap · 视频编辑</title></head>
+<body><header><div class="brand">◒ <strong>Mooncap</strong><span>录屏编辑</span></div><span id="draft-state">本机草稿</span></header>
+<main><section class="preview-column"><div class="preview-stage"><video id="source-video" preload="auto" playsinline></video><canvas id="preview-canvas" tabindex="0" aria-label="视频画面，按空格播放或暂停"></canvas><div id="seeking" hidden>正在定位画面…</div></div>
+<div class="playback"><button id="play" title="空格播放或暂停">▶ 播放</button><span>成片时间 <b id="output-time">00:00</b> / <span id="output-duration">00:00</span></span><span id="source-size"></span></div>
+<div class="timeline-header"><span>原片时间 · <span id="source-time">00:00</span> / <span id="source-duration">00:00</span></span><span class="legend">绿色：保留　暗红：删除</span></div><canvas id="timeline" tabindex="0" aria-label="原片时间线，拖动两端调整保留范围，拖动内部选择删除区间"></canvas><p class="timeline-help">拖动绿色手柄调整首尾 · 拖动中间区域选择删除片段 · 点击定位</p><div id="message" role="status" aria-live="polite"></div></section><aside id="video-controls"></aside></main>
+<script type="module" src="./video-workspace.mjs"></script></body></html>
