@@ -73,31 +73,32 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 }
 - (BOOL)applicationShouldHandleReopen:(__unused NSApplication *)sender hasVisibleWindows:(__unused BOOL)flag {
     // Finder and Spotlight send a reopen event to an already running menu bar
-    // app. Reuse (or recreate) settings so opening Mooncap has a visible result.
+    // app. Reuse (or recreate) settings so opening Mooji Cut has a visible result.
     [self showPreferences:nil];
     return NO;
 }
 - (void)applicationDidFinishLaunching:(__unused NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     self.smoke = [NSProcessInfo.processInfo.arguments containsObject:@"--smoke"];
-    NSString *domain = NSProcessInfo.processInfo.environment[@"MOONCAP_NATIVE_DEFAULTS_DOMAIN"] ?: (self.smoke ? @"dev.mooncap.native.smoke" : @"dev.mooncap.native.preferences");
+    // Keep the existing user preferences domain across the product rename.
+    NSString *domain = NSProcessInfo.processInfo.environment[@"MOOJICUT_NATIVE_DEFAULTS_DOMAIN"] ?: (self.smoke ? @"dev.moojicut.native.smoke" : @"dev.mooncap.native.preferences");
     self.defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
     [MCPreferencesController applySavedAppearance:self.defaults];
     self.diagnostics = MCCoreCheck(); self.report = [NSMutableDictionary dictionaryWithDictionary:@{ @"coreAction": self.diagnostics, @"defaultsDomain": domain }];
-    self.outputDirectory = NSProcessInfo.processInfo.environment[@"MOONCAP_NATIVE_OUTPUT"];
+    self.outputDirectory = NSProcessInfo.processInfo.environment[@"MOOJICUT_NATIVE_OUTPUT"];
     if (self.outputDirectory) [[NSFileManager defaultManager] createDirectoryAtPath:self.outputDirectory withIntermediateDirectories:YES attributes:nil error:NULL];
     self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
-    NSImage *statusImage = [NSImage imageNamed:@"MooncapStatusTemplate"];
+    NSImage *statusImage = [NSImage imageNamed:@"MoojiCutStatusTemplate"];
     statusImage.template = YES;
     statusImage.size = NSMakeSize(18, 18);
     self.statusItem.button.image = statusImage;
-    self.statusItem.button.accessibilityLabel = @"Mooncap";
-    if (!self.statusItem.button.image) self.statusItem.button.title = @"Mooncap";
-    self.statusItem.button.toolTip = @"Mooncap";
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Mooncap"];
+    self.statusItem.button.accessibilityLabel = @"Mooji Cut";
+    if (!self.statusItem.button.image) self.statusItem.button.title = @"Mooji Cut";
+    self.statusItem.button.toolTip = @"Mooji Cut";
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Mooji Cut"];
     NSMenuItem *preferences = [[NSMenuItem alloc] initWithTitle:@"设置…" action:@selector(showPreferences:) keyEquivalent:@","];
     preferences.target = self; [menu addItem:preferences]; [menu addItem:NSMenuItem.separatorItem];
-    NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出 Mooncap" action:@selector(terminate:) keyEquivalent:@"q"]; quit.target = NSApp; [menu addItem:quit];
+    NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出 Mooji Cut" action:@selector(terminate:) keyEquivalent:@"q"]; quit.target = NSApp; [menu addItem:quit];
     self.statusItem.menu = menu;
     if (self.smoke) [self runSmoke];
     else if ([NSProcessInfo.processInfo.arguments containsObject:@"--preferences"]) [self showPreferences:nil];

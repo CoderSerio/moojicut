@@ -5,7 +5,7 @@
 
 int main(void) {
     @autoreleasepool {
-        NSString *domain = [@"dev.mooncap.shortcuts.test." stringByAppendingString:NSUUID.UUID.UUIDString];
+        NSString *domain = [@"dev.moojicut.shortcuts.test." stringByAppendingString:NSUUID.UUID.UUIDString];
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
         @try {
             MCShortcutStore *store = [[MCShortcutStore alloc] initWithDefaults:defaults];

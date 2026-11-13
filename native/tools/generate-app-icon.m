@@ -1,6 +1,6 @@
 #import <AppKit/AppKit.h>
 
-// Build-time only: preserve the approved Lunar Frame artwork and add the
+// Build-time only: preserve the approved Mooji Cut artwork and add the
 // transparent margin expected by traditional macOS .icns application icons.
 static NSData *MCIconPNG(NSImage *artwork, NSInteger pixels) {
     NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
@@ -20,7 +20,7 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc != 3) { fprintf(stderr, "Usage: generate-app-icon ARTWORK_PNG ICONSET_DIRECTORY\n"); return 2; }
         NSImage *artwork = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]];
-        if (!artwork || !artwork.valid) { fprintf(stderr, "Cannot load the Mooncap artwork.\n"); return 1; }
+        if (!artwork || !artwork.valid) { fprintf(stderr, "Cannot load the Mooji Cut artwork.\n"); return 1; }
         NSString *directory = [NSString stringWithUTF8String:argv[2]];
         NSError *error = nil;
         if (![NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&error]) {

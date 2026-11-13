@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "mooncap/core"
+package "moojicut/core"
 
 // Values
 pub fn crop_rect(String) -> String

@@ -64,10 +64,10 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)buildWindow {
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 340)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
-    window.title = @"Mooncap 设置"; window.releasedWhenClosed = NO; window.delegate = self;
+    window.title = @"Mooji Cut 设置"; window.releasedWhenClosed = NO; window.delegate = self;
     window.restorable = NO; window.tabbingMode = NSWindowTabbingModeDisallowed;
     window.toolbarStyle = NSWindowToolbarStylePreference;
-    NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"MooncapPreferences"];
+    NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"MoojiCutPreferences"];
     toolbar.delegate = self; toolbar.allowsUserCustomization = NO; toolbar.autosavesConfiguration = NO;
     toolbar.displayMode = NSToolbarDisplayModeIconAndLabel; window.toolbar = toolbar;
     self.window = window;
@@ -87,10 +87,10 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSInteger index = [@[@"system", @"light", @"dark"] indexOfObject:self.appearanceChoice];
     [popup selectItemAtIndex:index == NSNotFound ? 0 : index];
     [popup.widthAnchor constraintEqualToConstant:190].active = YES;
-    NSTextField *description = MCLabel(@"跟随系统时，Mooncap 使用当前 macOS 外观。", 12, YES);
+    NSTextField *description = MCLabel(@"跟随系统时，Mooji Cut 使用当前 macOS 外观。", 12, YES);
     NSGridView *grid = MCGrid(@[@[MCLabel(@"主题", 13, NO), popup], @[NSGridCell.emptyContentView, description]]);
     NSBox *separator = [NSBox new]; separator.boxType = NSBoxSeparator;
-    NSTextField *background = MCLabel(@"关闭设置窗口后，Mooncap 会继续在菜单栏运行。", 13, NO);
+    NSTextField *background = MCLabel(@"关闭设置窗口后，Mooji Cut 会继续在菜单栏运行。", 13, NO);
     NSStackView *stack = MCStack(@[MCHeading(@"外观"), grid, separator, MCHeading(@"后台运行"), background, MCLabel(@"设置会自动保存。", 11, YES)], NSUserInterfaceLayoutOrientationVertical, 14);
     [stack setCustomSpacing:22 afterView:grid]; [stack setCustomSpacing:22 afterView:separator]; [stack setCustomSpacing:30 afterView:background];
     [separator.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
@@ -187,10 +187,10 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSView *page = [NSView new];
     NSImageView *icon = [[NSImageView alloc] initWithFrame:NSZeroRect];
     icon.image = NSApp.applicationIconImage;
-    icon.accessibilityLabel = @"Mooncap 月窗标志";
+    icon.accessibilityLabel = @"Mooji Cut 眨眼取景框标志";
     [icon.widthAnchor constraintEqualToConstant:56].active = YES; [icon.heightAnchor constraintEqualToConstant:56].active = YES;
-    NSTextField *name = MCLabel(@"Mooncap", 21, NO); name.font = [NSFont systemFontOfSize:21 weight:NSFontWeightSemibold];
-    NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版本";
+    NSTextField *name = MCLabel(@"Mooji Cut", 21, NO); name.font = [NSFont systemFontOfSize:21 weight:NSFontWeightSemibold];
+    NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoojiCutReleaseVersion"] ?: [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版本";
     NSStackView *identity = MCStack(@[name, MCLabel([@"版本 " stringByAppendingString:version], 12, YES)], NSUserInterfaceLayoutOrientationVertical, 4);
     NSStackView *header = MCStack(@[icon, identity], NSUserInterfaceLayoutOrientationHorizontal, 16);
     NSButton *disclosure = [NSButton new]; disclosure.bezelStyle = NSBezelStyleDisclosure; disclosure.buttonType = NSButtonTypeOnOff;
@@ -209,7 +209,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
         @[MCLabel(@"当前范围", 12, YES), MCLabel(@"菜单栏与设置；截图、录屏采集尚未迁移。", 12, NO)]
     ]);
     details.hidden = YES; self.technicalDetails = details;
-    NSStackView *stack = MCStack(@[header, MCLabel(@"为本地截图与录屏设计。", 13, NO), disclosureRow, details], NSUserInterfaceLayoutOrientationVertical, 18);
+    NSStackView *stack = MCStack(@[header, MCLabel(@"这一幕，我截下了。", 13, NO), MCLabel(@"开发预览版 · 截图与录屏功能正在接入。", 12, YES), disclosureRow, details], NSUserInterfaceLayoutOrientationVertical, 18);
     stack.detachesHiddenViews = YES; MCPin(stack, page); return page;
 }
 - (void)appearanceChanged:(NSPopUpButton *)sender {

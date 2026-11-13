@@ -1,17 +1,34 @@
 <p align="center">
-  <img src="assets/brand/lunar-frame/app-icon-rounded-preview.png" width="144" alt="Mooncap 月窗 Logo" />
+  <img src="assets/brand/mooji-cut/app-icon-rounded-preview.png" width="144" alt="Mooji Cut Logo" />
 </p>
 
-<h1 align="center">Mooncap</h1>
+<h1 align="center">Mooji Cut</h1>
 
-<p align="center"><strong>截下重点，录下过程。</strong></p>
+<p align="center"><strong>这一幕，我截下了。</strong></p>
 <p align="center">以 MoonBit 为核心的本地截图与录屏工具。</p>
 
-Mooncap 面向日常沟通里的小片段：一张需要圈出重点的截图，一段需要说明操作的录屏。捕捉后编辑，确认后复制，再回到原来的工作。
+Mooji Cut 面向日常沟通里的小片段：一张需要圈出重点的截图，一段需要说明操作的录屏。捕捉后编辑，确认后复制，再回到原来的工作。
 
-**当前为 macOS 原生开发预览版。** 已可体验菜单栏和偏好设置；下面的完整截图、录屏流程正在接入。
+**当前版本为 v0.1.0-alpha.1，macOS 原生开发预览版。** 可以体验菜单栏、偏好设置和快捷键配置；截图与录屏的完整流程尚不可用。
 
-## 捕捉之后，把重点说清楚
+## 下载与体验
+
+前往 [v0.1.0-alpha.1 发布页](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.1) 下载预览包。本次构建适用于 **Apple Silicon Mac，要求 macOS 26.0 或更新版本**。解压后将 Mooji Cut 放入「应用程序」并打开；应用平时驻留菜单栏，可从菜单栏进入设置。
+
+预览包采用本地签名（ad-hoc），尚未使用 Developer ID 签名或完成 Apple 公证。首次打开时，macOS 可能要求在「系统设置 → 隐私与安全性」中确认打开。
+
+| 部分 | 当前状态 |
+| --- | --- |
+| 原生菜单栏与设置 | 已可体验「通用／快捷键／关于」，外观与按键配置自动保存 |
+| 快捷键配置 | 支持录入、清除、恢复默认和冲突提示；尚未接通全局采集动作 |
+| 截图与录屏 | 采集、标注与剪辑、确认后复制的完整流程仍在开发中 |
+| 更多平台 | 优先打磨 macOS，后续接入 Windows 与 Linux |
+
+关闭设置不会退出应用；完全退出请使用菜单栏中的「退出 Mooji Cut」。
+
+## 正在完善的使用流程
+
+接下来围绕截图和录屏完成采集、编辑与分享，让捕捉后的内容能直接用于沟通。
 
 ### 截图：标出重点，再发出去
 
@@ -31,27 +48,18 @@ Mooncap 面向日常沟通里的小片段：一张需要圈出重点的截图，
 - **编辑完成，再确认。** 捕捉之后留出调整内容的机会，确认的默认动作是复制到剪贴板。
 - **围绕本地文件设计。** 素材、可编辑草稿和导出成品保存在本机，方便继续修改与再次分享。
 
-## 当前版本
-
-| 部分 | 当前状态 |
-| --- | --- |
-| 原生菜单栏与设置 | 已可体验「通用／快捷键／关于」，外观与按键配置自动保存 |
-| 快捷键配置 | 支持录入、清除、恢复默认和冲突提示；尚未接通全局采集动作 |
-| 截图与录屏 | 采集、标注与剪辑、确认后复制的完整流程仍在开发中 |
-| 更多平台 | 优先打磨 macOS，后续接入 Windows 与 Linux |
-
 首版视频编辑优先做好裁剪、删除片段、裁画面和静音，视频标注将在后续加入。
 
-## 本地体验
+## 从源码构建
 
-当前可通过源码构建体验 macOS 预览版。准备好 MoonBit 工具链、Xcode Command Line Tools 和 Python 3 后，在仓库根目录运行：
+在 macOS 上准备好 MoonBit 工具链、Xcode Command Line Tools 和 Python 3，然后在仓库根目录运行：
 
 ```sh
 make dev
 ```
 
-构建后会启动 Mooncap 并打开设置。应用平时驻留菜单栏，关闭设置不会退出；完全退出请使用菜单栏中的「退出 Mooncap」。
+构建后会启动 Mooji Cut 并打开设置。
 
-## 关于 Mooncap
+## 关于 Mooji Cut
 
-Mooncap 使用 MoonBit 编写编辑核心，搭配 macOS 原生界面。从日常截图与录屏出发，逐步完善编辑体验，并为更多平台带来同样的使用方式。
+Mooji Cut 使用 MoonBit 编写编辑核心，搭配 macOS 原生界面。从日常截图与录屏出发，逐步完善编辑体验，并为更多平台带来同样的使用方式。
