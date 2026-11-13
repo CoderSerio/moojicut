@@ -156,7 +156,7 @@ static void reset_shortcuts(GtkButton *button, gpointer data) {
 }
 
 static gboolean capture_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
-  (void)widget; (void)data;
+  (void)data;
   if (host.recording < 0) return FALSE;
   if (event->keyval == GDK_KEY_Escape || event->keyval == GDK_KEY_Tab || event->keyval == GDK_KEY_ISO_Left_Tab) {
     cancel_recording();
@@ -170,7 +170,7 @@ static gboolean capture_key(GtkWidget *widget, GdkEventKey *event, gpointer data
   if ((event->keyval >= GDK_KEY_Shift_L && event->keyval <= GDK_KEY_Hyper_R) ||
       event->keyval == GDK_KEY_ISO_Level3_Shift || event->keyval == GDK_KEY_Mode_switch) return TRUE;
   guint keyval = event->keyval;
-  GdkKeymap *keymap = gdk_keymap_get_for_display(gdk_event_get_display((GdkEvent *)event));
+  GdkKeymap *keymap = gdk_keymap_get_for_display(gtk_widget_get_display(widget));
   GdkModifierType base_state = (GdkModifierType)(event->state &
     ~(GDK_SHIFT_MASK | GDK_LOCK_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_SUPER_MASK | GDK_META_MASK));
   gdk_keymap_translate_keyboard_state(keymap, event->hardware_keycode, base_state,

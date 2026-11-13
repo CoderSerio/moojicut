@@ -29,7 +29,11 @@ extern int32_t shortcut_validate(int32_t, int32_t, int32_t, int32_t, int32_t, in
 
 static const wchar_t *HOST_CLASS = L"MoojiCut.Native.TrayHost";
 static wchar_t registry_path[160] = L"Software\\MoojiCut";
-static const wchar_t *HOTKEY_NAMES[3] = {L"Capture", L"Record", L"Stop"};
+typedef struct {
+    DWORD version;
+    DWORD open_on_start;
+    DWORD hotkeys[3];
+} PreferenceRecord;
 static const WORD DEFAULT_KEYS[3] = {
     MAKEWORD('1', HOTKEYF_CONTROL | HOTKEYF_SHIFT),
     MAKEWORD('2', HOTKEYF_CONTROL | HOTKEYF_SHIFT),
@@ -78,15 +82,14 @@ static void load_preferences(void) {
     for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
     open_on_start = FALSE;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, registry_path, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
-        DWORD value, size;
-        for (i = 0; i < 3; i++) {
-            size = sizeof(value);
-            if (RegGetValueW(key, NULL, HOTKEY_NAMES[i], RRF_RT_REG_DWORD, NULL, &value, &size) == ERROR_SUCCESS && value <= 0xffff)
-                hotkeys[i] = (WORD)value;
+        PreferenceRecord record;
+        DWORD size = sizeof(record);
+        if (RegGetValueW(key, NULL, L"PreferencesV1", RRF_RT_REG_BINARY, NULL, &record, &size) == ERROR_SUCCESS &&
+            size == sizeof(record) && record.version == 1 && record.hotkeys[0] <= 0xffff &&
+            record.hotkeys[1] <= 0xffff && record.hotkeys[2] <= 0xffff) {
+            for (i = 0; i < 3; i++) hotkeys[i] = (WORD)record.hotkeys[i];
+            open_on_start = record.open_on_start != 0;
         }
-        size = sizeof(value);
-        if (RegGetValueW(key, NULL, L"OpenSettingsOnStart", RRF_RT_REG_DWORD, NULL, &value, &size) == ERROR_SUCCESS)
-            open_on_start = value != 0;
         RegCloseKey(key);
     }
     if (validate_keys(hotkeys) != 0) for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
@@ -94,17 +97,16 @@ static void load_preferences(void) {
 
 static BOOL save_preferences(void) {
     HKEY key;
-    DWORD value;
+    PreferenceRecord record;
     int i;
-    BOOL succeeded = TRUE;
+    BOOL succeeded;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, registry_path, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS)
         return FALSE;
-    for (i = 0; i < 3; i++) {
-        value = hotkeys[i];
-        if (RegSetValueExW(key, HOTKEY_NAMES[i], 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) != ERROR_SUCCESS) succeeded = FALSE;
-    }
-    value = open_on_start ? 1 : 0;
-    if (RegSetValueExW(key, L"OpenSettingsOnStart", 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) != ERROR_SUCCESS) succeeded = FALSE;
+    record.version = 1;
+    record.open_on_start = open_on_start ? 1 : 0;
+    for (i = 0; i < 3; i++) record.hotkeys[i] = hotkeys[i];
+    // A single registry value keeps the three shortcuts consistent on failure.
+    succeeded = RegSetValueExW(key, L"PreferencesV1", 0, REG_BINARY, (const BYTE *)&record, sizeof(record)) == ERROR_SUCCESS;
     RegCloseKey(key);
     return succeeded;
 }
@@ -120,7 +122,7 @@ static void fill_shortcuts(HWND page) {
 }
 
 static void update_shortcuts(HWND page) {
-    WORD proposed[3];
+    WORD proposed[3], previous[3];
     int i, result;
     if (updating) return;
     for (i = 0; i < 3; i++) proposed[i] = (WORD)SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE + i, HKM_GETHOTKEY, 0, 0);
@@ -130,8 +132,12 @@ static void update_shortcuts(HWND page) {
             result == 2 ? L"快捷键重复，请使用不同的组合。尚未保存。" : L"请使用字母、数字或 F1–F24。尚未保存。");
         return;
     }
-    for (i = 0; i < 3; i++) hotkeys[i] = proposed[i];
-    SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, save_preferences() ? L"已保存" : L"保存失败，请检查账户权限。");
+    for (i = 0; i < 3; i++) { previous[i] = hotkeys[i]; hotkeys[i] = proposed[i]; }
+    if (save_preferences()) SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"已保存");
+    else {
+        for (i = 0; i < 3; i++) hotkeys[i] = previous[i];
+        SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"保存失败，请检查账户权限。");
+    }
 }
 
 static INT_PTR CALLBACK general_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
@@ -169,8 +175,9 @@ static INT_PTR CALLBACK shortcuts_page(HWND window, UINT message, WPARAM wp, LPA
         }
         if (id == IDC_RESET_SHORTCUTS && HIWORD(wp) == BN_CLICKED) {
             int i;
-            for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
-            fill_shortcuts(window);
+            updating = TRUE;
+            for (i = 0; i < 3; i++) SendDlgItemMessageW(window, IDC_HOTKEY_CAPTURE + i, HKM_SETHOTKEY, DEFAULT_KEYS[i], 0);
+            updating = FALSE;
             update_shortcuts(window);
             return TRUE;
         }
@@ -358,6 +365,7 @@ static int run_smoke(void) {
     HWND page, first;
     WORD changed = MAKEWORD(VK_F6, HOTKEYF_CONTROL);
     int passed = 0;
+    RegDeleteTreeW(HKEY_CURRENT_USER, registry_path);
     load_preferences();
     if (!show_settings()) goto cleanup;
     first = settings;
@@ -416,7 +424,8 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
         return core_ok ? 0 : 1;
     }
     if (!core_ok) {
-        MessageBoxW(NULL, L"MoonBit 核心初始化失败。请重新解压完整的预览包。", L"Mooji Cut", MB_OK | MB_ICONERROR);
+        if (smoke_mode) fprintf(stderr, "MoonBit core check failed.\n");
+        else MessageBoxW(NULL, L"MoonBit 核心初始化失败。请重新解压完整的预览包。", L"Mooji Cut", MB_OK | MB_ICONERROR);
         return 1;
     }
     if (smoke_mode) {
