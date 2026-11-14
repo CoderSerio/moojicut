@@ -15,3 +15,4 @@ moon.pkg linguist-detectable=false
 *.h linguist-detectable=false
 *.m linguist-detectable=false
 *.mm linguist-detectable=false
+native/**/*.inc linguist-detectable=false
