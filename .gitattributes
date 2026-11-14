@@ -8,7 +8,10 @@
 moon.mod linguist-detectable=false
 moon.pkg linguist-detectable=false
 
-# Exclude the Objective-C platform layer from repository language statistics.
+# Keep GitHub language statistics focused on the MoonBit application core.
+# Native platform code and its fixtures retain their actual syntax highlighting.
+*.c linguist-detectable=false
+*.cpp linguist-detectable=false
+*.h linguist-detectable=false
 *.m linguist-detectable=false
 *.mm linguist-detectable=false
-native/macos/**/*.h linguist-detectable=false
