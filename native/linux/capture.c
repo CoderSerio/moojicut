@@ -897,6 +897,7 @@ static gboolean icon_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
 }
 static GtkWidget *icon_button(MCIcon icon, const char *label, GCallback callback, int action) {
   GtkWidget *button = gtk_button_new(), *drawing = gtk_drawing_area_new();
+  gtk_widget_set_has_window(drawing, FALSE);
   gtk_widget_set_size_request(drawing, 26, 26);
   g_signal_connect(drawing, "draw", G_CALLBACK(icon_draw), GINT_TO_POINTER(icon));
   gtk_container_add(GTK_CONTAINER(button), drawing);
@@ -1013,6 +1014,9 @@ static gboolean open_editor(GdkPixbuf *image) {
   gtk_widget_set_no_show_all(capture.entry, TRUE);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.entry);
   GtkWidget *masks = gtk_drawing_area_new();
+  /* The overlay wrapper is pass-through; its child must not create a separate
+   * full-screen input window or it would still intercept canvas events. */
+  gtk_widget_set_has_window(masks, FALSE);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), masks);
   gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), masks, TRUE);
   g_signal_connect(masks, "draw", G_CALLBACK(masks_draw), NULL);
@@ -1175,8 +1179,18 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
   smoke_pump();
   ok = !capture.selecting && capture.crop[0] == 20 && capture.crop[1] == 30 && capture.crop[2] == 280 &&
        capture.crop[3] == 200;
-  if (!ok)
-    g_printerr("XTest fixture: frozen canvas selection routing failed\n");
+  if (!ok) {
+    GdkDevice *pointer = gdk_seat_get_pointer(gdk_display_get_default_seat(gdk_display_get_default()));
+    GdkWindow *target = gdk_device_get_window_at_position(pointer, NULL, NULL);
+    gpointer owner = NULL;
+    if (target)
+      gdk_window_get_user_data(target, &owner);
+    g_printerr("XTest fixture: selection failed, target=%s selecting=%d points=%.0f,%.0f -> %.0f,%.0f "
+               "crop=%.0f,%.0f %.0fx%.0f zoom=%.2f origin=%d,%d\n",
+               owner && GTK_IS_WIDGET(owner) ? G_OBJECT_TYPE_NAME(owner) : "none", capture.selecting,
+               capture.x1, capture.y1, capture.x2, capture.y2, capture.crop[0], capture.crop[1],
+               capture.crop[2], capture.crop[3], capture.zoom, ox, oy);
+  }
   if (ok) {
     int x, y;
     GtkWidget *button = capture.tools[TEXT];

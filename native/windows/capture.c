@@ -1195,8 +1195,31 @@ bool mc_capture_handle_message(MSG *message) {
     return false;
   return IsDialogMessageW(capture.editor, message) != FALSE;
 }
-/* Optional CI diagnostic. WM_PRINT only renders our synthetic image and our
- * own hidden native controls; there is no screen DC or desktop fallback. */
+static BOOL check_style_controls(void) {
+  HWND controls[3] = {capture.colors, capture.strokes, capture.fonts};
+  const int minimum_counts[3] = {5, 3, 8};
+  for (int i = 0; i < 3; i++) {
+    int count = (int)SendMessageW(controls[i], CB_GETCOUNT, 0, 0);
+    int selected = (int)SendMessageW(controls[i], CB_GETCURSEL, 0, 0);
+    int length = (int)SendMessageW(controls[i], CB_GETLBTEXTLEN, selected, 0);
+    COMBOBOXINFO info = {sizeof(info)};
+    if (count < minimum_counts[i] || selected < 0 || selected >= count || length < 1 || length > 100 ||
+        !GetComboBoxInfo(controls[i], &info) || info.rcItem.right <= info.rcItem.left ||
+        info.rcItem.bottom <= info.rcItem.top)
+      return FALSE;
+    wchar_t label[101];
+    if (SendMessageW(controls[i], CB_GETLBTEXT, selected, (LPARAM)label) != length)
+      return FALSE;
+    printf("Screenshot style control %d: items=%d selected=%d labelLength=%d itemRect=%ldx%ld.\n", i, count,
+           selected, length, info.rcItem.right - info.rcItem.left, info.rcItem.bottom - info.rcItem.top);
+  }
+  return (int)SendMessageW(capture.fonts, CB_GETITEMDATA, SendMessageW(capture.fonts, CB_GETCURSEL, 0, 0),
+                           0) == capture.font_size;
+}
+/* Optional CI diagnostic. Print only our synthetic image and native controls.
+ * Briefly show this fixture without activation so the real themed paint path runs,
+ * independently of hidden-ancestor WM_PRINT behavior.
+ * There is no screen DC, desktop capture, or substitute text painted by the test. */
 static BOOL save_capture_preview(void) {
   wchar_t path[32768];
   DWORD length = GetEnvironmentVariableW(L"MOOJICUT_SMOKE_SCREENSHOT", path, ARRAYSIZE(path));
@@ -1210,8 +1233,15 @@ static BOOL save_capture_preview(void) {
   Surface preview = {0};
   if (!surface_new(&preview, client.right, client.bottom))
     return FALSE;
-  SendMessageW(capture.editor, WM_PRINT, (WPARAM)preview.dc, PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
+  ShowWindow(capture.editor, SW_SHOWNOACTIVATE);
+  RedrawWindow(capture.editor, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+  BOOL printed = PrintWindow(capture.editor, preview.dc, PW_CLIENTONLY);
+  ShowWindow(capture.editor, SW_HIDE);
   GdiFlush();
+  if (!printed) {
+    surface_free(&preview);
+    return FALSE;
+  }
   BITMAPFILEHEADER file_header = {0};
   BITMAPINFOHEADER info = {0};
   DWORD bytes = (DWORD)preview.width * (DWORD)preview.height * 4, written;
@@ -1349,7 +1379,13 @@ int mc_capture_smoke(HINSTANCE instance) {
   image_session_remove(capture.session, capture.selected);
   capture.selected = index;
   capture.tool = TOOL_TEXT;
+  capture.color = (int)image_session_value(capture.session, index, 5);
+  capture.stroke = (int)image_session_value(capture.session, index, 6);
+  capture.font_size = (int)image_session_value(capture.session, index, 7);
+  sync_style_controls();
   layout_editor(capture.editor);
+  if (!check_style_controls())
+    goto cleanup;
   changed();
   if (!save_capture_preview())
     goto cleanup;
