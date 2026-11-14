@@ -92,21 +92,30 @@ class DesktopBuild:
             executable = staging / self.exe_name
             source = ROOT / "native" / self.system
             if self.system == "windows":
+                # MoonBit exports make LINK emit .lib/.exp sidecars. Keep all
+                # linker output outside the end-user bundle and copy only EXE.
+                linked_executable = Path(name) / self.exe_name
                 resource = Path(name) / "app.res"
                 self.run("rc", "/nologo", "/fo" + str(resource), "resources.rc", cwd=source)
-                self.run("cl", "/nologo", "/std:c11", "/utf-8", "/MT", "/O2", "/W4",
-                         "/DUNICODE", "/D_UNICODE", '/DMOOJICUT_VERSION="' + self.version + '"',
-                         "/I" + str(self.home / "include"), source / "main.c", archive, resource,
-                         "/Fo" + str(Path(name) / "host.obj"), "/Fe" + str(executable),
+                common = ["/nologo", "/utf-8", "/MT", "/O2", "/W4", "/DUNICODE", "/D_UNICODE",
+                          '/DMOOJICUT_VERSION="' + self.version + '"', "/I" + str(self.home / "include"),
+                          "/Fo" + str(Path(name)) + os.sep]
+                self.run("cl", *common, "/std:c11", "/c", *sorted(source.glob("*.c")))
+                if list(source.glob("*.cpp")):
+                    self.run("cl", *common, "/std:c++17", "/EHsc", "/c", *sorted(source.glob("*.cpp")))
+                self.run("cl", "/nologo", *sorted(Path(name).glob("*.obj")), archive, resource, "/Fe" + str(linked_executable),
                          "/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup", "/MANIFEST:NO",
+                         "/IMPLIB:" + str(Path(name) / "MoojiCut.lib"),
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
-                         "gdi32.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib")
+                         "gdi32.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
+                         "mfplat.lib", "mfreadwrite.lib", "mfuuid.lib", "mf.lib", "propsys.lib")
+                shutil.copy2(linked_executable, executable)
                 dependencies = self.run("dumpbin", "/nologo", "/dependents", executable)
             else:
                 flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1"))
                 self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                          '-DMOOJICUT_VERSION="' + self.version + '"', "-I", self.home / "include",
-                         source / "main.c", archive, *flags, "-lm", "-o", executable)
+                         *sorted(source.glob("*.c")), archive, *flags, "-lm", "-o", executable)
                 self.run("strip", executable)
                 dependencies = self.run("ldd", executable)
                 if "not found" in dependencies:
@@ -122,10 +131,12 @@ class DesktopBuild:
                              "commit": revision, "workingTreeDirty": dirty,
                              "compilerVersion": self.compiler, "signing": "unsigned",
                              "minimumOS": "Windows 10" if self.system == "windows" else "Ubuntu 22.04 (glibc 2.35)",
-                             "scope": "Native tray, preferences and shortcut configuration; capture and recording are not connected.",
+                             "scope": self.scope(),
                              "dependencies": dependencies}
             (staging / "build.json").write_text(json.dumps(self.metadata, indent=2) + "\n", encoding="utf-8")
             (staging / "README.txt").write_text(self.instructions(), encoding="utf-8")
+            shutil.copy2(ROOT / "LICENSE", staging / "LICENSE.txt")
+            self.verify_bundle(staging)
             self.bundle.parent.mkdir(parents=True, exist_ok=True)
             previous = Path(name) / "previous"
             if self.bundle.exists():
@@ -137,14 +148,38 @@ class DesktopBuild:
                     previous.rename(self.bundle)
                 raise
 
+    def scope(self):
+        if self.system == "windows":
+            return ("Native tray and configurable global shortcuts; screenshot selection, annotation and confirmed image copy; "
+                    "silent main-display recording, trim, cuts, crop and confirmed MP4 file copy.")
+        return ("Native tray and preferences; X11 screenshot selection or Wayland screenshot portal, "
+                "annotation and confirmed image copy. Global shortcuts and recording are not connected.")
+
+    def verify_bundle(self, directory):
+        expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt"}
+        if self.system == "linux":
+            expected.add("launch.sh")
+        actual = {path.name for path in directory.iterdir()}
+        if actual != expected:
+            raise RuntimeError("Unexpected package contents: extra={}, missing={}.".format(
+                sorted(actual - expected), sorted(expected - actual)))
+        if any(path.is_symlink() or not path.is_file() for path in directory.iterdir()):
+            raise RuntimeError("Package contents must be regular runtime files.")
+
     def instructions(self):
         shared = ("Mooji Cut " + self.version + "\n\n"
-                  "原生桌面预览版：托盘、设置、快捷键配置及 MoonBit 编辑核心。\n"
-                  "截图、录屏、标注/剪辑和复制导出的完整流程尚未接通。\n"
+                  "以 MoonBit 为核心的本地截图与录屏工具。\n"
+                  "截图后可添加矩形、箭头、文字和实心遮挡，确认后才复制图片。\n"
                   "关闭设置会保留托盘；从托盘菜单选择退出以结束应用。\n\n")
         if self.system == "windows":
             return shared + ("适用 Windows 10/11 x64（Intel/AMD）。解压全部文件，双击 MoojiCut.exe。\n"
                              "在任务栏隐藏图标区找到 Mooji Cut，双击或右键打开设置。\n"
+                             "从托盘菜单或可配置的全局快捷键启动截图、开始录屏和停止录屏。\n"
+                             "录屏支持主显示器，最高 1920 × 1080 / 15 fps；本版不录声音。\n"
+                             "停止后可裁剪时长、删除片段和裁画面。修改需点击对应的应用按钮。\n"
+                             "确认后复制 MP4 文件，可粘贴到接受文件的应用；关闭编辑器保留草稿。\n"
+                             "草稿和成片保存在 %LOCALAPPDATA%\\MoojiCut 的 Drafts 与 Exports 文件夹。\n"
+                             "Windows N 版录屏需要系统媒体功能包。\n\n"
                              "免安装，无需 Node、Python 或 MoonBit 工具链。程序未进行代码签名，\n"
                              "Windows 可能显示未知发布者提示。仅从项目 Release 下载并核对 SHA256。\n"
                              "命令行 MoojiCut.exe --preferences 可直接打开设置。\n")
@@ -152,6 +187,11 @@ class DesktopBuild:
                          "需要 GTK 3 和 Ayatana AppIndicator：\n"
                          "  sudo apt install libgtk-3-0 libayatana-appindicator3-1\n"
                          "解压后运行 ./launch.sh 打开设置；./moojicut 仅启动托盘。\n"
+                         "从托盘菜单或设置中启动截图，也可运行 ./moojicut --capture。\n"
+                         "X11 支持桌面框选；Wayland 使用系统截图门户，需要可用的\n"
+                         "xdg-desktop-portal 和当前桌面对应的后端。\n"
+                         "本版尚不支持 Linux 录屏或应用内注册全局快捷键。可在桌面系统设置中\n"
+                         "将快捷键绑定到解压目录下 moojicut --capture 的完整路径。\n"
                          "部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘；没有扩展也可用\n"
                          "./launch.sh 重新打开设置。包不自动安装依赖或修改桌面配置。\n")
 
@@ -171,6 +211,7 @@ class DesktopBuild:
         self.core_tests()
         self.build()
         self.smoke()
+        self.verify_bundle(self.bundle)
         releases = ROOT / "dist/releases"
         releases.mkdir(parents=True, exist_ok=True)
         stem = "moojicut-{}-{}-x64".format(self.version, self.system)
@@ -195,6 +236,7 @@ class DesktopBuild:
             else:
                 with tarfile.open(archive) as package:
                     package.extractall(extracted, filter="data")
+            self.verify_bundle(extracted / "MoojiCut")
             self.verify_binary(extracted / "MoojiCut" / self.exe_name)
             if (extracted / "MoojiCut" / self.exe_name).read_bytes() != self.executable.read_bytes():
                 raise RuntimeError("Packaged executable differs from the tested binary.")

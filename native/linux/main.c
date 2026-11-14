@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "moonbit.h"
+#include "capture.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "development"
@@ -31,6 +32,7 @@ static const Shortcut defaults[] = { { '1', 5 }, { '2', 5 }, { 'X', 5 } };
 
 static void show_preferences(void);
 static void cancel_recording(void);
+static void menu_capture(GtkWidget *widget, gpointer data);
 
 static int validate_shortcut(int index, Shortcut value) {
   Shortcut a = host.shortcuts[(index + 1) % 3];
@@ -235,6 +237,7 @@ static void window_destroyed(GtkWidget *widget, gpointer data) {
 
 static void quit_app(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
+  mc_linux_capture_close();
   g_application_quit(G_APPLICATION(host.application));
 }
 
@@ -260,6 +263,10 @@ static void show_preferences(void) {
 
   GtkWidget *general = page();
   gtk_box_pack_start(GTK_BOX(general), label("这一幕，我截下了。", FALSE), FALSE, FALSE, 0);
+  GtkWidget *capture_button = gtk_button_new_with_label("截图并标注…");
+  gtk_widget_set_halign(capture_button, GTK_ALIGN_START);
+  g_signal_connect(capture_button, "clicked", G_CALLBACK(menu_capture), NULL);
+  gtk_box_pack_start(GTK_BOX(general), capture_button, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(general), label("关闭设置后，Mooji Cut 继续在托盘中待命。\n从托盘菜单打开设置，或选择退出。", TRUE), FALSE, FALSE, 0);
   host.dark_toggle = gtk_check_button_new_with_label("偏好深色外观");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.dark_toggle), host.prefer_dark);
@@ -290,7 +297,7 @@ static void show_preferences(void) {
   gtk_widget_set_halign(reset, GTK_ALIGN_END);
   g_signal_connect(reset, "clicked", G_CALLBACK(reset_shortcuts), NULL);
   gtk_box_pack_start(GTK_BOX(shortcuts), reset, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(shortcuts), label("点击组合键开始录入。配置会自动保存；本预览版尚未注册全局快捷键，也不会占用系统按键。", TRUE), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(shortcuts), label("配置自动保存；Linux 全局快捷键尚未接入。请从托盘菜单或通用设置启动截图。录屏功能仍在开发中。", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), shortcuts, gtk_label_new("快捷键"));
 
   GtkWidget *about = page();
@@ -303,11 +310,11 @@ static void show_preferences(void) {
   }
   gtk_box_pack_start(GTK_BOX(about), label("Mooji Cut  " MOOJICUT_VERSION, FALSE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(about), label("以 MoonBit 为核心的本地截图与录屏工具。", FALSE), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(about), label("Linux 原生预览版\n可体验托盘与偏好设置；截图、录屏、编辑与导出的完整流程尚未接入。", TRUE), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(about), label("Linux 原生预览版\n支持截图、标注、确认复制。X11 使用框选，Wayland 由系统截图门户提供选择。录屏仍在开发中。", TRUE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(about), label(host.core_ok ? "MoonBit native 核心已连接" : "MoonBit 核心检查失败", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), about, gtk_label_new("关于"));
 
-  host.status = label("设置保存在本机。截图与录屏流程仍在开发中。", TRUE);
+  host.status = label("截图编辑后复制到剪贴板。设置保存在本机。", TRUE);
   gtk_box_pack_start(GTK_BOX(layout), host.status, FALSE, FALSE, 0);
   GtkWidget *quit = gtk_button_new_with_label("退出 Mooji Cut");
   gtk_widget_set_halign(quit, GTK_ALIGN_END);
@@ -321,6 +328,20 @@ static void show_preferences(void) {
 static void menu_preferences(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
   show_preferences();
+}
+
+static gboolean begin_capture(gpointer data) {
+  (void)data;
+  mc_linux_capture_start(host.application);
+  return G_SOURCE_REMOVE;
+}
+
+static void menu_capture(GtkWidget *widget, gpointer data) {
+  (void)widget; (void)data;
+  cancel_recording();
+  if (host.window) gtk_widget_hide(host.window);
+  /* Let the desktop remove the menu/settings before freezing the frame. */
+  g_timeout_add(120, begin_capture, NULL);
 }
 
 static gboolean save_smoke_screenshot(void) {
@@ -369,6 +390,7 @@ static gboolean smoke_check(gpointer data) {
   passed = passed && memcmp(host.shortcuts, defaults, sizeof(defaults)) == 0;
   gtk_widget_destroy(host.window);
   passed = passed && host.window == NULL;
+  passed = mc_linux_capture_smoke(host.application) && passed;
   host.exit_code = passed ? 0 : 1;
   g_print("Linux native UI smoke %s: core, settings persistence, clear/reset, duplicate validation, five close/reopen cycles.\n", passed ? "passed" : "FAILED");
   g_application_quit(G_APPLICATION(host.application));
@@ -385,6 +407,9 @@ static void startup(GApplication *application, gpointer data) {
   app_indicator_set_title(host.indicator, "Mooji Cut");
   app_indicator_set_icon_full(host.indicator, host.icon_path, "Mooji Cut");
   GtkWidget *menu = gtk_menu_new();
+  GtkWidget *screenshot = gtk_menu_item_new_with_label("截图并标注…");
+  g_signal_connect(screenshot, "activate", G_CALLBACK(menu_capture), NULL);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu), screenshot);
   GtkWidget *preferences = gtk_menu_item_new_with_label("设置…");
   g_signal_connect(preferences, "activate", G_CALLBACK(menu_preferences), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), preferences);
@@ -400,7 +425,8 @@ static void startup(GApplication *application, gpointer data) {
 static int command_line(GApplication *application, GApplicationCommandLine *command, gpointer data) {
   (void)application; (void)data;
   GVariantDict *options = g_application_command_line_get_options_dict(command);
-  if (g_variant_dict_contains(options, "preferences") || host.activated || host.smoke) show_preferences();
+  if (g_variant_dict_contains(options, "capture")) menu_capture(NULL, NULL);
+  else if (g_variant_dict_contains(options, "preferences") || host.activated || host.smoke) show_preferences();
   if (host.smoke && !host.activated) g_timeout_add(300, smoke_check, NULL);
   host.activated = TRUE;
   return 0;
@@ -440,6 +466,7 @@ int main(int argc, char **argv) {
   host.application = gtk_application_new("dev.moojicut.native", flags);
   const GOptionEntry options[] = {
     { "preferences", 0, 0, G_OPTION_ARG_NONE, NULL, "Open preferences", NULL },
+    { "capture", 0, 0, G_OPTION_ARG_NONE, NULL, "Capture and annotate a screenshot", NULL },
     { "smoke", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, NULL, "Run isolated native UI checks", NULL },
     { NULL, 0, 0, G_OPTION_ARG_NONE, NULL, NULL, NULL }
   };
@@ -447,6 +474,7 @@ int main(int argc, char **argv) {
   g_signal_connect(host.application, "startup", G_CALLBACK(startup), NULL);
   g_signal_connect(host.application, "command-line", G_CALLBACK(command_line), NULL);
   int result = g_application_run(G_APPLICATION(host.application), argc, argv);
+  mc_linux_capture_close();
   if (host.window) gtk_widget_destroy(host.window);
   if (host.indicator) {
     app_indicator_set_status(host.indicator, APP_INDICATOR_STATUS_PASSIVE);

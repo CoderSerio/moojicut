@@ -14,6 +14,8 @@
 #include <wchar.h>
 #include "moonbit.h"
 #include "resource.h"
+#include "capture.h"
+#include "recording.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "0.1.0-alpha.2"
@@ -22,6 +24,12 @@
 #define WIDE(x) WIDE_IMPL(x)
 #define WM_TRAY (WM_APP + 1)
 #define WM_SHOW_SETTINGS (WM_APP + 2)
+#define WM_REFRESH_SHORTCUTS (WM_APP + 3)
+#define CAPTURE_TIMER 6101
+#define CAPTURE_HOTKEY 6102
+#define RECORD_HOTKEY 6103
+#define STOP_HOTKEY 6104
+#define RECORD_TIMER 6105
 #define SETTINGS_SUBCLASS 1
 
 extern int32_t preview_core_check(void);
@@ -45,9 +53,70 @@ static HICON app_icon;
 static UINT taskbar_created;
 static NOTIFYICONDATAW tray;
 static BOOL tray_added, smoke_mode, updating;
+static BOOL smoke_shortcut_registration;
 static WORD hotkeys[3];
 static BOOL open_on_start;
 static int core_ok;
+static BOOL global_registered[3];
+static wchar_t shortcut_registration_error[180];
+static void refresh_global_shortcuts(void);
+static void unregister_shortcuts(void) {
+    int i;
+    for (i = 0; i < 3; i++) {
+        if (global_registered[i]) UnregisterHotKey(host, CAPTURE_HOTKEY + i);
+        global_registered[i] = FALSE;
+    }
+}
+
+static LRESULT CALLBACK hotkey_recorder_proc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
+    (void)id; (void)data;
+    if (message == WM_SETFOCUS) {
+        unregister_shortcuts();
+    } else if (message == WM_KILLFOCUS) PostMessageW(host, WM_REFRESH_SHORTCUTS, 0, 0);
+    else if (message == WM_NCDESTROY) RemoveWindowSubclass(window, hotkey_recorder_proc, 1);
+    return DefSubclassProc(window, message, wp, lp);
+}
+
+static void refresh_global_shortcuts(void) {
+    int i;
+    HWND focused = GetFocus();
+    wchar_t class_name[64];
+    if ((smoke_mode && !smoke_shortcut_registration) || !host) return;
+    unregister_shortcuts();
+    shortcut_registration_error[0] = L'\0';
+    if (focused && GetClassNameW(focused, class_name, ARRAYSIZE(class_name)) &&
+        wcscmp(class_name, HOTKEY_CLASSW) == 0) return;
+    for (i = 0; i < 3; i++) {
+        UINT modifiers = MOD_NOREPEAT;
+        BYTE flags = HIBYTE(hotkeys[i]);
+        if (!LOBYTE(hotkeys[i])) continue;
+        if (flags & HOTKEYF_CONTROL) modifiers |= MOD_CONTROL;
+        if (flags & HOTKEYF_ALT) modifiers |= MOD_ALT;
+        if (flags & HOTKEYF_SHIFT) modifiers |= MOD_SHIFT;
+        global_registered[i] = RegisterHotKey(host, CAPTURE_HOTKEY + i, modifiers, LOBYTE(hotkeys[i]));
+        if (!global_registered[i] && smoke_shortcut_registration)
+            fprintf(stderr, "Hotkey smoke: RegisterHotKey action=%d failed, error=%lu.\n", i, GetLastError());
+        if (!global_registered[i]) swprintf_s(shortcut_registration_error, ARRAYSIZE(shortcut_registration_error),
+            L"%s快捷键未能启用，可能已被其他程序占用。请换一个组合。", i == 0 ? L"截图" : i == 1 ? L"开始录屏" : L"停止录屏");
+    }
+    if (settings) {
+        HWND page = PropSheet_GetCurrentPageHwnd(settings);
+        if (page && GetDlgItem(page, IDC_SHORTCUT_STATUS))
+            SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, shortcut_registration_error[0] ? shortcut_registration_error :
+                L"快捷键已启用。录入时暂时停用，离开输入框后恢复。");
+    }
+}
+
+static void start_capture(void) {
+    if (mc_capture_busy()) { mc_capture_activate(); return; }
+    if (settings) ShowWindow(settings, SW_HIDE);
+    SetTimer(host, CAPTURE_TIMER, 160, NULL);
+}
+static void start_recording(void) {
+    if (mc_recording_busy()) { mc_recording_activate(); return; }
+    if (settings) ShowWindow(settings, SW_HIDE);
+    SetTimer(host, RECORD_TIMER, 160, NULL);
+}
 
 static int normalized_key(WORD combination) {
     int vk = LOBYTE(combination);
@@ -133,7 +202,10 @@ static void update_shortcuts(HWND page) {
         return;
     }
     for (i = 0; i < 3; i++) { previous[i] = hotkeys[i]; hotkeys[i] = proposed[i]; }
-    if (save_preferences()) SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"已保存");
+    if (save_preferences()) {
+        SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"已保存；离开输入框后启用快捷键。");
+        refresh_global_shortcuts();
+    }
     else {
         for (i = 0; i < 3; i++) hotkeys[i] = previous[i];
         SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"保存失败，请检查账户权限。");
@@ -161,7 +233,13 @@ static INT_PTR CALLBACK general_page(HWND window, UINT message, WPARAM wp, LPARA
 
 static INT_PTR CALLBACK shortcuts_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     (void)lp;
-    if (message == WM_INITDIALOG) { fill_shortcuts(window); return TRUE; }
+    if (message == WM_INITDIALOG) {
+        int i;
+        fill_shortcuts(window);
+        for (i = 0; i < 3; i++) SetWindowSubclass(GetDlgItem(window, IDC_HOTKEY_CAPTURE + i), hotkey_recorder_proc, 1, 0);
+        if (shortcut_registration_error[0]) SetDlgItemTextW(window, IDC_SHORTCUT_STATUS, shortcut_registration_error);
+        return TRUE;
+    }
     if (message == WM_COMMAND) {
         int id = LOWORD(wp);
         if (id >= IDC_HOTKEY_CAPTURE && id <= IDC_HOTKEY_STOP && HIWORD(wp) == EN_CHANGE) {
@@ -204,6 +282,7 @@ static LRESULT CALLBACK settings_subclass(HWND window, UINT message, WPARAM wp, 
     if (message == WM_NCDESTROY) {
         RemoveWindowSubclass(window, settings_subclass, SETTINGS_SUBCLASS);
         settings = NULL;
+        PostMessageW(host, WM_REFRESH_SHORTCUTS, 0, 0);
     }
     return DefSubclassProc(window, message, wp, lp);
 }
@@ -266,6 +345,11 @@ static void tray_menu(void) {
     POINT point;
     UINT chosen;
     if (!menu) return;
+    AppendMenuW(menu, MF_STRING, IDM_CAPTURE, L"截图…");
+    AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RECORD, L"开始录屏（无声音）…");
+    AppendMenuW(menu, MF_STRING | (mc_recording_recording() ? 0 : MF_GRAYED), IDM_STOP_RECORD, L"停止录屏并编辑");
+    AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RESUME_RECORD, L"继续编辑上次录屏…");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"设置…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IDM_QUIT, L"退出 Mooji Cut");
@@ -275,8 +359,12 @@ static void tray_menu(void) {
     chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, host, NULL);
     PostMessageW(host, WM_NULL, 0, 0);
     DestroyMenu(menu);
-    if (chosen == IDM_SETTINGS) show_settings();
-    else if (chosen == IDM_QUIT) DestroyWindow(host);
+    if (chosen == IDM_CAPTURE) start_capture();
+    else if (chosen == IDM_RECORD) start_recording();
+    else if (chosen == IDM_STOP_RECORD) mc_recording_stop();
+    else if (chosen == IDM_RESUME_RECORD) mc_recording_resume_last(instance, host);
+    else if (chosen == IDM_SETTINGS) show_settings();
+    else if (chosen == IDM_QUIT) PostMessageW(host, WM_CLOSE, 0, 0);
 }
 
 static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
@@ -285,6 +373,27 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         return 0;
     }
     switch (message) {
+    case WM_HOTKEY:
+        // Tests register real, uncommon shortcuts but never capture the desktop.
+        if (smoke_mode) return 0;
+        if (wp == CAPTURE_HOTKEY) start_capture();
+        else if (wp == RECORD_HOTKEY) start_recording();
+        else if (wp == STOP_HOTKEY) mc_recording_stop();
+        return 0;
+    case WM_REFRESH_SHORTCUTS: refresh_global_shortcuts(); return 0;
+    case WM_TIMER:
+        if (smoke_mode && (wp == CAPTURE_TIMER || wp == RECORD_TIMER)) {
+            KillTimer(window, (UINT_PTR)wp); return 0;
+        }
+        if (wp == CAPTURE_TIMER) { KillTimer(window, CAPTURE_TIMER); mc_capture_start(instance, host); }
+        if (wp == RECORD_TIMER) { KillTimer(window, RECORD_TIMER); mc_recording_start(instance, host); }
+        return 0;
+    case MOOJICUT_RECORDING_STATE_CHANGED:
+        if (tray_added) {
+            wcscpy_s(tray.szTip, ARRAYSIZE(tray.szTip), mc_recording_recording() ? L"Mooji Cut · 录屏中，请使用停止录屏快捷键结束" : L"Mooji Cut · 截图与录屏");
+            Shell_NotifyIconW(NIM_MODIFY, &tray);
+        }
+        return 0;
     case WM_TRAY:
         switch (LOWORD(lp)) {
         case WM_CONTEXTMENU: tray_menu(); break;
@@ -292,8 +401,15 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         }
         return 0;
     case WM_SHOW_SETTINGS: show_settings(); return 0;
-    case WM_CLOSE: DestroyWindow(window); return 0;
+    case WM_CLOSE:
+        if (mc_recording_busy()) {
+            mc_recording_close();
+            if (mc_recording_busy()) return 0;
+        }
+        DestroyWindow(window); return 0;
     case WM_DESTROY:
+        unregister_shortcuts();
+        mc_capture_close();
         if (settings) DestroyWindow(settings);
         if (tray_added) Shell_NotifyIconW(NIM_DELETE, &tray);
         tray_added = FALSE;
@@ -361,6 +477,54 @@ cleanup:
     return passed;
 }
 
+static BOOL run_shortcut_smoke(HWND page) {
+    WORD saved[3];
+    HWND previous_focus = GetFocus(), recorder = GetDlgItem(page, IDC_HOTKEY_CAPTURE);
+    HWND neutral = GetDlgItem(settings, IDOK);
+    MSG message;
+    BOOL passed = FALSE;
+    int i;
+    const BYTE modifiers = HOTKEYF_CONTROL | HOTKEYF_ALT | HOTKEYF_SHIFT;
+    if (!smoke_mode || !recorder || !neutral) return FALSE;
+    for (i = 0; i < 3; i++) saved[i] = hotkeys[i];
+    unregister_shortcuts();
+    smoke_shortcut_registration = TRUE;
+    for (i = 0; i < 3; i++) hotkeys[i] = MAKEWORD(VK_F17 + i, modifiers);
+    SetFocus(neutral);
+    if (GetFocus() != neutral) { fprintf(stderr, "Hotkey smoke: cannot focus neutral control.\n"); goto cleanup; }
+    refresh_global_shortcuts();
+    if (!global_registered[0] || !global_registered[1] || !global_registered[2]) goto cleanup;
+    SetFocus(recorder);
+    if (GetFocus() != recorder || global_registered[0] || global_registered[1] || global_registered[2]) {
+        fprintf(stderr, "Hotkey smoke: entering recorder did not suspend all shortcuts.\n"); goto cleanup;
+    }
+    SetFocus(neutral);
+    if (GetFocus() != neutral) { fprintf(stderr, "Hotkey smoke: cannot leave recorder.\n"); goto cleanup; }
+    while (PeekMessageW(&message, host, WM_REFRESH_SHORTCUTS, WM_REFRESH_SHORTCUTS, PM_REMOVE))
+        DispatchMessageW(&message);
+    if (!global_registered[0] || !global_registered[1] || !global_registered[2]) {
+        fprintf(stderr, "Hotkey smoke: leaving recorder did not restore all shortcuts.\n"); goto cleanup;
+    }
+    hotkeys[1] = 0;
+    refresh_global_shortcuts();
+    if (!global_registered[0] || global_registered[1] || !global_registered[2]) {
+        fprintf(stderr, "Hotkey smoke: disabled recording shortcut was registered.\n"); goto cleanup;
+    }
+    // Exercise the smoke guard without synthesizing or sending user input.
+    for (i = 0; i < 3; i++) SendMessageW(host, WM_HOTKEY, CAPTURE_HOTKEY + i, 0);
+    passed = !mc_capture_busy() && !mc_recording_busy();
+    if (!passed) fprintf(stderr, "Hotkey smoke: test events started a capture operation.\n");
+cleanup:
+    unregister_shortcuts();
+    smoke_shortcut_registration = FALSE;
+    for (i = 0; i < 3; i++) hotkeys[i] = saved[i];
+    shortcut_registration_error[0] = L'\0';
+    if (previous_focus && IsWindow(previous_focus)) SetFocus(previous_focus);
+    printf("Windows global shortcut smoke: %s (real registration, focus suspend/resume, disabled action).\n",
+        passed ? "passed" : "FAILED");
+    return passed;
+}
+
 static int run_smoke(void) {
     HWND page, first;
     WORD changed = MAKEWORD(VK_F6, HOTKEYF_CONTROL);
@@ -391,6 +555,7 @@ static int run_smoke(void) {
     if ((WORD)SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE, HKM_GETHOTKEY, 0, 0) != changed) goto cleanup;
     SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_RESET_SHORTCUTS, BN_CLICKED), 0);
     if (hotkeys[0] != DEFAULT_KEYS[0] || hotkeys[1] != DEFAULT_KEYS[1]) goto cleanup;
+    if (!run_shortcut_smoke(page)) goto cleanup;
     PropSheet_SetCurSel(settings, NULL, 2);
     page = PropSheet_GetCurrentPageHwnd(settings);
     if (!page || !GetDlgItem(page, IDC_CORE_STATUS)) goto cleanup;
@@ -466,11 +631,16 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
     load_preferences();
     if (smoke_mode) {
         result = run_smoke();
+        if (result == 0) result = mc_capture_smoke(instance);
+        if (result == 0) result = mc_recording_smoke(instance);
         DestroyWindow(host);
     } else {
         taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
+        refresh_global_shortcuts();
         if (!add_tray() || preferences_requested || open_on_start) show_settings();
         while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {
+            if (mc_capture_handle_message(&message)) continue;
+            if (mc_recording_handle_message(&message)) continue;
             if (!settings || !PropSheet_IsDialogMessage(settings, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
