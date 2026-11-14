@@ -335,8 +335,8 @@ class NativeBuild:
         self.run(global_shortcuts)
         capture_permission = shortcuts / "capture-permission"
         selection = shortcuts / "selection"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
-                 ROOT / "test/native/selection.m", *native_sources("macos", "feature.select"),
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
+                 ROOT / "test/native/selection.m", *native_sources("macos", "feature.select"), archive,
                  "-framework", "Foundation", "-o", selection)
         self.run(selection)
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,

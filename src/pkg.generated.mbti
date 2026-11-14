@@ -108,6 +108,18 @@ pub fn preview_core_check() -> Int32
 
 pub fn recording_transition(String, String) -> String
 
+pub fn selection_border_contains(Double, Double, Double, Double, Double, Double, Double) -> Int32
+
+pub fn selection_contains(Double, Double, Double, Double, Double, Double) -> Int32
+
+pub fn selection_handle_point(Double, Double, Double, Double, Int32, Int32) -> FixedArray[Double]
+
+pub fn selection_hit_handle(Double, Double, Double, Double, Double, Double, Double, Int32) -> Int32
+
+pub fn selection_region(Double, Double, Double, Double) -> FixedArray[Double]
+
+pub fn selection_transform(Double, Double, Double, Double, Double, Double, Double, Double, Int32, Double, Double, Double, Double, Double, Int32) -> FixedArray[Double]
+
 pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
 pub fn video_command(Int32, String) -> String
