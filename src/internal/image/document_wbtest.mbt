@@ -1,30 +1,7 @@
 ///|
-fn model_test_result(text : String) -> Json raise {
-  let result = @json.parse(text)
-  assert_true(result is Object({ "ok": True, .. }))
-  result
-}
-
-///|
-fn model_test_field(value : Json, key : String) -> Json {
-  match value {
-    Object(fields) => fields.get(key).unwrap()
-    _ => abort("Expected an object")
-  }
-}
-
-///|
-fn model_test_items(value : Json) -> Array[Json] {
-  match value {
-    Array(items) => items
-    _ => abort("Expected an array")
-  }
-}
-
-///|
 fn image_test_create() -> Json raise {
-  model_test_field(
-    model_test_result(image_create("{\"width\":1200,\"height\":900}")),
+  @test_support.model_test_field(
+    @test_support.model_test_result(image_create("{\"width\":1200,\"height\":900}")),
     "document",
   )
 }
@@ -34,10 +11,10 @@ fn image_test_apply(document : Json, command : Json) -> Json raise {
   let request = Json::object({
     "document": document,
     "command": command,
-    "expectedRevision": model_test_field(document, "revision"),
+    "expectedRevision": @test_support.model_test_field(document, "revision"),
   })
-  model_test_field(
-    model_test_result(image_apply(request.stringify())),
+  @test_support.model_test_field(
+    @test_support.model_test_result(image_apply(request.stringify())),
     "document",
   )
 }
@@ -59,7 +36,7 @@ fn image_test_rect(id : String) -> Json {
 
 ///|
 fn image_test_first(document : Json) -> Json {
-  model_test_items(model_test_field(document, "annotations"))[0]
+  @test_support.model_test_items(@test_support.model_test_field(document, "annotations"))[0]
 }
 
 ///|
@@ -97,18 +74,18 @@ test "image crop and annotation edits share one undo history" {
     ),
   )
   assert_true(
-    model_test_field(image_test_first(document), "width") == Json(200),
+    @test_support.model_test_field(image_test_first(document), "width") == Json(200),
   )
   document = image_test_apply(document, @json.parse("{\"type\":\"undo\"}"))
   assert_true(
-    model_test_field(model_test_field(document, "viewport"), "width") ==
+    @test_support.model_test_field(@test_support.model_test_field(document, "viewport"), "width") ==
     Json(500),
   )
   document = image_test_apply(document, @json.parse("{\"type\":\"undo\"}"))
-  assert_true(model_test_field(image_test_first(document), "x") == Json(100))
+  assert_true(@test_support.model_test_field(image_test_first(document), "x") == Json(100))
   document = image_test_apply(document, @json.parse("{\"type\":\"redo\"}"))
-  assert_true(model_test_field(image_test_first(document), "x") == Json(125))
-  expect_error(
+  assert_true(@test_support.model_test_field(image_test_first(document), "x") == Json(125))
+  @test_support.expect_error(
     image_apply(
       Json::object({
         "document": document,
@@ -130,7 +107,7 @@ test "image crop and annotation edits share one undo history" {
       ),
     ),
   )
-  assert_eq(model_test_items(model_test_field(document, "redo")).length(), 0)
+  assert_eq(@test_support.model_test_items(@test_support.model_test_field(document, "redo")).length(), 0)
 }
 
 ///|
@@ -168,14 +145,14 @@ test "large freehand histories exceed 64 KiB without changing prior snapshots" {
   }
   assert_true(document.stringify().length() > 65536)
   let restored = image_test_apply(document, @json.parse("{\"type\":\"undo\"}"))
-  let previous_point = model_test_items(
-      model_test_field(image_test_first(restored), "points"),
+  let previous_point = @test_support.model_test_items(
+      @test_support.model_test_field(image_test_first(restored), "points"),
     )[0]
-  let current_point = model_test_items(
-      model_test_field(image_test_first(document), "points"),
+  let current_point = @test_support.model_test_items(
+      @test_support.model_test_field(image_test_first(document), "points"),
     )[0]
-  assert_true(model_test_field(previous_point, "x") == Json(4))
-  assert_true(model_test_field(current_point, "x") == Json(5))
+  assert_true(@test_support.model_test_field(previous_point, "x") == Json(4))
+  assert_true(@test_support.model_test_field(current_point, "x") == Json(5))
 }
 
 ///|
@@ -195,23 +172,23 @@ test "image completion rebases objects and discards pixel-dependent history" {
       ),
     ),
   )
-  let completed = model_test_field(
-    model_test_result(
+  let completed = @test_support.model_test_field(
+    @test_support.model_test_result(
       image_finalize(Json::object({ "document": document }).stringify()),
     ),
     "document",
   )
-  assert_true(model_test_field(completed, "width") == Json(200))
-  assert_true(model_test_field(image_test_first(completed), "x") == Json(20))
-  assert_true(model_test_field(image_test_first(completed), "y") == Json(30))
+  assert_true(@test_support.model_test_field(completed, "width") == Json(200))
+  assert_true(@test_support.model_test_field(image_test_first(completed), "x") == Json(20))
+  assert_true(@test_support.model_test_field(image_test_first(completed), "y") == Json(30))
   assert_true(
-    model_test_field(model_test_field(completed, "viewport"), "x") == Json(0),
+    @test_support.model_test_field(@test_support.model_test_field(completed, "viewport"), "x") == Json(0),
   )
-  assert_eq(model_test_items(model_test_field(completed, "undo")).length(), 0)
-  assert_eq(model_test_items(model_test_field(completed, "redo")).length(), 0)
+  assert_eq(@test_support.model_test_items(@test_support.model_test_field(completed, "undo")).length(), 0)
+  assert_eq(@test_support.model_test_items(@test_support.model_test_field(completed, "redo")).length(), 0)
   assert_eq(
-    number_result(completed.stringify(), "revision"),
-    number_result(document.stringify(), "revision") + 1,
+    @test_support.number_result(completed.stringify(), "revision"),
+    @test_support.number_result(document.stringify(), "revision") + 1,
   )
 }
 
@@ -237,8 +214,8 @@ test "image undo is bounded to 100 edits and a multi-object deletion is atomic" 
       ),
     )
   }
-  assert_eq(model_test_items(model_test_field(document, "undo")).length(), 100)
-  let before = model_test_field(document, "annotations")
+  assert_eq(@test_support.model_test_items(@test_support.model_test_field(document, "undo")).length(), 100)
+  let before = @test_support.model_test_field(document, "annotations")
   document = image_test_apply(
     document,
     @json.parse(
@@ -248,11 +225,11 @@ test "image undo is bounded to 100 edits and a multi-object deletion is atomic" 
     ),
   )
   assert_eq(
-    model_test_items(model_test_field(document, "annotations")).length(),
+    @test_support.model_test_items(@test_support.model_test_field(document, "annotations")).length(),
     0,
   )
   document = image_test_apply(document, @json.parse("{\"type\":\"undo\"}"))
-  assert_true(model_test_field(document, "annotations") == before)
+  assert_true(@test_support.model_test_field(document, "annotations") == before)
 }
 
 ///|
@@ -270,7 +247,7 @@ test "image styles and IDs are validated and filled covers retain opacity" {
       _ => abort("rect")
     }
     fields[key] = value
-    expect_error(
+    @test_support.expect_error(
       image_apply(
         Json::object({
           "document": document,
@@ -288,7 +265,7 @@ test "image styles and IDs are validated and filled covers retain opacity" {
     "annotations": Json::array([image_test_rect("rect-1")]),
   })
   let with_rect = image_test_apply(document, add)
-  expect_error(
+  @test_support.expect_error(
     image_apply(
       Json::object({ "document": with_rect, "command": add }).stringify(),
     ),
@@ -303,15 +280,15 @@ test "image styles and IDs are validated and filled covers retain opacity" {
     ),
   )
   assert_true(
-    model_test_field(image_test_first(redacted), "opacity") == Json(0.2),
+    @test_support.model_test_field(image_test_first(redacted), "opacity") == Json(0.2),
   )
-  assert_eq(model_test_field(image_test_first(redacted), "color"), Json("#225577"))
-  let finalized = model_test_result(image_finalize(Json::object({ "document": redacted }).stringify()))
-  assert_eq(model_test_field(image_test_first(model_test_field(finalized, "document")), "opacity"), Json(0.2))
+  assert_eq(@test_support.model_test_field(image_test_first(redacted), "color"), Json("#225577"))
+  let finalized = @test_support.model_test_result(image_finalize(Json::object({ "document": redacted }).stringify()))
+  assert_eq(@test_support.model_test_field(image_test_first(@test_support.model_test_field(finalized, "document")), "opacity"), Json(0.2))
   let mosaic = image_test_apply(document, @json.parse((
     #|{"type":"add","annotations":[{"id":"mosaic","type":"mosaic","x":0,"y":0,"width":40,"height":30,"opacity":0.2}]}
   )))
-  assert_eq(model_test_field(image_test_first(mosaic), "opacity"), Json(1))
+  assert_eq(@test_support.model_test_field(image_test_first(mosaic), "opacity"), Json(1))
 }
 
 ///|
@@ -336,7 +313,7 @@ test "text edits retain Unicode and geometry through undo redo and export" {
       ]),
     }),
   )
-  let added = model_test_field(document, "annotations")
+  let added = @test_support.model_test_field(document, "annotations")
   document = image_test_apply(
     document,
     @json.parse(
@@ -345,7 +322,7 @@ test "text edits retain Unicode and geometry through undo redo and export" {
       ),
     ),
   )
-  let moved = model_test_field(document, "annotations")
+  let moved = @test_support.model_test_field(document, "annotations")
   document = image_test_apply(
     document,
     @json.parse(
@@ -354,10 +331,10 @@ test "text edits retain Unicode and geometry through undo redo and export" {
       ),
     ),
   )
-  let resized = model_test_field(document, "annotations")
+  let resized = @test_support.model_test_field(document, "annotations")
   // Resizing the text box does not implicitly change its typography.
   assert_true(
-    model_test_field(image_test_first(document), "fontSize") == Json(24),
+    @test_support.model_test_field(image_test_first(document), "fontSize") == Json(24),
   )
   document = image_test_apply(
     document,
@@ -371,15 +348,15 @@ test "text edits retain Unicode and geometry through undo redo and export" {
       }),
     }),
   )
-  let edited = model_test_field(document, "annotations")
+  let edited = @test_support.model_test_field(document, "annotations")
   // Each completed gesture or edit is one undo step, with no partial styles.
   for expected in [resized, moved, added] {
     document = image_test_apply(document, @json.parse("{\"type\":\"undo\"}"))
-    assert_true(model_test_field(document, "annotations") == expected)
+    assert_true(@test_support.model_test_field(document, "annotations") == expected)
   }
   for expected in [moved, resized, edited] {
     document = image_test_apply(document, @json.parse("{\"type\":\"redo\"}"))
-    assert_true(model_test_field(document, "annotations") == expected)
+    assert_true(@test_support.model_test_field(document, "annotations") == expected)
   }
   document = image_test_apply(
     document,
@@ -389,21 +366,21 @@ test "text edits retain Unicode and geometry through undo redo and export" {
       ),
     ),
   )
-  let completed = model_test_field(
-    model_test_result(
+  let completed = @test_support.model_test_field(
+    @test_support.model_test_result(
       image_finalize(Json::object({ "document": document }).stringify()),
     ),
     "document",
   )
   let text = image_test_first(completed)
-  assert_true(model_test_field(text, "id") == Json("text-1"))
-  assert_true(model_test_field(text, "text") == Json(content))
-  assert_true(model_test_field(text, "x") == Json(45.5))
-  assert_true(model_test_field(text, "y") == Json(39.75))
-  assert_true(model_test_field(text, "width") == Json(360))
-  assert_true(model_test_field(text, "height") == Json(144))
-  assert_true(model_test_field(text, "fontSize") == Json(36))
-  assert_true(model_test_field(text, "color") == Json("#09a6ff"))
-  assert_eq(model_test_items(model_test_field(completed, "undo")).length(), 0)
-  assert_true(model_test_field(document, "annotations") == edited)
+  assert_true(@test_support.model_test_field(text, "id") == Json("text-1"))
+  assert_true(@test_support.model_test_field(text, "text") == Json(content))
+  assert_true(@test_support.model_test_field(text, "x") == Json(45.5))
+  assert_true(@test_support.model_test_field(text, "y") == Json(39.75))
+  assert_true(@test_support.model_test_field(text, "width") == Json(360))
+  assert_true(@test_support.model_test_field(text, "height") == Json(144))
+  assert_true(@test_support.model_test_field(text, "fontSize") == Json(36))
+  assert_true(@test_support.model_test_field(text, "color") == Json("#09a6ff"))
+  assert_eq(@test_support.model_test_items(@test_support.model_test_field(completed, "undo")).length(), 0)
+  assert_true(@test_support.model_test_field(document, "annotations") == edited)
 }

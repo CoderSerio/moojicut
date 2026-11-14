@@ -42,7 +42,6 @@ fn native_video_integer(fields : Map[String, Json], key : String) -> Int {
 }
 
 ///|
-#export_name("native_video_resume")
 pub fn native_video_resume(
   duration_ms : Int, width : Int, height : Int, has_audio : Int, draft : String,
 ) -> Int {
@@ -68,7 +67,6 @@ pub fn native_video_resume(
 }
 
 ///|
-#export_name("native_video_open")
 pub fn native_video_open(duration_ms : Int, width : Int, height : Int, has_audio : Int) -> Int {
   native_video_resume(duration_ms, width, height, has_audio, "")
 }
@@ -84,7 +82,6 @@ fn native_video_command(handle : Int, command : Json) -> Int {
 }
 
 ///|
-#export_name("native_video_trim")
 pub fn native_video_trim(handle : Int, start_ms : Int, end_ms : Int) -> Int {
   native_video_command(handle, Json::object({
     "type": Json("trim"), "trim": Json::object({ "startMs": Json(start_ms), "endMs": Json(end_ms) }),
@@ -92,7 +89,6 @@ pub fn native_video_trim(handle : Int, start_ms : Int, end_ms : Int) -> Int {
 }
 
 ///|
-#export_name("native_video_cut")
 pub fn native_video_cut(handle : Int, start_ms : Int, end_ms : Int) -> Int {
   native_video_command(handle, Json::object({
     "type": Json("cut"), "cut": Json::object({ "startMs": Json(start_ms), "endMs": Json(end_ms) }),
@@ -100,13 +96,11 @@ pub fn native_video_cut(handle : Int, start_ms : Int, end_ms : Int) -> Int {
 }
 
 ///|
-#export_name("native_video_clear_cuts")
 pub fn native_video_clear_cuts(handle : Int) -> Int {
   native_video_command(handle, Json::object({ "type": Json("clearCuts") }))
 }
 
 ///|
-#export_name("native_video_crop")
 pub fn native_video_crop(handle : Int, x : Int, y : Int, width : Int, height : Int) -> Int {
   native_video_command(handle, Json::object({
     "type": Json("crop"), "crop": Json::object({
@@ -116,13 +110,11 @@ pub fn native_video_crop(handle : Int, x : Int, y : Int, width : Int, height : I
 }
 
 ///|
-#export_name("native_video_reset_crop")
 pub fn native_video_reset_crop(handle : Int) -> Int {
   native_video_command(handle, Json::object({ "type": Json("crop"), "crop": Json::null() }))
 }
 
 ///|
-#export_name("native_video_mute")
 pub fn native_video_mute(handle : Int, muted : Int) -> Int {
   if muted != 0 && muted != 1 {
     native_video_errors[if handle > 0 { handle } else { 0 }] = "muted 必须为 0 或 1"
@@ -132,25 +124,21 @@ pub fn native_video_mute(handle : Int, muted : Int) -> Int {
 }
 
 ///|
-#export_name("native_video_undo")
 pub fn native_video_undo(handle : Int) -> Int {
   native_video_command(handle, Json::object({ "type": Json("undo") }))
 }
 
 ///|
-#export_name("native_video_redo")
 pub fn native_video_redo(handle : Int) -> Int {
   native_video_command(handle, Json::object({ "type": Json("redo") }))
 }
 
 ///|
-#export_name("native_video_reset")
 pub fn native_video_reset(handle : Int) -> Int {
   native_video_command(handle, Json::object({ "type": Json("reset") }))
 }
 
 ///|
-#export_name("native_video_duration")
 pub fn native_video_duration(handle : Int) -> Int {
   let state = match native_video_state(handle) { Some(state) => state; None => return 0 }
   let plan = match native_video_object(state, "plan") { Some(plan) => plan; None => return 0 }
@@ -166,11 +154,9 @@ fn native_video_segments(handle : Int) -> Array[Json] {
 }
 
 ///|
-#export_name("native_video_segment_count")
 pub fn native_video_segment_count(handle : Int) -> Int { native_video_segments(handle).length() }
 
 ///|
-#export_name("native_video_segment_value")
 pub fn native_video_segment_value(handle : Int, index : Int, field : Int) -> Int {
   let key = match field {
     0 => "sourceStartMs"; 1 => "sourceEndMs"; 2 => "outputStartMs"; 3 => "outputEndMs"; _ => return -1
@@ -181,7 +167,6 @@ pub fn native_video_segment_value(handle : Int, index : Int, field : Int) -> Int
 }
 
 ///|
-#export_name("native_video_crop_value")
 pub fn native_video_crop_value(handle : Int, field : Int) -> Int {
   let key = match field { 0 => "x"; 1 => "y"; 2 => "width"; 3 => "height"; _ => return -1 }
   let state = match native_video_state(handle) { Some(state) => state; None => return -1 }
@@ -200,7 +185,6 @@ pub fn native_video_crop_value(handle : Int, field : Int) -> Int {
 ///|
 // Editor fields are read from the reducer document, never inferred from kept
 // segments: a deletion at a trim boundary changes the plan but not the trim.
-#export_name("native_video_edit_value")
 pub fn native_video_edit_value(handle : Int, field : Int) -> Int {
   let state = match native_video_state(handle) { Some(state) => state; None => return -1 }
   if field == 3 || field == 4 {
@@ -224,7 +208,6 @@ pub fn native_video_edit_value(handle : Int, field : Int) -> Int {
 }
 
 ///|
-#export_name("native_video_snapshot")
 pub fn native_video_snapshot(handle : Int) -> String {
   let state = match native_video_state(handle) { Some(state) => state; None => return "" }
   match native_video_object(state, "document") {
@@ -234,14 +217,12 @@ pub fn native_video_snapshot(handle : Int) -> String {
 }
 
 ///|
-#export_name("native_video_close")
 pub fn native_video_close(handle : Int) -> Unit {
   if handle > 0 { video_dispose(handle - 1) }
   native_video_errors.remove(handle)
 }
 
 ///|
-#export_name("native_video_error")
 pub fn native_video_error(handle : Int) -> String {
   native_video_errors.get(if handle > 0 { handle } else { 0 }).unwrap_or("")
 }
