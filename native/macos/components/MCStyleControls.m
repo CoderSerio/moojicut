@@ -80,9 +80,7 @@ static NSTextField *MCStyleLabel(NSString *text) {
         [self.well.heightAnchor constraintEqualToConstant:18].active = YES;
         self.well.target = self; self.well.action = @selector(changed:);
         self.opacityControl = [[MCNumberControl alloc] initWithLabel:@"不透明度" minimum:0 maximum:100 value:100];
-        NSNumberFormatter *percent = (NSNumberFormatter *)self.opacityControl.field.formatter;
-        percent.positiveSuffix = @"%";
-        percent.negativeSuffix = @"%";
+        [self.opacityControl insertArrangedSubview:MCStyleLabel(@"%") atIndex:2];
         __weak MCColorControl *weakSelf = self;
         self.opacityControl.onChange = ^(id sender) { [weakSelf changed:sender]; };
         [self addArrangedSubview:MCStyleLabel(@"颜色")];
