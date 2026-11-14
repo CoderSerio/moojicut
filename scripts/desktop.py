@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from native_modules import native_sources, object_path
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -68,11 +69,13 @@ class DesktopBuild:
         return self.run(self.moon, "-C", ROOT, "--target-dir", self.directory / "moon", *args)
 
     def core_tests(self):
+        self.run(sys.executable, "-m", "unittest", "discover", "-s", ROOT / "test/build", "-v")
         self.moon_command("check", "--target", "native", "--deny-warn")
         self.moon_command("test", "--target", "native", "--release", "--deny-warn")
 
     def build(self):
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check")
+        sources = native_sources(self.system)
         output = self.moon_command("build", "--target", "native", "--release", "--deny-warn", "--output-json")
         archive = None
         for line in output.splitlines():
@@ -100,11 +103,15 @@ class DesktopBuild:
                 self.run("rc", "/nologo", "/fo" + str(resource), "resources.rc", cwd=source)
                 common = ["/nologo", "/utf-8", "/MT", "/O2", "/W4", "/DUNICODE", "/D_UNICODE",
                           '/DMOOJICUT_VERSION="' + self.version + '"', "/I" + str(self.home / "include"),
-                          "/Fo" + str(Path(name)) + os.sep]
-                self.run("cl", *common, "/std:c11", "/c", *sorted(source.glob("*.c")))
-                if list(source.glob("*.cpp")):
-                    self.run("cl", *common, "/std:c++17", "/EHsc", "/c", *sorted(source.glob("*.cpp")))
-                self.run("cl", "/nologo", *sorted(Path(name).glob("*.obj")), archive, resource, "/Fe" + str(linked_executable),
+                          "/I" + str(ROOT)]
+                objects = []
+                for unit in sources:
+                    obj = object_path(name, unit)
+                    obj.parent.mkdir(parents=True, exist_ok=True)
+                    language = ["/std:c++17", "/EHsc"] if unit.suffix == ".cpp" else ["/std:c11"]
+                    self.run("cl", *common, *language, "/Fo" + str(obj), "/c", unit)
+                    objects.append(obj)
+                self.run("cl", "/nologo", *objects, archive, resource, "/Fe" + str(linked_executable),
                          "/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup", "/MANIFEST:NO",
                          "/IMPLIB:" + str(Path(name) / "MoojiCut.lib"),
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
@@ -116,7 +123,7 @@ class DesktopBuild:
                 flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1"))
                 self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                          '-DMOOJICUT_VERSION="' + self.version + '"', "-I", self.home / "include",
-                         *sorted(source.glob("*.c")), archive, *flags, "-lm", "-o", executable)
+                         "-I", ROOT, *sources, archive, *flags, "-lm", "-o", executable)
                 self.run("strip", executable)
                 dependencies = self.run("ldd", executable)
                 if "not found" in dependencies:
@@ -153,11 +160,14 @@ class DesktopBuild:
     def scope(self):
         if self.system == "windows":
             return ("Native tray and configurable global shortcuts; frozen-desktop inline screenshot editing, "
-                    "editable text, pinned images with configurable local zoom/opacity keys, confirmed image copy; "
+                    "editable text, RGBA annotation styles, in-place pinned images with configurable zoom/opacity "
+                    "and global hide/recover/click-through keys, confirmed image copy; "
                     "silent main-display recording, trim, cuts, crop and confirmed MP4 file copy.")
         return ("Native tray and preferences; X11 frozen-desktop inline editing or Wayland portal image editing; "
-                "editable text, pinned images with configurable local zoom/opacity keys, confirmed image copy. "
-                "Wayland positioning/keep-above is compositor-dependent. Global shortcuts and recording are not connected.")
+                "editable text, RGBA annotation styles, pinned images with configurable zoom/opacity keys "
+                "and X11 global hide/recover/click-through keys, confirmed image copy. "
+                "Wayland positioning/keep-above is compositor-dependent; click-through is disabled. "
+                "Capture global shortcuts and recording are not connected.")
 
     def verify_bundle(self, directory):
         expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt"}
@@ -175,9 +185,14 @@ class DesktopBuild:
                   "以 MoonBit 为核心的本地截图与录屏工具。\n"
                   "截图后可添加矩形、箭头、文字和实心遮挡，确认后才复制图片。\n"
                   "框选后直接标注；点击文字工具后在画面输入，双击已有文字继续编辑。\n"
-                  "选中文字可拖动、拖拽控制点缩放，并在工具条调整颜色和字号。\n"
-                  "点击图钉将结果贴在屏幕上。选中贴图后按 + / - 缩放，Ctrl + / - 调透明度。\n"
-                  "贴图按键可在设置中更改；这些按键仅对选中的贴图生效。\n"
+                  "选中文字可拖动、拖拽控制点缩放；工具条第二行可调整颜色、不透明度、字号或线宽。\n"
+                  "各工具分别记住本次编辑中的样式；修改已选标注不会改变新建标注的默认样式。\n"
+                  "点击图钉将结果固定在当前选区的位置。双击或选中后按 Esc 关闭。\n"
+                  "选中贴图后按 + / - 缩放，Ctrl + / - 调透明度。贴图按键可在设置中更改。\n"
+                  "Windows / Linux X11：Ctrl + Shift + H 切换选中贴图的隐藏状态；\n"
+                  "没有选中时，若有隐藏项则恢复，否则隐藏全部。恢复时保留原来的不透明度。\n"
+                  "Ctrl + Shift + P 切换鼠标穿透；穿透期间仅响应解除穿透，不响应 Esc 等操作。\n"
+                  "隐藏和穿透恢复键支持全局响应，托盘菜单也提供恢复入口。\n"
                   "关闭设置会保留托盘；从托盘菜单选择退出以结束应用。\n\n")
         if self.system == "windows":
             return shared + ("适用 Windows 10/11 x64（Intel/AMD）。解压全部文件，双击 MoojiCut.exe。\n"
@@ -200,7 +215,8 @@ class DesktopBuild:
                          "xdg-desktop-portal 和当前桌面对应的后端。\n"
                          "Wayland 门户返回图片后在无边框界面编辑；窗口位置、跨工作区与置顶效果\n"
                          "由桌面合成器决定，无法保证与 X11 的桌面原位编辑完全相同。\n"
-                         "本版尚不支持 Linux 录屏或应用内注册全局快捷键。可在桌面系统设置中\n"
+                         "Wayland 暂不启用鼠标穿透；全局贴图恢复按键仅支持 X11。\n"
+                         "本版尚不支持 Linux 录屏或应用内注册全局截图快捷键。可在桌面系统设置中\n"
                          "将快捷键绑定到解压目录下 moojicut --capture 的完整路径。\n"
                          "部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘；没有扩展也可用\n"
                          "./launch.sh 重新打开设置。包不自动安装依赖或修改桌面配置。\n")
@@ -262,7 +278,7 @@ class DesktopBuild:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
-    parser.add_argument("--release-version", default="0.1.0-alpha.5")
+    parser.add_argument("--release-version", default="0.1.0-alpha.9")
     args = parser.parse_args()
     if sys.platform == "darwin":
         from native import NativeBuild

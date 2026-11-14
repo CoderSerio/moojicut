@@ -1,7 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
-#import "MCShortcutStore.h"
-#import "MCSystemShortcutCheck.h"
+#import "native/macos/preferences/MCShortcutStore.h"
+#import "native/macos/preferences/MCSystemShortcutCheck.h"
 
 int main(void) {
     @autoreleasepool {

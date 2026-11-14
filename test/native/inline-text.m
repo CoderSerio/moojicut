@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
-#import "capture/MCImageEditorController.h"
+#import "plugins/feature/image_editor/macos/MCImageEditorController.h"
+#import "components/style_controls/macos/MCStyleControls.h"
 #include "moonbit.h"
 #include <math.h>
 
@@ -22,10 +23,12 @@
 @property (readonly) MCImageCanvas *canvas;
 @property (readonly) NSSegmentedControl *tools;
 @property (readonly) NSColorWell *color;
+@property (readonly) MCColorControl *colorControl;
 @property (readonly) NSTextField *fontSize;
 @property (readonly) NSButton *confirmButton;
 @property (readonly) NSButton *cancelButton;
 - (void)prepareWindow;
+- (void)chooseTool:(id)sender;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)styleChanged:(id)sender;
 @end
@@ -248,6 +251,58 @@ static BOOL emptyAndCancelledInput(void) {
     return passed;
 }
 
+// Compare live composition with exported pixels: translucent covers must be
+// applied once even where a native inline editor overlaps their background.
+static BOOL rgbaStyles(void) {
+    BOOL passed = YES;
+    NSError *error = nil;
+    MCImageEditorController *editor = fixture(1, &error);
+    MCImageCanvas *canvas = editor.canvas;
+    editor.tools.selectedSegment = 4;
+    [editor chooseTool:editor.tools];
+    editor.colorControl.color = [NSColor colorWithSRGBRed:0 green:1 blue:0 alpha:1];
+    [editor.color sendAction:editor.color.action to:editor.color.target];
+    editor.colorControl.opacityControl.stepper.doubleValue = 25;
+    NSStepper *opacityStepper = editor.colorControl.opacityControl.stepper;
+    [opacityStepper sendAction:opacityStepper.action to:opacityStepper.target];
+    [canvas mouseDown:mouse(canvas, NSEventTypeLeftMouseDown, NSMakePoint(20, 20), 1)];
+    [canvas mouseDragged:mouse(canvas, NSEventTypeLeftMouseDragged, NSMakePoint(320, 120), 1)];
+    [canvas mouseUp:mouse(canvas, NSEventTypeLeftMouseUp, NSMakePoint(320, 120), 1)];
+    NSDictionary *cover = [editor.document[@"annotations"] firstObject];
+    CHECK([cover[@"color"] isEqual:@"#00ff00"] && near([cover[@"opacity"] doubleValue], .25),
+          "shared color component commits colored translucent fill to MoonBit");
+    NSBitmapImageRep *exported = [NSBitmapImageRep imageRepWithData:[editor renderPNGData:&error]];
+    NSColor *pixel = [[exported colorAtX:250 y:50] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    // Device RGB profiles differ; this range still rejects opaque or twice-blended fills.
+    CHECK(pixel.redComponent > .70 && pixel.redComponent < .85 && pixel.greenComponent > .95 && pixel.blueComponent > .70 && pixel.blueComponent < .85,
+          "export blends a 25 percent green cover over white instead of forcing black/opaque");
+    editor.tools.selectedSegment = 3;
+    [editor chooseTool:editor.tools];
+    editor.colorControl.color = [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.5];
+    [editor.color sendAction:editor.color.action to:editor.color.target];
+    [editor addTextAtPoint:NSMakePoint(30, 30)];
+    [canvas.textView insertText:@"A" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK(near([canvas.textDraft[@"opacity"] doubleValue], .5), "new text uses the shared color alpha");
+    NSRect frame = canvas.imageFrame;
+    [canvas layoutSubtreeIfNeeded];
+    NSBitmapImageRep *live = [canvas bitmapImageRepForCachingDisplayInRect:canvas.bounds];
+    [canvas cacheDisplayInRect:canvas.bounds toBitmapImageRep:live];
+    CGFloat backing = live.pixelsWide / NSWidth(canvas.bounds);
+    NSInteger x = (frame.origin.x + 250 * frame.size.width / 800) * backing;
+    NSInteger y = (frame.origin.y + 50 * frame.size.height / 500) * backing;
+    NSColor *livePixel = [[live colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CHECK(fabs(livePixel.redComponent - pixel.redComponent) < .03 && fabs(livePixel.blueComponent - pixel.blueComponent) < .03,
+          "translucent cover is composited once behind and above the native inline editor");
+    [canvas finishTextEditing:YES];
+    NSDictionary *text = editor.document[@"annotations"][1];
+    CHECK(near([text[@"opacity"] doubleValue], .5), "text alpha survives inline commit");
+    [editor undo:nil];
+    CHECK([editor.document[@"annotations"] count] == 1 && near([editor.document[@"annotations"][0][@"opacity"] doubleValue], .25),
+          "undoing text preserves the previous cover color and opacity");
+    [editor cancel:nil];
+    return passed;
+}
+
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -257,6 +312,7 @@ int main(void) {
         passed = manipulationAtScale(0.5) && passed;
         passed = manipulationAtScale(1.5) && passed;
         passed = emptyAndCancelledInput() && passed;
+        passed = rgbaStyles() && passed;
         puts(passed ? "PASS inline text: hidden AppKit editor, IME/multiline, re-edit/style, scaled drag/resize, undo and PNG clipboard"
                     : "FAIL inline text interaction");
         return passed ? 0 : 1;

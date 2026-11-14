@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "platforms": {
+    "macos": {
+      "host": {
+        "sources": [
+          "native/macos/main.m",
+          "native/macos/preferences/MCPreferencesController.m",
+          "native/macos/preferences/MCShortcutRecorder.m",
+          "native/macos/shortcuts/MCGlobalShortcutManager.m",
+          "native/macos/updates/MCUpdateController.m"
+        ],
+        "requires": ["system.shortcut_config", "feature.capture", "feature.pin", "feature.recording"]
+      },
+      "system.shortcut_config": {
+        "sources": ["native/macos/preferences/MCShortcutStore.m", "native/macos/preferences/MCPinShortcutStore.m", "native/macos/preferences/MCSystemShortcutCheck.m"],
+        "requires": []
+      },
+      "component.style_controls": {
+        "sources": ["components/style_controls/macos/MCStyleControls.m", "components/style_controls/macos/MCStylePropertiesView.m"],
+        "requires": []
+      },
+      "feature.select": {
+        "sources": ["plugins/feature/select/macos/MCSelection.m"],
+        "requires": []
+      },
+      "feature.image_editor": {
+        "sources": ["plugins/feature/image_editor/macos/MCImageEditorController.m"],
+        "requires": ["component.style_controls", "feature.select"]
+      },
+      "feature.capture": {
+        "sources": ["plugins/feature/capture/macos/MCCaptureController.m"],
+        "requires": ["feature.image_editor"]
+      },
+      "feature.pin": {
+        "sources": ["plugins/feature/pin/macos/MCPinnedImageController.m"],
+        "requires": ["system.shortcut_config"]
+      },
+      "feature.video_editor": {
+        "sources": ["plugins/feature/video_editor/macos/MCVideoEditor.m"],
+        "requires": []
+      },
+      "feature.recording": {
+        "sources": ["plugins/feature/recording/macos/MCMacRecordingController.m"],
+        "requires": ["feature.video_editor"]
+      }
+    },
+    "windows": {
+      "host": {
+        "sources": ["native/windows/main.c"],
+        "requires": ["feature.capture", "feature.pin", "feature.recording"]
+      },
+      "component.style_controls": {
+        "sources": ["components/style_controls/windows/style_controls.c"],
+        "requires": ["component.hud"]
+      },
+      "component.hud": {
+        "sources": ["components/hud/windows/hud.cpp"],
+        "requires": []
+      },
+      "feature.select": {
+        "sources": ["plugins/feature/select/windows/selection.c"],
+        "requires": []
+      },
+      "feature.capture": {
+        "sources": ["plugins/feature/capture/windows/capture.c"],
+        "requires": ["component.style_controls", "component.hud", "feature.select"]
+      },
+      "feature.pin": {
+        "sources": ["plugins/feature/pin/windows/pinning.c"],
+        "requires": []
+      },
+      "feature.recording": {
+        "sources": ["plugins/feature/recording/windows/recording.cpp"],
+        "requires": []
+      }
+    },
+    "linux": {
+      "host": {
+        "sources": ["native/linux/main.c"],
+        "requires": ["feature.capture", "feature.pin"]
+      },
+      "component.style_controls": {
+        "sources": ["components/style_controls/linux/style_controls.c"],
+        "requires": []
+      },
+      "feature.select": {
+        "sources": ["plugins/feature/select/linux/selection.c"],
+        "requires": []
+      },
+      "feature.capture": {
+        "sources": ["plugins/feature/capture/linux/capture.c"],
+        "requires": ["component.style_controls", "feature.select"]
+      },
+      "feature.pin": {
+        "sources": ["plugins/feature/pin/linux/pinning.c"],
+        "requires": []
+      }
+    }
+  }
+}

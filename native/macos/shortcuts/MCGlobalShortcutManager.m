@@ -1,6 +1,6 @@
 #import "MCGlobalShortcutManager.h"
-#import "../preferences/MCShortcutStore.h"
-#import "../preferences/MCSystemShortcutCheck.h"
+#import "native/macos/preferences/MCShortcutStore.h"
+#import "native/macos/preferences/MCSystemShortcutCheck.h"
 
 const UInt32 MCCaptureHotKeySignature = 0x4d4a4354;
 const UInt32 MCCaptureHotKeyID = 1;

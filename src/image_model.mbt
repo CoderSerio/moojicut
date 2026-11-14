@@ -80,10 +80,11 @@ fn image_annotation(raw : Json) -> Json raise InputError {
     }
   }
   let opacity = image_number(m, "opacity", if kind == "marker" { 0.3 } else { 1.0 })
-  if opacity < 0.01 || opacity > 1 { raise InputError("invalid_annotation", "Opacity must be 0.01–1") }
-  m["opacity"] = Json(if kind == "redact" || kind == "mosaic" { 1.0 } else { opacity })
+  if !editor_style_value_valid(1, opacity) { raise InputError("invalid_annotation", "Opacity must be 0–1") }
+  // Filled covers share editable RGBA style. Mosaic remains an opaque filter.
+  m["opacity"] = Json(if kind == "mosaic" { 1.0 } else { opacity })
   let stroke = image_number(m, "stroke", if kind == "marker" { 24 } else { 3 })
-  if stroke < 1 || stroke > 96 { raise InputError("invalid_annotation", "Stroke must be 1–96 px") }
+  if !editor_style_value_valid(2, stroke) { raise InputError("invalid_annotation", "Stroke must be 1–96 px") }
   m["stroke"] = Json(stroke)
   let color = image_string(m, "color", "#ef4444")
   if color.length() != 7 || !color.has_prefix("#") { raise InputError("invalid_annotation", "Expected #rrggbb color") }
@@ -101,7 +102,7 @@ fn image_annotation(raw : Json) -> Json raise InputError {
     let text = image_string(m, "text", "")
     if text == "" || text.length() > 10000 { raise InputError("invalid_annotation", "Text must have 1–10000 characters") }
     let size = image_number(m, "fontSize", 24)
-    if size < 8 || size > 128 { raise InputError("invalid_annotation", "Font size must be 8–128") }
+    if !editor_style_value_valid(3, size) { raise InputError("invalid_annotation", "Font size must be 8–128") }
     m["fontSize"] = Json(size)
   }
   if kind == "mosaic" {

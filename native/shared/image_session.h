@@ -20,7 +20,7 @@ int32_t image_session_crop(int32_t id, int32_t x, int32_t y, int32_t w, int32_t 
 /* Viewport fields: 0=x, 1=y, 2=width, 3=height. */
 double image_session_viewport_value(int32_t id, int32_t field);
 
-/* Kinds: 1=rectangle, 2=arrow, 3=text, 4=opaque redaction. Arrow width/height
+/* Kinds: 1=rectangle, 2=arrow, 3=text, 4=filled cover (legacy name: redact). Arrow width/height
  * are signed deltas to the endpoint. Color is RGB 0x000000..0xffffff.
  * Text add/update consumes the pending content set with set_text; set it
  * before every text commit, including geometry/style-only text updates. */
@@ -30,6 +30,15 @@ int32_t image_session_add(int32_t id, int32_t kind, int32_t x, int32_t y,
 int32_t image_session_add_styled(int32_t id, int32_t kind, int32_t x, int32_t y,
                                 int32_t w, int32_t h, int32_t color,
                                 int32_t stroke, int32_t font_size);
+/* RGBA operations commit geometry/style/text atomically. Opacity must be
+ * finite and between 0 and 1 inclusive; zero is a transparent annotation.
+ * Legacy add defaults to opacity 1; legacy update preserves existing opacity. */
+int32_t image_session_add_rgba(int32_t id, int32_t kind, int32_t x, int32_t y,
+                              int32_t w, int32_t h, int32_t color,
+                              int32_t stroke, int32_t font_size, double opacity);
+int32_t image_session_update_rgba(int32_t id, int32_t index, int32_t x, int32_t y,
+                                 int32_t w, int32_t h, int32_t color,
+                                 int32_t stroke, int32_t font_size, double opacity);
 int32_t image_session_update(int32_t id, int32_t index, int32_t x, int32_t y,
                             int32_t w, int32_t h, int32_t color,
                             int32_t stroke, int32_t font_size);
@@ -38,7 +47,8 @@ int32_t image_session_undo(int32_t id);
 int32_t image_session_redo(int32_t id);
 int32_t image_session_count(int32_t id);
 /* Annotation fields: 0=kind, 1=x, 2=y, 3=width, 4=height, 5=RGB color,
- * 6=stroke width, 7=font size (text only). Unknown fields return zero. */
+ * 6=stroke width, 7=font size (text only), 8=opacity (0..1).
+ * Unknown fields return zero. */
 double image_session_value(int32_t id, int32_t index, int32_t field);
 moonbit_string_t image_session_text(int32_t id, int32_t index);
 void image_session_dispose(int32_t id);

@@ -3,8 +3,8 @@
 #endif
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
-#import "capture/MCCaptureController.h"
-#import "capture/MCImageEditorController.h"
+#import "plugins/feature/capture/macos/MCCaptureController.h"
+#import "plugins/feature/image_editor/macos/MCImageEditorController.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include "moonbit.h"
 
@@ -301,7 +301,7 @@ int main(void) {
             reset(true, false);
             controller = [MCPermissionCapture new];
             __block NSUInteger pinCalls = 0;
-            controller.onPinPNGData = ^BOOL(NSData *data) { pinCalls++; return data.length > 0; };
+            controller.onPinPNGData = ^BOOL(NSData *data, NSRect screenFrame) { (void)screenFrame; pinCalls++; return data.length > 0; };
             [controller capture];
             [controller captureDisplaysForSession:controller.interceptedSession];
             controller.pendingContent(fakeContent(@[@27,@14]), nil);

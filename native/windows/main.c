@@ -14,9 +14,9 @@
 #include <wchar.h>
 #include "moonbit.h"
 #include "resource.h"
-#include "capture.h"
-#include "pinning.h"
-#include "recording.h"
+#include "plugins/feature/capture/windows/capture.h"
+#include "plugins/feature/pin/windows/pinning.h"
+#include "plugins/feature/recording/windows/recording.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "0.1.0-alpha.2"
@@ -72,8 +72,8 @@ static void unregister_shortcuts(void) {
 static LRESULT CALLBACK hotkey_recorder_proc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
     (void)id; (void)data;
     if (message == WM_SETFOCUS) {
-        unregister_shortcuts();
-    } else if (message == WM_KILLFOCUS) PostMessageW(host, WM_REFRESH_SHORTCUTS, 0, 0);
+        unregister_shortcuts();mc_pin_suspend_shortcuts(TRUE);
+    } else if (message == WM_KILLFOCUS) {mc_pin_suspend_shortcuts(FALSE);PostMessageW(host, WM_REFRESH_SHORTCUTS, 0, 0);}
     else if (message == WM_NCDESTROY) RemoveWindowSubclass(window, hotkey_recorder_proc, 1);
     return DefSubclassProc(window, message, wp, lp);
 }
@@ -107,6 +107,16 @@ static void refresh_global_shortcuts(void) {
                 L"快捷键已启用。录入时暂时停用，离开输入框后恢复。");
     }
 }
+
+static BOOL capture_pin_image(void *context, HGLOBAL dib, int x, int y) {
+    HINSTANCE application = *(HINSTANCE *)context;
+    return mc_pin_image(application, dib, x, y, TRUE);
+}
+static void capture_set_pins_hidden(void *context, BOOL hidden) {
+    (void)context;
+    mc_pins_hide(hidden);
+}
+static const MCCaptureHost capture_services = {&instance, capture_pin_image, capture_set_pins_hidden};
 
 static void start_capture(void) {
     if (mc_capture_busy()) { mc_capture_activate(); return; }
@@ -148,7 +158,6 @@ static int validate_keys(const WORD keys[3]) {
 }
 
 static void load_preferences(void) {
-    mc_pin_load_keys(registry_path);
     HKEY key;
     int i;
     for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
@@ -165,6 +174,7 @@ static void load_preferences(void) {
         RegCloseKey(key);
     }
     if (validate_keys(hotkeys) != 0) for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
+    mc_pin_set_capture_keys(hotkeys);mc_pin_load_keys(registry_path);
 }
 
 static BOOL save_preferences(void) {
@@ -199,6 +209,7 @@ static void update_shortcuts(HWND page) {
     if (updating) return;
     for (i = 0; i < 3; i++) proposed[i] = (WORD)SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE + i, HKM_GETHOTKEY, 0, 0);
     result = validate_keys(proposed);
+    if(mc_pin_capture_conflicts(proposed)){SetDlgItemTextW(page,IDC_SHORTCUT_STATUS,L"与贴图隐藏或鼠标穿透快捷键冲突，尚未保存。");return;}
     if (result != 0) {
         SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, result == 1 ? L"字母与数字需搭配 Ctrl 或 Alt。尚未保存。" :
             result == 2 ? L"快捷键重复，请使用不同的组合。尚未保存。" : L"请使用字母、数字或 F1–F24。尚未保存。");
@@ -206,6 +217,7 @@ static void update_shortcuts(HWND page) {
     }
     for (i = 0; i < 3; i++) { previous[i] = hotkeys[i]; hotkeys[i] = proposed[i]; }
     if (save_preferences()) {
+        mc_pin_set_capture_keys(hotkeys);
         SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"已保存；离开输入框后启用快捷键。");
         refresh_global_shortcuts();
     }
@@ -270,7 +282,7 @@ static INT_PTR CALLBACK pins_page(HWND window, UINT message, WPARAM wp, LPARAM l
     (void)lp;
     if (message == WM_INITDIALOG) {
         updating = TRUE;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 6; i++) {
             SendDlgItemMessageW(window, IDC_PIN_ZOOM_IN + i, HKM_SETRULES, 0, 0);
             SendDlgItemMessageW(window, IDC_PIN_ZOOM_IN + i, HKM_SETHOTKEY, mc_pin_key(i), 0);
             SetWindowSubclass(GetDlgItem(window, IDC_PIN_ZOOM_IN + i), hotkey_recorder_proc, 1, 0);
@@ -280,17 +292,17 @@ static INT_PTR CALLBACK pins_page(HWND window, UINT message, WPARAM wp, LPARAM l
     }
     if (message == WM_COMMAND) {
         int id = LOWORD(wp);
-        WORD proposed[4];
+        WORD proposed[6];
         if (id == IDC_PIN_RESET && HIWORD(wp) == BN_CLICKED) {
             mc_pin_default_keys(proposed);
             updating = TRUE;
-            for (int i = 0; i < 4; i++) SendDlgItemMessageW(window, IDC_PIN_ZOOM_IN + i, HKM_SETHOTKEY, proposed[i], 0);
+            for (int i = 0; i < 6; i++) SendDlgItemMessageW(window, IDC_PIN_ZOOM_IN + i, HKM_SETHOTKEY, proposed[i], 0);
             updating = FALSE;
-        } else if (!(id >= IDC_PIN_ZOOM_IN && id < IDC_PIN_ZOOM_IN + 4 && HIWORD(wp) == EN_CHANGE)) return FALSE;
+        } else if (!(id >= IDC_PIN_ZOOM_IN && id < IDC_PIN_ZOOM_IN + 6 && HIWORD(wp) == EN_CHANGE)) return FALSE;
         if (updating) return TRUE;
-        for (int i = 0; i < 4; i++) proposed[i] = (WORD)SendDlgItemMessageW(window, IDC_PIN_ZOOM_IN + i, HKM_GETHOTKEY, 0, 0);
+        for (int i = 0; i < 6; i++) proposed[i] = (WORD)SendDlgItemMessageW(window, IDC_PIN_ZOOM_IN + i, HKM_GETHOTKEY, 0, 0);
         SetDlgItemTextW(window, IDC_PIN_STATUS, mc_pin_save_keys(registry_path, proposed) ?
-            L"已保存。只在选中贴图时生效。" : L"未保存：组合重复、按键保留或无法写入设置。");
+            L"已保存；隐藏/恢复与穿透按键可跨应用使用。" : L"未保存：按键冲突、穿透未关闭或无法写入。");
         return TRUE;
     }
     return FALSE;
@@ -383,7 +395,9 @@ static void tray_menu(void) {
     AppendMenuW(menu, MF_STRING | (mc_recording_recording() ? 0 : MF_GRAYED), IDM_STOP_RECORD, L"停止录屏并编辑");
     AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RESUME_RECORD, L"继续编辑上次录屏…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(menu, MF_STRING, IDM_CLOSE_PINS, L"关闭所有贴图");
+    AppendMenuW(menu, MF_STRING, IDM_RESTORE_PINS, L"恢复隐藏的贴图");
+    AppendMenuW(menu, MF_STRING, IDM_EXIT_PIN_PASSTHROUGH, L"关闭鼠标穿透");
+    AppendMenuW(menu, MF_STRING, IDM_CLOSE_PINS, L"关闭可交互的贴图");
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"设置…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IDM_QUIT, L"退出 Mooji Cut");
@@ -397,6 +411,8 @@ static void tray_menu(void) {
     else if (chosen == IDM_RECORD) start_recording();
     else if (chosen == IDM_STOP_RECORD) mc_recording_stop();
     else if (chosen == IDM_RESUME_RECORD) mc_recording_resume_last(instance, host);
+    else if (chosen == IDM_RESTORE_PINS) mc_pins_restore_hidden();
+    else if (chosen == IDM_EXIT_PIN_PASSTHROUGH) mc_pins_exit_passthrough();
     else if (chosen == IDM_CLOSE_PINS) mc_pins_close();
     else if (chosen == IDM_SETTINGS) show_settings();
     else if (chosen == IDM_QUIT) PostMessageW(host, WM_CLOSE, 0, 0);
@@ -422,7 +438,7 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         }
         if (wp == CAPTURE_TIMER) {
             KillTimer(window, CAPTURE_TIMER);
-            if (!mc_capture_start(instance, host)) MessageBoxW(host,
+            if (!mc_capture_start(instance, host, &capture_services)) MessageBoxW(host,
                 L"无法读取当前桌面。请退出安全桌面或远程会话限制后重试。", L"Mooji Cut", MB_OK | MB_ICONWARNING);
         }
         if (wp == RECORD_TIMER) { KillTimer(window, RECORD_TIMER); mc_recording_start(instance, host); }
@@ -449,7 +465,7 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
     case WM_DESTROY:
         unregister_shortcuts();
         mc_capture_close();
-        mc_pins_close();
+        mc_pins_shutdown();
         if (settings) DestroyWindow(settings);
         if (tray_added) Shell_NotifyIconW(NIM_DELETE, &tray);
         tray_added = FALSE;
@@ -682,6 +698,7 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
     if (smoke_mode) {
         result = run_smoke();
         if (result == 0) result = mc_capture_smoke(instance);
+        if (result == 0 && !mc_pin_smoke(instance)) result = 1;
         if (result == 0) result = mc_recording_smoke(instance);
         DestroyWindow(host);
     } else {

@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
-#import "capture/MCImageEditorController.h"
+#import "plugins/feature/image_editor/macos/MCImageEditorController.h"
+#import "components/style_controls/macos/MCStylePropertiesView.h"
 #include "moonbit.h"
 #include <math.h>
 
@@ -9,6 +10,7 @@
 @property NSString *selectedID;
 @property NSTextView *textView;
 - (NSRect)imageFrame;
+- (BOOL)finishTextEditing:(BOOL)commit;
 @end
 @interface MCImageEditorController (MCOverlayTest)
 @property (readonly) MCImageCanvas *canvas;
@@ -20,7 +22,8 @@
 @property (readonly) NSStackView *colorGroup;
 @property (readonly) NSStackView *fontGroup;
 @property (readonly) NSStackView *strokeGroup;
-@property (readonly) NSSegmentedControl *lineWidth;
+@property (readonly) NSTextField *lineWidth;
+@property (readonly) NSStepper *strokeStepper;
 @property (readonly) NSColorWell *color;
 @property (readonly) NSTextField *fontSize;
 @property (readonly) NSStepper *fontStepper;
@@ -31,6 +34,7 @@
 - (void)refresh;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)pinImage:(id)sender;
+- (void)prepareWindow;
 @end
 
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL capture overlay: %s\n", message); passed = NO; } } while (0)
@@ -94,8 +98,8 @@ static BOOL exercise(CGFloat scale) {
     [editor chooseTool:editor.tools];
     CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && !editor.strokeGroup.hidden,
           "rectangle exposes color and labelled line width only");
-    editor.lineWidth.selectedSegment = 2;
-    [editor styleChanged:editor.lineWidth];
+    editor.strokeStepper.doubleValue = 8;
+    [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
     [canvas mouseDown:mouse(canvas, NSEventTypeLeftMouseDown, NSMakePoint(340, 240))];
     [canvas mouseDragged:mouse(canvas, NSEventTypeLeftMouseDragged, NSMakePoint(420, 290))];
     [canvas mouseUp:mouse(canvas, NSEventTypeLeftMouseUp, NSMakePoint(420, 290))];
@@ -107,8 +111,8 @@ static BOOL exercise(CGFloat scale) {
     CHECK(!editor.strokeGroup.hidden && editor.fontGroup.hidden, "arrow exposes the same meaningful shape properties");
     editor.tools.selectedSegment = 4;
     [editor chooseTool:editor.tools];
-    CHECK(editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
-          "opaque redaction does not offer color or font settings");
+    CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
+          "filled cover exposes color/opacity without unrelated stroke or font properties");
     editor.tools.selectedSegment = 3;
     [editor chooseTool:editor.tools];
     CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden &&
@@ -125,7 +129,7 @@ static BOOL exercise(CGFloat scale) {
           "tool switching preserves ongoing IME composition and HUD placement");
     [canvas.textView insertText:@"原地编辑 🌙\n第二行" replacementRange:NSMakeRange(NSNotFound, 0)];
     editor.fontStepper.doubleValue = 32;
-    [editor styleChanged:editor.fontStepper];
+    [editor.fontStepper sendAction:editor.fontStepper.action to:editor.fontStepper.target];
     CHECK(editor.fontSize.doubleValue == 32 && [editor.document[@"annotations"] count] == 0,
           "native font stepper updates the text draft without premature document history");
     NSString *previewPath = NSProcessInfo.processInfo.environment[@"MOOJICUT_OVERLAY_PREVIEW"];
@@ -165,11 +169,91 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.document[@"viewport"] isEqual:viewport] && [editor.document[@"annotations"] count] == 1,
           "undoing a selection resize preserves its annotations");
     __block NSData *pinned = nil;
-    editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; return YES; };
+    NSRect expectedPinFrame = [editor.window convertRectToScreen:[canvas convertRect:
+        NSMakeRect(100 * scale, 60 * scale, 400 * scale, 300 * scale) toView:nil]];
+    __block NSRect pinnedFrame = NSZeroRect;
+    __weak MCImageEditorController *weakEditor = editor;
+    editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; pinnedFrame = weakEditor.pinScreenFrame; return YES; };
     [editor pinImage:nil];
     CHECK(pinned.length > 0 && editor.window == nil, "pin receives the final crop and finishes the capture");
+    CHECK(NSEqualRects(expectedPinFrame, pinnedFrame), "pin carries the actual screen selection frame at every backing scale");
     NSBitmapImageRep *pin = [NSBitmapImageRep imageRepWithData:pinned];
     CHECK(pin.pixelsWide == 400 && pin.pixelsHigh == 300, "pin does not receive the uncropped desktop");
+    return passed;
+}
+static BOOL independentToolStyles(void) {
+    BOOL passed = YES;
+    NSError *error = nil;
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:&error];
+    [editor prepareWindow];
+    MCStylePropertiesView *properties = (MCStylePropertiesView *)editor.properties;
+    const int colors[] = {0, 0xff0000, 0x00ff00, 0x0000ff, 0x883399};
+    for (NSInteger tool = 1; tool <= 4; tool++) {
+        editor.tools.selectedSegment = tool;
+        [editor chooseTool:editor.tools];
+        MCStyleValues values = properties.values;
+        values.rgb = colors[tool]; values.opacity = tool * .2;
+        properties.values = values;
+        [editor.color sendAction:editor.color.action to:editor.color.target];
+        if (tool <= 2) {
+            editor.strokeStepper.doubleValue = 3 * tool;
+            [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
+        }
+    }
+    CHECK([editor.document[@"undo"] count] == 0, "changing creation defaults never creates document undo entries");
+    for (NSInteger tool = 4; tool >= 1; tool--) {
+        editor.tools.selectedSegment = tool;
+        [editor chooseTool:editor.tools];
+        MCStyleValues values = properties.values;
+        CHECK(values.rgb == colors[tool] && fabs(values.opacity - tool * .2) < .001,
+              "each tool restores its own RGBA values after visiting every other tool");
+        if (tool <= 2) CHECK(values.stroke == 3 * tool, "rectangle and arrow have independent line widths");
+    }
+    MCImageEditorController *other = [[MCImageEditorController alloc] initWithPNGData:fixture() error:&error];
+    [other prepareWindow];
+    CHECK(((MCStylePropertiesView *)other.properties).values.rgb == (int32_t)editor_style_default(MC_STYLE_COLOR),
+          "another editor instance retains its own defaults");
+    editor.tools.selectedSegment = 3;
+    [editor chooseTool:editor.tools];
+    [editor addTextAtPoint:NSMakePoint(30, 30)];
+    [editor.canvas.textView insertText:@"第一段" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK([editor.canvas finishTextEditing:YES], "new styled text commits through the normal inline editor");
+    NSUInteger history = [editor.document[@"undo"] count];
+    properties.colorControl.color = [NSColor colorWithSRGBRed:1 green:1 blue:0 alpha:.9];
+    [editor.color sendAction:editor.color.action to:editor.color.target];
+    NSDictionary *changed = [editor.document[@"annotations"] firstObject];
+    CHECK([changed[@"color"] isEqual:@"#ffff00"] && fabs([changed[@"opacity"] doubleValue] - .9) < .001 &&
+          [editor.document[@"undo"] count] == history + 1,
+          "editing a selected annotation commits RGBA together as one undoable change");
+    [editor undo:nil];
+    CHECK([editor.document[@"annotations"][0][@"color"] isEqual:@"#0000ff"], "one undo restores the selected object's color");
+    [editor redo:nil];
+    [editor chooseTool:editor.tools];
+    CHECK(properties.values.rgb == 0x0000ff && fabs(properties.values.opacity - .6) < .001,
+          "modifying an existing object never overwrites text creation defaults");
+    [editor addTextAtPoint:NSMakePoint(30, 180)];
+    [editor.canvas.textView insertText:@"第二段" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK([editor.canvas finishTextEditing:YES], "a subsequent text annotation commits");
+    CHECK([editor.document[@"annotations"][0][@"color"] isEqual:@"#ffff00"] &&
+          [editor.document[@"annotations"][1][@"color"] isEqual:@"#0000ff"],
+          "existing objects and new annotations retain independent styles");
+    [editor cancel:nil]; [other cancel:nil];
+
+    // Reuse the same native component outside an editor. Rebinding values must
+    // not emit user actions or route callbacks to another component instance.
+    MCStylePropertiesView *first = [[MCStylePropertiesView alloc] initWithFrame:NSZeroRect];
+    MCStylePropertiesView *second = [[MCStylePropertiesView alloc] initWithFrame:NSZeroRect];
+    first.propertyMask = second.propertyMask = editor_style_property_mask(MC_STYLE_TOOL_RECTANGLE);
+    __block NSInteger firstChanges = 0, secondChanges = 0;
+    first.onChange = ^(__unused id sender) { firstChanges++; };
+    second.onChange = ^(__unused id sender) { secondChanges++; };
+    MCStyleValues rebound = first.values; rebound.stroke = 12;
+    first.values = rebound;
+    CHECK(firstChanges == 0 && secondChanges == 0, "rebinding component values never masquerades as user input");
+    first.strokeControl.stepper.doubleValue = 13;
+    [first.strokeControl.stepper sendAction:first.strokeControl.stepper.action to:first.strokeControl.stepper.target];
+    CHECK(firstChanges == 1 && secondChanges == 0 && second.values.stroke == editor_style_default(MC_STYLE_STROKE),
+          "native numeric callbacks stay within their own component instance");
     return passed;
 }
 int main(void) {
@@ -179,6 +263,7 @@ int main(void) {
         moonbit_init();
         BOOL passed = exercise(.5);
         passed = exercise(1.5) && passed;
+        passed = independentToolStyles() && passed;
         puts(passed ? "PASS capture overlay: borderless frozen canvas, direct edit, scaled region handles, exact crop and pin output"
                     : "FAIL capture overlay");
         return passed ? 0 : 1;

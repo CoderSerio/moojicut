@@ -19,6 +19,7 @@ import sys
 import tempfile
 import zipfile
 from install_sparkle import install as install_sparkle, VERSION as SPARKLE_VERSION
+from native_modules import native_sources
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +54,7 @@ class NativeBuild:
         manifest = (ROOT / "moon.mod").read_text()
         self.name = self.manifest_value(manifest, "name")
         self.version = self.manifest_value(manifest, "version")
-        self.release_version = release_version or self.version + "-alpha.5"
+        self.release_version = release_version or self.version + "-alpha.9"
         version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
                                self.release_version)
         if not version:
@@ -165,9 +166,7 @@ class NativeBuild:
         directory = ARTIFACTS / "native-app"
         archive = self.archive(directory)
         native = ROOT / "native/macos"
-        sources = sorted(native.rglob("*.m"))
-        if not sources:
-            raise RuntimeError("No AppKit source files found in native/macos.")
+        sources = native_sources("macos")
         brand = ROOT / "assets/brand/mooji-cut"
         with tempfile.TemporaryDirectory(prefix="staging-", dir=directory) as staging_name:
             staging = Path(staging_name)
@@ -185,7 +184,7 @@ class NativeBuild:
             shutil.copy2(ROOT / "LICENSE", resources / "LICENSE.txt")
             shutil.copy2(ROOT / "assets/icons/lucide/LICENSE", resources / "Lucide-LICENSE.txt")
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
-                     "-I", self.include, "-I", native, "-F", sparkle, *sources, archive,
+                     "-I", self.include, "-I", ROOT, "-I", native, "-F", sparkle, *sources, archive,
                      "-framework", "Sparkle", "-Wl,-rpath,@executable_path/../Frameworks",
                      *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                      "-o", executable)
@@ -297,6 +296,7 @@ class NativeBuild:
         print("Build metadata:", directory / build_info.name, flush=True)
 
     def test(self):
+        self.run(sys.executable, "-m", "unittest", "discover", "-s", ROOT / "test/build", "-v")
         directory = ARTIFACTS / "native-core"
         directory.mkdir(parents=True, exist_ok=True)
         self.moon_command(directory, "test", "--target", "native", "--deny-warn")
@@ -309,52 +309,56 @@ class NativeBuild:
         shortcuts.mkdir(parents=True, exist_ok=True)
         preferences = ROOT / "native/macos/preferences"
         executable = shortcuts / "shortcut-settings"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", preferences,
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", preferences,
                  ROOT / "test/native/shortcut-settings.m", preferences / "MCShortcutStore.m",
                  preferences / "MCSystemShortcutCheck.m", "-framework", "AppKit", "-framework", "Carbon",
                  "-o", executable)
         self.run(executable)
         pin_shortcuts = shortcuts / "pin-shortcuts"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT / "native/macos",
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
                  ROOT / "test/native/pin-shortcuts.m", preferences / "MCPinShortcutStore.m",
                  preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
                  preferences / "MCPreferencesController.m",
                  "-framework", "AppKit", "-framework", "Carbon", "-o", pin_shortcuts)
         self.run(pin_shortcuts)
         pinned_image = shortcuts / "pinned-image"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT / "native/macos",
-                 ROOT / "test/native/pinned-image.m", ROOT / "native/macos/pinning/MCPinnedImageController.m",
-                 preferences / "MCPinShortcutStore.m", preferences / "MCShortcutStore.m", preferences / "MCSystemShortcutCheck.m",
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
+                 "-DRegisterEventHotKey=MCTestRegisterPinHotKey", "-DUnregisterEventHotKey=MCTestUnregisterPinHotKey",
+                 ROOT / "test/native/pinned-image.m", *native_sources("macos", "feature.pin"),
                  "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
         self.run(pinned_image)
         global_shortcuts = shortcuts / "global-shortcuts"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT / "native/macos",
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
                  ROOT / "test/native/global-shortcuts.m", preferences / "MCShortcutStore.m",
                  preferences / "MCSystemShortcutCheck.m", ROOT / "native/macos/shortcuts/MCGlobalShortcutManager.m",
                  "-framework", "AppKit", "-framework", "Carbon", "-o", global_shortcuts)
         self.run(global_shortcuts)
         capture_permission = shortcuts / "capture-permission"
-        capture = ROOT / "native/macos/capture"
+        selection = shortcuts / "selection"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/selection.m", *native_sources("macos", "feature.select"),
+                 "-framework", "Foundation", "-o", selection)
+        self.run(selection)
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
-                 "-I", ROOT / "native/macos", "-DCGPreflightScreenCaptureAccess=MCFakePreflight",
+                 "-I", ROOT, "-I", ROOT / "native/macos", "-DCGPreflightScreenCaptureAccess=MCFakePreflight",
                  "-DCGRequestScreenCaptureAccess=MCFakeRequest", ROOT / "test/native/capture-permission.m",
-                 capture / "MCCaptureController.m", capture / "MCImageEditorController.m", archive,
+                 *native_sources("macos", "feature.capture"), archive,
                  "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", capture_permission)
         self.run(capture_permission)
         inline_text = shortcuts / "inline-text"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
-                 "-I", ROOT / "native/macos", ROOT / "test/native/inline-text.m",
-                 capture / "MCImageEditorController.m", archive, "-framework", "AppKit", "-o", inline_text)
+                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/inline-text.m",
+                 *native_sources("macos", "feature.image_editor"), archive, "-framework", "AppKit", "-o", inline_text)
         self.run(inline_text)
         capture_overlay = shortcuts / "capture-overlay"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
-                 "-I", ROOT / "native/macos", ROOT / "test/native/capture-overlay.m",
-                 capture / "MCImageEditorController.m", archive, "-framework", "AppKit", "-o", capture_overlay)
+                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/capture-overlay.m",
+                 *native_sources("macos", "feature.image_editor"), archive, "-framework", "AppKit", "-o", capture_overlay)
         self.run(capture_overlay)
         sparkle = install_sparkle()
         updater = shortcuts / "updater-smoke"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
-                 "-I", ROOT / "native/macos", ROOT / "test/native/updater-smoke.m",
+                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/updater-smoke.m",
                  ROOT / "native/macos/updates/MCUpdateController.m",
                  "-framework", "AppKit", "-framework", "Security", "-framework", "Sparkle",
                  "-Wl,-rpath," + str(sparkle), "-o", updater)
@@ -381,7 +385,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
     parser.add_argument("--release-version", metavar="VERSION",
-                        help="Release label (default: <moon.mod version>-alpha.5).")
+                        help="Release label (default: <moon.mod version>-alpha.9).")
     args = parser.parse_args()
     native = NativeBuild(args.release_version)
     if args.command == "dev":

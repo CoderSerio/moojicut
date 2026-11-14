@@ -1,6 +1,6 @@
 #import <AppKit/AppKit.h>
-#import "shortcuts/MCGlobalShortcutManager.h"
-#import "preferences/MCShortcutStore.h"
+#import "native/macos/shortcuts/MCGlobalShortcutManager.h"
+#import "native/macos/preferences/MCShortcutStore.h"
 
 static BOOL sendHotKey(UInt32 signature, UInt32 action) {
   EventRef event = NULL;
