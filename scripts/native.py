@@ -25,6 +25,8 @@ APP_NAME = "Mooji Cut"
 EXECUTABLE_NAME = "MoojiCut"
 APP = ROOT / "dist/native-app.noindex" / (APP_NAME + ".app")
 ARTIFACTS = ROOT / ".artifacts"
+FRAMEWORKS = ["AppKit", "Foundation", "Carbon", "ScreenCaptureKit", "AVKit",
+              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics"]
 
 
 class NativeBuild:
@@ -147,7 +149,7 @@ class NativeBuild:
             resources.mkdir()
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
                      "-I", self.include, "-I", native, *sources, archive,
-                     "-framework", "AppKit", "-framework", "Foundation", "-framework", "Carbon",
+                     *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                      "-o", executable)
             arch, minimum_macos = self.binary_platform(executable)
             generator = directory / "generate-app-icon"
@@ -176,7 +178,7 @@ class NativeBuild:
                         "coreVersion": self.version, **self.source_revision(),
                         "compilerVersion": self.compiler, "clangVersion": self.clang,
                         "arch": arch, "minimumMacOSVersion": minimum_macos,
-                        "frameworks": ["AppKit", "Foundation", "Carbon"],
+                        "frameworks": FRAMEWORKS,
                         "signing": "ad-hoc", "notarized": False}
             (resources / "build.json").write_text(json.dumps(metadata, indent=2) + "\n")
             self.run("/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", staged_app)
@@ -250,6 +252,12 @@ class NativeBuild:
                  preferences / "MCSystemShortcutCheck.m", "-framework", "AppKit", "-framework", "Carbon",
                  "-o", executable)
         self.run(executable)
+        global_shortcuts = shortcuts / "global-shortcuts"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT / "native/macos",
+                 ROOT / "test/native/global-shortcuts.m", preferences / "MCShortcutStore.m",
+                 preferences / "MCSystemShortcutCheck.m", ROOT / "native/macos/shortcuts/MCGlobalShortcutManager.m",
+                 "-framework", "AppKit", "-framework", "Carbon", "-o", global_shortcuts)
+        self.run(global_shortcuts)
 
     def smoke(self):
         self.build()
@@ -263,6 +271,8 @@ class NativeBuild:
         self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--smoke", env=env)
         if not report.is_file() or not json.loads(report.read_text()).get("smokePassed"):
             raise RuntimeError("Native UI smoke did not produce a passing report.")
+        self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--capture-smoke", env=env)
+        self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--recording-smoke", env=env)
         print("Smoke report:", report, flush=True)
 
 

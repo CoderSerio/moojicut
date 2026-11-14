@@ -94,19 +94,23 @@ class DesktopBuild:
             if self.system == "windows":
                 resource = Path(name) / "app.res"
                 self.run("rc", "/nologo", "/fo" + str(resource), "resources.rc", cwd=source)
-                self.run("cl", "/nologo", "/std:c11", "/utf-8", "/MT", "/O2", "/W4",
-                         "/DUNICODE", "/D_UNICODE", '/DMOOJICUT_VERSION="' + self.version + '"',
-                         "/I" + str(self.home / "include"), *sorted(source.glob("*.c")), archive, resource,
-                         "/Fo" + str(Path(name)) + os.sep, "/Fe" + str(executable),
+                common = ["/nologo", "/utf-8", "/MT", "/O2", "/W4", "/DUNICODE", "/D_UNICODE",
+                          '/DMOOJICUT_VERSION="' + self.version + '"', "/I" + str(self.home / "include"),
+                          "/Fo" + str(Path(name)) + os.sep]
+                self.run("cl", *common, "/std:c11", "/c", *sorted(source.glob("*.c")))
+                if list(source.glob("*.cpp")):
+                    self.run("cl", *common, "/std:c++17", "/EHsc", "/c", *sorted(source.glob("*.cpp")))
+                self.run("cl", "/nologo", *sorted(Path(name).glob("*.obj")), archive, resource, "/Fe" + str(executable),
                          "/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup", "/MANIFEST:NO",
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
-                         "gdi32.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib")
+                         "gdi32.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
+                         "mfplat.lib", "mfreadwrite.lib", "mfuuid.lib", "mf.lib", "propsys.lib")
                 dependencies = self.run("dumpbin", "/nologo", "/dependents", executable)
             else:
                 flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1"))
                 self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                          '-DMOOJICUT_VERSION="' + self.version + '"', "-I", self.home / "include",
-                         source / "main.c", archive, *flags, "-lm", "-o", executable)
+                         *sorted(source.glob("*.c")), archive, *flags, "-lm", "-o", executable)
                 self.run("strip", executable)
                 dependencies = self.run("ldd", executable)
                 if "not found" in dependencies:

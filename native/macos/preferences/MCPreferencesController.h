@@ -5,6 +5,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface MCPreferencesController : NSObject <NSWindowDelegate, NSToolbarDelegate>
 @property (nonatomic, readonly, nullable) NSWindow *window;
 @property (nonatomic, copy, nullable) void (^onClose)(void);
+@property (nonatomic, copy, nullable) void (^onShortcutRecordingChanged)(BOOL recording);
+@property (nonatomic, copy, nullable) NSString *shortcutRegistrationError;
 @property (nonatomic, readonly) NSString *appearanceChoice;
 @property (nonatomic, readonly) BOOL technicalDetailsVisible;
 @property (nonatomic, readonly) MCShortcutStore *shortcutStore;

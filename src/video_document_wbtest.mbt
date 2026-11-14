@@ -4,6 +4,22 @@ fn video_test_source() -> String {
 }
 
 ///|
+test "clearing cuts and reset remove the legacy single-cut field" {
+  let draft =
+    #|{"schemaVersion":1,"trim":{"startMs":0,"endMs":10000},"cut":{"startMs":1000,"endMs":2000},"cuts":[],"crop":null,"muted":false,"preset":"share"}
+  for action in ["clearCuts", "reset"] {
+    let state = model_test_result(video_open(video_test_source(), draft))
+    let id = number_result(state.stringify(), "session").to_int()
+    assert_eq(number_result(model_test_field(state, "plan").stringify(), "outputDurationMs"), 9000)
+    let changed = video_test_command(id, Json::object({ "type": Json(action) }).stringify())
+    assert_eq(number_result(model_test_field(changed, "plan").stringify(), "outputDurationMs"), 10000)
+    let restored = video_test_command(id, "{\"type\":\"undo\"}")
+    assert_eq(number_result(model_test_field(restored, "plan").stringify(), "outputDurationMs"), 9000)
+    video_dispose(id)
+  }
+}
+
+///|
 fn video_test_command(id : Int32, command : String) -> Json raise {
   model_test_result(video_command(id, command))
 }

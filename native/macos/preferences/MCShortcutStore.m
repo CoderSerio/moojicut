@@ -1,6 +1,7 @@
 #import "MCShortcutStore.h"
 #import "MCSystemShortcutCheck.h"
 
+NSNotificationName const MCShortcutsDidChangeNotification = @"MCShortcutsDidChangeNotification";
 static NSString *const MCShortcutsKey = @"shortcuts.v1";
 static NSEventModifierFlags const MCShortcutModifiers = NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagControl | NSEventModifierFlagShift;
 
@@ -97,6 +98,7 @@ static BOOL MCEqualShortcut(NSDictionary *left, NSDictionary *right) {
     }
     self.shortcuts[action] = normalized ?: @{};
     [self.defaults setObject:[self.shortcuts copy] forKey:MCShortcutsKey];
+    [NSNotificationCenter.defaultCenter postNotificationName:MCShortcutsDidChangeNotification object:self.defaults];
     return YES;
 }
 - (void)restoreDefaults {
@@ -111,6 +113,7 @@ static BOOL MCEqualShortcut(NSDictionary *left, NSDictionary *right) {
     }
     self.shortcuts = [defaults mutableCopy];
     [self.defaults setObject:[self.shortcuts copy] forKey:MCShortcutsKey];
+    [NSNotificationCenter.defaultCenter postNotificationName:MCShortcutsDidChangeNotification object:self.defaults];
     return YES;
 }
 + (NSString *)displayStringForShortcut:(NSDictionary *)shortcut {

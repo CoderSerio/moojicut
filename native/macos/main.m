@@ -2,6 +2,10 @@
 #import <mach/mach.h>
 #import <unistd.h>
 #import "preferences/MCPreferencesController.h"
+#import "shortcuts/MCGlobalShortcutManager.h"
+#import "capture/MCCaptureController.h"
+#import "capture/MCImageEditorController.h"
+#import "recording/MCMacRecordingController.h"
 #include "moonbit.h"
 #include <stdlib.h>
 
@@ -44,6 +48,11 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @property (weak) NSWindow *closedWindow;
 @property (weak) MCPreferencesController *closedController;
 @property NSMutableArray *lifecycleCycles;
+@property MCCaptureController *captureController;
+@property MCGlobalShortcutManager *globalShortcuts;
+@property MCMacRecordingController *recordingController;
+@property NSMenuItem *recordMenuItem;
+@property NSMenuItem *stopMenuItem;
 @end
 
 @implementation MCNativeHost
@@ -57,7 +66,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 - (void)writeReport {
     if (!self.outputDirectory) return;
     self.report[@"memoryMeasurement"] = @"Own-process TASK_VM_INFO: resident_size is RSS bytes; phys_footprint is macOS physical footprint bytes.";
-    self.report[@"scope"] = @"AppKit menu bar and native settings connected to MoonBit native core; capture and recording have not been migrated.";
+    self.report[@"scope"] = @"AppKit screenshot capture and MoonBit annotation editor; native tray and settings.";
     NSData *data = [NSJSONSerialization dataWithJSONObject:self.report options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:NULL];
     [data writeToFile:[self.outputDirectory stringByAppendingPathComponent:@"report.json"] atomically:YES];
 }
@@ -66,10 +75,26 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoonBitCoreVersion"] ?: @"开发版本";
         self.preferences = [[MCPreferencesController alloc] initWithDefaults:self.defaults coreVersion:version diagnostics:self.diagnostics];
         __weak MCNativeHost *weakSelf = self;
-        self.preferences.onClose = ^{ weakSelf.preferences = nil; };
+        self.preferences.onClose = ^{ [weakSelf.globalShortcuts resume]; weakSelf.preferences = nil; };
+        self.preferences.onShortcutRecordingChanged = ^(BOOL recording) {
+            if (recording) [weakSelf.globalShortcuts suspend]; else [weakSelf.globalShortcuts resume];
+        };
+        self.preferences.shortcutRegistrationError = self.globalShortcuts.registrationError;
     }
     [self.preferences show];
     self.report[@"windowNumber"] = @(self.preferences.window.windowNumber); [self writeReport];
+}
+- (void)capture:(__unused id)sender {
+    [self.captureController capture];
+}
+- (void)startRecording:(__unused id)sender { [self.recordingController startRecording]; }
+- (void)stopRecording:(__unused id)sender { [self.recordingController stopRecording]; }
+- (void)resumeRecordingDraft:(__unused id)sender { [self.recordingController resumeLastDraft]; }
+- (void)updateRecordingState {
+    self.recordMenuItem.enabled = !self.recordingController.busy;
+    self.stopMenuItem.enabled = self.recordingController.recording;
+    self.statusItem.button.toolTip = self.recordingController.recording ? @"Mooji Cut · 录制中，点击停止录屏" : @"Mooji Cut";
+    self.statusItem.button.title = self.recordingController.recording ? @" ●" : @"";
 }
 - (BOOL)applicationShouldHandleReopen:(__unused NSApplication *)sender hasVisibleWindows:(__unused BOOL)flag {
     // Finder and Spotlight send a reopen event to an already running menu bar
@@ -83,6 +108,15 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     // Keep the existing user preferences domain across the product rename.
     NSString *domain = NSProcessInfo.processInfo.environment[@"MOOJICUT_NATIVE_DEFAULTS_DOMAIN"] ?: (self.smoke ? @"dev.moojicut.native.smoke" : @"dev.mooncap.native.preferences");
     self.defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
+    self.captureController = [MCCaptureController new];
+    self.recordingController = [MCMacRecordingController new];
+    __weak MCNativeHost *weakSelf = self;
+    self.recordingController.onStateChange = ^{ [weakSelf updateRecordingState]; };
+    self.globalShortcuts = [[MCGlobalShortcutManager alloc] initWithDefaults:self.defaults onCapture:^{ [weakSelf capture:nil]; }];
+    self.globalShortcuts.onRecord = ^{ [weakSelf startRecording:nil]; };
+    self.globalShortcuts.onStop = ^{ [weakSelf stopRecording:nil]; };
+    self.globalShortcuts.onStatusChanged = ^(NSString *error) { weakSelf.preferences.shortcutRegistrationError = error; };
+    if (!self.smoke) [self.globalShortcuts start];
     [MCPreferencesController applySavedAppearance:self.defaults];
     self.diagnostics = MCCoreCheck(); self.report = [NSMutableDictionary dictionaryWithDictionary:@{ @"coreAction": self.diagnostics, @"defaultsDomain": domain }];
     self.outputDirectory = NSProcessInfo.processInfo.environment[@"MOOJICUT_NATIVE_OUTPUT"];
@@ -96,11 +130,22 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     if (!self.statusItem.button.image) self.statusItem.button.title = @"Mooji Cut";
     self.statusItem.button.toolTip = @"Mooji Cut";
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Mooji Cut"];
+    menu.autoenablesItems = NO;
+    NSMenuItem *capture = [[NSMenuItem alloc] initWithTitle:@"截图…" action:@selector(capture:) keyEquivalent:@""];
+    capture.target = self; [menu addItem:capture]; [menu addItem:NSMenuItem.separatorItem];
+    self.recordMenuItem = [[NSMenuItem alloc] initWithTitle:@"开始录屏…" action:@selector(startRecording:) keyEquivalent:@""];
+    self.recordMenuItem.target = self; [menu addItem:self.recordMenuItem];
+    self.stopMenuItem = [[NSMenuItem alloc] initWithTitle:@"停止录屏并编辑" action:@selector(stopRecording:) keyEquivalent:@""];
+    self.stopMenuItem.target = self; [menu addItem:self.stopMenuItem];
+    NSMenuItem *draft = [[NSMenuItem alloc] initWithTitle:@"继续编辑上次录屏…" action:@selector(resumeRecordingDraft:) keyEquivalent:@""];
+    draft.target = self; [menu addItem:draft]; [menu addItem:NSMenuItem.separatorItem];
     NSMenuItem *preferences = [[NSMenuItem alloc] initWithTitle:@"设置…" action:@selector(showPreferences:) keyEquivalent:@","];
     preferences.target = self; [menu addItem:preferences]; [menu addItem:NSMenuItem.separatorItem];
     NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出 Mooji Cut" action:@selector(terminate:) keyEquivalent:@"q"]; quit.target = NSApp; [menu addItem:quit];
     self.statusItem.menu = menu;
+    [self updateRecordingState];
     if (self.smoke) [self runSmoke];
+    else if ([NSProcessInfo.processInfo.arguments containsObject:@"--capture"]) [self capture:nil];
     else if ([NSProcessInfo.processInfo.arguments containsObject:@"--preferences"]) [self showPreferences:nil];
 }
 - (void)closeForSmoke {
@@ -177,7 +222,17 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     });
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(__unused NSApplication *)sender { return NO; }
+- (NSApplicationTerminateReply)applicationShouldTerminate:(__unused NSApplication *)sender {
+    if (self.recordingController.captureInProgress || self.recordingController.exporting) {
+        NSAlert *alert = [NSAlert new]; alert.messageText = @"录屏还未完成";
+        alert.informativeText = @"请先停止录屏，或等待视频导出完成，再退出 Mooji Cut，以免损坏视频文件。";
+        [alert addButtonWithTitle:@"继续使用"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
+        return NSTerminateCancel;
+    }
+    return NSTerminateNow;
+}
 - (void)applicationWillTerminate:(__unused NSNotification *)notification {
+    [self.globalShortcuts invalidate];
     [NSStatusBar.systemStatusBar removeStatusItem:self.statusItem];
     // NSApplication terminate exits directly; code after run is not a test exit hook.
     if (self.smoke) exit([self.report[@"smokePassed"] boolValue] ? 0 : 1);
@@ -188,6 +243,23 @@ int main(__unused int argc, __unused const char *argv[]) {
     @autoreleasepool {
         moonbit_init();
         NSApplication *application = NSApplication.sharedApplication;
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--recording-smoke"]) {
+            NSError *error = nil;
+            NSString *root = NSProcessInfo.processInfo.environment[@"MOOJICUT_NATIVE_OUTPUT"] ?: NSTemporaryDirectory();
+            NSURL *directory = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:[@"video-" stringByAppendingString:NSUUID.UUID.UUIDString]] isDirectory:YES];
+            BOOL passed = [MCMacRecordingController runSmokeInDirectory:directory error:&error];
+            if (!passed) NSLog(@"Recording editor smoke failed: %@", error);
+            puts(passed ? "Native recording editor smoke passed." : "Native recording editor smoke FAILED.");
+            return passed ? 0 : 1;
+        }
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--capture-smoke"]) {
+            NSError *error = nil;
+            NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_NATIVE_OUTPUT"] ?: NSTemporaryDirectory();
+            BOOL passed = [MCImageEditorController runSmokeInDirectory:directory error:&error];
+            if (!passed) NSLog(@"Capture editor smoke failed: %@", error);
+            puts(passed ? "Native capture editor smoke passed." : "Native capture editor smoke FAILED.");
+            return passed ? 0 : 1;
+        }
         MCNativeHost *host = [MCNativeHost new]; application.delegate = host; [application run];
         return host.smoke && ![host.report[@"smokePassed"] boolValue] ? 1 : 0;
     }

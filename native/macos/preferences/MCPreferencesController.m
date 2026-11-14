@@ -47,6 +47,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 @property NSMutableDictionary<NSString *, MCShortcutRecorder *> *shortcutRecorders;
 @property NSMutableDictionary<NSString *, NSButton *> *shortcutClearButtons;
 @property NSTextField *shortcutFeedback;
+@property NSTextField *shortcutAvailability;
 @end
 
 @implementation MCPreferencesController
@@ -104,6 +105,24 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)cancelShortcutRecording {
     for (MCShortcutRecorder *recorder in self.shortcutRecorders.allValues) [recorder cancelRecording];
 }
+- (void)setShortcutRegistrationError:(NSString *)error {
+    _shortcutRegistrationError = [error copy];
+    [self updateShortcutAvailability];
+}
+- (void)updateShortcutAvailability {
+    NSMutableArray<NSString *> *states = [NSMutableArray array];
+    NSDictionary *names = @{@"capture":@"截图", @"record":@"开始录屏", @"stop":@"停止录屏"};
+    for (NSString *action in @[@"capture", @"record", @"stop"])
+        [states addObject:[NSString stringWithFormat:@"%@%@", names[action], [self.shortcutStore shortcutForAction:action] ? @"已启用" : @"未设置"]];
+    NSString *availability = self.shortcutRegistrationError ?: [states componentsJoinedByString:@" · "];
+    self.shortcutAvailability.stringValue = [availability stringByAppendingString:@"\n录入时暂时停用全部快捷键，结束录入后自动恢复。"];
+    self.shortcutAvailability.textColor = self.shortcutRegistrationError ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+}
+- (void)notifyShortcutRecordingState {
+    BOOL recording = NO;
+    for (MCShortcutRecorder *recorder in self.shortcutRecorders.allValues) recording = recording || recorder.isRecording;
+    if (self.onShortcutRecordingChanged) self.onShortcutRecordingChanged(recording);
+}
 - (NSView *)shortcutsPage {
     NSView *page = [NSView new];
     self.shortcutRecorders = [NSMutableDictionary dictionary];
@@ -126,6 +145,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
                 [controller setShortcutFeedback:error ?: @"无法保存这个快捷键。" error:YES]; return NO;
             }
             controller.shortcutClearButtons[action].enabled = shortcut != nil;
+            [controller updateShortcutAvailability];
             [controller setShortcutFeedback:shortcut ? @"快捷键已保存。" : @"已清除这个快捷键。" error:NO];
             return YES;
         };
@@ -133,11 +153,13 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
         recorder.onRecordingChanged = ^(BOOL recording) {
             MCPreferencesController *controller = weakSelf;
             if (!recording) {
+                [controller notifyShortcutRecordingState];
                 if ([controller.shortcutFeedback.stringValue hasPrefix:@"按下"] || [controller.shortcutFeedback.textColor isEqual:NSColor.systemRedColor])
                     [controller setShortcutFeedback:@"录入已结束，未更改的快捷键保持原样。" error:NO];
                 return;
             }
             for (NSString *other in controller.shortcutRecorders) if (![other isEqual:action]) [controller.shortcutRecorders[other] cancelRecording];
+            [controller notifyShortcutRecordingState];
             [controller setShortcutFeedback:@"按下组合键；Esc 取消，Delete 清除。" error:NO];
         };
         NSButton *clear = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"xmark.circle.fill" accessibilityDescription:@"清除"] target:self action:@selector(clearShortcut:)];
@@ -157,7 +179,8 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSStackView *resetRow = MCStack(@[spacer, reset], NSUserInterfaceLayoutOrientationHorizontal, 0);
     [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [reset setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSTextField *availability = MCLabel(@"当前可保存按键配置；截图与录屏功能可用后启用。\n系统快捷键冲突会提示，其他应用的占用情况仍需留意。", 11, YES);
+    NSTextField *availability = MCLabel(@"", 11, YES); self.shortcutAvailability = availability;
+    [self updateShortcutAvailability];
     NSStackView *stack = MCStack(@[MCHeading(@"全局快捷键"), MCLabel(@"点按按键框，然后按下你想使用的组合键。", 12, YES), grid, feedback, resetRow, availability], NSUserInterfaceLayoutOrientationVertical, 12);
     [resetRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [feedback.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
@@ -169,6 +192,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSString *action = sender.identifier; NSString *error = nil;
     if ([self.shortcutStore setShortcut:nil forAction:action error:&error]) {
         self.shortcutRecorders[action].shortcut = nil; sender.enabled = NO;
+        [self updateShortcutAvailability];
         [self setShortcutFeedback:@"已清除这个快捷键。" error:NO];
     } else [self setShortcutFeedback:error ?: @"无法清除快捷键。" error:YES];
 }
@@ -181,6 +205,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
         self.shortcutRecorders[action].shortcut = [self.shortcutStore shortcutForAction:action];
         self.shortcutClearButtons[action].enabled = YES;
     }
+    [self updateShortcutAvailability];
     [self setShortcutFeedback:@"已恢复默认快捷键。" error:NO];
 }
 - (NSView *)aboutPage {
@@ -206,10 +231,10 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
         @[MCLabel(@"核心", 12, YES), MCLabel(core, 12, NO)],
         @[MCLabel(@"宿主", 12, YES), MCLabel([@"AppKit · " stringByAppendingString:arch], 12, NO)],
         @[MCLabel(@"状态", 12, YES), MCLabel([self.diagnostics[@"passed"] boolValue] ? @"核心连接正常" : @"核心连接未通过检查", 12, NO)],
-        @[MCLabel(@"当前范围", 12, YES), MCLabel(@"菜单栏与设置；截图、录屏采集尚未迁移。", 12, NO)]
+        @[MCLabel(@"当前范围", 12, YES), MCLabel(@"截图标注、录屏剪辑与确认复制。", 12, NO)]
     ]);
     details.hidden = YES; self.technicalDetails = details;
-    NSStackView *stack = MCStack(@[header, MCLabel(@"这一幕，我截下了。", 13, NO), MCLabel(@"开发预览版 · 截图与录屏功能正在接入。", 12, YES), disclosureRow, details], NSUserInterfaceLayoutOrientationVertical, 18);
+    NSStackView *stack = MCStack(@[header, MCLabel(@"这一幕，我截下了。", 13, NO), MCLabel(@"截图标注与录屏剪辑，确认后复制。", 12, YES), disclosureRow, details], NSUserInterfaceLayoutOrientationVertical, 18);
     stack.detachesHiddenViews = YES; MCPin(stack, page); return page;
 }
 - (void)appearanceChanged:(NSPopUpButton *)sender {
@@ -232,6 +257,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)selectPage:(NSString *)identifier {
     if (![@[@"general", @"shortcuts", @"about"] containsObject:identifier]) return;
     [self cancelShortcutRecording];
+    if (self.onShortcutRecordingChanged) self.onShortcutRecordingChanged(NO);
     [self.pages selectTabViewItemWithIdentifier:identifier]; self.window.toolbar.selectedItemIdentifier = identifier;
 }
 - (void)toolbarSelected:(NSToolbarItem *)sender { [self selectPage:sender.itemIdentifier]; }
@@ -250,6 +276,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)windowWillClose:(NSNotification *)notification {
     if (notification.object != self.window) return;
     [self cancelShortcutRecording];
+    if (self.onShortcutRecordingChanged) self.onShortcutRecordingChanged(NO);
     // Preference toolbars keep AppKit view/validation state. Detach that state
     // before relinquishing the one settings window owned by this controller.
     self.window.toolbar.delegate = nil;
@@ -257,7 +284,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.window.toolbar = nil;
     self.window.contentView = nil;
     self.window.delegate = nil; self.window = nil; self.pages = nil; self.appearancePopup = nil; self.technicalDetails = nil; self.disclosure = nil;
-    self.shortcutRecorders = nil; self.shortcutClearButtons = nil; self.shortcutFeedback = nil;
+    self.shortcutRecorders = nil; self.shortcutClearButtons = nil; self.shortcutFeedback = nil; self.shortcutAvailability = nil;
     if (self.onClose) self.onClose();
 }
 @end

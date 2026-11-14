@@ -141,11 +141,15 @@ pub fn video_command(id : Int, command_text : String) -> String {
         cuts.push(Json::object(object_field(command, "cut")))
         document["cuts"] = Json::array(cuts)
       }
-      "clearCuts" => document["cuts"] = Json::array([])
+      "clearCuts" => {
+        document["cuts"] = Json::array([])
+        document.remove("cut")
+      }
       "crop" => document["crop"] = match command.get("crop") { Some(value) => value; None => Json::null() }
       "mute" => document["muted"] = Json(video_bool(command, "muted"))
       "preset" => document["preset"] = Json(video_string(command, "preset"))
       "reset" => {
+        document.remove("cut")
         let initial = video_default(object_field(document, "source"))
         for key in ["trim", "cuts", "crop", "muted", "preset"] { document[key] = initial[key] }
       }

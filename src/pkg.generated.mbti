@@ -14,6 +14,62 @@ pub fn image_create(String) -> String
 
 pub fn image_finalize(String) -> String
 
+pub fn image_session_add(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
+
+pub fn image_session_count(Int32) -> Int32
+
+pub fn image_session_create(Int32, Int32) -> Int32
+
+pub fn image_session_dispose(Int32) -> Unit
+
+pub fn image_session_redo(Int32) -> Int32
+
+pub fn image_session_set_text(Int32, String) -> Int32
+
+pub fn image_session_text(Int32, Int32) -> String
+
+pub fn image_session_undo(Int32) -> Int32
+
+pub fn image_session_value(Int32, Int32, Int32) -> Double
+
+pub fn native_video_clear_cuts(Int32) -> Int32
+
+pub fn native_video_close(Int32) -> Unit
+
+pub fn native_video_crop(Int32, Int32, Int32, Int32, Int32) -> Int32
+
+pub fn native_video_crop_value(Int32, Int32) -> Int32
+
+pub fn native_video_cut(Int32, Int32, Int32) -> Int32
+
+pub fn native_video_duration(Int32) -> Int32
+
+pub fn native_video_edit_value(Int32, Int32) -> Int32
+
+pub fn native_video_error(Int32) -> String
+
+pub fn native_video_mute(Int32, Int32) -> Int32
+
+pub fn native_video_open(Int32, Int32, Int32, Int32) -> Int32
+
+pub fn native_video_redo(Int32) -> Int32
+
+pub fn native_video_reset(Int32) -> Int32
+
+pub fn native_video_reset_crop(Int32) -> Int32
+
+pub fn native_video_resume(Int32, Int32, Int32, Int32, String) -> Int32
+
+pub fn native_video_segment_count(Int32) -> Int32
+
+pub fn native_video_segment_value(Int32, Int32, Int32) -> Int32
+
+pub fn native_video_snapshot(Int32) -> String
+
+pub fn native_video_trim(Int32, Int32, Int32) -> Int32
+
+pub fn native_video_undo(Int32) -> Int32
+
 pub fn preview_core_check() -> Int32
 
 pub fn recording_transition(String, String) -> String

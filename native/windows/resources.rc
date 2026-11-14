@@ -38,7 +38,7 @@ BEGIN
     PUSHBUTTON "清除", IDC_CLEAR_STOP, 260, 105, 43, 19
     LTEXT "", IDC_SHORTCUT_STATUS, 17, 138, 190, 31
     PUSHBUTTON "恢复默认", IDC_RESET_SHORTCUTS, 231, 139, 72, 20
-    LTEXT "截图快捷键已接通；录屏快捷键仍在接入。\n输入组合时暂停全局按键，离开输入框后恢复。", -1, 17, 174, 285, 26
+    LTEXT "截图、开始录屏、停止录屏已接通。\n输入组合时暂停全局按键，离开输入框后恢复。", -1, 17, 174, 285, 26
 END
 
 IDD_ABOUT DIALOGEX 0, 0, 320, 207
@@ -51,5 +51,5 @@ BEGIN
     LTEXT "", IDC_VERSION, 62, 37, 230, 16
     LTEXT "以 MoonBit 为核心的本地截图与录屏工具。\n捕捉后编辑，确认后复制。", -1, 17, 75, 285, 28
     LTEXT "", IDC_CORE_STATUS, 17, 115, 285, 15
-    LTEXT "框选截图、添加标注，确认后复制图片。\n本预览包尚未进行 Windows 代码签名。\n更多录屏与编辑能力正在完善。", -1, 17, 150, 285, 40
+    LTEXT "截图标注与录屏剪辑，确认后复制。\nWindows 本版录制主显示器，不录声音。\n本预览包尚未进行 Windows 代码签名。", -1, 17, 150, 285, 40
 END
