@@ -292,6 +292,8 @@ struct DesktopSurface {
 };
 void recordDesktop(const fs::path &target, RECT bounds, UINT32 width, UINT32 height, std::atomic<bool> &stop) {
     Encoder encoder(target,width,height); DesktopSurface surface(width,height);
+    // Let the start dialog disappear from the compositor before the first frame.
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
     std::vector<BYTE> pending(static_cast<size_t>(width)*height*4);
     LARGE_INTEGER frequency,origin,now; QueryPerformanceFrequency(&frequency); QueryPerformanceCounter(&origin);
     LONGLONG last=0; bool haveFrame=false;
@@ -541,14 +543,16 @@ extern "C" void mc_recording_activate(void){if(state.editor){ShowWindow(state.ed
 extern "C" void mc_recording_close(void){
     if(state.kind==JobKind::Recording){mc_recording_stop();return;}
     if(mc_recording_exporting()){
-        if(MessageBoxW(state.editor,L"停止生成视频并关闭？原片与编辑草稿会保留。",L"Mooji Cut",MB_YESNO|MB_ICONQUESTION)==IDYES){state.closeAfter=true;state.cancel.store(true);}return;
+        // Mark cancellation before any UI work: a modal prompt would pump the
+        // worker completion message and could publish a video after close.
+        state.closeAfter=true;state.cancel.store(true);
+        setStatus(L"正在取消并关闭，原片与编辑草稿会保留。");return;
     }
     if(state.editor){try{saveDraft();DestroyWindow(state.editor);}catch(const Failure &error){setStatus(description(error));}}
 }
 extern "C" bool mc_recording_handle_message(MSG *message){return state.editor&&IsDialogMessageW(state.editor,message)!=FALSE;}
 
 extern "C" int mc_recording_smoke(HINSTANCE instance) {
-    (void)instance;
     int32_t session=0;
     try {
         MediaRuntime runtime;fs::path directory=fs::temp_directory_path()/L"moojicut-recording-smoke"/identifier();fs::create_directories(directory);
@@ -568,6 +572,26 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
         moonbit_string_t snapshot=native_video_snapshot(session);int32_t resumed=native_video_resume(4000,320,240,0,snapshot);moonbit_decref(snapshot);
         if(!resumed||native_video_duration(resumed)!=2000)throw Failure{E_FAIL,L"视频草稿恢复失败"};native_video_close(resumed);
         if(!native_video_undo(session)||!native_video_redo(session))throw Failure{E_FAIL,L"视频撤销重做失败"};
+        if(!initialize(instance,nullptr))throw Failure{E_FAIL,L"无法初始化视频编辑窗口"};
+        state.directory=directory;state.source=source;state.session=session;session=0;
+        state.editor=CreateWindowExW(WS_EX_CONTROLPARENT,editorClass,L"Mooji Cut video smoke",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
+            0,0,820,480,nullptr,nullptr,instance,nullptr);
+        if(!state.editor)throw Failure{E_FAIL,L"无法创建视频编辑测试窗口"};
+        refresh();saveDraft();
+        SetWindowTextW(state.fields[0],L"0.750");
+        if(noPendingInputs())throw Failure{E_FAIL,L"未应用的裁剪输入被忽略"};
+        refresh();SetWindowTextW(state.fields[2],L"0.200");SetWindowTextW(state.fields[3],L"0.300");
+        if(noPendingInputs())throw Failure{E_FAIL,L"未添加的删除区间被忽略"};
+        SetWindowTextW(state.fields[2],L"0");SetWindowTextW(state.fields[3],L"0");
+        if(!noPendingInputs())throw Failure{E_FAIL,L"有效编辑状态无法确认"};
+        fs::path cancelled=directory/L"cancelled.mp4";fs::copy_file(output,cancelled);
+        DWORD clipboardSequence=GetClipboardSequenceNumber();
+        state.kind=JobKind::Confirm;state.cancel.store(false);state.closeAfter=false;
+        mc_recording_close();
+        auto completed=std::make_unique<JobResult>();completed->kind=JobKind::Confirm;completed->success=true;completed->path=cancelled;
+        SendMessageW(state.host,doneMessage,0,reinterpret_cast<LPARAM>(completed.release()));
+        if(mc_recording_busy()||fs::exists(cancelled)||GetClipboardSequenceNumber()!=clipboardSequence)
+            throw Failure{E_FAIL,L"关闭后的完成回调仍然发布了视频"};
         wchar_t ci[16];DWORD ciLength=GetEnvironmentVariableW(L"CI",ci,16);
         if(ciLength&&ciLength<16&&_wcsicmp(ci,L"true")==0){
             HWND clipboardOwner=CreateWindowExW(0,L"STATIC",L"Mooji Cut clipboard test",WS_POPUP,0,0,0,0,nullptr,nullptr,instance,nullptr);
@@ -576,8 +600,11 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
             DestroyWindow(clipboardOwner);if(!copied)throw Failure{E_FAIL,L"CI文件剪贴板检查失败"};
         }
         else std::printf("Clipboard test skipped outside CI.\n");
-        native_video_close(session);session=0;std::printf("Windows Media Foundation recording/edit/export smoke passed.\n");return 0;
+        std::printf("Windows Media Foundation recording/edit/export smoke passed.\n");return 0;
     }catch(const Failure &error){if(session)native_video_close(session);std::fwprintf(stderr,L"Recording smoke failed: %ls\n",description(error).c_str());}
     catch(const std::exception &){if(session)native_video_close(session);std::fprintf(stderr,"Recording smoke failed: native exception.\n");}
+    if(state.editor)DestroyWindow(state.editor);
+    else if(state.session){native_video_close(state.session);state.session=0;}
+    state.kind=JobKind::None;
     return 1;
 }
