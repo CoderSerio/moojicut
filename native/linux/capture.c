@@ -920,7 +920,7 @@ static void hud_provider(GtkWidget *widget, gpointer data) {
 static void style_hud(void) {
   static const char css[] =
       ".mc-capture-hud { background-color: #292730; background-image: none; color: #ece8e2;"
-      " border: 1px solid #514b59; border-radius: 12px; box-shadow: 0 4px 12px alpha(black, 0.25); }"
+      " border: 1px solid #514b59; border-radius: 12px; padding: 8px; box-shadow: 0 4px 12px alpha(black, 0.25); }"
       ".mc-capture-hud button { background-image: none; background-color: transparent; color: #ece8e2;"
       " border: 1px solid transparent; border-radius: 7px; box-shadow: none; text-shadow: none;"
       " -gtk-icon-shadow: none; padding: 0; min-width: 30px; min-height: 30px; }"
@@ -1072,7 +1072,7 @@ static gboolean open_editor(GdkPixbuf *image) {
   gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), masks, TRUE);
   g_signal_connect(masks, "draw", G_CALLBACK(masks_draw), NULL);
   capture.toolbar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
-  gtk_container_set_border_width(GTK_CONTAINER(capture.toolbar), 8);
+  gtk_container_set_border_width(GTK_CONTAINER(capture.toolbar), 0);
   gtk_widget_set_no_show_all(capture.toolbar, TRUE);
   gtk_style_context_add_class(gtk_widget_get_style_context(capture.toolbar), "mc-capture-hud");
   GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2),
@@ -1431,6 +1431,13 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   ok = capture.crop[2] == 320 && ok;
   const char *preview_path = g_getenv("MOOJICUT_SMOKE_SCREENSHOT");
   if (preview_path && *preview_path) {
+    /* Readable synthetic preview, after all behavior and privacy pixel checks.
+     * It uses the same document and native renderer as interactive capture. */
+    if (pending_text("原地编辑"))
+      image_session_update(capture.session, 0, 150, 100, 180, 70, 0xF26769, 4, 32);
+    image_session_crop(capture.session, 30, 50, 440, 200);
+    capture.selected = 0;
+    sync_crop();
     sync_style();
     layout_controls();
     gtk_widget_queue_draw(capture.editor);
