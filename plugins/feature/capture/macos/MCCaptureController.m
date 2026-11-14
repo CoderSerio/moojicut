@@ -27,6 +27,21 @@ static NSError *MCCaptureError(NSString *message) {
     return self;
 }
 - (BOOL)busy { return self.captureSession != nil || self.editor != nil; }
+- (void)configurePinActionForEditor:(MCImageEditorController *)editor {
+    if (!self.onPinPNGData) { editor.onPinPNGData = nil; return; }
+    __weak MCCaptureController *weakSelf = self;
+    __weak MCImageEditorController *weakEditor = editor;
+    editor.onPinPNGData = ^BOOL(NSData *png) {
+        MCCaptureController *owner = weakSelf;
+        MCImageEditorController *current = weakEditor;
+        return current && owner.onPinPNGData ? owner.onPinPNGData(png, current.pinScreenFrame) : NO;
+    };
+}
+- (void)setOnPinPNGData:(BOOL (^)(NSData *, NSRect))handler {
+    _onPinPNGData = [handler copy];
+    if (self.editor) [self configurePinActionForEditor:self.editor];
+    for (MCImageEditorController *editor in self.overlayEditors) [self configurePinActionForEditor:editor];
+}
 - (void)changed { if (self.onStateChange) self.onStateChange(); }
 - (NSRunningApplication *)frontmostApplication {
     return NSWorkspace.sharedWorkspace.frontmostApplication;
@@ -102,10 +117,7 @@ static NSError *MCCaptureError(NSString *message) {
     self.editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
     if (!self.editor) return NO;
     __weak MCCaptureController *weakSelf = self;
-    if (self.onPinPNGData) self.editor.onPinPNGData = ^BOOL(NSData *png) {
-        MCCaptureController *owner = weakSelf;
-        return owner.onPinPNGData ? owner.onPinPNGData(png, owner.editor.pinScreenFrame) : NO;
-    };
+    [self configurePinActionForEditor:self.editor];
     self.editor.onClose = ^{ weakSelf.editor = nil; [weakSelf changed]; };
     [self.editor show];
     [self changed];
@@ -173,11 +185,7 @@ static NSError *MCCaptureError(NSString *message) {
             MCCaptureController *owner = weakSelf;
             if ([owner.captureSession isEqualToString:session]) [owner cancelCapture];
         };
-        __weak MCImageEditorController *weakEditor = editor;
-        if (self.onPinPNGData) editor.onPinPNGData = ^BOOL(NSData *png) {
-            MCCaptureController *owner = weakSelf;
-            return owner.onPinPNGData ? owner.onPinPNGData(png, weakEditor.pinScreenFrame) : NO;
-        };
+        [self configurePinActionForEditor:editor];
         [editors addObject:editor];
         if (NSPointInRect(pointer, [snapshot[@"frame"] rectValue])) focused = editor;
     }

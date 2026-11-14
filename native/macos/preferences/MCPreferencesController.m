@@ -1,6 +1,7 @@
 #import "MCPreferencesController.h"
 #import "MCShortcutRecorder.h"
 #import "native/macos/updates/MCUpdateController.h"
+#import "plugins/feature/pin/macos/MCPinnedImageController.h"
 
 static NSString *const MCAppearanceKey = @"appearance";
 static NSTextField *MCLabel(NSString *text, CGFloat size, BOOL secondary) {
@@ -56,6 +57,9 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 @property NSTabView *shortcutGroups;
 @property NSButton *automaticUpdatesCheckbox;
 @property NSButton *checkUpdatesButton;
+@property NSButton *cancelUpdatesButton;
+@property NSButton *releasePageButton;
+@property NSButton *pinningCheckbox;
 @property NSTextField *updateStatus;
 @end
 
@@ -106,11 +110,25 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSGridView *grid = MCGrid(@[@[MCLabel(@"主题", 13, NO), popup], @[NSGridCell.emptyContentView, description]]);
     NSBox *separator = [NSBox new]; separator.boxType = NSBoxSeparator;
     NSTextField *background = MCLabel(@"关闭设置窗口后，Mooji Cut 会继续在菜单栏运行。", 13, NO);
-    NSStackView *stack = MCStack(@[MCHeading(@"外观"), grid, separator, MCHeading(@"后台运行"), background, MCLabel(@"设置会自动保存。", 11, YES)], NSUserInterfaceLayoutOrientationVertical, 14);
-    [stack setCustomSpacing:22 afterView:grid]; [stack setCustomSpacing:22 afterView:separator]; [stack setCustomSpacing:30 afterView:background];
+    self.pinningCheckbox = [NSButton checkboxWithTitle:@"启用贴图" target:self action:@selector(pinningChanged:)];
+    self.pinningCheckbox.state = self.pinningEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+    NSStackView *stack = MCStack(@[MCHeading(@"外观"), grid, separator, MCHeading(@"内置功能"), self.pinningCheckbox,
+        MCLabel(@"将截图固定在屏幕上。关闭后会关闭所有贴图并释放贴图快捷键。", 12, YES), background,
+        MCLabel(@"设置会自动保存。", 11, YES)], NSUserInterfaceLayoutOrientationVertical, 12);
+    [stack setCustomSpacing:18 afterView:grid];
     [separator.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     MCPin(stack, page); return page;
 }
+- (BOOL)pinningEnabled {
+    id saved = [self.defaults objectForKey:MCPinFeatureEnabledDefaultsKey];
+    return !saved || [saved boolValue];
+}
+- (void)setPinningEnabled:(BOOL)enabled {
+    [self.defaults setBool:enabled forKey:MCPinFeatureEnabledDefaultsKey];
+    self.pinningCheckbox.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+    if (self.onPinningEnabledChanged) self.onPinningEnabledChanged(enabled);
+}
+- (void)pinningChanged:(NSButton *)sender { [self setPinningEnabled:sender.state == NSControlStateValueOn]; }
 - (void)setShortcutFeedback:(NSString *)message error:(BOOL)error {
     self.shortcutFeedback.stringValue = message;
     self.shortcutFeedback.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
@@ -388,6 +406,8 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.automaticUpdatesCheckbox.enabled = self.updateController.available;
     self.automaticUpdatesCheckbox.state = self.updateController.automaticallyChecksForUpdates ? NSControlStateValueOn : NSControlStateValueOff;
     self.checkUpdatesButton.enabled = self.updateController.canCheckForUpdates;
+    self.cancelUpdatesButton.hidden = !self.updateController.checkingSource;
+    self.releasePageButton.hidden = self.updateController.releasePageURL == nil;
     self.updateStatus.stringValue = self.updateController.statusText ?: @"更新服务尚未初始化。";
 }
 - (void)automaticUpdatesChanged:(NSButton *)sender {
@@ -395,15 +415,22 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     [self refreshUpdatePage];
 }
 - (void)checkUpdates:(id)sender { [self.updateController checkForUpdates:sender]; }
+- (void)cancelUpdates:(__unused id)sender { [self.updateController cancelCheck]; }
+- (void)openUpdateRelease:(id)sender { [self.updateController openReleasePage:sender]; }
 - (NSView *)updatesPage {
     NSView *page = [NSView new];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoojiCutReleaseVersion"] ?: [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版本";
     self.automaticUpdatesCheckbox = [NSButton checkboxWithTitle:@"自动检查更新" target:self action:@selector(automaticUpdatesChanged:)];
     self.checkUpdatesButton = [NSButton buttonWithTitle:@"检查更新…" target:self action:@selector(checkUpdates:)];
     self.checkUpdatesButton.bezelStyle = NSBezelStyleRounded;
+    self.cancelUpdatesButton = [NSButton buttonWithTitle:@"取消检查" target:self action:@selector(cancelUpdates:)];
+    self.releasePageButton = [NSButton buttonWithTitle:@"打开发布页面" target:self action:@selector(openUpdateRelease:)];
+    NSStackView *actions = MCStack(@[self.checkUpdatesButton, self.cancelUpdatesButton, self.releasePageButton],
+        NSUserInterfaceLayoutOrientationHorizontal, 10);
+    actions.detachesHiddenViews = YES;
     self.updateStatus = MCLabel(@"", 12, YES);
     NSStackView *stack = MCStack(@[MCHeading(@"软件更新"), MCLabel([@"当前版本 " stringByAppendingString:version], 13, NO), self.automaticUpdatesCheckbox,
-        MCLabel(@"发现新版本时提醒你，由你确认下载与安装。", 12, YES), self.checkUpdatesButton, self.updateStatus], NSUserInterfaceLayoutOrientationVertical, 14);
+        MCLabel(@"发现新版本时提醒你，由你确认下载与安装。", 12, YES), actions, self.updateStatus], NSUserInterfaceLayoutOrientationVertical, 14);
     [self.updateStatus.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [stack setCustomSpacing:6 afterView:self.automaticUpdatesCheckbox];
     MCPin(stack, page); [self refreshUpdatePage]; return page;
@@ -459,7 +486,8 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.window.delegate = nil; self.window = nil; self.pages = nil; self.appearancePopup = nil; self.technicalDetails = nil; self.disclosure = nil;
     self.shortcutRecorders = nil; self.shortcutClearButtons = nil; self.shortcutFeedback = nil; self.shortcutAvailability = nil;
     self.pinShortcutRecorders = nil; self.pinShortcutClearButtons = nil; self.pinShortcutFeedback = nil; self.shortcutGroups = nil;
-    self.automaticUpdatesCheckbox = nil; self.checkUpdatesButton = nil; self.updateStatus = nil;
+    self.automaticUpdatesCheckbox = nil; self.checkUpdatesButton = nil; self.cancelUpdatesButton = nil;
+    self.releasePageButton = nil; self.pinningCheckbox = nil; self.updateStatus = nil;
     if (self.onClose) self.onClose();
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }

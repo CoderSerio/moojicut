@@ -14,6 +14,7 @@
 #include <wchar.h>
 #include "moonbit.h"
 #include "resource.h"
+#include "updates.h"
 #include "plugins/feature/capture/windows/capture.h"
 #include "plugins/feature/pin/windows/pinning.h"
 #include "plugins/feature/recording/windows/recording.h"
@@ -57,6 +58,7 @@ static BOOL tray_added, smoke_mode, updating;
 static BOOL smoke_shortcut_registration;
 static WORD hotkeys[3];
 static BOOL open_on_start;
+static BOOL update_exit_pending;
 static int core_ok;
 static BOOL global_registered[3];
 static wchar_t shortcut_registration_error[180];
@@ -116,15 +118,18 @@ static void capture_set_pins_hidden(void *context, BOOL hidden) {
     (void)context;
     mc_pins_hide(hidden);
 }
-static const MCCaptureHost capture_services = {&instance, capture_pin_image, capture_set_pins_hidden};
+static BOOL capture_pin_enabled(void *context) { (void)context; return mc_pin_enabled(); }
+static const MCCaptureHost capture_services = {&instance, capture_pin_image, capture_set_pins_hidden, capture_pin_enabled};
 
 static void start_capture(void) {
+    if (update_exit_pending) return;
     if (mc_capture_busy()) { mc_capture_activate(); return; }
     if (settings) ShowWindow(settings, SW_HIDE);
     mc_pins_hide(TRUE);
     SetTimer(host, CAPTURE_TIMER, 160, NULL);
 }
 static void start_recording(void) {
+    if (update_exit_pending) return;
     if (mc_recording_busy()) { mc_recording_activate(); return; }
     if (settings) ShowWindow(settings, SW_HIDE);
     SetTimer(host, RECORD_TIMER, 160, NULL);
@@ -162,6 +167,9 @@ static void load_preferences(void) {
     int i;
     for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
     open_on_start = FALSE;
+    DWORD pin_enabled = 1, pin_bytes = sizeof(pin_enabled);
+    RegGetValueW(HKEY_CURRENT_USER, registry_path, L"PinEnabled", RRF_RT_REG_DWORD, NULL, &pin_enabled, &pin_bytes);
+    mc_pin_set_enabled(pin_enabled != 0);
     if (RegOpenKeyExW(HKEY_CURRENT_USER, registry_path, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
         PreferenceRecord record;
         DWORD size = sizeof(record);
@@ -227,10 +235,33 @@ static void update_shortcuts(HWND page) {
     }
 }
 
+static BOOL set_pin_enabled(BOOL enabled) {
+    HKEY key;
+    DWORD value = enabled ? 1 : 0;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, registry_path, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS)
+        return FALSE;
+    BOOL saved = RegSetValueExW(key, L"PinEnabled", 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) == ERROR_SUCCESS;
+    if (saved && !mc_pin_set_enabled(enabled)) {
+        value = mc_pin_enabled() ? 1 : 0;
+        RegSetValueExW(key, L"PinEnabled", 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+        saved = FALSE;
+    }
+    RegCloseKey(key);
+    mc_capture_refresh_capabilities();
+    return saved;
+}
+
 static INT_PTR CALLBACK general_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     (void)lp;
     if (message == WM_INITDIALOG) {
         CheckDlgButton(window, IDC_START_SETTINGS, open_on_start ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(window, IDC_PIN_ENABLED, mc_pin_enabled() ? BST_CHECKED : BST_UNCHECKED);
+        return TRUE;
+    }
+    if (message == WM_COMMAND && LOWORD(wp) == IDC_PIN_ENABLED && HIWORD(wp) == BN_CLICKED) {
+        BOOL saved = set_pin_enabled(IsDlgButtonChecked(window, IDC_PIN_ENABLED) == BST_CHECKED);
+        CheckDlgButton(window, IDC_PIN_ENABLED, mc_pin_enabled() ? BST_CHECKED : BST_UNCHECKED);
+        SetDlgItemTextW(window, IDC_FEATURE_STATUS, saved ? (mc_pin_enabled() ? L"贴图已启用。" : L"贴图已关闭，现有贴图和全局按键已收回。") : L"更改未保存，请稍后重试。");
         return TRUE;
     }
     if (message == WM_COMMAND && LOWORD(wp) == IDC_START_SETTINGS && HIWORD(wp) == BN_CLICKED) {
@@ -278,8 +309,13 @@ static INT_PTR CALLBACK shortcuts_page(HWND window, UINT message, WPARAM wp, LPA
     return FALSE;
 }
 
+static void refresh_pin_page(HWND window) {
+    BOOL enabled = mc_pin_enabled();
+    for (int i = 0; i < 6; i++) EnableWindow(GetDlgItem(window, IDC_PIN_ZOOM_IN + i), enabled);
+    EnableWindow(GetDlgItem(window, IDC_PIN_RESET), enabled);
+    SetDlgItemTextW(window, IDC_PIN_STATUS, enabled ? L"隐藏/恢复与穿透按键可跨应用使用。" : L"贴图已停用，请先在通用页启用。");
+}
 static INT_PTR CALLBACK pins_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
-    (void)lp;
     if (message == WM_INITDIALOG) {
         updating = TRUE;
         for (int i = 0; i < 6; i++) {
@@ -288,6 +324,11 @@ static INT_PTR CALLBACK pins_page(HWND window, UINT message, WPARAM wp, LPARAM l
             SetWindowSubclass(GetDlgItem(window, IDC_PIN_ZOOM_IN + i), hotkey_recorder_proc, 1, 0);
         }
         updating = FALSE;
+        refresh_pin_page(window);
+        return TRUE;
+    }
+    if (message == WM_NOTIFY && ((NMHDR *)lp)->code == PSN_SETACTIVE) {
+        refresh_pin_page(window);
         return TRUE;
     }
     if (message == WM_COMMAND) {
@@ -318,6 +359,32 @@ static INT_PTR CALLBACK about_page(HWND window, UINT message, WPARAM wp, LPARAM 
     return FALSE;
 }
 
+static void refresh_updates_page(HWND window) {
+    SetDlgItemTextW(window, IDC_UPDATE_STATUS, mc_updates_status());
+    BOOL busy = mc_updates_busy();
+    EnableWindow(GetDlgItem(window, IDC_UPDATE_CHECK), !busy);
+    EnableWindow(GetDlgItem(window, IDC_UPDATE_DOWNLOAD), !busy && mc_updates_available());
+    EnableWindow(GetDlgItem(window, IDC_UPDATE_CANCEL), busy);
+    EnableWindow(GetDlgItem(window, IDC_UPDATE_OPEN), mc_updates_downloaded());
+}
+static INT_PTR CALLBACK updates_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_INITDIALOG) { refresh_updates_page(window); return TRUE; }
+    if (message == WM_NOTIFY && ((NMHDR *)lp)->code == PSN_SETACTIVE) {
+        refresh_updates_page(window);
+        return TRUE;
+    }
+    if (message == WM_COMMAND && HIWORD(wp) == BN_CLICKED) {
+        if (LOWORD(wp) == IDC_UPDATE_CHECK) mc_updates_check();
+        else if (LOWORD(wp) == IDC_UPDATE_DOWNLOAD) mc_updates_download(window);
+        else if (LOWORD(wp) == IDC_UPDATE_CANCEL) mc_updates_cancel();
+        else if (LOWORD(wp) == IDC_UPDATE_OPEN) mc_updates_open_location();
+        else return FALSE;
+        refresh_updates_page(window);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static LRESULT CALLBACK settings_subclass(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
     (void)id; (void)data;
     if (message == WM_CLOSE || (message == WM_COMMAND && (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL))) {
@@ -334,12 +401,12 @@ static LRESULT CALLBACK settings_subclass(HWND window, UINT message, WPARAM wp, 
 
 static BOOL show_settings(void) {
     if (!settings) {
-        PROPSHEETPAGEW pages[4];
+        PROPSHEETPAGEW pages[5];
         PROPSHEETHEADERW header;
-        const DLGPROC procedures[4] = {general_page, shortcuts_page, about_page, pins_page};
+        const DLGPROC procedures[5] = {general_page, shortcuts_page, about_page, pins_page, updates_page};
         int i;
         ZeroMemory(pages, sizeof(pages));
-        for (i = 0; i < 4; i++) {
+        for (i = 0; i < 5; i++) {
             pages[i].dwSize = sizeof(pages[i]);
             pages[i].dwFlags = PSP_DEFAULT;
             pages[i].hInstance = instance;
@@ -352,7 +419,7 @@ static BOOL show_settings(void) {
         header.hwndParent = host;
         header.hInstance = instance;
         header.pszCaption = L"Mooji Cut 设置";
-        header.nPages = 4;
+        header.nPages = 5;
         header.ppsp = pages;
         settings = (HWND)PropertySheetW(&header);
         if (settings == (HWND)-1) settings = NULL;
@@ -395,9 +462,10 @@ static void tray_menu(void) {
     AppendMenuW(menu, MF_STRING | (mc_recording_recording() ? 0 : MF_GRAYED), IDM_STOP_RECORD, L"停止录屏并编辑");
     AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RESUME_RECORD, L"继续编辑上次录屏…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(menu, MF_STRING, IDM_RESTORE_PINS, L"恢复隐藏的贴图");
-    AppendMenuW(menu, MF_STRING, IDM_EXIT_PIN_PASSTHROUGH, L"关闭鼠标穿透");
-    AppendMenuW(menu, MF_STRING, IDM_CLOSE_PINS, L"关闭可交互的贴图");
+    UINT pin_flags = MF_STRING | (mc_pin_enabled() ? 0 : MF_GRAYED);
+    AppendMenuW(menu, pin_flags, IDM_RESTORE_PINS, L"恢复隐藏的贴图");
+    AppendMenuW(menu, pin_flags, IDM_EXIT_PIN_PASSTHROUGH, L"关闭鼠标穿透");
+    AppendMenuW(menu, pin_flags, IDM_CLOSE_PINS, L"关闭可交互的贴图");
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"设置…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IDM_QUIT, L"退出 Mooji Cut");
@@ -438,10 +506,11 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         }
         if (wp == CAPTURE_TIMER) {
             KillTimer(window, CAPTURE_TIMER);
+            if (update_exit_pending) return 0;
             if (!mc_capture_start(instance, host, &capture_services)) MessageBoxW(host,
                 L"无法读取当前桌面。请退出安全桌面或远程会话限制后重试。", L"Mooji Cut", MB_OK | MB_ICONWARNING);
         }
-        if (wp == RECORD_TIMER) { KillTimer(window, RECORD_TIMER); mc_recording_start(instance, host); }
+        if (wp == RECORD_TIMER) { KillTimer(window, RECORD_TIMER); if (!update_exit_pending) mc_recording_start(instance, host); }
         return 0;
     case MOOJICUT_RECORDING_STATE_CHANGED:
         if (tray_added) {
@@ -456,16 +525,28 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         }
         return 0;
     case WM_SHOW_SETTINGS: show_settings(); return 0;
+    case MOOJICUT_UPDATES_CHANGED:
+        if (settings) {
+            HWND page = PropSheet_GetCurrentPageHwnd(settings);
+            if (page && GetDlgItem(page, IDC_UPDATE_STATUS)) refresh_updates_page(page);
+        }
+        if (update_exit_pending && !mc_updates_busy()) PostMessageW(host, WM_CLOSE, 0, 0);
+        return 0;
     case WM_CLOSE:
         if (mc_recording_busy()) {
             mc_recording_close();
             if (mc_recording_busy()) return 0;
         }
+        update_exit_pending = TRUE;
+        KillTimer(host, CAPTURE_TIMER);
+        KillTimer(host, RECORD_TIMER);
+        if (!mc_updates_prepare_close()) return 0;
         DestroyWindow(window); return 0;
     case WM_DESTROY:
         unregister_shortcuts();
         mc_capture_close();
         mc_pins_shutdown();
+        mc_updates_shutdown();
         if (settings) DestroyWindow(settings);
         if (tray_added) Shell_NotifyIconW(NIM_DELETE, &tray);
         tray_added = FALSE;
@@ -589,6 +670,16 @@ static int run_smoke(void) {
     load_preferences();
     if (!show_settings()) goto cleanup;
     first = settings;
+    page = PropSheet_GetCurrentPageHwnd(settings);
+    if (!mc_pin_enabled() || !GetDlgItem(page, IDC_PIN_ENABLED)) goto cleanup;
+    CheckDlgButton(page, IDC_PIN_ENABLED, BST_UNCHECKED);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_PIN_ENABLED, BN_CLICKED), 0);
+    load_preferences();
+    if (mc_pin_enabled()) goto cleanup;
+    CheckDlgButton(page, IDC_PIN_ENABLED, BST_CHECKED);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_PIN_ENABLED, BN_CLICKED), 0);
+    load_preferences();
+    if (!mc_pin_enabled()) goto cleanup;
     if (!show_settings() || settings != first) goto cleanup;
     PropSheet_SetCurSel(settings, NULL, 1);
     page = PropSheet_GetCurrentPageHwnd(settings);
@@ -699,9 +790,11 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
         result = run_smoke();
         if (result == 0) result = mc_capture_smoke(instance);
         if (result == 0 && !mc_pin_smoke(instance)) result = 1;
+        if (result == 0 && !mc_updates_smoke(instance)) result = 1;
         if (result == 0) result = mc_recording_smoke(instance);
         DestroyWindow(host);
     } else {
+        if (!mc_updates_initialize(instance, host)) return 1;
         taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
         refresh_global_shortcuts();
         if (!add_tray() || preferences_requested || open_on_start) show_settings();

@@ -320,6 +320,15 @@ int main(void) {
                   "secondary display keeps its negative coordinates and corresponding pixels");
             CHECK(controller.createdEditors[1].onPinPNGData([@"pin" dataUsingEncoding:NSUTF8StringEncoding]) && pinCalls == 1,
                   "overlay pin actions delegate the final PNG to the application");
+            BOOL (^oldPinAction)(NSData *) = controller.createdEditors[1].onPinPNGData;
+            controller.onPinPNGData = nil;
+            CHECK(!controller.createdEditors[0].onPinPNGData && !controller.createdEditors[1].onPinPNGData && controller.busy,
+                  "disabling pin capability clears all active overlay actions without canceling editing");
+            CHECK(!oldPinAction([@"pin" dataUsingEncoding:NSUTF8StringEncoding]) && pinCalls == 1,
+                  "a retained pin callback cannot invoke a capability removed while editing");
+            controller.onPinPNGData = ^BOOL(NSData *data, NSRect frame) { (void)frame; pinCalls++; return data.length > 0; };
+            CHECK(controller.createdEditors[0].onPinPNGData && controller.createdEditors[1].onPinPNGData && controller.busy,
+                  "re-enabling pin capability updates existing editors in place");
             [controller.createdEditors[1] cancel:nil];
             CHECK(!controller.busy && controller.createdEditors[0].cancellations > 0 && controller.createdEditors[1].cancellations > 0,
                   "closing any overlay closes the whole capture session");

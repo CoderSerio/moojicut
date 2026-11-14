@@ -58,6 +58,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @property MCPinnedImageController *pinnedImages;
 @property NSMenuItem *recordMenuItem;
 @property NSMenuItem *stopMenuItem;
+@property BOOL choosingImage;
 @end
 
 @implementation MCNativeHost
@@ -85,6 +86,10 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
             if (recording) [weakSelf.globalShortcuts suspend]; else [weakSelf.globalShortcuts resume];
             [weakSelf.pinnedImages setShortcutsSuspended:recording];
         };
+        self.preferences.onPinningEnabledChanged = ^(BOOL enabled) {
+            weakSelf.pinnedImages.enabled = enabled;
+            [weakSelf updatePinCapability];
+        };
         self.preferences.shortcutRegistrationError = self.globalShortcuts.registrationError;
         self.preferences.pinShortcutRegistrationError = self.pinnedImages.shortcutRegistrationError;
         self.preferences.updateController = self.updateController;
@@ -93,31 +98,55 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.report[@"windowNumber"] = @(self.preferences.window.windowNumber); [self writeReport];
 }
 - (void)capture:(__unused id)sender {
+    if (self.updateController.installationPending) return;
     [self.captureController capture];
+}
+- (void)updatePinCapability {
+    if (!self.pinnedImages.enabled) self.captureController.onPinPNGData = nil;
+    else {
+        __weak MCNativeHost *weakSelf = self;
+        self.captureController.onPinPNGData = ^BOOL(NSData *data, NSRect screenFrame) {
+            NSError *error = nil;
+            BOOL pinned = [weakSelf.pinnedImages pinPNGData:data screenFrame:screenFrame error:&error];
+            if (!pinned) NSLog(@"Unable to create pinned image: %@", error.localizedDescription);
+            return pinned;
+        };
+    }
+    for (NSMenuItem *item in self.statusItem.menu.itemArray) if (item.tag == 1001) item.enabled = self.pinnedImages.enabled;
 }
 - (void)closePinnedImages:(__unused id)sender { [self.pinnedImages closeAll]; }
 - (void)togglePinnedImages:(__unused id)sender { [self.pinnedImages toggleVisibility]; }
 - (void)restorePinnedImages:(__unused id)sender { [self.pinnedImages restoreHiddenPins]; }
 - (void)unlockPinnedImages:(__unused id)sender { [self.pinnedImages disableClickThrough]; }
 - (void)openImage:(__unused id)sender {
+    if (self.updateController.installationPending) return;
+    self.choosingImage = YES;
+    [self.updateController operationStateDidChange];
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.allowedContentTypes = @[UTTypeImage]; panel.allowsMultipleSelection = NO;
     panel.canChooseDirectories = NO; panel.prompt = @"标注图片";
     [NSApp activateIgnoringOtherApps:YES];
-    if ([panel runModal] == NSModalResponseOK) {
+    NSModalResponse response = [panel runModal];
+    if (response == NSModalResponseOK && !self.updateController.installationPending) {
         NSError *error = nil;
         if (![self.captureController showEditorForPNGURL:panel.URL error:&error]) [[NSAlert alertWithError:error] runModal];
     }
+    self.choosingImage = NO;
+    [self.updateController operationStateDidChange];
 }
-- (void)startRecording:(__unused id)sender { [self.recordingController startRecording]; }
+- (void)startRecording:(__unused id)sender { if (!self.updateController.installationPending) [self.recordingController startRecording]; }
 - (void)stopRecording:(__unused id)sender { [self.recordingController stopRecording]; }
-- (void)resumeRecordingDraft:(__unused id)sender { [self.recordingController resumeLastDraft]; }
+- (void)resumeRecordingDraft:(__unused id)sender { if (!self.updateController.installationPending) [self.recordingController resumeLastDraft]; }
 - (void)updateRecordingState {
-    self.recordMenuItem.enabled = !self.recordingController.busy;
+    self.recordMenuItem.enabled = !self.recordingController.busy && !self.updateController.installationPending;
     self.stopMenuItem.enabled = self.recordingController.recording;
     self.statusItem.button.toolTip = self.recordingController.recording ? @"Mooji Cut · 录制中，点击停止录屏" : @"Mooji Cut";
     self.statusItem.button.title = self.recordingController.recording ? @" ●" : @"";
+    for (NSMenuItem *item in self.statusItem.menu.itemArray)
+        if (item.action == @selector(capture:) || item.action == @selector(openImage:) || item.action == @selector(resumeRecordingDraft:))
+            item.enabled = !self.updateController.installationPending;
 }
+- (void)updateStateChanged:(__unused NSNotification *)notification { [self updateRecordingState]; }
 - (BOOL)applicationShouldHandleReopen:(__unused NSApplication *)sender hasVisibleWindows:(__unused BOOL)flag {
     // Finder and Spotlight send a reopen event to an already running menu bar
     // app. Reuse (or recreate) settings so opening Mooji Cut has a visible result.
@@ -134,19 +163,18 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.captureController = [MCCaptureController new];
     self.recordingController = [MCMacRecordingController new];
     self.updateController = [MCUpdateController new];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateStateChanged:)
+        name:MCUpdateStateDidChangeNotification object:self.updateController];
     __weak MCNativeHost *weakSelf = self;
-    self.updateController.isOperationBusy = ^BOOL{ return weakSelf.captureController.busy || weakSelf.recordingController.busy; };
+    self.updateController.isOperationBusy = ^BOOL{
+        return weakSelf.captureController.busy || weakSelf.recordingController.busy || weakSelf.choosingImage;
+    };
     self.pinnedImages.onShortcutStatus = ^(NSString *error) { weakSelf.preferences.pinShortcutRegistrationError = error; };
     self.captureController.onStateChange = ^{
         [weakSelf.pinnedImages setCaptureHidden:weakSelf.captureController.busy];
         [weakSelf.updateController operationStateDidChange];
     };
-    self.captureController.onPinPNGData = ^BOOL(NSData *data, NSRect screenFrame) {
-        NSError *error = nil;
-        BOOL pinned = [weakSelf.pinnedImages pinPNGData:data screenFrame:screenFrame error:&error];
-        if (!pinned) NSLog(@"Unable to create pinned image: %@", error.localizedDescription);
-        return pinned;
-    };
+    [self updatePinCapability];
     self.recordingController.onStateChange = ^{
         [weakSelf updateRecordingState];
         [weakSelf.updateController operationStateDidChange];
@@ -179,10 +207,10 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         @{@"title":@"恢复所有隐藏贴图", @"action":NSStringFromSelector(@selector(restorePinnedImages:))},
         @{@"title":@"解除贴图鼠标穿透", @"action":NSStringFromSelector(@selector(unlockPinnedImages:))}]) {
         NSMenuItem *entry = [[NSMenuItem alloc] initWithTitle:item[@"title"] action:NSSelectorFromString(item[@"action"]) keyEquivalent:@""];
-        entry.target = self; [menu addItem:entry];
+        entry.target = self; entry.tag = 1001; [menu addItem:entry];
     }
     NSMenuItem *closePins = [[NSMenuItem alloc] initWithTitle:@"关闭所有贴图" action:@selector(closePinnedImages:) keyEquivalent:@""];
-    closePins.target = self; [menu addItem:closePins]; [menu addItem:NSMenuItem.separatorItem];
+    closePins.target = self; closePins.tag = 1001; [menu addItem:closePins]; [menu addItem:NSMenuItem.separatorItem];
     self.recordMenuItem = [[NSMenuItem alloc] initWithTitle:@"开始录屏…" action:@selector(startRecording:) keyEquivalent:@""];
     self.recordMenuItem.target = self; [menu addItem:self.recordMenuItem];
     self.stopMenuItem = [[NSMenuItem alloc] initWithTitle:@"停止录屏并编辑" action:@selector(stopRecording:) keyEquivalent:@""];
@@ -193,6 +221,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     preferences.target = self; [menu addItem:preferences]; [menu addItem:NSMenuItem.separatorItem];
     NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出 Mooji Cut" action:@selector(terminate:) keyEquivalent:@"q"]; quit.target = NSApp; [menu addItem:quit];
     self.statusItem.menu = menu;
+    [self updatePinCapability];
     [self updateRecordingState];
     if (self.smoke) [self runSmoke];
     else if ([NSProcessInfo.processInfo.arguments containsObject:@"--open-image"]) {

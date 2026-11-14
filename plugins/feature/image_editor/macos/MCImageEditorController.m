@@ -890,6 +890,11 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     self.pinButton.enabled = self.onPinPNGData != nil;
     [self positionFloatingToolbar];
 }
+- (void)setOnPinPNGData:(BOOL (^)(NSData *))handler {
+    _onPinPNGData = [handler copy];
+    self.pinButton.enabled = handler != nil;
+    self.pinButton.toolTip = handler ? @"贴图置顶" : @"贴图已关闭，可在设置中启用";
+}
 - (void)showError:(NSError *)error {
     [self.properties showMessage:error.localizedDescription];
     NSBeep();

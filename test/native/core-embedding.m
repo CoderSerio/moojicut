@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #include <assert.h>
 #include "moonbit.h"
+#include "native/shared/update_release.h"
 
 // Signatures observed in native foreign_library output from moonc 0.10.20.
 // This test deliberately checks the real boundary instead of a mocked core.
@@ -64,6 +65,31 @@ int main(void) {
     assert(Moonbit_array_length(unicode) == 4);
     assert(unicode[0] == 0x4e2d && unicode[1] == 0x6587 && unicode[2] == 0xd83e && unicode[3] == 0xdd8a);
     moonbit_decref(unicode);
+
+    // Verify the real exported ownership boundary, not a mock C parser. Repeated
+    // checks release both caller-owned inputs and the short-lived result handle.
+    for (int i = 0; i < 64; i++) {
+      NSString *version = @"0.1.0-alpha.10";
+      NSString *name = [@"moojicut-" stringByAppendingString:[version stringByAppendingString:@"-macos-arm64.zip"]];
+      NSString *prefix = [@"https://github.com/CoderSerio/moojicut/releases/download/v" stringByAppendingString:[version stringByAppendingString:@"/"]];
+      NSString *response = JSONText(@[@{@"tag_name":[@"v" stringByAppendingString:version], @"draft":@NO,
+        @"prerelease":@YES, @"published_at":@"2026-11-15T00:00:00Z",
+        @"html_url":[@"https://github.com/CoderSerio/moojicut/releases/tag/v" stringByAppendingString:version],
+        @"assets":@[@{@"name":name, @"state":@"uploaded", @"size":@1234,
+          @"browser_download_url":[prefix stringByAppendingString:name],
+          @"digest":@"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}]);
+      moonbit_string_t current = MoonString(@"0.1.0-alpha.9"), body = MoonString(response);
+      int handle = update_release_create(current, MC_UPDATE_MACOS_ARM64, body);
+      assert(Moonbit_rc_count(Moonbit_object_header(current)) == 1);
+      assert(Moonbit_rc_count(Moonbit_object_header(body)) == 1);
+      moonbit_decref(current); moonbit_decref(body);
+      assert(handle > 0 && update_release_status(handle) == MC_UPDATE_AVAILABLE && update_release_size(handle) == 1234);
+      moonbit_string_t selected = update_release_text(handle, MC_UPDATE_VERSION);
+      update_release_dispose(handle);
+      NSString *selectedVersion = [[NSString alloc] initWithCharacters:selected length:(NSUInteger)Moonbit_array_length(selected)];
+      moonbit_decref(selected);
+      assert([selectedVersion isEqual:version] && update_release_status(handle) == MC_UPDATE_INVALID);
+    }
 
     NSDictionary *created = Call(image_create, @{ @"width":@640, @"height":@360 });
     NSCAssert([created[@"ok"] boolValue], @"Create failed");

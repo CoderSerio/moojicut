@@ -123,6 +123,13 @@ int main(void) {
             [window close];
 
             MCPreferencesController *preferences = [[MCPreferencesController alloc] initWithDefaults:defaults coreVersion:@"test" diagnostics:@{}];
+            CHECK(preferences.pinningEnabled, "pin feature is enabled before the first explicit preference");
+            __block NSUInteger capabilityChanges = 0;
+            preferences.onPinningEnabledChanged = ^(BOOL enabled) { (void)enabled; capabilityChanges++; };
+            [preferences setPinningEnabled:NO];
+            MCPreferencesController *reopened = [[MCPreferencesController alloc] initWithDefaults:defaults coreVersion:@"test" diagnostics:@{}];
+            CHECK(!reopened.pinningEnabled && capabilityChanges == 1, "pin feature preference persists and dispatches one host lifecycle change");
+            [preferences setPinningEnabled:YES];
             __block BOOL recordingSettings = NO;
             preferences.onShortcutRecordingChanged = ^(BOOL active) { recordingSettings = active; };
             [preferences buildWindow]; [preferences selectPage:@"shortcuts"];

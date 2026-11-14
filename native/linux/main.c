@@ -7,6 +7,7 @@
 #include "moonbit.h"
 #include "plugins/feature/capture/linux/capture.h"
 #include "plugins/feature/pin/linux/pinning.h"
+#include "updates.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "development"
@@ -19,9 +20,9 @@ typedef struct { int key; int mods; } Shortcut;
 typedef struct {
   GtkApplication *application;
   AppIndicator *indicator;
-  GtkWidget *window, *notebook, *status, *recorders[3], *dark_toggle;
+  GtkWidget *window, *notebook, *status, *recorders[3], *dark_toggle, *pin_toggle, *pin_menu[3];
   Shortcut shortcuts[3];
-  gboolean prefer_dark, system_dark, smoke, activated, core_ok;
+  gboolean prefer_dark, system_dark, smoke, activated, core_ok, pin_enabled, quitting;
   int recording, exit_code;
   char *config_path, *smoke_dir, *icon_path;
 } Host;
@@ -69,6 +70,7 @@ static void refresh_shortcuts(void) {
 static gboolean save_settings(void) {
   GKeyFile *settings = g_key_file_new();
   g_key_file_set_boolean(settings, "General", "prefer-dark", host.prefer_dark);
+  g_key_file_set_boolean(settings, "Features", "pin-enabled", host.pin_enabled);
   for (int i = 0; i < 3; i++) {
     int values[] = { host.shortcuts[i].key, host.shortcuts[i].mods };
     g_key_file_set_integer_list(settings, "Shortcuts", action_ids[i], values, 2);
@@ -94,9 +96,12 @@ static gboolean save_settings(void) {
 static void load_settings(void) {
   memcpy(host.shortcuts, defaults, sizeof(defaults));
   host.prefer_dark = FALSE;
+  host.pin_enabled = TRUE;
   GKeyFile *settings = g_key_file_new();
   if (g_key_file_load_from_file(settings, host.config_path, G_KEY_FILE_NONE, NULL)) {
     host.prefer_dark = g_key_file_get_boolean(settings, "General", "prefer-dark", NULL);
+    if (g_key_file_has_key(settings, "Features", "pin-enabled", NULL))
+      host.pin_enabled = g_key_file_get_boolean(settings, "Features", "pin-enabled", NULL);
     for (int i = 0; i < 3; i++) {
       gsize count = 0;
       int *value = g_key_file_get_integer_list(settings, "Shortcuts", action_ids[i], &count, NULL);
@@ -213,6 +218,27 @@ static void appearance_changed(GtkToggleButton *button, gpointer data) {
     host.prefer_dark || host.system_dark, NULL);
   set_status("外观偏好已保存。");
 }
+static void sync_pin_feature(void) {
+  mc_linux_pins_set_enabled(host.pin_enabled);
+  mc_linux_capture_refresh_capabilities();
+  for (int i = 0; i < 3; i++)
+    if (host.pin_menu[i]) gtk_widget_set_sensitive(host.pin_menu[i], host.pin_enabled);
+}
+static void pin_feature_changed(GtkToggleButton *button, gpointer data) {
+  (void)data;
+  gboolean previous = host.pin_enabled;
+  host.pin_enabled = gtk_toggle_button_get_active(button);
+  /* Persist first: a failed write must not irreversibly discard existing pins. */
+  if (!save_settings()) {
+    host.pin_enabled = previous;
+    g_signal_handlers_block_by_func(button, pin_feature_changed, NULL);
+    gtk_toggle_button_set_active(button, previous);
+    g_signal_handlers_unblock_by_func(button, pin_feature_changed, NULL);
+    return;
+  }
+  sync_pin_feature();
+  set_status(host.pin_enabled ? "贴图已启用。" : "贴图已关闭，当前贴图与全局按键已释放；按键配置保留。");
+}
 
 static GtkWidget *label(const char *text, gboolean secondary) {
   GtkWidget *widget = gtk_label_new(text);
@@ -231,16 +257,23 @@ static GtkWidget *page(void) {
 
 static void window_destroyed(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
-  host.window = host.notebook = host.status = host.dark_toggle = NULL;
+  host.window = host.notebook = host.status = host.dark_toggle = host.pin_toggle = NULL;
   memset(host.recorders, 0, sizeof(host.recorders));
   host.recording = -1;
 }
 
 static void quit_app(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
+  if (host.quitting) return;
+  host.quitting = TRUE;
   mc_linux_capture_close();
-  mc_linux_pins_close();
-  g_application_quit(G_APPLICATION(host.application));
+  mc_linux_pins_set_enabled(FALSE);
+  if (host.window) gtk_widget_destroy(host.window);
+  mc_linux_updates_cancel_all();
+  if (host.indicator) app_indicator_set_status(host.indicator, APP_INDICATOR_STATUS_PASSIVE);
+  /* Download tasks hold the application until cancelled workers finish removing
+   * partial files. Releasing startup's hold leaves the GTK loop responsive. */
+  g_application_release(G_APPLICATION(host.application));
 }
 
 static void show_preferences(void) {
@@ -275,6 +308,11 @@ static void show_preferences(void) {
   g_signal_connect(host.dark_toggle, "toggled", G_CALLBACK(appearance_changed), NULL);
   gtk_box_pack_start(GTK_BOX(general), host.dark_toggle, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(general), label("使用桌面的 GTK 主题；深色外观需要主题支持。", TRUE), FALSE, FALSE, 0);
+  host.pin_toggle = gtk_check_button_new_with_label("启用贴图");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), host.pin_enabled);
+  g_signal_connect(host.pin_toggle, "toggled", G_CALLBACK(pin_feature_changed), NULL);
+  gtk_box_pack_start(GTK_BOX(general), host.pin_toggle, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(general), label("关闭时会关闭所有当前贴图并释放贴图全局按键；按键配置保留，重新启用后可继续使用。", TRUE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(general), label("如果桌面未显示托盘图标，重新运行启动脚本即可打开设置。GNOME 桌面可能需要 AppIndicator 扩展。", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), general, gtk_label_new("通用"));
 
@@ -302,6 +340,7 @@ static void show_preferences(void) {
   gtk_box_pack_start(GTK_BOX(shortcuts), label("配置自动保存；截图全局快捷键尚未接入，请从托盘菜单或通用设置启动。贴图全局恢复键见“贴图按键”；录屏仍在开发中。", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), shortcuts, gtk_label_new("快捷键"));
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_pin_preferences(), gtk_label_new("贴图按键"));
+  gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_update_preferences(), gtk_label_new("更新"));
 
   GtkWidget *about = page();
   GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale(host.icon_path, 72, 72, TRUE, NULL);
@@ -339,12 +378,14 @@ static void capture_closed(gpointer data) {
 }
 static void pin_capture_result(GdkPixbuf *image, const GdkRectangle *bounds, gpointer data) {
   (void)data;
-  mc_linux_pin_image_at(image, bounds);
+  if (host.pin_enabled) mc_linux_pin_image_at(image, bounds);
 }
-static const MCLinuxCaptureHost capture_host = {pin_capture_result, capture_closed, NULL};
+static gboolean can_pin_capture(gpointer data) { (void)data; return mc_linux_pins_enabled(); }
+static const MCLinuxCaptureHost capture_host = {pin_capture_result, capture_closed, NULL, can_pin_capture};
 
 static gboolean begin_capture(gpointer data) {
   (void)data;
+  if (host.quitting) return G_SOURCE_REMOVE;
   mc_linux_capture_start(host.application, &capture_host);
   return G_SOURCE_REMOVE;
 }
@@ -381,7 +422,7 @@ static gboolean save_smoke_screenshot(void) {
 static gboolean smoke_check(gpointer data) {
   (void)data;
   gboolean passed = host.core_ok && host.window && gtk_widget_get_visible(host.window);
-  passed = passed && gtk_notebook_get_n_pages(GTK_NOTEBOOK(host.notebook)) == 4;
+  passed = passed && gtk_notebook_get_n_pages(GTK_NOTEBOOK(host.notebook)) == 5;
   passed = save_smoke_screenshot() && passed;
   gtk_notebook_set_current_page(GTK_NOTEBOOK(host.notebook), 1);
   passed = passed && validate_shortcut(0, host.shortcuts[1]) == 2;
@@ -390,6 +431,12 @@ static gboolean smoke_check(gpointer data) {
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.dark_toggle), TRUE);
   load_settings();
   passed = passed && host.shortcuts[0].key == '9' && host.shortcuts[2].key == 0 && host.prefer_dark;
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), FALSE);
+  load_settings();
+  passed = !host.pin_enabled && !mc_linux_pins_enabled() && passed;
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), TRUE);
+  load_settings();
+  passed = host.pin_enabled && mc_linux_pins_enabled() && passed;
   begin_recording(NULL, GINT_TO_POINTER(0));
   gtk_notebook_set_current_page(GTK_NOTEBOOK(host.notebook), 2);
   passed = passed && host.recording == -1;
@@ -406,6 +453,7 @@ static gboolean smoke_check(gpointer data) {
   passed = passed && host.window == NULL;
   passed = mc_linux_capture_smoke(host.application) && passed;
   passed = mc_linux_pin_smoke() && passed;
+  passed = mc_linux_update_smoke() && passed;
   host.exit_code = passed ? 0 : 1;
   g_print("Linux native UI smoke %s: core, settings persistence, clear/reset, duplicate validation, five close/reopen cycles.\n", passed ? "passed" : "FAILED");
   g_application_quit(G_APPLICATION(host.application));
@@ -428,6 +476,7 @@ static void startup(GApplication *application, gpointer data) {
   g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &host.system_dark, NULL);
   load_settings();
   mc_linux_pins_init(host.application, host.config_path);
+  mc_linux_pins_set_enabled(host.pin_enabled);
   g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", host.prefer_dark || host.system_dark, NULL);
   host.indicator = app_indicator_new("moojicut", host.icon_path, APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
   app_indicator_set_title(host.indicator, "Mooji Cut");
@@ -437,12 +486,15 @@ static void startup(GApplication *application, gpointer data) {
   g_signal_connect(screenshot, "activate", G_CALLBACK(menu_capture), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), screenshot);
   GtkWidget *restore = gtk_menu_item_new_with_label("恢复隐藏贴图");
+  host.pin_menu[0] = restore;
   g_signal_connect(restore,"activate",G_CALLBACK(restore_pins),NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu),restore);
   GtkWidget *restore_input = gtk_menu_item_new_with_label("关闭鼠标穿透");
+  host.pin_menu[1] = restore_input;
   g_signal_connect(restore_input,"activate",G_CALLBACK(restore_pin_input),NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu),restore_input);
   GtkWidget *pins = gtk_menu_item_new_with_label("关闭所有贴图");
+  host.pin_menu[2] = pins;
   g_signal_connect(pins, "activate", G_CALLBACK(close_pins), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), pins);
   GtkWidget *preferences = gtk_menu_item_new_with_label("设置…");
@@ -453,12 +505,14 @@ static void startup(GApplication *application, gpointer data) {
   g_signal_connect(quit, "activate", G_CALLBACK(quit_app), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit);
   gtk_widget_show_all(menu);
+  sync_pin_feature();
   app_indicator_set_menu(host.indicator, GTK_MENU(menu));
   app_indicator_set_status(host.indicator, APP_INDICATOR_STATUS_ACTIVE);
 }
 
 static int command_line(GApplication *application, GApplicationCommandLine *command, gpointer data) {
   (void)application; (void)data;
+  if (host.quitting) return 0;
   GVariantDict *options = g_application_command_line_get_options_dict(command);
   if (g_variant_dict_contains(options, "capture")) menu_capture(NULL, NULL);
   else if (g_variant_dict_contains(options, "preferences") || host.activated || host.smoke) show_preferences();
@@ -510,7 +564,7 @@ int main(int argc, char **argv) {
   g_signal_connect(host.application, "command-line", G_CALLBACK(command_line), NULL);
   int result = g_application_run(G_APPLICATION(host.application), argc, argv);
   mc_linux_capture_close();
-  mc_linux_pins_close();
+  mc_linux_pins_set_enabled(FALSE);
   if (host.window) gtk_widget_destroy(host.window);
   if (host.indicator) {
     app_indicator_set_status(host.indicator, APP_INDICATOR_STATUS_PASSIVE);

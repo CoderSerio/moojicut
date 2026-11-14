@@ -1,4 +1,5 @@
 #include "pinning.h"
+#include "native/shared/feature_runtime.h"
 #include <dlfcn.h>
 #include <gdk/gdkx.h>
 #include <glib/gstdio.h>
@@ -27,8 +28,9 @@ static const Binding defaults[6] = {{GDK_KEY_plus, 0},
                                     {GDK_KEY_p, GDK_CONTROL_MASK | GDK_SHIFT_MASK}};
 static const char *names[] = {"放大贴图",     "缩小贴图",        "增加不透明度",
                               "降低不透明度", "隐藏 / 恢复贴图", "切换鼠标穿透"};
-static GtkWidget *recorders[6], *status;
+static GtkWidget *recorders[6], *status, *preferences_box;
 static int recording = -1;
+static int feature_state;
 
 static gboolean capture_hidden, global_ready[2], global_down[2], filter_added;
 static void *xlib;
@@ -39,6 +41,8 @@ static void visibility_action(void);
 static void passthrough_action(void);
 static GdkFilterReturn global_filter(GdkXEvent *native, GdkEvent *event, gpointer data);
 static gboolean record_key(GtkWidget *widget, GdkEventKey *event, gpointer data);
+static void refresh(void);
+gboolean mc_linux_pins_enabled(void) { return feature_can_invoke(feature_state) == 1; }
 static unsigned x_mods(GdkModifierType mods) {
   return ((mods & GDK_CONTROL_MASK) ? ControlMask : 0) | ((mods & GDK_SHIFT_MASK) ? ShiftMask : 0) |
          ((mods & GDK_MOD1_MASK) ? Mod1Mask : 0) | ((mods & GDK_SUPER_MASK) ? Mod4Mask : 0);
@@ -165,6 +169,8 @@ static void passthrough_action(void) {
 static GdkFilterReturn global_filter(GdkXEvent *native, GdkEvent *event, gpointer data) {
   (void)event;
   (void)data;
+  if (!mc_linux_pins_enabled())
+    return GDK_FILTER_CONTINUE;
   XEvent *x = native;
   if (x->type != KeyPress && x->type != KeyRelease)
     return GDK_FILTER_CONTINUE;
@@ -233,11 +239,7 @@ static gboolean save(void) {
   return ok;
 }
 void mc_linux_pins_init(GtkApplication *app, const char *path) {
-  for (int i = 0; i < 2; i++)
-    if (global_ready[i]) {
-      release_global(bindings[i + 4]);
-      global_ready[i] = FALSE;
-    }
+  mc_linux_pins_set_enabled(FALSE);
   application = app;
   g_free(settings_path);
   settings_path = g_strconcat(path, ".pins", NULL);
@@ -262,14 +264,42 @@ void mc_linux_pins_init(GtkApplication *app, const char *path) {
           memcpy(bindings, defaults, sizeof(bindings));
   }
   g_key_file_unref(file);
-  if (x11_available()) {
-    for (int i = 0; i < 2; i++)
-      global_ready[i] = register_global(bindings[i + 4]);
-    if (!filter_added) {
-      gdk_window_add_filter(NULL, global_filter, NULL);
-      filter_added = TRUE;
+}
+void mc_linux_pins_set_enabled(gboolean enabled) {
+  if (enabled == mc_linux_pins_enabled())
+    return;
+  if (!enabled) {
+    feature_state = feature_transition(feature_state, MC_FEATURE_REQUEST_DISABLE);
+    recording = -1;
+    /* Restore input before removing its recovery key. Closing the feature is
+     * stronger than the interactive close-all command, which protects pins. */
+    mc_linux_pins_restore_input();
+    mc_linux_pins_close();
+    for (int i = 0; i < 2; i++) {
+      if (global_ready[i])
+        release_global(bindings[i + 4]);
+      global_ready[i] = global_down[i] = FALSE;
+    }
+    if (filter_added) {
+      gdk_window_remove_filter(NULL, global_filter, NULL);
+      filter_added = FALSE;
+    }
+    capture_hidden = FALSE;
+    feature_state = feature_transition(feature_state, MC_FEATURE_CLEANUP_FINISHED);
+  } else {
+    feature_state = feature_transition(feature_state, MC_FEATURE_ENABLE);
+    if (x11_available()) {
+      for (int i = 0; i < 2; i++)
+        global_ready[i] = register_global(bindings[i + 4]);
+      if (!filter_added) {
+        gdk_window_add_filter(NULL, global_filter, NULL);
+        filter_added = TRUE;
+      }
     }
   }
+  if (preferences_box)
+    gtk_widget_set_sensitive(preferences_box, mc_linux_pins_enabled());
+  refresh();
 }
 static void resize_pin(Pin *pin, double scale) {
   GdkMonitor *monitor = gdk_display_get_monitor_at_window(gtk_widget_get_display(pin->window),
@@ -436,6 +466,8 @@ static gboolean press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
   return FALSE;
 }
 void mc_linux_pin_image_at(GdkPixbuf *image, const GdkRectangle *bounds) {
+  if (!mc_linux_pins_enabled())
+    return;
   if (!image)
     return;
   Pin *pin = g_new0(Pin, 1);
@@ -515,6 +547,8 @@ static void refresh(void) {
 }
 static void begin(GtkButton *button, gpointer data) {
   (void)button;
+  if (!mc_linux_pins_enabled())
+    return;
   recording = GPOINTER_TO_INT(data);
   refresh();
   gtk_label_set_text(GTK_LABEL(status),
@@ -523,7 +557,7 @@ static void begin(GtkButton *button, gpointer data) {
 static gboolean record_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
   (void)widget;
   (void)data;
-  if (recording < 0)
+  if (!mc_linux_pins_enabled() || recording < 0)
     return FALSE;
   if (event->keyval == GDK_KEY_Escape) {
     recording = -1;
@@ -581,6 +615,8 @@ static gboolean record_key(GtkWidget *widget, GdkEventKey *event, gpointer data)
 static void reset_keys(GtkButton *button, gpointer data) {
   (void)button;
   (void)data;
+  if (!mc_linux_pins_enabled())
+    return;
   Binding previous[6];
   memcpy(previous, bindings, sizeof(bindings));
   for (GSList *n = pins; n; n = n->next) {
@@ -622,10 +658,13 @@ static void prefs_destroy(GtkWidget *widget, gpointer data) {
   (void)data;
   memset(recorders, 0, sizeof(recorders));
   status = NULL;
+  preferences_box = NULL;
   recording = -1;
 }
 GtkWidget *mc_linux_pin_preferences(void) {
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+  preferences_box = box;
+  gtk_widget_set_sensitive(box, mc_linux_pins_enabled());
   gtk_container_set_border_width(GTK_CONTAINER(box), 20);
   GtkWidget *grid = gtk_grid_new();
   gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
@@ -795,6 +834,40 @@ gboolean mc_linux_pin_smoke(void) {
   twice.type = GDK_2BUTTON_PRESS;
   press(pin->canvas, &twice, pin);
   ok = pins == NULL && ok;
+  /* Disabling is real teardown, not just a hidden menu. Preserve bindings,
+   * revoke stale entry points, and permit exactly one later registration. */
+  preferences = mc_linux_pin_preferences();
+  g_object_ref_sink(preferences);
+  begin(NULL, GINT_TO_POINTER(0));
+  saved = record_key(NULL, &config_event, NULL) && saved;
+  Binding retained = bindings[0];
+  image = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 120, 80);
+  mc_linux_pin_image(image);
+  pin = pins ? pins->data : NULL;
+  ok = pin != NULL && ok;
+  if (pin && x11_available()) ok = set_passthrough(pin, TRUE) && ok;
+  begin(NULL, GINT_TO_POINTER(1));
+  mc_linux_pins_set_enabled(FALSE);
+  ok = !mc_linux_pins_enabled() && !pins && !filter_added && !global_ready[0] && !global_ready[1] &&
+       !global_down[0] && !global_down[1] && recording == -1 && !gtk_widget_get_sensitive(preferences) && ok;
+  begin(NULL, GINT_TO_POINTER(1));
+  reset_keys(NULL, NULL);
+  mc_linux_pin_image(image);
+  ok = recording == -1 && !record_key(NULL, &config_event, NULL) && !pins && same(retained, bindings[0]) && ok;
+  mc_linux_pins_set_enabled(FALSE);
+  mc_linux_pins_set_enabled(TRUE);
+  mc_linux_pins_set_enabled(TRUE);
+  ok = mc_linux_pins_enabled() && gtk_widget_get_sensitive(preferences) && same(retained, bindings[0]) && ok;
+  mc_linux_pin_image(image);
+  pin = pins ? pins->data : NULL;
+  ok = pin != NULL && ok;
+  if (pin && x11_available())
+    ok = global_ready[0] && global_ready[1] && filter_added && set_passthrough(pin, TRUE) && smoke_recover_key(pin) && ok;
+  g_object_unref(image);
+  reset_keys(NULL, NULL);
+  gtk_widget_destroy(preferences);
+  g_object_unref(preferences);
   mc_linux_pins_close();
+  g_print("Linux pin lifecycle smoke %s: release grabs/filter, terminate pass-through, reject disabled calls, retain bindings, re-enable recovery.\n", ok && saved ? "passed" : "FAILED");
   return ok && saved;
 }

@@ -18,10 +18,10 @@
 
 Windows 包免安装，目前尚未进行代码签名，系统可能显示未知发布者提示。macOS 预览包尚未完成 Apple 公证，首次打开可能需要在「系统设置 → 隐私与安全性」中确认。
 
-Linux 需要 GTK 3 和 Ayatana AppIndicator。Ubuntu 22.04 可运行：
+Linux 需要 GTK 3、Ayatana AppIndicator 和 libcurl。Ubuntu 22.04 可运行：
 
 ```sh
-sudo apt install libgtk-3-0 libayatana-appindicator3-1
+sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4
 ```
 
 部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘；没有图标也可运行 `./launch.sh` 打开设置，或运行 `./moojicut --capture` 直接截图。Wayland 还需要桌面提供可用的 `xdg-desktop-portal` 截图服务。
@@ -65,6 +65,8 @@ Linux 的自动检查覆盖 X11；**Wayland 截图门户尚未完成实机验证
 
 以上按键均可在贴图快捷键设置中修改。隐藏与穿透的恢复键需要组合键，方便切到其他应用后仍能找回贴图。
 
+在「设置 → 通用」中可关闭贴图功能。关闭会立即移除现有贴图（包括隐藏和穿透中的贴图），释放贴图快捷键，截图编辑仍可继续。重新开启后即可创建新贴图，原来的快捷键配置会保留；已关闭的图片不会重新出现。
+
 ## 录屏：剪掉多余，再分享过程
 
 **开始录制 → 停止 → 编辑 → 确认并复制视频文件**
@@ -89,9 +91,13 @@ macOS 可以在开始时选择是否录制系统声音，再通过系统界面�
 
 ## 应用内更新
 
-macOS 可在「设置 → 更新」中检查新版本，下载后点击安装并重新打开。更新包和更新信息均经过签名校验；快捷键、偏好设置和录屏草稿会保留。录屏或编辑尚未结束时，应用会等待你完成当前操作。
+在「设置 → 更新」中检查 GitHub Releases，无需登录 GitHub。开发预览版会接收更新的预览版和正式版；正式版只接收正式更新，不会自动降级。检查失败、网络超时或 GitHub 限流时会显示原因，稍后可重试。
 
-默认由你手动检查，也可以开启自动检查。应用不会静默安装更新。首次安装仍需下载应用；旧版没有更新入口，需要手动换装一次。Windows 与 Linux 本版仍通过发布页更新。
+macOS 在对应版本提供签名更新源后，通过应用内更新窗口下载、安装并重新打开；更新信息和安装包均按应用内置公钥校验。如果该版本还没有签名源，设置会提示打开发布页手动下载。默认手动检查，也可以开启自动检查，应用不会静默安装。截图或录屏编辑尚未结束时，会等待你完成当前操作。
+
+Windows 与 Linux 可在更新页下载对应平台的安装包，校验大小及 SHA256 后保存到选择的位置；下载可以取消，失败时不会覆盖已有文件。下载完成后点击打开文件位置，退出旧版本，再手动解压并运行新版本。这两个平台目前尚不支持自动替换正在运行的应用。
+
+快捷键、偏好设置和录屏草稿会保留。首次安装仍需下载应用；旧版没有更新入口，或仍使用旧更新地址时，需要手动换装一次。
 
 ## 从源码构建
 
@@ -99,7 +105,7 @@ macOS 可在「设置 → 更新」中检查新版本，下载后点击安装并
 
 - macOS：Xcode Command Line Tools 及支持 macOS 26 的 SDK。
 - Windows：MSVC C++ Build Tools 与 Windows SDK，在 x64 Native Tools 开发终端中运行。
-- Linux：C 编译器、`pkg-config`、GTK 3 和 Ayatana AppIndicator 开发包。
+- Linux：C 编译器、`pkg-config`、GTK 3、Ayatana AppIndicator 和 libcurl 开发包。
 
 在仓库根目录运行：
 

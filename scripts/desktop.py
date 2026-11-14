@@ -116,11 +116,12 @@ class DesktopBuild:
                          "/IMPLIB:" + str(Path(name) / "MoojiCut.lib"),
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
                          "gdi32.lib", "gdiplus.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
-                         "mfplat.lib", "mfreadwrite.lib", "mfuuid.lib", "mf.lib", "propsys.lib")
+                         "mfplat.lib", "mfreadwrite.lib", "mfuuid.lib", "mf.lib", "propsys.lib",
+                         "winhttp.lib", "bcrypt.lib", "comdlg32.lib")
                 shutil.copy2(linked_executable, executable)
                 dependencies = self.run("dumpbin", "/nologo", "/dependents", executable)
             else:
-                flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1"))
+                flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1", "libcurl"))
                 self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                          '-DMOOJICUT_VERSION="' + self.version + '"', "-I", self.home / "include",
                          "-I", ROOT, *sources, archive, *flags, "-lm", "-o", executable)
@@ -193,6 +194,9 @@ class DesktopBuild:
                   "没有选中时，若有隐藏项则恢复，否则隐藏全部。恢复时保留原来的不透明度。\n"
                   "Ctrl + Shift + P 切换鼠标穿透；穿透期间仅响应解除穿透，不响应 Esc 等操作。\n"
                   "隐藏和穿透恢复键支持全局响应，托盘菜单也提供恢复入口。\n"
+                  "设置中可停用贴图：关闭当前全部贴图并释放按键，重新启用会保留配置。\n"
+                  "设置 → 更新可检查 GitHub Releases、下载并校验更新包。\n"
+                  "下载完成后请退出旧版本，再手动解压并运行新版本。\n"
                   "关闭设置会保留托盘；从托盘菜单选择退出以结束应用。\n\n")
         if self.system == "windows":
             return shared + ("适用 Windows 10/11 x64（Intel/AMD）。解压全部文件，双击 MoojiCut.exe。\n"
@@ -207,8 +211,8 @@ class DesktopBuild:
                              "Windows 可能显示未知发布者提示。仅从项目 Release 下载并核对 SHA256。\n"
                              "命令行 MoojiCut.exe --preferences 可直接打开设置。\n")
         return shared + ("适用 Ubuntu 22.04/24.04 x86_64 及兼容发行版（glibc >= 2.35）。\n"
-                         "需要 GTK 3 和 Ayatana AppIndicator：\n"
-                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1\n"
+                         "需要 GTK 3、Ayatana AppIndicator 和 libcurl：\n"
+                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4\n"
                          "解压后运行 ./launch.sh 打开设置；./moojicut 仅启动托盘。\n"
                          "从托盘菜单或设置中启动截图，也可运行 ./moojicut --capture。\n"
                          "X11 支持桌面框选；Wayland 使用系统截图门户，需要可用的\n"
@@ -278,7 +282,7 @@ class DesktopBuild:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
-    parser.add_argument("--release-version", default="0.1.0-alpha.9")
+    parser.add_argument("--release-version", default="0.1.0-alpha.10")
     args = parser.parse_args()
     if sys.platform == "darwin":
         from native import NativeBuild

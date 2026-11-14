@@ -26,6 +26,10 @@ pub fn editor_style_step(Int32) -> Double
 
 pub fn export_profile(String) -> String
 
+pub fn feature_can_invoke(Int32) -> Int32
+
+pub fn feature_transition(Int32, Int32) -> Int32
+
 pub fn image_apply(String) -> String
 
 pub fn image_create(String) -> String
@@ -109,6 +113,18 @@ pub fn preview_core_check() -> Int32
 pub fn recording_transition(String, String) -> String
 
 pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
+
+pub fn update_release_create(String, Int32, String) -> Int32
+
+pub fn update_release_dispose(Int32) -> Unit
+
+pub fn update_release_size(Int32) -> Int32
+
+pub fn update_release_status(Int32) -> Int32
+
+pub fn update_release_text(Int32, Int32) -> String
+
+pub fn update_version_compare(String, String) -> Int32
 
 pub fn video_command(Int32, String) -> String
 
