@@ -23,10 +23,8 @@ fn native_image_document(result : String) -> Map[String, Json]? {
 }
 
 ///|
-#export_name("image_session_create")
-pub fn image_session_create(width : Int, height : Int) -> Int {
+fn native_image_create(request : Json) -> Int {
   if native_image_sessions.length() >= 16 { return 0 }
-  let request = Json::object({ "width": Json(width), "height": Json(height) })
   let document = match native_image_document(image_create(request.stringify())) {
     Some(document) => document
     None => return 0
@@ -35,6 +33,24 @@ pub fn image_session_create(width : Int, height : Int) -> Int {
   native_image_next_id.val = id + 1
   native_image_sessions[id] = { document, text: "文本", next_annotation: 1 }
   id
+}
+
+///|
+#export_name("image_session_create")
+pub fn image_session_create(width : Int, height : Int) -> Int {
+  native_image_create(Json::object({ "width": Json(width), "height": Json(height) }))
+}
+
+///|
+// Initial region selection is the document baseline, not an undoable edit.
+#export_name("image_session_create_viewport")
+pub fn image_session_create_viewport(
+  width : Int, height : Int, x : Int, y : Int, viewport_width : Int, viewport_height : Int,
+) -> Int {
+  native_image_create(Json::object({
+    "width": Json(width), "height": Json(height),
+    "viewport": Json::object({ "x": Json(x), "y": Json(y), "width": Json(viewport_width), "height": Json(viewport_height) }),
+  }))
 }
 
 ///|
@@ -67,6 +83,15 @@ pub fn image_session_add(
   id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int,
 ) -> Int {
+  image_session_add_styled(id, kind, x, y, width, height, color, stroke, 24)
+}
+
+///|
+#export_name("image_session_add_styled")
+pub fn image_session_add_styled(
+  id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
+  color : Int, stroke : Int, font_size : Int,
+) -> Int {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
   if kind < 1 || kind > 4 || color < 0 || color > 16777215 { return 0 }
   let name = ["rect", "arrow", "text", "redact"][kind - 1]
@@ -79,12 +104,71 @@ pub fn image_session_add(
     annotation["x2"] = Json(x.to_double() + width.to_double())
     annotation["y2"] = Json(y.to_double() + height.to_double())
   }
-  if kind == 3 { annotation["text"] = Json(session.text); annotation["fontSize"] = Json(24) }
+  if kind == 3 { annotation["text"] = Json(session.text); annotation["fontSize"] = Json(font_size) }
   let result = native_image_command(session, Json::object({
     "type": Json("add"), "annotations": Json::array([Json::object(annotation)]),
   }))
   if result == 1 { session.next_annotation = session.next_annotation + 1 }
   result
+}
+
+///|
+// Hosts keep live drag/typing drafts outside the document, then commit once.
+#export_name("image_session_update")
+pub fn image_session_update(
+  id : Int, index : Int, x : Int, y : Int, width : Int, height : Int,
+  color : Int, stroke : Int, font_size : Int,
+) -> Int {
+  let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
+  let annotation = match native_image_annotation(id, index) { Some(value) => value; None => return 0 }
+  if color < 0 || color > 16777215 { return 0 }
+  let patch : Map[String, Json] = {
+    "x": Json(x), "y": Json(y), "width": Json(width), "height": Json(height),
+    "color": Json(native_image_color(color)), "stroke": Json(stroke),
+  }
+  let kind = image_string(annotation, "type", "")
+  if kind == "arrow" {
+    patch["x2"] = Json(x.to_double() + width.to_double())
+    patch["y2"] = Json(y.to_double() + height.to_double())
+  }
+  if kind == "text" { patch["text"] = Json(session.text); patch["fontSize"] = Json(font_size) }
+  // Clicking a selection or finishing unchanged text must not consume undo.
+  let mut changed = false
+  for key, value in patch {
+    if annotation.get(key) != Some(value) { changed = true }
+  }
+  if !changed { return 1 }
+  native_image_command(session, Json::object({
+    "type": Json("update"), "id": annotation["id"], "patch": Json::object(patch),
+  }))
+}
+
+///|
+#export_name("image_session_remove")
+pub fn image_session_remove(id : Int, index : Int) -> Int {
+  let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
+  let annotation = match native_image_annotation(id, index) { Some(value) => value; None => return 0 }
+  native_image_command(session, Json::object({
+    "type": Json("remove"), "ids": Json::array([annotation["id"]]),
+  }))
+}
+
+///|
+#export_name("image_session_crop")
+pub fn image_session_crop(id : Int, x : Int, y : Int, width : Int, height : Int) -> Int {
+  let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
+  let rect = Json::object({ "x": Json(x), "y": Json(y), "width": Json(width), "height": Json(height) })
+  if session.document.get("viewport") == Some(rect) { return 1 }
+  native_image_command(session, Json::object({ "type": Json("crop"), "rect": rect }))
+}
+
+///|
+#export_name("image_session_viewport_value")
+pub fn image_session_viewport_value(id : Int, field : Int) -> Double {
+  let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
+  let viewport = match session.document.get("viewport") { Some(Object(rect)) => rect; _ => return 0 }
+  let key = match field { 0 => "x"; 1 => "y"; 2 => "width"; 3 => "height"; _ => return 0 }
+  image_number(viewport, key, 0)
 }
 
 ///|
@@ -151,7 +235,7 @@ pub fn image_session_value(id : Int, index : Int, field : Int) -> Double {
     }
     return number.to_double()
   }
-  let key = match field { 1 => "x"; 2 => "y"; 3 => "width"; 4 => "height"; 6 => "stroke"; _ => return 0 }
+  let key = match field { 1 => "x"; 2 => "y"; 3 => "width"; 4 => "height"; 6 => "stroke"; 7 => "fontSize"; _ => return 0 }
   image_number(annotation, key, 0)
 }
 

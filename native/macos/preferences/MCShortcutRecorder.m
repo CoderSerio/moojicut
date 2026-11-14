@@ -1,5 +1,6 @@
 #import "MCShortcutRecorder.h"
 #import "MCShortcutStore.h"
+#import "MCPinShortcutStore.h"
 
 @interface MCShortcutRecorder ()
 @property (nonatomic, readwrite, getter=isRecording) BOOL recording;
@@ -63,14 +64,17 @@
         if (!self.onChange || self.onChange(nil)) { self.shortcut = nil; [self cancelRecording]; }
         return;
     }
-    NSDictionary *candidate = [MCShortcutStore shortcutWithKeyCode:event.keyCode modifiers:event.modifierFlags];
+    NSDictionary *candidate = self.recordsPinShortcut ?
+        [MCPinShortcutStore shortcutWithKeyCode:event.keyCode modifiers:event.modifierFlags] :
+        [MCShortcutStore shortcutWithKeyCode:event.keyCode modifiers:event.modifierFlags];
     if (!candidate) {
-        if (self.onError) self.onError(@"请使用 ⌘、⌥ 或 ⌃ 加一个按键，可同时按住 ⇧。");
+        if (self.onError) self.onError(self.recordsPinShortcut ? @"请按一个普通按键，可同时使用修饰键。" : @"请使用 ⌘、⌥ 或 ⌃ 加一个按键，可同时按住 ⇧。");
         return;
     }
     NSMutableDictionary *value = [candidate mutableCopy];
     NSString *character = [event charactersByApplyingModifiers:0];
-    if (event.keyCode < 51 && event.keyCode != 36 && event.keyCode != 49 && character.length &&
+    if (!(self.recordsPinShortcut && ([candidate[@"keyCode"] unsignedShortValue] == 24 || [candidate[@"keyCode"] unsignedShortValue] == 27)) &&
+        event.keyCode < 51 && event.keyCode != 36 && event.keyCode != 49 && character.length &&
         [character rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound) value[@"keyLabel"] = character.uppercaseString;
     if (!self.onChange || self.onChange(value)) { self.shortcut = value; [self cancelRecording]; }
 }

@@ -306,3 +306,97 @@ test "image styles and IDs are validated and redaction remains opaque" {
     model_test_field(image_test_first(redacted), "opacity") == Json(1),
   )
 }
+
+///|
+test "text edits retain Unicode and geometry through undo redo and export" {
+  let content = "中文标注 ✂️\n可以再次编辑"
+  let mut document = image_test_apply(
+    image_test_create(),
+    Json::object({
+      "type": Json("add"),
+      "annotations": Json::array([
+        Json::object({
+          "id": Json("text-1"),
+          "type": Json("text"),
+          "x": Json(100),
+          "y": Json(150),
+          "width": Json(240),
+          "height": Json(96),
+          "text": Json("第一版 🙂"),
+          "fontSize": Json(24),
+          "color": Json("#ef4444"),
+        }),
+      ]),
+    }),
+  )
+  let added = model_test_field(document, "annotations")
+  document = image_test_apply(
+    document,
+    @json.parse(
+      (
+        #|{"type":"move","id":"text-1","dx":25.5,"dy":-10.25}
+      ),
+    ),
+  )
+  let moved = model_test_field(document, "annotations")
+  document = image_test_apply(
+    document,
+    @json.parse(
+      (
+        #|{"type":"resize","id":"text-1","rect":{"width":360,"height":144}}
+      ),
+    ),
+  )
+  let resized = model_test_field(document, "annotations")
+  // Resizing the text box does not implicitly change its typography.
+  assert_true(
+    model_test_field(image_test_first(document), "fontSize") == Json(24),
+  )
+  document = image_test_apply(
+    document,
+    Json::object({
+      "type": Json("update"),
+      "id": Json("text-1"),
+      "patch": Json::object({
+        "text": Json(content),
+        "fontSize": Json(36),
+        "color": Json("#09a6ff"),
+      }),
+    }),
+  )
+  let edited = model_test_field(document, "annotations")
+  // Each completed gesture or edit is one undo step, with no partial styles.
+  for expected in [resized, moved, added] {
+    document = image_test_apply(document, @json.parse("{\"type\":\"undo\"}"))
+    assert_true(model_test_field(document, "annotations") == expected)
+  }
+  for expected in [moved, resized, edited] {
+    document = image_test_apply(document, @json.parse("{\"type\":\"redo\"}"))
+    assert_true(model_test_field(document, "annotations") == expected)
+  }
+  document = image_test_apply(
+    document,
+    @json.parse(
+      (
+        #|{"type":"crop","rect":{"x":80,"y":100,"width":600,"height":400}}
+      ),
+    ),
+  )
+  let completed = model_test_field(
+    model_test_result(
+      image_finalize(Json::object({ "document": document }).stringify()),
+    ),
+    "document",
+  )
+  let text = image_test_first(completed)
+  assert_true(model_test_field(text, "id") == Json("text-1"))
+  assert_true(model_test_field(text, "text") == Json(content))
+  assert_true(model_test_field(text, "x") == Json(45.5))
+  assert_true(model_test_field(text, "y") == Json(39.75))
+  assert_true(model_test_field(text, "width") == Json(360))
+  assert_true(model_test_field(text, "height") == Json(144))
+  assert_true(model_test_field(text, "fontSize") == Json(36))
+  assert_true(model_test_field(text, "color") == Json("#09a6ff"))
+  assert_eq(model_test_items(model_test_field(completed, "undo")).length(), 0)
+  assert_true(model_test_field(document, "annotations") == edited)
+}

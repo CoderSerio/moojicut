@@ -1,499 +1,1237 @@
 #include "capture.h"
+#include "../shared/image_session.h"
+#include "../shared/mc_icons.h"
+#include "moonbit.h"
+#include "pinning.h"
 #include <gdk/gdkx.h>
-#include <pango/pangocairo.h>
 #include <math.h>
+#include <pango/pangocairo.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "moonbit.h"
 
-extern int32_t image_session_create(int32_t, int32_t);
-extern int32_t image_session_add(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
-extern int32_t image_session_set_text(int32_t, moonbit_string_t);
-extern int32_t image_session_undo(int32_t);
-extern int32_t image_session_redo(int32_t);
-extern int32_t image_session_count(int32_t);
-extern double image_session_value(int32_t, int32_t, int32_t);
-extern moonbit_string_t image_session_text(int32_t, int32_t);
-extern void image_session_dispose(int32_t);
-
-enum { RECTANGLE = 1, ARROW, TEXT, REDACT };
+enum { SELECT, RECTANGLE, ARROW, TEXT, REDACT };
+typedef struct {
+  char *text;
+  int cursor, selection;
+} TextSnapshot;
 typedef struct {
   GtkApplication *application;
-  GtkWidget *overlay, *editor, *canvas, *entry, *status;
-  GdkPixbuf *desktop, *image;
-  GdkSeat *seat;
+  GtkWidget *editor, *canvas, *overlay, *toolbar, *entry, *font, *colors, *tools[5];
+  GdkPixbuf *image;
+  GdkRectangle toolbar_bounds, entry_bounds;
+  GPtrArray *draft_undo, *draft_redo;
+  TextSnapshot *draft_before;
+  int draft_action_depth;
+  gboolean restoring_draft;
   GDBusConnection *bus;
   char *request_path;
   guint subscription;
-  int session, tool, color, stroke, width, height, root_width, root_height;
-  double x1, y1, x2, y2, zoom, offset_x, offset_y;
-  gboolean dragging, pending, smoke, closing;
+  int session, tool, color, stroke, font_size, width, height, root_width, root_height;
+  int selected, edit_index, handle, gesture;
+  double x1, y1, x2, y2, zoom, offset_x, offset_y, crop[4], original[7], preview[7];
+  gboolean dragging, pending, smoke, closing, selecting, editing, composing, updating, x11;
 } Capture;
 static Capture capture;
 static guint generation;
 
 static gboolean open_editor(GdkPixbuf *image);
+static gboolean commit_text(void);
+static void layout_controls(void);
+static void draw_document(cairo_t *cr, gboolean export);
+static PangoLayout *text_layout(cairo_t *cr, const char *text, double width, double size);
+static void snapshot_free(gpointer value) {
+  TextSnapshot *snapshot = value;
+  if (!snapshot)
+    return;
+  g_free(snapshot->text);
+  g_free(snapshot);
+}
+static TextSnapshot *snapshot_text(void) {
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
+  GtkTextIter first, last, cursor, selection;
+  gtk_text_buffer_get_bounds(buffer, &first, &last);
+  TextSnapshot *value = g_new0(TextSnapshot, 1);
+  value->text = gtk_text_buffer_get_text(buffer, &first, &last, FALSE);
+  gtk_text_buffer_get_iter_at_mark(buffer, &cursor, gtk_text_buffer_get_insert(buffer));
+  gtk_text_buffer_get_iter_at_mark(buffer, &selection, gtk_text_buffer_get_selection_bound(buffer));
+  value->cursor = gtk_text_iter_get_offset(&cursor);
+  value->selection = gtk_text_iter_get_offset(&selection);
+  return value;
+}
+static void push_snapshot(GPtrArray *array, TextSnapshot *snapshot) {
+  if (strlen(snapshot->text) > 40000) {
+    snapshot_free(snapshot);
+    return;
+  }
+  if (array->len >= 100)
+    g_ptr_array_remove_index(array, 0);
+  g_ptr_array_add(array, snapshot);
+}
+static void reset_draft_history(void) {
+  if (!capture.draft_undo)
+    capture.draft_undo = g_ptr_array_new_with_free_func(snapshot_free);
+  if (!capture.draft_redo)
+    capture.draft_redo = g_ptr_array_new_with_free_func(snapshot_free);
+  g_ptr_array_set_size(capture.draft_undo, 0);
+  g_ptr_array_set_size(capture.draft_redo, 0);
+  g_clear_pointer(&capture.draft_before, snapshot_free);
+  capture.draft_action_depth = 0;
+}
+static void draft_action_begin(GtkTextBuffer *buffer, gpointer data) {
+  (void)buffer;
+  (void)data;
+  if (!capture.editing || capture.restoring_draft)
+    return;
+  if (capture.draft_action_depth++ == 0)
+    capture.draft_before = snapshot_text();
+}
+static void draft_action_end(GtkTextBuffer *buffer, gpointer data) {
+  (void)buffer;
+  (void)data;
+  if (!capture.editing || capture.restoring_draft || capture.draft_action_depth <= 0)
+    return;
+  if (--capture.draft_action_depth || !capture.draft_before)
+    return;
+  TextSnapshot *after = snapshot_text(), *before = capture.draft_before;
+  capture.draft_before = NULL;
+  if (strcmp(before->text, after->text)) {
+    push_snapshot(capture.draft_undo, before);
+    g_ptr_array_set_size(capture.draft_redo, 0);
+  } else
+    snapshot_free(before);
+  snapshot_free(after);
+}
+static void draft_undo(gboolean redo) {
+  GPtrArray *from = redo ? capture.draft_redo : capture.draft_undo;
+  GPtrArray *to = redo ? capture.draft_undo : capture.draft_redo;
+  if (!from || !from->len)
+    return;
+  TextSnapshot *value = g_ptr_array_steal_index(from, from->len - 1);
+  push_snapshot(to, snapshot_text());
+  capture.restoring_draft = TRUE;
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
+  gtk_text_buffer_set_text(buffer, value->text, -1);
+  GtkTextIter cursor, selection;
+  gtk_text_buffer_get_iter_at_offset(buffer, &cursor, value->cursor);
+  gtk_text_buffer_get_iter_at_offset(buffer, &selection, value->selection);
+  gtk_text_buffer_select_range(buffer, &cursor, &selection);
+  capture.restoring_draft = FALSE;
+  snapshot_free(value);
+}
 static void report(const char *message) {
-  if (capture.smoke) { g_printerr("%s\n", message); return; }
+  if (capture.smoke) {
+    g_printerr("%s\n", message);
+    return;
+  }
   GtkWidget *dialog = gtk_message_dialog_new(capture.editor ? GTK_WINDOW(capture.editor) : NULL,
-    GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_INFO, GTK_BUTTONS_CLOSE, "%s", message);
+                                             GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_INFO,
+                                             GTK_BUTTONS_CLOSE, "%s", message);
   gtk_window_set_title(GTK_WINDOW(dialog), "Mooji Cut");
   g_signal_connect_swapped(dialog, "response", G_CALLBACK(gtk_widget_destroy), dialog);
   gtk_widget_show_all(dialog);
 }
-
-static void release_overlay(void) {
-  GdkSeat *seat = capture.seat;
-  GtkWidget *window = capture.overlay;
-  capture.overlay = NULL; capture.seat = NULL; capture.dragging = FALSE;
-  if (seat) gdk_seat_ungrab(seat);
-  if (window) gtk_widget_destroy(window);
-  g_clear_object(&capture.desktop);
-}
-
 static void release_portal(gboolean cancel) {
-  if (capture.bus && capture.subscription) g_dbus_connection_signal_unsubscribe(capture.bus, capture.subscription);
+  if (capture.bus && capture.subscription)
+    g_dbus_connection_signal_unsubscribe(capture.bus, capture.subscription);
   capture.subscription = 0;
-  if (cancel && capture.bus && capture.request_path) g_dbus_connection_call(capture.bus,
-    "org.freedesktop.portal.Desktop", capture.request_path, "org.freedesktop.portal.Request", "Close",
-    NULL, NULL, G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL, NULL);
+  if (cancel && capture.bus && capture.request_path)
+    g_dbus_connection_call(capture.bus, "org.freedesktop.portal.Desktop", capture.request_path,
+                           "org.freedesktop.portal.Request", "Close", NULL, NULL, G_DBUS_CALL_FLAGS_NONE,
+                           3000, NULL, NULL, NULL);
   g_clear_pointer(&capture.request_path, g_free);
   g_clear_object(&capture.bus);
   capture.pending = FALSE;
 }
-
 void mc_linux_capture_close(void) {
-  if (capture.closing) return;
+  if (capture.closing)
+    return;
   capture.closing = TRUE;
   generation++;
-  if (capture.canvas && gtk_widget_has_grab(capture.canvas)) gtk_grab_remove(capture.canvas);
+  if (capture.canvas && gtk_widget_has_grab(capture.canvas))
+    gtk_grab_remove(capture.canvas);
   release_portal(TRUE);
-  release_overlay();
   GtkWidget *window = capture.editor;
   capture.editor = NULL;
-  if (window) gtk_widget_destroy(window);
-  if (capture.session > 0) image_session_dispose(capture.session);
+  if (window)
+    gtk_widget_destroy(window);
+  if (capture.session > 0)
+    image_session_dispose(capture.session);
   g_clear_object(&capture.image);
+  g_clear_pointer(&capture.draft_before, snapshot_free);
+  g_clear_pointer(&capture.draft_undo, g_ptr_array_unref);
+  g_clear_pointer(&capture.draft_redo, g_ptr_array_unref);
   memset(&capture, 0, sizeof(capture));
+  mc_linux_pins_hide(FALSE);
 }
-
-gboolean mc_linux_capture_busy(void) { return capture.overlay || capture.editor || capture.pending; }
-
-static void draw_shape(cairo_t *cr, int kind, double x, double y, double width, double height,
-                       int rgb, double stroke, const char *text) {
+gboolean mc_linux_capture_busy(void) {
+  return capture.editor || capture.pending;
+}
+static gboolean inside(double x, double y, const double *r) {
+  return x >= r[0] && y >= r[1] && x <= r[0] + r[2] && y <= r[1] + r[3];
+}
+static void read_annotation(int index, double *r) {
+  for (int i = 0; i < 7; i++)
+    r[i] = image_session_value(capture.session, index, i + 1);
+}
+static char *annotation_text(int index) {
+  moonbit_string_t value = image_session_text(capture.session, index);
+  char *text = g_utf16_to_utf8((const gunichar2 *)value, Moonbit_array_length(value), NULL, NULL, NULL);
+  moonbit_decref(value);
+  return text;
+}
+static gboolean pending_text(const char *text) {
+  glong length = 0;
+  gunichar2 *value = g_utf8_to_utf16(text, -1, NULL, &length, NULL);
+  if (!value || length < 1 || length > 10000) {
+    g_free(value);
+    return FALSE;
+  }
+  moonbit_string_t input = moonbit_make_string_raw((int32_t)length);
+  memcpy(input, value, (gsize)length * sizeof(gunichar2));
+  g_free(value);
+  int result = image_session_set_text(capture.session, input);
+  moonbit_decref(input);
+  return result == 1;
+}
+static gboolean update_annotation(int index, const double *r) {
+  double adjusted[7];
+  memcpy(adjusted, r, sizeof(adjusted));
+  int kind = (int)image_session_value(capture.session, index, 0);
+  if (kind == TEXT && !capture.editing) {
+    char *text = annotation_text(index);
+    gboolean ok = pending_text(text ? text : "");
+    if (ok) {
+      cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+      cairo_t *cr = cairo_create(surface);
+      PangoLayout *layout = text_layout(cr, text, adjusted[2], adjusted[6]);
+      int height;
+      pango_layout_get_pixel_size(layout, NULL, &height);
+      adjusted[3] = fmin(capture.height - adjusted[1], fmax(adjusted[3], height + 2));
+      g_object_unref(layout);
+      cairo_destroy(cr);
+      cairo_surface_destroy(surface);
+    }
+    g_free(text);
+    if (!ok)
+      return FALSE;
+  }
+  return image_session_update(capture.session, index, (int)adjusted[0], (int)adjusted[1],
+                              kind == ARROW ? (int)adjusted[2] : MAX(1, (int)adjusted[2]),
+                              kind == ARROW ? (int)adjusted[3] : MAX(1, (int)adjusted[3]), (int)adjusted[4],
+                              (int)adjusted[5], (int)adjusted[6]) == 1;
+}
+static PangoLayout *text_layout(cairo_t *cr, const char *text, double width, double size) {
+  PangoLayout *layout = pango_cairo_create_layout(cr);
+  PangoFontDescription *font = pango_font_description_from_string("Sans Bold");
+  pango_font_description_set_absolute_size(font, size * PANGO_SCALE);
+  pango_layout_set_font_description(layout, font);
+  pango_font_description_free(font);
+  pango_layout_set_text(layout, text, -1);
+  pango_layout_set_width(layout, MAX(1, (int)(width * PANGO_SCALE)));
+  pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+  return layout;
+}
+static void draw_shape(cairo_t *cr, int kind, const double *r, const char *text) {
+  double x = r[0], y = r[1], w = r[2], h = r[3], stroke = r[5];
+  int rgb = (int)r[4];
   cairo_save(cr);
   cairo_set_source_rgb(cr, ((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0);
   cairo_set_line_width(cr, stroke);
   cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-  if (kind == RECTANGLE) { cairo_rectangle(cr, x, y, width, height); cairo_stroke(cr); }
-  else if (kind == REDACT) {
+  if (kind == RECTANGLE) {
+    cairo_rectangle(cr, x, y, w, h);
+    cairo_stroke(cr);
+  } else if (kind == REDACT) {
     cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
-    cairo_set_source_rgb(cr, 0, 0, 0); cairo_rectangle(cr, x, y, width, height); cairo_fill(cr);
+    cairo_set_source_rgb(cr, 0, 0, 0);
+    cairo_rectangle(cr, x, y, w, h);
+    cairo_fill(cr);
   } else if (kind == ARROW) {
-    double length = hypot(width, height);
-    if (length > 0.5) {
-      double head = fmin(length * 0.45, 14 + stroke);
-      cairo_move_to(cr, x, y); cairo_line_to(cr, x + width, y + height); cairo_stroke(cr);
-      cairo_move_to(cr, x + width - head * width / length + head * 0.45 * height / length,
-        y + height - head * height / length - head * 0.45 * width / length);
-      cairo_line_to(cr, x + width, y + height);
-      cairo_line_to(cr, x + width - head * width / length - head * 0.45 * height / length,
-        y + height - head * height / length + head * 0.45 * width / length); cairo_stroke(cr);
+    double len = hypot(w, h);
+    if (len > .5) {
+      double head = fmin(len * .45, 14 + stroke);
+      cairo_move_to(cr, x, y);
+      cairo_line_to(cr, x + w, y + h);
+      cairo_stroke(cr);
+      cairo_move_to(cr, x + w - head * w / len + head * .45 * h / len,
+                    y + h - head * h / len - head * .45 * w / len);
+      cairo_line_to(cr, x + w, y + h);
+      cairo_line_to(cr, x + w - head * w / len - head * .45 * h / len,
+                    y + h - head * h / len + head * .45 * w / len);
+      cairo_stroke(cr);
     }
   } else if (kind == TEXT && text) {
-    PangoLayout *layout = pango_cairo_create_layout(cr);
-    PangoFontDescription *font = pango_font_description_from_string("Sans Bold");
-    pango_font_description_set_absolute_size(font, 24 * PANGO_SCALE);
-    pango_layout_set_font_description(layout, font); pango_layout_set_text(layout, text, -1);
-    cairo_move_to(cr, x, y); pango_cairo_show_layout(cr, layout);
-    pango_font_description_free(font); g_object_unref(layout);
+    cairo_rectangle(cr, x, y, w, h);
+    cairo_clip(cr);
+    PangoLayout *layout = text_layout(cr, text, w, r[6]);
+    cairo_move_to(cr, x, y);
+    pango_cairo_show_layout(cr, layout);
+    g_object_unref(layout);
   }
   cairo_restore(cr);
 }
-
-static void draw_document(cairo_t *cr) {
-  gdk_cairo_set_source_pixbuf(cr, capture.image, 0, 0); cairo_paint(cr);
+static void draw_document(cairo_t *cr, gboolean export) {
+  gdk_cairo_set_source_pixbuf(cr, capture.image, 0, 0);
+  cairo_paint(cr);
   int count = image_session_count(capture.session);
-  for (int pass = 0; pass < 2; pass++) for (int i = 0; i < count; i++) {
-    int kind = (int)image_session_value(capture.session, i, 0);
-    if ((kind == REDACT) != (pass == 1)) continue;
-    char *text = NULL;
-    if (kind == TEXT) {
-      moonbit_string_t value = image_session_text(capture.session, i);
-      text = g_utf16_to_utf8((const gunichar2 *)value, Moonbit_array_length(value), NULL, NULL, NULL);
-      moonbit_decref(value);
+  for (int pass = 0; pass < 2; pass++)
+    for (int i = 0; i < count; i++) {
+      int kind = (int)image_session_value(capture.session, i, 0);
+      if ((kind == REDACT) != (pass == 1))
+        continue;
+      if (!export && capture.editing && capture.edit_index == i)
+        continue;
+      double r[7];
+      read_annotation(i, r);
+      if (!export && capture.dragging && capture.gesture == 1 && capture.selected == i)
+        memcpy(r, capture.preview, sizeof(r));
+      char *text = kind == TEXT ? annotation_text(i) : NULL;
+      draw_shape(cr, kind, r, text);
+      g_free(text);
     }
-    draw_shape(cr, kind, image_session_value(capture.session, i, 1), image_session_value(capture.session, i, 2),
-      image_session_value(capture.session, i, 3), image_session_value(capture.session, i, 4),
-      (int)image_session_value(capture.session, i, 5), image_session_value(capture.session, i, 6), text);
-    g_free(text);
-  }
 }
-
+static void selection_outline(cairo_t *cr, const double *r, gboolean handles) {
+  cairo_save(cr);
+  cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
+  cairo_set_source_rgb(cr, .2, .17, .23);
+  cairo_set_line_width(cr, 3 / capture.zoom);
+  cairo_stroke_preserve(cr);
+  cairo_set_source_rgb(cr, .76, .75, .73);
+  cairo_set_line_width(cr, 1 / capture.zoom);
+  cairo_stroke(cr);
+  if (handles)
+    for (int i = 0; i < 8; i++) {
+      static const double xs[] = {0, .5, 1, 1, 1, .5, 0, 0}, ys[] = {0, 0, 0, .5, 1, 1, 1, .5};
+      cairo_rectangle(cr, r[0] + r[2] * xs[i] - 3 / capture.zoom, r[1] + r[3] * ys[i] - 3 / capture.zoom,
+                      6 / capture.zoom, 6 / capture.zoom);
+      cairo_set_source_rgb(cr, .98, .96, .92);
+      cairo_fill_preserve(cr);
+      cairo_set_source_rgb(cr, .3, .28, .32);
+      cairo_stroke(cr);
+    }
+  cairo_restore(cr);
+}
+static void transform(void) {
+  int width = gtk_widget_get_allocated_width(capture.canvas),
+      height = gtk_widget_get_allocated_height(capture.canvas);
+  capture.zoom = fmin((double)MAX(1, width) / capture.width, (double)MAX(1, height) / capture.height);
+  capture.offset_x = (width - capture.width * capture.zoom) / 2;
+  capture.offset_y = (height - capture.height * capture.zoom) / 2;
+}
+static gboolean canvas_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
+  (void)widget;
+  (void)data;
+  transform();
+  cairo_save(cr);
+  cairo_translate(cr, capture.offset_x, capture.offset_y);
+  cairo_scale(cr, capture.zoom, capture.zoom);
+  draw_document(cr, FALSE);
+  double crop[4];
+  memcpy(crop, capture.crop, sizeof(crop));
+  if (capture.selecting) {
+    crop[0] = fmin(capture.x1, capture.x2);
+    crop[1] = fmin(capture.y1, capture.y2);
+    crop[2] = fabs(capture.x2 - capture.x1);
+    crop[3] = fabs(capture.y2 - capture.y1);
+  }
+  if (capture.dragging && capture.gesture == 2)
+    memcpy(crop, capture.preview, sizeof(crop));
+  cairo_save(cr);
+  cairo_rectangle(cr, 0, 0, capture.width, capture.height);
+  cairo_rectangle(cr, crop[0], crop[1], crop[2], crop[3]);
+  cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+  cairo_set_source_rgba(cr, 0, 0, 0, .42);
+  cairo_fill(cr);
+  cairo_restore(cr);
+  selection_outline(cr, crop, !capture.selecting);
+  if (capture.selecting) {
+    cairo_save(cr);
+    cairo_scale(cr, 1 / capture.zoom, 1 / capture.zoom);
+    PangoLayout *hint = pango_cairo_create_layout(cr);
+    pango_layout_set_text(hint, "拖动框选 · 松开后直接标注 · Esc 取消", -1);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_move_to(cr, 16, 16);
+    pango_cairo_show_layout(cr, hint);
+    g_object_unref(hint);
+    cairo_restore(cr);
+  }
+  if (capture.selected >= 0 && !capture.editing) {
+    double r[7];
+    read_annotation(capture.selected, r);
+    if (capture.dragging && capture.gesture == 1)
+      memcpy(r, capture.preview, sizeof(r));
+    selection_outline(cr, r, TRUE);
+  }
+  if (capture.dragging && capture.gesture == 0 && !capture.selecting) {
+    double r[] = {capture.tool == ARROW ? capture.x1 : fmin(capture.x1, capture.x2),
+                  capture.tool == ARROW ? capture.y1 : fmin(capture.y1, capture.y2),
+                  capture.tool == ARROW ? capture.x2 - capture.x1 : fabs(capture.x2 - capture.x1),
+                  capture.tool == ARROW ? capture.y2 - capture.y1 : fabs(capture.y2 - capture.y1),
+                  capture.color,
+                  capture.stroke,
+                  capture.font_size};
+    draw_shape(cr, capture.tool, r, NULL);
+  }
+  cairo_restore(cr);
+  return FALSE;
+}
+static gboolean masks_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
+  (void)widget;
+  (void)data;
+  if (!capture.editing)
+    return FALSE;
+  cairo_save(cr);
+  cairo_translate(cr, capture.offset_x, capture.offset_y);
+  cairo_scale(cr, capture.zoom, capture.zoom);
+  cairo_save(cr);
+  cairo_rectangle(cr, 0, 0, capture.width, capture.height);
+  cairo_rectangle(cr, capture.crop[0], capture.crop[1], capture.crop[2], capture.crop[3]);
+  cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+  cairo_clip(cr);
+  draw_document(cr, FALSE);
+  cairo_set_source_rgba(cr, 0, 0, 0, .42);
+  cairo_paint(cr);
+  cairo_restore(cr);
+  cairo_rectangle(cr, capture.crop[0], capture.crop[1], capture.crop[2], capture.crop[3]);
+  cairo_clip(cr);
+  for (int i = 0; i < image_session_count(capture.session); i++)
+    if ((int)image_session_value(capture.session, i, 0) == REDACT) {
+      double r[7];
+      read_annotation(i, r);
+      draw_shape(cr, REDACT, r, NULL);
+    }
+  cairo_restore(cr);
+  return FALSE;
+}
 static GdkPixbuf *flatten(void) {
-  cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, capture.width, capture.height);
-  if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(surface); return NULL; }
-  cairo_t *cr = cairo_create(surface); draw_document(cr); cairo_destroy(cr);
-  GdkPixbuf *image = gdk_pixbuf_get_from_surface(surface, 0, 0, capture.width, capture.height);
+  int width = (int)capture.crop[2], height = (int)capture.crop[3];
+  if (width < 2 || height < 2)
+    return NULL;
+  cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+  if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+    cairo_surface_destroy(surface);
+    return NULL;
+  }
+  cairo_t *cr = cairo_create(surface);
+  cairo_translate(cr, -capture.crop[0], -capture.crop[1]);
+  draw_document(cr, TRUE);
+  cairo_destroy(cr);
+  GdkPixbuf *image = gdk_pixbuf_get_from_surface(surface, 0, 0, width, height);
   cairo_surface_destroy(surface);
   return image;
 }
-
 static gboolean copy_image(void) {
   GdkPixbuf *image = flatten();
-  if (!image) return FALSE;
-  GdkAtom selection = capture.smoke ? gdk_atom_intern_static_string("MOOJICUT_TEST_IMAGE") : GDK_SELECTION_CLIPBOARD;
-  GtkClipboard *clipboard = gtk_clipboard_get(selection);
+  if (!image)
+    return FALSE;
+  GtkClipboard *clipboard = gtk_clipboard_get(
+      capture.smoke ? gdk_atom_intern_static_string("MOOJICUT_TEST_IMAGE") : GDK_SELECTION_CLIPBOARD);
   gtk_clipboard_set_image(clipboard, image);
-  if (!capture.smoke) { gtk_clipboard_set_can_store(clipboard, NULL, 0); gtk_clipboard_store(clipboard); }
+  if (!capture.smoke) {
+    gtk_clipboard_set_can_store(clipboard, NULL, 0);
+    gtk_clipboard_store(clipboard);
+  }
   g_object_unref(image);
   return TRUE;
 }
-
-static gboolean canvas_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
-  (void)data;
-  GtkAllocation allocation; gtk_widget_get_allocation(widget, &allocation);
-  capture.zoom = fmin(1, fmin((double)MAX(1, allocation.width - 24) / capture.width,
-    (double)MAX(1, allocation.height - 24) / capture.height));
-  capture.offset_x = (allocation.width - capture.width * capture.zoom) / 2;
-  capture.offset_y = (allocation.height - capture.height * capture.zoom) / 2;
-  cairo_translate(cr, capture.offset_x, capture.offset_y); cairo_scale(cr, capture.zoom, capture.zoom);
-  cairo_rectangle(cr, 0, 0, capture.width, capture.height); cairo_clip(cr);
-  draw_document(cr);
-  if (capture.dragging) draw_shape(cr, capture.tool,
-    capture.tool == ARROW ? capture.x1 : fmin(capture.x1, capture.x2),
-    capture.tool == ARROW ? capture.y1 : fmin(capture.y1, capture.y2),
-    capture.tool == ARROW ? capture.x2 - capture.x1 : fabs(capture.x2 - capture.x1),
-    capture.tool == ARROW ? capture.y2 - capture.y1 : fabs(capture.y2 - capture.y1), capture.color, capture.stroke, NULL);
-  return FALSE;
+static void sync_crop(void) {
+  for (int i = 0; i < 4; i++)
+    capture.crop[i] = image_session_viewport_value(capture.session, i);
 }
-
-static gboolean add_text(int x, int y) {
-  glong length = 0; const char *text = gtk_entry_get_text(GTK_ENTRY(capture.entry));
-  gunichar2 *utf16 = g_utf8_to_utf16(text, -1, NULL, &length, NULL);
-  if (!utf16 || length < 1 || x >= capture.width || y >= capture.height) { g_free(utf16); return FALSE; }
-  moonbit_string_t input = moonbit_make_string_raw((int32_t)length);
-  memcpy(input, utf16, (gsize)length * sizeof(gunichar2)); g_free(utf16);
-  int result = image_session_set_text(capture.session, input); moonbit_decref(input);
-  return result == 1 && image_session_add(capture.session, TEXT, x, y, capture.width - x,
-    MIN(32, capture.height - y), capture.color, capture.stroke) == 1;
+static void sync_style(void) {
+  if (capture.selected < 0)
+    return;
+  capture.updating = TRUE;
+  capture.color = (int)image_session_value(capture.session, capture.selected, 5);
+  capture.font_size = (int)image_session_value(capture.session, capture.selected, 7);
+  if (capture.font_size < 8)
+    capture.font_size = 24;
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(capture.font), capture.font_size);
+  GdkRGBA rgba = {((capture.color >> 16) & 255) / 255.0, ((capture.color >> 8) & 255) / 255.0,
+                  (capture.color & 255) / 255.0, 1};
+  gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(capture.colors), &rgba);
+  capture.updating = FALSE;
 }
-
-static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
-  (void)data;
-  if (event->button != 1 || capture.zoom <= 0) return FALSE;
-  double x = (event->x - capture.offset_x) / capture.zoom, y = (event->y - capture.offset_y) / capture.zoom;
-  if (x < 0 || y < 0 || x >= capture.width || y >= capture.height) return FALSE;
-  capture.x1 = capture.x2 = floor(x); capture.y1 = capture.y2 = floor(y);
-  gtk_widget_grab_focus(widget);
-  if (capture.tool == TEXT) {
-    if (!add_text((int)x, (int)y)) gtk_label_set_text(GTK_LABEL(capture.status), "先输入文字，再点击图片放置。");
-    gtk_widget_queue_draw(widget);
-  } else { capture.dragging = TRUE; gtk_grab_add(widget); }
+static void text_style(void) {
+  char *css =
+      g_strdup_printf("textview, textview text {background-color: transparent; color: #%06x; font-family: "
+                      "Sans; font-weight: bold; font-size: %.2fpx; padding: 0; border: 0;}",
+                      capture.color, capture.font_size * capture.zoom);
+  GtkCssProvider *provider = gtk_css_provider_new();
+  gtk_css_provider_load_from_data(provider, css, -1, NULL);
+  gtk_style_context_add_provider(gtk_widget_get_style_context(capture.entry), GTK_STYLE_PROVIDER(provider),
+                                 GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+  g_object_unref(provider);
+  g_free(css);
+}
+static void begin_text(int index, double x, double y) {
+  if (index < 0 && (x >= capture.crop[0] + capture.crop[2] - 8 || y >= capture.crop[1] + capture.crop[3] - 8))
+    return;
+  if (!commit_text())
+    return;
+  reset_draft_history();
+  capture.editing = TRUE;
+  capture.edit_index = index;
+  capture.selected = index;
+  if (index >= 0) {
+    read_annotation(index, capture.preview);
+    sync_style();
+  } else {
+    double right = capture.crop[0] + capture.crop[2], bottom = capture.crop[1] + capture.crop[3];
+    double r[] = {
+        x, y, fmin(240, right - x), fmin(80, bottom - y), capture.color, capture.stroke, capture.font_size};
+    memcpy(capture.preview, r, sizeof(r));
+  }
+  char *text = index >= 0 ? annotation_text(index) : g_strdup("");
+  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), text ? text : "", -1);
+  g_free(text);
+  text_style();
+  layout_controls();
+  gtk_widget_show(capture.entry);
+  gtk_widget_grab_focus(capture.entry);
+  gtk_widget_queue_draw(capture.editor);
+}
+static gboolean commit_text(void) {
+  if (capture.composing)
+    return FALSE;
+  if (!capture.editing)
+    return TRUE;
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
+  GtkTextIter start, end;
+  gtk_text_buffer_get_bounds(buffer, &start, &end);
+  char *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+  gboolean ok = TRUE;
+  if (*text) {
+    if (!pending_text(text))
+      ok = FALSE;
+    else {
+      double *r = capture.preview;
+      r[4] = capture.color;
+      r[6] = capture.font_size;
+      cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+      cairo_t *cr = cairo_create(s);
+      PangoLayout *layout = text_layout(cr, text, r[2], r[6]);
+      int h;
+      pango_layout_get_pixel_size(layout, NULL, &h);
+      r[3] = fmin(capture.height - r[1], fmax(r[3], h + 2));
+      g_object_unref(layout);
+      cairo_destroy(cr);
+      cairo_surface_destroy(s);
+      if (capture.edit_index >= 0)
+        ok = update_annotation(capture.edit_index, r);
+      else {
+        ok = image_session_add_styled(capture.session, TEXT, (int)r[0], (int)r[1], (int)r[2], (int)r[3],
+                                      (int)r[4], (int)r[5], (int)r[6]) == 1;
+        if (ok)
+          capture.selected = image_session_count(capture.session) - 1;
+      }
+    }
+  } else if (capture.edit_index >= 0) {
+    ok = image_session_remove(capture.session, capture.edit_index) == 1;
+    capture.selected = -1;
+  }
+  g_free(text);
+  if (!ok) {
+    report("文字未能保存。请缩短内容或调整文字框后重试。");
+    return FALSE;
+  }
+  capture.editing = FALSE;
+  gtk_widget_hide(capture.entry);
+  gtk_widget_queue_draw(capture.editor);
   return TRUE;
 }
-
+static void cancel_text(void) {
+  capture.editing = FALSE;
+  gtk_widget_hide(capture.entry);
+  gtk_widget_grab_focus(capture.canvas);
+  gtk_widget_queue_draw(capture.editor);
+}
+static int handle_at(double x, double y, const double *r) {
+  static const double xs[] = {0, .5, 1, 1, 1, .5, 0, 0}, ys[] = {0, 0, 0, .5, 1, 1, 1, .5};
+  for (int i = 0; i < 8; i++)
+    if (fabs(x - r[0] - r[2] * xs[i]) <= 7 / capture.zoom &&
+        fabs(y - r[1] - r[3] * ys[i]) <= 7 / capture.zoom)
+      return i;
+  return -1;
+}
+static int hit_test(double x, double y) {
+  for (int i = image_session_count(capture.session) - 1; i >= 0; i--) {
+    double r[7];
+    read_annotation(i, r);
+    if (r[2] < 0) {
+      r[0] += r[2];
+      r[2] = -r[2];
+    }
+    if (r[3] < 0) {
+      r[1] += r[3];
+      r[3] = -r[3];
+    }
+    if (inside(x, y, r))
+      return i;
+  }
+  return -1;
+}
+static void event_position(double ex, double ey, double *x, double *y) {
+  *x = CLAMP(floor((ex - capture.offset_x) / capture.zoom), 0, capture.width);
+  *y = CLAMP(floor((ey - capture.offset_y) / capture.zoom), 0, capture.height);
+}
+static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+  (void)data;
+  if (event->button != 1 || capture.zoom <= 0)
+    return FALSE;
+  if (!commit_text())
+    return TRUE;
+  double x, y;
+  event_position(event->x, event->y, &x, &y);
+  gtk_widget_grab_focus(widget);
+  capture.x1 = capture.x2 = x;
+  capture.y1 = capture.y2 = y;
+  capture.handle = -1;
+  capture.gesture = 0;
+  if (!capture.selecting) {
+    if (capture.selected >= 0) {
+      read_annotation(capture.selected, capture.original);
+      capture.handle = (int)image_session_value(capture.session, capture.selected, 0) == ARROW
+                           ? -1
+                           : handle_at(x, y, capture.original);
+      if (capture.handle >= 0)
+        capture.gesture = 1;
+    }
+    if (capture.gesture == 0 && capture.tool == SELECT) {
+      int index = hit_test(x, y);
+      capture.selected = index;
+      if (index >= 0) {
+        read_annotation(index, capture.original);
+        capture.gesture = 1;
+        sync_style();
+        if (event->type == GDK_2BUTTON_PRESS && (int)image_session_value(capture.session, index, 0) == TEXT) {
+          begin_text(index, x, y);
+          return TRUE;
+        }
+      } else {
+        capture.handle = handle_at(x, y, capture.crop);
+        if (capture.handle >= 0 || inside(x, y, capture.crop)) {
+          memcpy(capture.original, capture.crop, sizeof(capture.crop));
+          capture.gesture = 2;
+        }
+      }
+    }
+    if (capture.gesture == 0 && capture.tool == TEXT && inside(x, y, capture.crop)) {
+      int index = hit_test(x, y);
+      if (index >= 0 && (int)image_session_value(capture.session, index, 0) == TEXT) {
+        capture.selected = index;
+        sync_style();
+        if (event->type == GDK_2BUTTON_PRESS) {
+          begin_text(index, x, y);
+          return TRUE;
+        }
+        read_annotation(index, capture.original);
+        capture.gesture = 1;
+      } else {
+        begin_text(-1, x, y);
+        return TRUE;
+      }
+    }
+    if (capture.gesture == 0 && capture.tool == SELECT) {
+      gtk_widget_queue_draw(widget);
+      return TRUE;
+    }
+    if (!inside(x, y, capture.crop) && capture.gesture == 0)
+      return TRUE;
+  }
+  memcpy(capture.preview, capture.original, sizeof(capture.preview));
+  capture.dragging = TRUE;
+  gtk_grab_add(widget);
+  gtk_widget_queue_draw(widget);
+  return TRUE;
+}
+static void motion(double x, double y) {
+  capture.x2 = x;
+  capture.y2 = y;
+  if (capture.gesture) {
+    double *r = capture.preview, *o = capture.original, dx = x - capture.x1, dy = y - capture.y1;
+    memcpy(r, o, sizeof(capture.preview));
+    if (capture.handle < 0) {
+      r[0] = CLAMP(o[0] + dx, fmax(0, -o[2]), capture.width - fmax(0, o[2]));
+      r[1] = CLAMP(o[1] + dy, fmax(0, -o[3]), capture.height - fmax(0, o[3]));
+    } else {
+      int h = capture.handle;
+      double left = o[0], top = o[1], right = o[0] + o[2], bottom = o[1] + o[3];
+      if (h == 0 || h == 6 || h == 7)
+        left = CLAMP(left + dx, 0, right - 8);
+      if (h == 2 || h == 3 || h == 4)
+        right = CLAMP(right + dx, left + 8, capture.width);
+      if (h <= 2)
+        top = CLAMP(top + dy, 0, bottom - 8);
+      if (h >= 4 && h <= 6)
+        bottom = CLAMP(bottom + dy, top + 8, capture.height);
+      r[0] = left;
+      r[1] = top;
+      r[2] = right - left;
+      r[3] = bottom - top;
+      if (capture.gesture == 1 && (h % 2) == 0 &&
+          (int)image_session_value(capture.session, capture.selected, 0) == TEXT)
+        r[6] = CLAMP(round(o[6] * fmin(r[2] / o[2], r[3] / o[3])), 8, 128);
+    }
+  }
+}
 static gboolean canvas_motion(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
   (void)data;
-  if (!capture.dragging || capture.zoom <= 0) return FALSE;
-  capture.x2 = CLAMP(floor((event->x - capture.offset_x) / capture.zoom), 0, capture.width);
-  capture.y2 = CLAMP(floor((event->y - capture.offset_y) / capture.zoom), 0, capture.height);
-  gtk_widget_queue_draw(widget); return TRUE;
+  if (!capture.dragging)
+    return FALSE;
+  double x, y;
+  event_position(event->x, event->y, &x, &y);
+  motion(x, y);
+  gtk_widget_queue_draw(widget);
+  return TRUE;
 }
-
+static gboolean finish_selection(void) {
+  double x = fmin(capture.x1, capture.x2), y = fmin(capture.y1, capture.y2),
+         w = fabs(capture.x2 - capture.x1), h = fabs(capture.y2 - capture.y1);
+  if (w < 2 || h < 2)
+    return FALSE;
+  capture.session =
+      image_session_create_viewport(capture.width, capture.height, (int)x, (int)y, (int)w, (int)h);
+  if (capture.session <= 0)
+    return FALSE;
+  capture.selecting = FALSE;
+  sync_crop();
+  gtk_widget_set_no_show_all(capture.toolbar, FALSE);
+  gtk_widget_show_all(capture.toolbar);
+  layout_controls();
+  gtk_widget_queue_draw(capture.canvas);
+  return TRUE;
+}
 static gboolean canvas_release(GtkWidget *widget, GdkEventButton *event, gpointer data) {
   (void)data;
-  if (!capture.dragging || event->button != 1) return FALSE;
-  capture.x2 = CLAMP(floor((event->x - capture.offset_x) / capture.zoom), 0, capture.width);
-  capture.y2 = CLAMP(floor((event->y - capture.offset_y) / capture.zoom), 0, capture.height);
-  capture.dragging = FALSE; gtk_grab_remove(widget);
-  int x = (int)(capture.tool == ARROW ? capture.x1 : fmin(capture.x1, capture.x2));
-  int y = (int)(capture.tool == ARROW ? capture.y1 : fmin(capture.y1, capture.y2));
-  int width = (int)(capture.tool == ARROW ? capture.x2 - capture.x1 : fabs(capture.x2 - capture.x1));
-  int height = (int)(capture.tool == ARROW ? capture.y2 - capture.y1 : fabs(capture.y2 - capture.y1));
-  if ((capture.tool == ARROW && abs(width) + abs(height) >= 3) || (width >= 2 && height >= 2))
-    image_session_add(capture.session, capture.tool, x, y, width, height, capture.tool == REDACT ? 0 : capture.color, capture.stroke);
-  gtk_widget_queue_draw(widget); return TRUE;
+  if (!capture.dragging || event->button != 1)
+    return FALSE;
+  double x, y;
+  event_position(event->x, event->y, &x, &y);
+  motion(x, y);
+  capture.dragging = FALSE;
+  if (gtk_widget_has_grab(widget))
+    gtk_grab_remove(widget);
+  if (capture.selecting)
+    finish_selection();
+  else if (capture.gesture == 1)
+    update_annotation(capture.selected, capture.preview);
+  else if (capture.gesture == 2) {
+    image_session_crop(capture.session, (int)capture.preview[0], (int)capture.preview[1],
+                       (int)capture.preview[2], (int)capture.preview[3]);
+    sync_crop();
+  } else if (capture.tool != SELECT && capture.tool != TEXT) {
+    int x0 = (int)(capture.tool == ARROW ? capture.x1 : fmin(capture.x1, capture.x2)),
+        y0 = (int)(capture.tool == ARROW ? capture.y1 : fmin(capture.y1, capture.y2)),
+        w = (int)(capture.tool == ARROW ? capture.x2 - capture.x1 : fabs(capture.x2 - capture.x1)),
+        h = (int)(capture.tool == ARROW ? capture.y2 - capture.y1 : fabs(capture.y2 - capture.y1));
+    if ((capture.tool == ARROW && abs(w) + abs(h) >= 3) || (w >= 2 && h >= 2))
+      image_session_add(capture.session, capture.tool, x0, y0, w, h,
+                        capture.tool == REDACT ? 0 : capture.color, capture.stroke);
+  }
+  capture.gesture = 0;
+  layout_controls();
+  gtk_widget_queue_draw(widget);
+  return TRUE;
 }
-
-static void tool_changed(GtkComboBox *combo, gpointer data) {
-  (void)data; capture.tool = gtk_combo_box_get_active(combo) + 1;
-  if (capture.tool == TEXT) gtk_widget_grab_focus(capture.entry);
+static void tool_clicked(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  if (!commit_text())
+    return;
+  capture.tool = GPOINTER_TO_INT(data);
+  for (int i = 0; i < 5; i++) {
+    GtkStyleContext *style = gtk_widget_get_style_context(capture.tools[i]);
+    if (i == capture.tool)
+      gtk_style_context_add_class(style, "suggested-action");
+    else
+      gtk_style_context_remove_class(style, "suggested-action");
+  }
+  capture.selected = -1;
+  gtk_widget_grab_focus(capture.canvas);
+  gtk_widget_queue_draw(capture.canvas);
 }
-static void color_changed(GtkColorButton *button, gpointer data) {
-  (void)data; GdkRGBA color; gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(button), &color);
-  capture.color = ((int)round(color.red * 255) << 16) | ((int)round(color.green * 255) << 8) | (int)round(color.blue * 255);
+static void style_changed(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  (void)data;
+  if (capture.updating)
+    return;
+  GdkRGBA color;
+  gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(capture.colors), &color);
+  capture.color = ((int)round(color.red * 255) << 16) | ((int)round(color.green * 255) << 8) |
+                  (int)round(color.blue * 255);
+  capture.font_size = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(capture.font));
+  if (capture.editing)
+    text_style();
+  else if (capture.selected >= 0) {
+    double r[7];
+    read_annotation(capture.selected, r);
+    r[4] = capture.color;
+    r[6] = capture.font_size;
+    update_annotation(capture.selected, r);
+  }
+  gtk_widget_queue_draw(capture.editor);
 }
-static void stroke_changed(GtkSpinButton *spin, gpointer data) { (void)data; capture.stroke = gtk_spin_button_get_value_as_int(spin); }
 static void command(GtkWidget *widget, gpointer data) {
-  (void)widget; int action = GPOINTER_TO_INT(data);
-  if (action == 1) image_session_undo(capture.session);
-  if (action == 2) image_session_redo(capture.session);
-  if (action == 3) { if (copy_image()) mc_linux_capture_close(); else report("暂时无法复制图片，请重试。"); return; }
-  if (action == 4) { mc_linux_capture_close(); return; }
+  (void)widget;
+  int action = GPOINTER_TO_INT(data);
+  if (action == 4) {
+    mc_linux_capture_close();
+    return;
+  }
+  if (!commit_text())
+    return;
+  if (action == 1 || action == 2) {
+    if (action == 1)
+      image_session_undo(capture.session);
+    else
+      image_session_redo(capture.session);
+    capture.selected = -1;
+    sync_crop();
+    layout_controls();
+  }
+  if (action == 3) {
+    if (copy_image())
+      mc_linux_capture_close();
+    else
+      report("暂时无法复制图片，请重试。");
+    return;
+  }
+  if (action == 5) {
+    GdkPixbuf *image = flatten();
+    if (image) {
+      mc_linux_capture_close();
+      mc_linux_pin_image(image);
+      g_object_unref(image);
+    }
+    return;
+  }
   gtk_widget_queue_draw(capture.canvas);
 }
 static gboolean editor_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
-  (void)widget; (void)data;
-  if (event->keyval == GDK_KEY_Escape) { mc_linux_capture_close(); return TRUE; }
-  if (!(event->state & GDK_CONTROL_MASK)) return FALSE;
-  if (event->keyval == GDK_KEY_Return) { command(NULL, GINT_TO_POINTER(3)); return TRUE; }
-  if (gtk_window_get_focus(GTK_WINDOW(capture.editor)) == capture.entry) return FALSE;
+  (void)widget;
+  (void)data;
+  if (capture.editing) {
+    if (capture.composing)
+      return FALSE;
+    guint key = gdk_keyval_to_lower(event->keyval);
+    if ((event->state & GDK_CONTROL_MASK) && (key == GDK_KEY_z || key == GDK_KEY_y)) {
+      draft_undo(key == GDK_KEY_y || (event->state & GDK_SHIFT_MASK));
+      return TRUE;
+    }
+    if (event->keyval == GDK_KEY_Escape) {
+      cancel_text();
+      return TRUE;
+    }
+    if ((event->state & GDK_CONTROL_MASK) && event->keyval == GDK_KEY_Return) {
+      if (commit_text())
+        gtk_widget_grab_focus(capture.canvas);
+      return TRUE;
+    }
+    return FALSE;
+  }
+  if (event->keyval == GDK_KEY_Escape) {
+    mc_linux_capture_close();
+    return TRUE;
+  }
+  if (capture.selecting)
+    return FALSE;
+  if (event->keyval == GDK_KEY_Delete && capture.selected >= 0) {
+    image_session_remove(capture.session, capture.selected);
+    capture.selected = -1;
+    gtk_widget_queue_draw(capture.canvas);
+    return TRUE;
+  }
+  if (!(event->state & GDK_CONTROL_MASK))
+    return FALSE;
   guint key = gdk_keyval_to_lower(event->keyval);
-  if (key == GDK_KEY_z || key == GDK_KEY_y) { command(NULL, GINT_TO_POINTER(key == GDK_KEY_y || (event->state & GDK_SHIFT_MASK) ? 2 : 1)); return TRUE; }
-  if (key == GDK_KEY_c) { command(NULL, GINT_TO_POINTER(3)); return TRUE; }
+  if (key == GDK_KEY_Return || key == GDK_KEY_c) {
+    command(NULL, GINT_TO_POINTER(3));
+    return TRUE;
+  }
+  if (key == GDK_KEY_z || key == GDK_KEY_y) {
+    command(NULL, GINT_TO_POINTER(key == GDK_KEY_y || (event->state & GDK_SHIFT_MASK) ? 2 : 1));
+    return TRUE;
+  }
   return FALSE;
 }
 static gboolean delete_window(GtkWidget *widget, GdkEvent *event, gpointer data) {
-  (void)widget; (void)event; (void)data; mc_linux_capture_close(); return TRUE;
+  (void)widget;
+  (void)event;
+  (void)data;
+  mc_linux_capture_close();
+  return TRUE;
 }
-
+static gboolean icon_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
+  (void)widget;
+  MCIconPath path = mc_icon_path((MCIcon)GPOINTER_TO_INT(data));
+  cairo_translate(cr, 3, 3);
+  cairo_scale(cr, .8, .8);
+  for (unsigned i = 0; i < path.count; i++) {
+    const MCIconCommand *c = &path.commands[i];
+    switch (c->op) {
+    case 'M':
+      cairo_move_to(cr, c->x1, c->y1);
+      break;
+    case 'L':
+      cairo_line_to(cr, c->x1, c->y1);
+      break;
+    case 'C':
+      cairo_curve_to(cr, c->x1, c->y1, c->x2, c->y2, c->x3, c->y3);
+      break;
+    case 'Z':
+      cairo_close_path(cr);
+      break;
+    }
+  }
+  GdkRGBA color;
+  gtk_style_context_get_color(gtk_widget_get_style_context(widget), GTK_STATE_FLAG_NORMAL, &color);
+  gdk_cairo_set_source_rgba(cr, &color);
+  cairo_set_line_width(cr, 2);
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+  cairo_stroke(cr);
+  return FALSE;
+}
+static GtkWidget *icon_button(MCIcon icon, const char *label, GCallback callback, int action) {
+  GtkWidget *button = gtk_button_new(), *drawing = gtk_drawing_area_new();
+  gtk_widget_set_size_request(drawing, 26, 26);
+  g_signal_connect(drawing, "draw", G_CALLBACK(icon_draw), GINT_TO_POINTER(icon));
+  gtk_container_add(GTK_CONTAINER(button), drawing);
+  gtk_widget_set_tooltip_text(button, label);
+  atk_object_set_name(gtk_widget_get_accessible(button), label);
+  g_signal_connect(button, "clicked", callback, GINT_TO_POINTER(action));
+  return button;
+}
+static void layout_controls(void) {
+  if (!capture.canvas || !capture.toolbar)
+    return;
+  transform();
+  int ww = gtk_widget_get_allocated_width(capture.canvas),
+      hh = gtk_widget_get_allocated_height(capture.canvas);
+  GtkRequisition size;
+  gtk_widget_get_preferred_size(capture.toolbar, &size, NULL);
+  int x = CLAMP((int)(capture.offset_x + capture.crop[0] * capture.zoom), 0, MAX(0, ww - size.width));
+  int y = (int)(capture.offset_y + (capture.crop[1] + capture.crop[3]) * capture.zoom) + 12;
+  if (y + size.height > hh)
+    y = MAX(0, (int)(capture.offset_y + capture.crop[1] * capture.zoom) - size.height - 12);
+  GdkRectangle toolbar_bounds = {x, y, size.width, size.height};
+  gboolean changed = memcmp(&toolbar_bounds, &capture.toolbar_bounds, sizeof(toolbar_bounds)) != 0;
+  capture.toolbar_bounds = toolbar_bounds;
+  if (capture.editing) {
+    double *r = capture.preview;
+    GdkRectangle entry_bounds = {(int)(capture.offset_x + r[0] * capture.zoom),
+                                 (int)(capture.offset_y + r[1] * capture.zoom),
+                                 MAX(8, (int)(r[2] * capture.zoom)), MAX(8, (int)(r[3] * capture.zoom))};
+    changed = changed || memcmp(&entry_bounds, &capture.entry_bounds, sizeof(entry_bounds)) != 0;
+    capture.entry_bounds = entry_bounds;
+  }
+  if (changed)
+    gtk_widget_queue_resize(capture.overlay);
+}
+static gboolean overlay_position(GtkOverlay *overlay, GtkWidget *child, GdkRectangle *allocation,
+                                 gpointer data) {
+  (void)overlay;
+  (void)data;
+  if (child == capture.toolbar) {
+    *allocation = capture.toolbar_bounds;
+    return TRUE;
+  }
+  if (child == capture.entry) {
+    *allocation = capture.entry_bounds;
+    return TRUE;
+  }
+  return FALSE;
+}
+static void size_changed(GtkWidget *widget, GtkAllocation *allocation, gpointer data) {
+  (void)widget;
+  (void)allocation;
+  (void)data;
+  layout_controls();
+}
+static void preedit_changed(GtkTextView *view, const char *text, gpointer data) {
+  (void)view;
+  (void)data;
+  capture.composing = text && *text;
+}
 static gboolean open_editor(GdkPixbuf *image) {
   int width = gdk_pixbuf_get_width(image), height = gdk_pixbuf_get_height(image);
-  if (width < 2 || height < 2 || width > 32768 || height > 32768 || (guint64)width * height > 64000000) return FALSE;
-  capture.session = image_session_create(width, height);
-  if (capture.session <= 0) return FALSE;
-  capture.image = g_object_ref(image); capture.width = width; capture.height = height;
-  capture.tool = RECTANGLE; capture.color = 0xF26769; capture.stroke = 4;
-  capture.editor = gtk_application_window_new(capture.application);
-  gtk_window_set_title(GTK_WINDOW(capture.editor), "Mooji Cut · 标注后复制");
-  gtk_window_set_default_size(GTK_WINDOW(capture.editor), 1000, 700);
+  if (width < 2 || height < 2 || width > 32768 || height > 32768 || (guint64)width * height > 64000000)
+    return FALSE;
+  capture.image = g_object_ref(image);
+  capture.width = width;
+  capture.height = height;
+  capture.selected = capture.edit_index = -1;
+  capture.tool = SELECT;
+  capture.color = 0xF26769;
+  capture.stroke = 4;
+  capture.font_size = 24;
+  capture.crop[2] = width;
+  capture.crop[3] = height;
+  if (!capture.selecting) {
+    capture.session = image_session_create_viewport(width, height, 0, 0, width, height);
+    if (capture.session <= 0)
+      return FALSE;
+  }
+  /* An X11 override-redirect surface avoids window-manager work-area constraints
+   * across the frozen virtual desktop. Portal images use a normal borderless
+   * surface because Wayland owns placement and focus. */
+  capture.editor =
+      capture.x11 ? gtk_window_new(GTK_WINDOW_POPUP) : gtk_application_window_new(capture.application);
+  if (capture.x11) {
+    gtk_window_set_application(GTK_WINDOW(capture.editor), capture.application);
+    gtk_window_set_accept_focus(GTK_WINDOW(capture.editor), TRUE);
+  }
+  gtk_window_set_title(GTK_WINDOW(capture.editor), "Mooji Cut · 截图标注");
+  gtk_window_set_decorated(GTK_WINDOW(capture.editor), FALSE);
+  gtk_window_set_keep_above(GTK_WINDOW(capture.editor), TRUE);
+  gtk_window_set_skip_taskbar_hint(GTK_WINDOW(capture.editor), TRUE);
+  gtk_window_set_default_size(GTK_WINDOW(capture.editor),
+                              capture.root_width ? capture.root_width : MIN(width + 40, 1000),
+                              capture.root_height ? capture.root_height : MIN(height + 140, 800));
   g_signal_connect(capture.editor, "delete-event", G_CALLBACK(delete_window), NULL);
   g_signal_connect(capture.editor, "key-press-event", G_CALLBACK(editor_key), NULL);
-  GtkWidget *layout = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10), *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-  gtk_container_set_border_width(GTK_CONTAINER(layout), 12); gtk_container_add(GTK_CONTAINER(capture.editor), layout);
-  gtk_box_pack_start(GTK_BOX(layout), toolbar, FALSE, FALSE, 0);
-  GtkWidget *tools = gtk_combo_box_text_new();
-  const char *names[] = { "矩形", "箭头", "文字", "实心遮挡" };
-  for (int i = 0; i < 4; i++) gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(tools), names[i]);
-  gtk_combo_box_set_active(GTK_COMBO_BOX(tools), 0);
-  g_signal_connect(tools, "changed", G_CALLBACK(tool_changed), NULL); gtk_box_pack_start(GTK_BOX(toolbar), tools, FALSE, FALSE, 0);
-  GdkRGBA color = { 242 / 255.0, 103 / 255.0, 105 / 255.0, 1 };
-  GtkWidget *colors = gtk_color_button_new_with_rgba(&color), *stroke = gtk_spin_button_new_with_range(1, 24, 1);
-  gtk_widget_set_tooltip_text(colors, "标注颜色"); gtk_widget_set_tooltip_text(stroke, "线宽（原图像素）");
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(stroke), 4);
-  g_signal_connect(colors, "color-set", G_CALLBACK(color_changed), NULL); g_signal_connect(stroke, "value-changed", G_CALLBACK(stroke_changed), NULL);
-  gtk_box_pack_start(GTK_BOX(toolbar), colors, FALSE, FALSE, 0); gtk_box_pack_start(GTK_BOX(toolbar), stroke, FALSE, FALSE, 0);
-  const char *actions[] = { "撤销", "重做", "复制", "取消" };
-  for (int i = 0; i < 4; i++) {
-    GtkWidget *button = gtk_button_new_with_label(actions[i]);
-    g_signal_connect(button, "clicked", G_CALLBACK(command), GINT_TO_POINTER(i + 1));
-    gtk_box_pack_start(GTK_BOX(toolbar), button, FALSE, FALSE, 0);
+  GtkWidget *overlay = gtk_overlay_new();
+  capture.overlay = overlay;
+  g_signal_connect(overlay, "get-child-position", G_CALLBACK(overlay_position), NULL);
+  gtk_container_add(GTK_CONTAINER(capture.editor), overlay);
+  capture.canvas = gtk_drawing_area_new();
+  gtk_widget_set_can_focus(capture.canvas, TRUE);
+  gtk_container_add(GTK_CONTAINER(overlay), capture.canvas);
+  capture.entry = gtk_text_view_new();
+  g_signal_connect(capture.entry, "preedit-changed", G_CALLBACK(preedit_changed), NULL);
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
+  g_signal_connect(buffer, "begin-user-action", G_CALLBACK(draft_action_begin), NULL);
+  g_signal_connect(buffer, "end-user-action", G_CALLBACK(draft_action_end), NULL);
+  gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(capture.entry), GTK_WRAP_WORD_CHAR);
+  gtk_text_view_set_left_margin(GTK_TEXT_VIEW(capture.entry), 0);
+  gtk_text_view_set_right_margin(GTK_TEXT_VIEW(capture.entry), 0);
+  gtk_text_view_set_top_margin(GTK_TEXT_VIEW(capture.entry), 0);
+  gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(capture.entry), 0);
+  gtk_widget_set_no_show_all(capture.entry, TRUE);
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.entry);
+  GtkWidget *masks = gtk_drawing_area_new();
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), masks);
+  gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), masks, TRUE);
+  g_signal_connect(masks, "draw", G_CALLBACK(masks_draw), NULL);
+  capture.toolbar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  gtk_widget_set_no_show_all(capture.toolbar, TRUE);
+  gtk_style_context_add_class(gtk_widget_get_style_context(capture.toolbar), "toolbar");
+  GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2),
+            *row2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+  gtk_box_pack_start(GTK_BOX(capture.toolbar), row, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(capture.toolbar), row2, FALSE, FALSE, 0);
+  const char *names[] = {"选择 / 移动", "矩形", "箭头", "文字：单击新建，双击编辑", "实心遮挡"};
+  MCIcon icons[] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT, MC_ICON_REDACT};
+  for (int i = 0; i < 5; i++) {
+    capture.tools[i] = icon_button(icons[i], names[i], G_CALLBACK(tool_clicked), i);
+    gtk_box_pack_start(GTK_BOX(row), capture.tools[i], FALSE, FALSE, 0);
   }
-  capture.entry = gtk_entry_new(); gtk_entry_set_max_length(GTK_ENTRY(capture.entry), 1024);
-  gtk_entry_set_placeholder_text(GTK_ENTRY(capture.entry), "输入文字，选择“文字”工具，再点击图片放置");
-  gtk_box_pack_start(GTK_BOX(layout), capture.entry, FALSE, FALSE, 0);
-  capture.canvas = gtk_drawing_area_new(); gtk_widget_set_can_focus(capture.canvas, TRUE);
-  gtk_widget_add_events(capture.canvas, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
+  gtk_style_context_add_class(gtk_widget_get_style_context(capture.tools[0]), "suggested-action");
+  capture.colors = gtk_color_button_new();
+  GdkRGBA color = {242 / 255.0, 103 / 255.0, 105 / 255.0, 1};
+  gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(capture.colors), &color);
+  gtk_widget_set_tooltip_text(capture.colors, "文字与标注颜色");
+  g_signal_connect(capture.colors, "color-set", G_CALLBACK(style_changed), NULL);
+  gtk_box_pack_start(GTK_BOX(row), capture.colors, FALSE, FALSE, 0);
+  capture.font = gtk_spin_button_new_with_range(8, 128, 1);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(capture.font), 24);
+  gtk_widget_set_tooltip_text(capture.font, "文字大小（原图像素）");
+  g_signal_connect(capture.font, "value-changed", G_CALLBACK(style_changed), NULL);
+  gtk_box_pack_start(GTK_BOX(row), capture.font, FALSE, FALSE, 0);
+  MCIcon action_icons[] = {MC_ICON_UNDO, MC_ICON_REDO, MC_ICON_CHECK, MC_ICON_CLOSE, MC_ICON_PIN};
+  const char *actions[] = {"撤销 Ctrl+Z", "重做 Ctrl+Shift+Z", "确认并复制 Ctrl+Enter", "取消 Esc",
+                           "固定贴图"};
+  for (int i = 0; i < 5; i++)
+    gtk_box_pack_start(GTK_BOX(row2), icon_button(action_icons[i], actions[i], G_CALLBACK(command), i + 1),
+                       FALSE, FALSE, 0);
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.toolbar);
+  gtk_widget_add_events(capture.canvas,
+                        GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
   g_signal_connect(capture.canvas, "draw", G_CALLBACK(canvas_draw), NULL);
   g_signal_connect(capture.canvas, "button-press-event", G_CALLBACK(canvas_press), NULL);
   g_signal_connect(capture.canvas, "motion-notify-event", G_CALLBACK(canvas_motion), NULL);
   g_signal_connect(capture.canvas, "button-release-event", G_CALLBACK(canvas_release), NULL);
-  gtk_box_pack_start(GTK_BOX(layout), capture.canvas, TRUE, TRUE, 0);
-  capture.status = gtk_label_new("确认后复制原图尺寸的图片 · Ctrl+Z 撤销 · Ctrl+Enter 复制 · Esc 取消");
-  gtk_box_pack_start(GTK_BOX(layout), capture.status, FALSE, FALSE, 0);
-  gtk_widget_show_all(capture.editor); gtk_window_present(GTK_WINDOW(capture.editor));
+  g_signal_connect(capture.canvas, "size-allocate", G_CALLBACK(size_changed), NULL);
+  gtk_widget_show_all(capture.editor);
+  if (!capture.selecting) {
+    gtk_widget_set_no_show_all(capture.toolbar, FALSE);
+    gtk_widget_show_all(capture.toolbar);
+  }
+  gtk_widget_grab_focus(capture.canvas);
+  layout_controls();
+  if (!capture.smoke)
+    gtk_window_present(GTK_WINDOW(capture.editor));
   return TRUE;
 }
-
-static gboolean overlay_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
-  (void)widget; (void)data;
-  double sx = (double)capture.root_width / gdk_pixbuf_get_width(capture.desktop);
-  double sy = (double)capture.root_height / gdk_pixbuf_get_height(capture.desktop);
-  cairo_save(cr); cairo_scale(cr, sx, sy); gdk_cairo_set_source_pixbuf(cr, capture.desktop, 0, 0); cairo_paint(cr); cairo_restore(cr);
-  cairo_set_source_rgba(cr, 0, 0, 0, 0.4); cairo_paint(cr);
-  double x = fmin(capture.x1, capture.x2), y = fmin(capture.y1, capture.y2);
-  double width = fabs(capture.x2 - capture.x1), height = fabs(capture.y2 - capture.y1);
-  if (width > 0 && height > 0) {
-    cairo_save(cr); cairo_rectangle(cr, x, y, width, height); cairo_clip(cr); cairo_scale(cr, sx, sy);
-    gdk_cairo_set_source_pixbuf(cr, capture.desktop, 0, 0); cairo_paint(cr); cairo_restore(cr);
-    cairo_set_source_rgb(cr, 242 / 255.0, 103 / 255.0, 105 / 255.0); cairo_set_line_width(cr, 2);
-    cairo_rectangle(cr, x, y, width, height); cairo_stroke(cr);
+static gboolean start_x11(void) {
+  GdkWindow *root = gdk_get_default_root_window();
+  int x, y;
+  capture.root_width = gdk_window_get_width(root);
+  capture.root_height = gdk_window_get_height(root);
+  gdk_window_get_origin(root, &x, &y);
+  GdkPixbuf *image = gdk_pixbuf_get_from_window(root, 0, 0, capture.root_width, capture.root_height);
+  if (!image)
+    return FALSE;
+  capture.selecting = TRUE;
+  capture.x11 = TRUE;
+  gboolean ok = open_editor(image);
+  g_object_unref(image);
+  if (ok) {
+    gtk_window_move(GTK_WINDOW(capture.editor), x, y);
+    gtk_window_resize(GTK_WINDOW(capture.editor), capture.root_width, capture.root_height);
+    gdk_window_focus(gtk_widget_get_window(capture.editor), GDK_CURRENT_TIME);
   }
-  cairo_set_source_rgb(cr, 1, 1, 1);
-  PangoLayout *hint = pango_cairo_create_layout(cr); pango_layout_set_text(hint, "拖动框选 · 松开后标注 · Esc 取消", -1);
-  cairo_move_to(cr, CLAMP(x, 16, MAX(16, capture.root_width - 380)), CLAMP(y - 28, 16, MAX(16, capture.root_height - 40)));
-  pango_cairo_show_layout(cr, hint); g_object_unref(hint); return FALSE;
-}
-static gboolean overlay_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
-  (void)data;
-  if (event->button == 3) { mc_linux_capture_close(); return TRUE; }
-  if (event->button != 1) return FALSE;
-  capture.x1 = capture.x2 = CLAMP(event->x, 0, capture.root_width);
-  capture.y1 = capture.y2 = CLAMP(event->y, 0, capture.root_height); capture.dragging = TRUE;
-  gtk_widget_queue_draw(widget); return TRUE;
-}
-static gboolean overlay_motion(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
-  (void)data; if (!capture.dragging) return FALSE;
-  capture.x2 = CLAMP(event->x, 0, capture.root_width); capture.y2 = CLAMP(event->y, 0, capture.root_height);
-  gtk_widget_queue_draw(widget); return TRUE;
-}
-static gboolean finish_selection(void) {
-  double sx = (double)gdk_pixbuf_get_width(capture.desktop) / capture.root_width;
-  double sy = (double)gdk_pixbuf_get_height(capture.desktop) / capture.root_height;
-  int x = (int)floor(fmin(capture.x1, capture.x2) * sx), y = (int)floor(fmin(capture.y1, capture.y2) * sy);
-  int right = MIN(gdk_pixbuf_get_width(capture.desktop), (int)ceil(fmax(capture.x1, capture.x2) * sx));
-  int bottom = MIN(gdk_pixbuf_get_height(capture.desktop), (int)ceil(fmax(capture.y1, capture.y2) * sy));
-  if (right - x < 2 || bottom - y < 2) return FALSE;
-  GdkPixbuf *part = gdk_pixbuf_new_subpixbuf(capture.desktop, x, y, right - x, bottom - y);
-  GdkPixbuf *copy = gdk_pixbuf_copy(part); g_object_unref(part);
-  release_overlay();
-  gboolean ok = copy && open_editor(copy); g_clear_object(&copy);
-  if (!ok) { report("无法创建截图，请缩小区域后重试。"); mc_linux_capture_close(); }
   return ok;
 }
-static gboolean overlay_release(GtkWidget *widget, GdkEventButton *event, gpointer data) {
-  (void)widget; (void)data;
-  if (!capture.dragging || event->button != 1) return FALSE;
-  capture.x2 = CLAMP(event->x, 0, capture.root_width); capture.y2 = CLAMP(event->y, 0, capture.root_height);
-  capture.dragging = FALSE; finish_selection(); return TRUE;
-}
-static gboolean overlay_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
-  (void)widget; (void)data;
-  if (event->keyval == GDK_KEY_Escape) { mc_linux_capture_close(); return TRUE; }
-  return FALSE;
-}
-static gboolean overlay_grab_broken(GtkWidget *widget, GdkEventGrabBroken *event, gpointer data) {
-  (void)event; (void)data;
-  if (capture.overlay == widget) mc_linux_capture_close();
-  return FALSE;
-}
-
-static gboolean start_x11(void) {
-  GdkWindow *root = gdk_get_default_root_window(); int origin_x, origin_y;
-  capture.root_width = gdk_window_get_width(root); capture.root_height = gdk_window_get_height(root);
-  gdk_window_get_origin(root, &origin_x, &origin_y);
-  capture.desktop = gdk_pixbuf_get_from_window(root, 0, 0, capture.root_width, capture.root_height);
-  if (!capture.desktop) return FALSE;
-  capture.overlay = gtk_window_new(GTK_WINDOW_POPUP);
-  gtk_window_set_application(GTK_WINDOW(capture.overlay), capture.application);
-  gtk_window_set_decorated(GTK_WINDOW(capture.overlay), FALSE); gtk_window_set_keep_above(GTK_WINDOW(capture.overlay), TRUE);
-  gtk_window_set_accept_focus(GTK_WINDOW(capture.overlay), TRUE);
-  gtk_window_move(GTK_WINDOW(capture.overlay), origin_x, origin_y);
-  gtk_window_set_default_size(GTK_WINDOW(capture.overlay), capture.root_width, capture.root_height);
-  gtk_widget_add_events(capture.overlay, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK | GDK_KEY_PRESS_MASK);
-  g_signal_connect(capture.overlay, "draw", G_CALLBACK(overlay_draw), NULL);
-  g_signal_connect(capture.overlay, "button-press-event", G_CALLBACK(overlay_press), NULL);
-  g_signal_connect(capture.overlay, "motion-notify-event", G_CALLBACK(overlay_motion), NULL);
-  g_signal_connect(capture.overlay, "button-release-event", G_CALLBACK(overlay_release), NULL);
-  g_signal_connect(capture.overlay, "key-press-event", G_CALLBACK(overlay_key), NULL);
-  g_signal_connect(capture.overlay, "grab-broken-event", G_CALLBACK(overlay_grab_broken), NULL);
-  gtk_widget_show_all(capture.overlay);
-  GdkWindow *window = gtk_widget_get_window(capture.overlay);
-  gdk_window_move_resize(window, origin_x, origin_y, capture.root_width, capture.root_height);
-  GdkSeat *seat = gdk_display_get_default_seat(gdk_window_get_display(window));
-  GdkCursor *cursor = gdk_cursor_new_from_name(gdk_window_get_display(window), "crosshair");
-  GdkGrabStatus grabbed = gdk_seat_grab(seat, window, GDK_SEAT_CAPABILITY_ALL, FALSE, cursor, NULL, NULL, NULL);
-  g_clear_object(&cursor);
-  if (grabbed != GDK_GRAB_SUCCESS) { release_overlay(); return FALSE; }
-  capture.seat = seat; gdk_window_focus(window, GDK_CURRENT_TIME);
-  return TRUE;
-}
-
-static void portal_response(GDBusConnection *bus, const char *sender, const char *path,
-                            const char *interface, const char *signal, GVariant *parameters, gpointer data) {
-  (void)bus; (void)sender; (void)interface; (void)signal;
-  if (GPOINTER_TO_UINT(data) != generation || !capture.pending || g_strcmp0(path, capture.request_path)) return;
-  guint result; GVariant *values; g_variant_get(parameters, "(u@a{sv})", &result, &values);
-  char *uri = NULL; g_variant_lookup(values, "uri", "s", &uri); g_variant_unref(values);
-  release_portal(FALSE);
-  if (result != 0 || !uri) {
-    report(result == 1 ? "截图已取消，剪贴板未更改。" : "系统未允许截图，剪贴板未更改。请检查截图门户和权限。");
-    g_free(uri); mc_linux_capture_close(); return;
-  }
-  GFile *file = g_file_new_for_uri(uri); char *filename = g_file_get_path(file); GError *error = NULL;
-  GdkPixbuf *image = filename ? gdk_pixbuf_new_from_file(filename, &error) : NULL;
-  gboolean ok = image && open_editor(image);
-  g_clear_object(&image); g_object_unref(file); g_free(filename); g_free(uri); g_clear_error(&error);
-  if (!ok) { report("无法读取系统提供的截图。剪贴板未更改。"); mc_linux_capture_close(); }
-}
-static void portal_started(GObject *object, GAsyncResult *result, gpointer data) {
-  GError *error = NULL; GVariant *response = g_dbus_connection_call_finish(G_DBUS_CONNECTION(object), result, &error);
-  if (GPOINTER_TO_UINT(data) != generation || !capture.pending) {
-    /* A cancellation can race the method reply on older portal versions that
-       return a different request path. Close that actual handle as well. */
-    if (response && GPOINTER_TO_UINT(data) != generation) {
-      const char *path; g_variant_get(response, "(&o)", &path);
-      g_dbus_connection_call(G_DBUS_CONNECTION(object), "org.freedesktop.portal.Desktop", path,
-        "org.freedesktop.portal.Request", "Close", NULL, NULL, G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL, NULL);
-    }
-    g_clear_pointer(&response, g_variant_unref); g_clear_error(&error); return;
-  }
-  if (!response) { report("当前桌面未提供可用的截图门户，请安装并启用对应的 xdg-desktop-portal 后端。"); g_clear_error(&error); mc_linux_capture_close(); return; }
-  const char *path; g_variant_get(response, "(&o)", &path);
-  if (g_strcmp0(path, capture.request_path)) {
-    g_dbus_connection_signal_unsubscribe(capture.bus, capture.subscription); g_free(capture.request_path);
-    capture.request_path = g_strdup(path);
-    capture.subscription = g_dbus_connection_signal_subscribe(capture.bus, "org.freedesktop.portal.Desktop",
-      "org.freedesktop.portal.Request", "Response", path, NULL, G_DBUS_SIGNAL_FLAGS_NONE, portal_response, data, NULL);
-  }
-  g_variant_unref(response);
-}
-static void start_portal(void) {
-  GError *error = NULL; capture.bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, &error);
-  if (!capture.bus) { report("无法连接系统截图服务。请确认桌面会话的 D-Bus 正常运行。"); g_clear_error(&error); mc_linux_capture_close(); return; }
-  char *sender = g_strdup(g_dbus_connection_get_unique_name(capture.bus) + 1);
-  for (char *p = sender; *p; p++) if (*p == '.') *p = '_';
-  char *token = g_strdup_printf("moojicut_%u_%u", generation, g_random_int());
-  capture.request_path = g_strdup_printf("/org/freedesktop/portal/desktop/request/%s/%s", sender, token);
-  capture.pending = TRUE;
-  capture.subscription = g_dbus_connection_signal_subscribe(capture.bus, "org.freedesktop.portal.Desktop",
-    "org.freedesktop.portal.Request", "Response", capture.request_path, NULL, G_DBUS_SIGNAL_FLAGS_NONE,
-    portal_response, GUINT_TO_POINTER(generation), NULL);
-  GVariantBuilder options; g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
-  g_variant_builder_add(&options, "{sv}", "handle_token", g_variant_new_string(token));
-  g_variant_builder_add(&options, "{sv}", "interactive", g_variant_new_boolean(TRUE));
-  g_dbus_connection_call(capture.bus, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
-    "org.freedesktop.portal.Screenshot", "Screenshot", g_variant_new("(s@a{sv})", "", g_variant_builder_end(&options)),
-    G_VARIANT_TYPE("(o)"), G_DBUS_CALL_FLAGS_NONE, 10000, NULL, portal_started, GUINT_TO_POINTER(generation));
-  g_free(sender); g_free(token);
-}
-
+#include "portal.inc"
 void mc_linux_capture_start(GtkApplication *application) {
-  if (mc_linux_capture_busy()) { if (capture.editor) gtk_window_present(GTK_WINDOW(capture.editor)); return; }
-  memset(&capture, 0, sizeof(capture)); capture.application = application; generation++;
+  if (mc_linux_capture_busy()) {
+    if (capture.editor)
+      gtk_window_present(GTK_WINDOW(capture.editor));
+    return;
+  }
+  memset(&capture, 0, sizeof(capture));
+  capture.application = application;
+  generation++;
   if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    if (!start_x11()) { report("无法冻结屏幕，或其他应用正在选择区域。请退出其他截屏操作后重试。"); mc_linux_capture_close(); }
-  } else start_portal();
+    if (!start_x11()) {
+      report("无法冻结屏幕，请退出其他截屏操作后重试。");
+      mc_linux_capture_close();
+    }
+  } else
+    start_portal();
 }
-
 gboolean mc_linux_capture_smoke(GtkApplication *application) {
-  if (mc_linux_capture_busy()) return FALSE;
-  memset(&capture, 0, sizeof(capture)); capture.application = application; capture.smoke = TRUE;
-  GdkPixbuf *source = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 320, 200);
-  if (!source) return FALSE;
+  if (mc_linux_capture_busy())
+    return FALSE;
+  memset(&capture, 0, sizeof(capture));
+  capture.application = application;
+  capture.smoke = TRUE;
+  capture.selecting = TRUE;
+  capture.x11 = GDK_IS_X11_DISPLAY(gdk_display_get_default());
+  capture.root_width = 640;
+  capture.root_height = 400;
+  GdkPixbuf *source = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 640, 400);
+  if (!source)
+    return FALSE;
   gdk_pixbuf_fill(source, 0xDCA050FF);
-  gboolean passed = open_editor(source); g_object_unref(source);
-  if (!passed) { mc_linux_capture_close(); return FALSE; }
-  passed = image_session_add(capture.session, REDACT, 30, 40, 80, 60, 0, 4) == 1;
-  passed = passed && image_session_add(capture.session, RECTANGLE, 20, 30, 130, 110, 0xF26769, 4) == 1;
-  passed = passed && image_session_add(capture.session, ARROW, 250, 170, -100, -60, 0x246BFD, 4) == 1;
-  gtk_entry_set_text(GTK_ENTRY(capture.entry), "截图 MoonBit ✅"); passed = passed && add_text(40, 50);
-  passed = passed && image_session_undo(capture.session) == 1 && image_session_count(capture.session) == 3;
-  passed = passed && image_session_redo(capture.session) == 1 && image_session_count(capture.session) == 4;
+  gboolean ok = open_editor(source);
+  g_object_unref(source);
+  if (!ok) {
+    mc_linux_capture_close();
+    return FALSE;
+  }
+  while (gtk_events_pending())
+    gtk_main_iteration();
+  GtkWidget *original = capture.editor;
+  GdkEventButton selection_event = {0};
+  selection_event.button = 1;
+  selection_event.x = capture.offset_x + 350 * capture.zoom;
+  selection_event.y = capture.offset_y + 250 * capture.zoom;
+  ok = canvas_press(capture.canvas, &selection_event, NULL) && ok;
+  selection_event.x = capture.offset_x + 30 * capture.zoom;
+  selection_event.y = capture.offset_y + 50 * capture.zoom;
+  ok = canvas_release(capture.canvas, &selection_event, NULL) && !capture.selecting &&
+       capture.editor == original && !gtk_window_get_decorated(GTK_WINDOW(original)) && ok;
+  begin_text(-1, 60, 80);
+  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), "截图 MoonBit ✅\n第二行",
+                           -1);
+  GtkTextBuffer *draft_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
+  gtk_text_buffer_begin_user_action(draft_buffer);
+  gtk_text_buffer_insert_at_cursor(draft_buffer, "追加", -1);
+  gtk_text_buffer_end_user_action(draft_buffer);
+  draft_undo(FALSE);
+  TextSnapshot *draft = snapshot_text();
+  ok = strstr(draft->text, "追加") == NULL && image_session_count(capture.session) == 0 && ok;
+  snapshot_free(draft);
+  draft_undo(TRUE);
+  draft = snapshot_text();
+  ok = strstr(draft->text, "追加") != NULL && ok;
+  snapshot_free(draft);
+  draft_undo(FALSE);
+  preedit_changed(GTK_TEXT_VIEW(capture.entry), "拼", NULL);
+  GdkEventKey ime_key = {0};
+  ime_key.keyval = GDK_KEY_Escape;
+  ok = !editor_key(capture.editor, &ime_key, NULL) && capture.editing && !commit_text() && ok;
+  preedit_changed(GTK_TEXT_VIEW(capture.entry), "", NULL);
+  ok = commit_text() && ok;
+  ok = image_session_count(capture.session) == 1 && ok;
+  begin_text(0, 0, 0);
+  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), "改过的文字", -1);
+  ok = commit_text() && ok;
+  char *text = annotation_text(0);
+  ok = g_strcmp0(text, "改过的文字") == 0 && ok;
+  g_free(text);
+  ok = image_session_undo(capture.session) == 1 && ok;
+  text = annotation_text(0);
+  ok = text && strstr(text, "MoonBit") && ok;
+  g_free(text);
+  image_session_redo(capture.session);
+  GdkEventButton gesture = {0};
+  gesture.button = 1;
+  gesture.x = capture.offset_x + 100 * capture.zoom;
+  gesture.y = capture.offset_y + 100 * capture.zoom;
+  ok = canvas_press(capture.canvas, &gesture, NULL) && ok;
+  GdkEventMotion move = {0};
+  move.x = gesture.x + 15 * capture.zoom;
+  move.y = gesture.y + 10 * capture.zoom;
+  ok = canvas_motion(capture.canvas, &move, NULL) && ok;
+  gesture.x = move.x;
+  gesture.y = move.y;
+  ok = canvas_release(capture.canvas, &gesture, NULL) && image_session_value(capture.session, 0, 1) == 75 &&
+       ok;
+  text = annotation_text(0);
+  ok = g_strcmp0(text, "改过的文字") == 0 && ok;
+  g_free(text);
+  double r[7];
+  read_annotation(0, r);
+  r[2] = 100;
+  r[4] = 0x225577;
+  r[6] = 32;
+  ok = update_annotation(0, r) && image_session_value(capture.session, 0, 7) == 32 && ok;
+  ok = image_session_add(capture.session, REDACT, 50, 60, 80, 60, 0, 4) == 1 && ok;
   GdkPixbuf *image = flatten();
-  passed = passed && image && gdk_pixbuf_get_width(image) == 320 && gdk_pixbuf_get_height(image) == 200;
+  ok = image && gdk_pixbuf_get_width(image) == 320 && gdk_pixbuf_get_height(image) == 200 && ok;
   if (image) {
-    const guchar *pixel = gdk_pixbuf_get_pixels(image) + 50 * gdk_pixbuf_get_rowstride(image) + 50 * gdk_pixbuf_get_n_channels(image);
-    passed = passed && pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0;
+    const guchar *p = gdk_pixbuf_get_pixels(image) + 30 * gdk_pixbuf_get_rowstride(image) +
+                      30 * gdk_pixbuf_get_n_channels(image);
+    ok = p[0] == 0 && p[1] == 0 && p[2] == 0 && ok;
     g_object_unref(image);
   }
-  passed = passed && copy_image();
-  GtkClipboard *clipboard = gtk_clipboard_get(gdk_atom_intern_static_string("MOOJICUT_TEST_IMAGE"));
-  image = gtk_clipboard_wait_for_image(clipboard);
-  passed = passed && image && gdk_pixbuf_get_width(image) == 320 && gdk_pixbuf_get_height(image) == 200;
-  g_clear_object(&image); gtk_clipboard_clear(clipboard); mc_linux_capture_close();
-  if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    capture.application = application; capture.smoke = TRUE;
-    if (!start_x11()) passed = FALSE;
-    else {
-      capture.x1 = 300; capture.y1 = 180; capture.x2 = 20; capture.y2 = 30;
-      passed = finish_selection() && passed;
-      passed = passed && capture.editor && capture.width >= 280 && capture.height >= 150;
-    }
-    mc_linux_capture_close();
+  ok = copy_image() && ok;
+  GtkClipboard *clip = gtk_clipboard_get(gdk_atom_intern_static_string("MOOJICUT_TEST_IMAGE"));
+  image = gtk_clipboard_wait_for_image(clip);
+  ok = image && gdk_pixbuf_get_width(image) == 320 && ok;
+  g_clear_object(&image);
+  gtk_clipboard_clear(clip);
+  ok = image_session_crop(capture.session, 40, 60, 200, 120) == 1 && ok;
+  sync_crop();
+  image = flatten();
+  ok = image && gdk_pixbuf_get_width(image) == 200 && ok;
+  g_clear_object(&image);
+  image_session_undo(capture.session);
+  sync_crop();
+  ok = capture.crop[2] == 320 && ok;
+  const char *preview_path = g_getenv("MOOJICUT_SMOKE_SCREENSHOT");
+  if (preview_path && *preview_path) {
+    layout_controls();
+    gtk_widget_queue_draw(capture.editor);
+    while (gtk_events_pending())
+      gtk_main_iteration();
+    GdkWindow *window = gtk_widget_get_window(capture.editor);
+    GdkPixbuf *preview = window ? gdk_pixbuf_get_from_window(window, 0, 0, gdk_window_get_width(window),
+                                                             gdk_window_get_height(window))
+                                : NULL;
+    char *path = g_strconcat(preview_path, ".capture.png", NULL);
+    ok = preview && gdk_pixbuf_save(preview, path, "png", NULL, NULL) && ok;
+    g_free(path);
+    g_clear_object(&preview);
   }
-  g_print("Linux screenshot smoke %s: MoonBit edits, undo/redo, masks, original image, private clipboard, X11 selection.\n", passed ? "passed" : "FAILED");
-  return passed;
+  mc_linux_capture_close();
+  ok = mc_linux_pin_smoke() && ok;
+  g_print("Linux screenshot/pin smoke %s: retained overlay, inline multilingual text/re-edit/undo/style, "
+          "crop export, masks, private clipboard, pin zoom/opacity/focus.\n",
+          ok ? "passed" : "FAILED");
+  return ok;
 }

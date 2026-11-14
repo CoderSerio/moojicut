@@ -15,8 +15,11 @@ on:
       - src/**
       - native/windows/**
       - native/linux/**
+      - native/shared/**
       - scripts/desktop.py
       - scripts/install_moon.py
+      - scripts/generate_icons.py
+      - assets/icons/**
       - assets/brand/mooji-cut/**
       - .gitattributes
       - moon.mod

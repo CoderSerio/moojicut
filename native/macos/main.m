@@ -5,6 +5,7 @@
 #import "shortcuts/MCGlobalShortcutManager.h"
 #import "capture/MCCaptureController.h"
 #import "capture/MCImageEditorController.h"
+#import "pinning/MCPinnedImageController.h"
 #import "recording/MCMacRecordingController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "updates/MCUpdateController.h"
@@ -54,6 +55,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @property MCGlobalShortcutManager *globalShortcuts;
 @property MCMacRecordingController *recordingController;
 @property MCUpdateController *updateController;
+@property MCPinnedImageController *pinnedImages;
 @property NSMenuItem *recordMenuItem;
 @property NSMenuItem *stopMenuItem;
 @end
@@ -91,6 +93,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 - (void)capture:(__unused id)sender {
     [self.captureController capture];
 }
+- (void)closePinnedImages:(__unused id)sender { [self.pinnedImages closeAll]; }
 - (void)openImage:(__unused id)sender {
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.allowedContentTypes = @[UTTypeImage]; panel.allowsMultipleSelection = NO;
@@ -122,12 +125,22 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     // Keep the existing user preferences domain across the product rename.
     NSString *domain = NSProcessInfo.processInfo.environment[@"MOOJICUT_NATIVE_DEFAULTS_DOMAIN"] ?: (self.smoke ? @"dev.moojicut.native.smoke" : @"dev.mooncap.native.preferences");
     self.defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
+    self.pinnedImages = [[MCPinnedImageController alloc] initWithDefaults:self.defaults];
     self.captureController = [MCCaptureController new];
     self.recordingController = [MCMacRecordingController new];
     self.updateController = [MCUpdateController new];
     __weak MCNativeHost *weakSelf = self;
     self.updateController.isOperationBusy = ^BOOL{ return weakSelf.captureController.busy || weakSelf.recordingController.busy; };
-    self.captureController.onStateChange = ^{ [weakSelf.updateController operationStateDidChange]; };
+    self.captureController.onStateChange = ^{
+        [weakSelf.pinnedImages setCaptureHidden:weakSelf.captureController.busy];
+        [weakSelf.updateController operationStateDidChange];
+    };
+    self.captureController.onPinPNGData = ^BOOL(NSData *data) {
+        NSError *error = nil;
+        BOOL pinned = [weakSelf.pinnedImages pinPNGData:data error:&error];
+        if (!pinned) NSLog(@"Unable to create pinned image: %@", error.localizedDescription);
+        return pinned;
+    };
     self.recordingController.onStateChange = ^{
         [weakSelf updateRecordingState];
         [weakSelf.updateController operationStateDidChange];
@@ -156,6 +169,8 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     capture.target = self; [menu addItem:capture]; [menu addItem:NSMenuItem.separatorItem];
     NSMenuItem *openImage = [[NSMenuItem alloc] initWithTitle:@"打开图片标注…" action:@selector(openImage:) keyEquivalent:@""];
     openImage.target = self; [menu addItem:openImage]; [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *closePins = [[NSMenuItem alloc] initWithTitle:@"关闭所有贴图" action:@selector(closePinnedImages:) keyEquivalent:@""];
+    closePins.target = self; [menu addItem:closePins]; [menu addItem:NSMenuItem.separatorItem];
     self.recordMenuItem = [[NSMenuItem alloc] initWithTitle:@"开始录屏…" action:@selector(startRecording:) keyEquivalent:@""];
     self.recordMenuItem.target = self; [menu addItem:self.recordMenuItem];
     self.stopMenuItem = [[NSMenuItem alloc] initWithTitle:@"停止录屏并编辑" action:@selector(stopRecording:) keyEquivalent:@""];
