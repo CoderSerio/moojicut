@@ -108,7 +108,7 @@ class DesktopBuild:
                          "/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup", "/MANIFEST:NO",
                          "/IMPLIB:" + str(Path(name) / "MoojiCut.lib"),
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
-                         "gdi32.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
+                         "gdi32.lib", "gdiplus.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
                          "mfplat.lib", "mfreadwrite.lib", "mfuuid.lib", "mf.lib", "propsys.lib")
                 shutil.copy2(linked_executable, executable)
                 dependencies = self.run("dumpbin", "/nologo", "/dependents", executable)

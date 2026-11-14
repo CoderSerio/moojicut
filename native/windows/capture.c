@@ -8,6 +8,7 @@
 #include "capture.h"
 #include "../shared/image_session.h"
 #include "../shared/mc_icons.h"
+#include "hud.h"
 #include "moonbit.h"
 #include "pinning.h"
 #include <commctrl.h>
@@ -36,6 +37,7 @@ enum {
   ID_PIN,
   ID_FONT
 };
+enum { STYLE_COLOR_BASE = 9200, STYLE_STROKE_BASE = 9300, STYLE_FONT_BASE = 9400 };
 typedef struct {
   HDC dc;
   HBITMAP bitmap;
@@ -287,21 +289,24 @@ static void preserve_text(int index) {
 static void layout_editor(HWND window) {
   RECT client;
   GetClientRect(window, &client);
-  int gap = dpi_px(window, 6), size = dpi_px(window, 30), width = size * 10 + gap * 11,
-      height = size * 2 + gap * 3;
-  int x = bounded(capture.viewport.left, 0, maximum(0, client.right - width)),
-      y = capture.viewport.bottom + gap;
-  if (y + height > client.bottom)
+  int width = dpi_px(window, 460), height = dpi_px(window, 88), gap = dpi_px(window, 10);
+  int x = bounded(capture.viewport.left, 6, maximum(6, client.right - width - 6));
+  int y = capture.viewport.bottom + gap;
+  if (y + height > client.bottom - 6)
     y = capture.viewport.top - height - gap;
-  y = bounded(y, 0, maximum(0, client.bottom - height));
+  y = bounded(y, 6, maximum(6, client.bottom - height - 6));
   SetRect(&capture.toolbar, x, y, x + width, y + height);
-  for (int i = 0; i < 10; i++)
-    MoveWindow(capture.buttons[i], x + gap + i * (size + gap), y + gap, size, size, TRUE);
-  MoveWindow(capture.colors, x + gap, y + size + gap * 2, dpi_px(window, 100), size * 6, TRUE);
-  MoveWindow(capture.strokes, x + gap * 2 + dpi_px(window, 100), y + size + gap * 2, dpi_px(window, 90),
-             size * 5, TRUE);
-  MoveWindow(capture.fonts, x + gap * 3 + dpi_px(window, 190), y + size + gap * 2, dpi_px(window, 90),
-             size * 8, TRUE);
+  int size = dpi_px(window, 32);
+  for (int i = 0; i < 5; i++)
+    MoveWindow(capture.buttons[i], x + dpi_px(window, 8 + i * 36), y + dpi_px(window, 8), size, size, TRUE);
+  MoveWindow(capture.colors, x + dpi_px(window, 204), y + dpi_px(window, 8), size, size, TRUE);
+  MoveWindow(capture.strokes, x + dpi_px(window, 240), y + dpi_px(window, 8), size, size, TRUE);
+  MoveWindow(capture.fonts, x + dpi_px(window, 276), y + dpi_px(window, 8), dpi_px(window, 68), size, TRUE);
+  MoveWindow(capture.buttons[5], x + dpi_px(window, 356), y + dpi_px(window, 8), size, size, TRUE);
+  MoveWindow(capture.buttons[6], x + dpi_px(window, 392), y + dpi_px(window, 8), size, size, TRUE);
+  for (int i = 7; i < 10; i++)
+    MoveWindow(capture.buttons[i], x + dpi_px(window, 344 + (i - 7) * 36), y + dpi_px(window, 48), size, size,
+               TRUE);
   capture.canvas = capture.viewport;
   capture.zoom = 1;
   InvalidateRect(window, NULL, FALSE);
@@ -421,21 +426,16 @@ static BOOL finish_text(BOOL cancel) {
   return TRUE;
 }
 static void sync_style_controls(void) {
-  for (int i = 0; i < 5; i++)
-    if (PALETTE[i] == capture.color)
-      SendMessageW(capture.colors, CB_SETCURSEL, i, 0);
-  SendMessageW(capture.strokes, CB_SETCURSEL, capture.stroke == 2 ? 0 : capture.stroke == 8 ? 2 : 1, 0);
-  int count = (int)SendMessageW(capture.fonts, CB_GETCOUNT, 0, 0), found = -1;
-  for (int i = 0; i < count; i++)
-    if ((int)SendMessageW(capture.fonts, CB_GETITEMDATA, i, 0) == capture.font_size)
-      found = i;
-  if (found < 0) {
-    wchar_t label[32];
-    swprintf_s(label, 32, L"文字 %d", capture.font_size);
-    found = (int)SendMessageW(capture.fonts, CB_ADDSTRING, 0, (LPARAM)label);
-    SendMessageW(capture.fonts, CB_SETITEMDATA, found, capture.font_size);
-  }
-  SendMessageW(capture.fonts, CB_SETCURSEL, found, 0);
+  wchar_t label[80];
+  swprintf_s(label, 80, L"颜色：#%06X，点击选择", capture.color);
+  SetWindowTextW(capture.colors, label);
+  swprintf_s(label, 80, L"线宽：%d 像素，点击选择", capture.stroke);
+  SetWindowTextW(capture.strokes, label);
+  swprintf_s(label, 80, L"文字大小：%d 像素，点击选择", capture.font_size);
+  SetWindowTextW(capture.fonts, label);
+  InvalidateRect(capture.colors, NULL, FALSE);
+  InvalidateRect(capture.strokes, NULL, FALSE);
+  InvalidateRect(capture.fonts, NULL, FALSE);
 }
 static void begin_text(POINT point, int index) {
   if (!finish_text(FALSE))
@@ -482,8 +482,9 @@ static int hit_handle(RECT r, POINT p) {
                      {r.right, r.top},    {r.right, (r.top + r.bottom) / 2},
                      {r.right, r.bottom}, {(r.left + r.right) / 2, r.bottom},
                      {r.left, r.bottom},  {r.left, (r.top + r.bottom) / 2}};
+  int radius = dpi_px(capture.editor ? capture.editor : capture.overlay, 7);
   for (int i = 0; i < 8; i++)
-    if (abs(p.x - points[i].x) <= 7 && abs(p.y - points[i].y) <= 7)
+    if (abs(p.x - points[i].x) <= radius && abs(p.y - points[i].y) <= radius)
       return i;
   return -1;
 }
@@ -508,29 +509,8 @@ static RECT drag_rect(RECT r, POINT from, POINT to, int handle) {
   return r;
 }
 static void frame(HDC dc, RECT r, BOOL handles) {
-  HPEN pen = CreatePen(PS_SOLID, 3, RGB(44, 36, 54));
-  HGDIOBJ prior = SelectObject(dc, pen), brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-  Rectangle(dc, r.left, r.top, r.right, r.bottom);
-  SelectObject(dc, prior);
-  DeleteObject(pen);
-  pen = CreatePen(PS_SOLID, 1, RGB(194, 191, 186));
-  SelectObject(dc, pen);
-  Rectangle(dc, r.left, r.top, r.right, r.bottom);
-  if (handles) {
-    HBRUSH fill = CreateSolidBrush(RGB(250, 245, 234));
-    SelectObject(dc, fill);
-    POINT points[8] = {{r.left, r.top},     {(r.left + r.right) / 2, r.top},
-                       {r.right, r.top},    {r.right, (r.top + r.bottom) / 2},
-                       {r.right, r.bottom}, {(r.left + r.right) / 2, r.bottom},
-                       {r.left, r.bottom},  {r.left, (r.top + r.bottom) / 2}};
-    for (int i = 0; i < 8; i++)
-      Rectangle(dc, points[i].x - 3, points[i].y - 3, points[i].x + 4, points[i].y + 4);
-    SelectObject(dc, brush);
-    DeleteObject(fill);
-  }
-  SelectObject(dc, brush);
-  SelectObject(dc, prior);
-  DeleteObject(pen);
+  HWND window = capture.editor ? capture.editor : capture.overlay;
+  mc_hud_frame(dc, &r, handles, window ? (float)GetDpiForWindow(window) / 96 : 1);
 }
 static void region_label(HDC dc, RECT rect) {
   wchar_t label[64];
@@ -547,37 +527,35 @@ static const int button_ids[10] = {ID_SELECT, ID_RECT, ID_ARROW, ID_TEXT,   ID_R
 static const MCIcon button_icons[10] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT,
                                         MC_ICON_REDACT, MC_ICON_UNDO,      MC_ICON_REDO,  MC_ICON_PIN,
                                         MC_ICON_CLOSE,  MC_ICON_CHECK};
-static void draw_icon(HDC dc, RECT bounds, MCIcon icon, BOOL selected) {
-  HBRUSH fill = CreateSolidBrush(selected ? RGB(104, 99, 109) : RGB(43, 41, 48));
-  FillRect(dc, &bounds, fill);
-  DeleteObject(fill);
-  double scale = (bounds.right - bounds.left) * .65 / 24;
-  int x = (bounds.left + bounds.right - rounded(24 * scale)) / 2,
-      y = (bounds.top + bounds.bottom - rounded(24 * scale)) / 2;
-  LOGBRUSH lb = {BS_SOLID, RGB(247, 243, 234), 0};
-  HPEN pen = ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
-                          (DWORD)maximum(1, rounded(2 * scale)), &lb, 0, NULL);
-  HGDIOBJ previous = SelectObject(dc, pen);
-  MCIconPath path = mc_icon_path(icon);
-  BeginPath(dc);
-  for (unsigned i = 0; i < path.count; i++) {
-    const MCIconCommand *c = &path.commands[i];
-    if (c->op == 'M')
-      MoveToEx(dc, x + rounded(c->x1 * scale), y + rounded(c->y1 * scale), NULL);
-    else if (c->op == 'L')
-      LineTo(dc, x + rounded(c->x1 * scale), y + rounded(c->y1 * scale));
-    else if (c->op == 'C') {
-      POINT p[3] = {{x + rounded(c->x1 * scale), y + rounded(c->y1 * scale)},
-                    {x + rounded(c->x2 * scale), y + rounded(c->y2 * scale)},
-                    {x + rounded(c->x3 * scale), y + rounded(c->y3 * scale)}};
-      PolyBezierTo(dc, p, 3);
-    } else if (c->op == 'Z')
-      CloseFigure(dc);
+static LRESULT CALLBACK hud_button_proc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id,
+                                        DWORD_PTR data) {
+  (void)id;
+  (void)data;
+  if (message == WM_MOUSEMOVE && !GetPropW(window, L"MoojiCut.Hover")) {
+    SetPropW(window, L"MoojiCut.Hover", (HANDLE)1);
+    TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, window, 0};
+    TrackMouseEvent(&track);
+    InvalidateRect(window, NULL, FALSE);
+  } else if (message == WM_MOUSELEAVE) {
+    RemovePropW(window, L"MoojiCut.Hover");
+    InvalidateRect(window, NULL, FALSE);
+  } else if (message == WM_NCDESTROY) {
+    RemovePropW(window, L"MoojiCut.Hover");
+    RemoveWindowSubclass(window, hud_button_proc, 2);
   }
-  EndPath(dc);
-  StrokePath(dc);
-  SelectObject(dc, previous);
-  DeleteObject(pen);
+  return DefSubclassProc(window, message, wp, lp);
+}
+static HWND hud_button(HWND parent, int id, const wchar_t *label) {
+  HWND button = CreateWindowW(L"BUTTON", label, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1,
+                              parent, (HMENU)(INT_PTR)id, capture.instance, NULL);
+  SetWindowSubclass(button, hud_button_proc, 2, 0);
+  TOOLINFOW tip = {sizeof(tip)};
+  tip.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+  tip.hwnd = parent;
+  tip.uId = (UINT_PTR)button;
+  tip.lpszText = (LPWSTR)label;
+  SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
+  return button;
 }
 static BOOL add_shape(void) {
   RECT b = selection(capture.start, capture.end);
@@ -644,6 +622,61 @@ static void apply_style(void) {
     changed();
   }
 }
+static BOOL apply_style_command(int command) {
+  if (command >= STYLE_COLOR_BASE && command < STYLE_COLOR_BASE + 5)
+    capture.color = PALETTE[command - STYLE_COLOR_BASE];
+  else if (command == STYLE_STROKE_BASE + 2 || command == STYLE_STROKE_BASE + 4 ||
+           command == STYLE_STROKE_BASE + 8)
+    capture.stroke = command - STYLE_STROKE_BASE;
+  else if (command >= STYLE_FONT_BASE + 8 && command <= STYLE_FONT_BASE + 128)
+    capture.font_size = command - STYLE_FONT_BASE;
+  else
+    return FALSE;
+  apply_style();
+  sync_style_controls();
+  return TRUE;
+}
+static void style_menu(int control) {
+  if (capture.composing)
+    return;
+  HWND button = control == ID_COLOR ? capture.colors : control == ID_STROKE ? capture.strokes : capture.fonts;
+  HMENU menu = CreatePopupMenu();
+  if (!menu)
+    return;
+  if (control == ID_COLOR) {
+    const wchar_t *labels[5] = {L"珊瑚红", L"蓝色", L"绿色", L"白色", L"黑色"};
+    for (int i = 0; i < 5; i++)
+      AppendMenuW(menu, MF_STRING | (capture.color == PALETTE[i] ? MF_CHECKED : 0), STYLE_COLOR_BASE + i,
+                  labels[i]);
+  } else if (control == ID_STROKE) {
+    const int widths[3] = {2, 4, 8};
+    for (int i = 0; i < 3; i++) {
+      wchar_t label[40];
+      swprintf_s(label, 40, L"%d 像素", widths[i]);
+      AppendMenuW(menu, MF_STRING | (capture.stroke == widths[i] ? MF_CHECKED : 0),
+                  STYLE_STROKE_BASE + widths[i], label);
+    }
+  } else {
+    const int sizes[9] = {8, 12, 16, 24, 28, 32, 48, 72, 128};
+    for (int i = 0; i < 9; i++) {
+      wchar_t label[40];
+      swprintf_s(label, 40, L"%d 像素", sizes[i]);
+      AppendMenuW(menu, MF_STRING | (capture.font_size == sizes[i] ? MF_CHECKED : 0),
+                  STYLE_FONT_BASE + sizes[i], label);
+    }
+  }
+  RECT rect;
+  GetWindowRect(button, &rect);
+  int action = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN, rect.left,
+                                   rect.bottom + 4, 0, capture.editor, NULL);
+  DestroyMenu(menu);
+  if (action)
+    SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(action, 0), 0);
+  if (capture.editing != -2)
+    SetFocus(capture.text);
+  else
+    SetFocus(capture.editor);
+}
 static void paint_editor(HDC dc) {
   BitBlt(dc, 0, 0, capture.dimmed.width, capture.dimmed.height, capture.dimmed.dc, 0, 0, SRCCOPY);
   if (render_image()) {
@@ -668,9 +701,9 @@ static void paint_editor(HDC dc) {
     frame(dc, v, TRUE);
     region_label(dc, v);
   }
-  HBRUSH brush = CreateSolidBrush(RGB(43, 41, 48));
-  FillRect(dc, &capture.toolbar, brush);
-  DeleteObject(brush);
+  mc_hud_card(dc, &capture.toolbar, (float)GetDpiForWindow(capture.editor) / 96,
+              capture.editing == -2 ? L"拖动移动 · 双击编辑 · Ctrl+Enter 确认"
+                                    : L"直接输入 · Enter 换行 · Ctrl+Enter 完成");
 }
 static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
   switch (message) {
@@ -685,51 +718,18 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     capture.tooltip =
         CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT,
                         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, NULL, capture.instance, NULL);
-    for (int i = 0; i < 10; i++) {
-      capture.buttons[i] =
-          CreateWindowW(L"BUTTON", labels[i], WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1,
-                        window, (HMENU)(INT_PTR)button_ids[i], capture.instance, NULL);
-      TOOLINFOW ti = {sizeof(ti)};
-      ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-      ti.hwnd = window;
-      ti.uId = (UINT_PTR)capture.buttons[i];
-      ti.lpszText = (LPWSTR)labels[i];
-      SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
-    }
-    capture.colors =
-        CreateWindowW(L"COMBOBOX", L"文字颜色", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0,
-                      1, 1, window, (HMENU)ID_COLOR, capture.instance, NULL);
-    const wchar_t *colors[5] = {L"珊瑚红", L"蓝色", L"绿色", L"白色", L"黑色"};
-    for (int i = 0; i < 5; i++)
-      SendMessageW(capture.colors, CB_ADDSTRING, 0, (LPARAM)colors[i]);
-    SendMessageW(capture.colors, CB_SETCURSEL, 0, 0);
-    capture.strokes =
-        CreateWindowW(L"COMBOBOX", L"线条宽度", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0,
-                      1, 1, window, (HMENU)ID_STROKE, capture.instance, NULL);
-    const wchar_t *strokes[3] = {L"细线 2", L"中线 4", L"粗线 8"};
-    for (int i = 0; i < 3; i++)
-      SendMessageW(capture.strokes, CB_ADDSTRING, 0, (LPARAM)strokes[i]);
-    SendMessageW(capture.strokes, CB_SETCURSEL, 1, 0);
-    capture.fonts =
-        CreateWindowW(L"COMBOBOX", L"文字大小", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0,
-                      1, 1, window, (HMENU)ID_FONT, capture.instance, NULL);
-    const int sizes[8] = {8, 12, 16, 24, 32, 48, 72, 128};
-    for (int i = 0; i < 8; i++) {
-      wchar_t label[30];
-      swprintf_s(label, 30, L"文字 %d", sizes[i]);
-      SendMessageW(capture.fonts, CB_ADDSTRING, 0, (LPARAM)label);
-      SendMessageW(capture.fonts, CB_SETITEMDATA, i, sizes[i]);
-    }
-    SendMessageW(capture.fonts, CB_SETCURSEL, 3, 0);
+    for (int i = 0; i < 10; i++)
+      capture.buttons[i] = hud_button(window, button_ids[i], labels[i]);
+    capture.colors = hud_button(window, ID_COLOR, L"标注颜色 · 点击选择");
+    capture.strokes = hud_button(window, ID_STROKE, L"线条宽度 · 点击选择");
+    capture.fonts = hud_button(window, ID_FONT, L"文字大小 · 点击选择");
+    sync_style_controls();
     capture.text = CreateWindowExW(0, L"EDIT", L"",
                                    WS_CHILD | WS_TABSTOP | ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL, 0,
                                    0, 1, 1, window, (HMENU)ID_TEXT_INPUT, capture.instance, NULL);
     SetWindowSubclass(capture.text, text_proc, 1, 0);
     SendMessageW(capture.text, EM_SETLIMITTEXT, 10000, 0);
     SendMessageW(capture.text, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
-    SendMessageW(capture.colors, WM_SETFONT, (WPARAM)capture.font, TRUE);
-    SendMessageW(capture.strokes, WM_SETFONT, (WPARAM)capture.font, TRUE);
-    SendMessageW(capture.fonts, WM_SETFONT, (WPARAM)capture.font, TRUE);
     layout_editor(window);
     return 0;
   }
@@ -742,13 +742,30 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     return 0;
   case WM_DRAWITEM: {
     DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
+    int kind = -1, value = 0;
+    BOOL selected = FALSE;
     for (int i = 0; i < 10; i++)
       if (item->CtlID == (UINT)button_ids[i]) {
-        draw_icon(item->hDC, item->rcItem, button_icons[i], i < 5 && capture.tool == i);
-        if (item->itemState & ODS_FOCUS)
-          DrawFocusRect(item->hDC, &item->rcItem);
-        return TRUE;
+        kind = button_icons[i];
+        selected = i < 5 && capture.tool == i;
       }
+    if (item->CtlID == ID_COLOR) {
+      kind = MC_HUD_COLOR;
+      value = capture.color;
+    } else if (item->CtlID == ID_STROKE) {
+      kind = MC_HUD_STROKE;
+      value = capture.stroke;
+    } else if (item->CtlID == ID_FONT) {
+      kind = MC_HUD_FONT;
+      value = capture.font_size;
+    }
+    if (kind >= 0) {
+      mc_hud_button(item->hDC, &item->rcItem, kind, value, selected,
+                    GetPropW(item->hwndItem, L"MoojiCut.Hover") != NULL,
+                    (item->itemState & ODS_SELECTED) != 0, (item->itemState & ODS_FOCUS) != 0,
+                    (float)GetDpiForWindow(window) / 96);
+      return TRUE;
+    }
     break;
   }
   case WM_CTLCOLOREDIT:
@@ -763,21 +780,14 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       style_text();
       return 0;
     }
-    if (HIWORD(wp) == CBN_SELCHANGE) {
-      if (LOWORD(wp) == ID_COLOR) {
-        int i = (int)SendMessageW(capture.colors, CB_GETCURSEL, 0, 0);
-        if (i >= 0 && i < 5)
-          capture.color = PALETTE[i];
-      } else if (LOWORD(wp) == ID_STROKE) {
-        int i = (int)SendMessageW(capture.strokes, CB_GETCURSEL, 0, 0);
-        capture.stroke = i == 0 ? 2 : i == 2 ? 8 : 4;
-      } else if (LOWORD(wp) == ID_FONT) {
-        int i = (int)SendMessageW(capture.fonts, CB_GETCURSEL, 0, 0);
-        capture.font_size = (int)SendMessageW(capture.fonts, CB_GETITEMDATA, i, 0);
-      }
-      apply_style();
-    } else if (HIWORD(wp) == BN_CLICKED)
-      editor_command(LOWORD(wp));
+    if (apply_style_command(LOWORD(wp)))
+      return 0;
+    if (HIWORD(wp) == BN_CLICKED) {
+      if (LOWORD(wp) == ID_COLOR || LOWORD(wp) == ID_STROKE || LOWORD(wp) == ID_FONT)
+        style_menu(LOWORD(wp));
+      else
+        editor_command(LOWORD(wp));
+    }
     return 0;
   case WM_ERASEBKGND:
     return 1;
@@ -1195,27 +1205,6 @@ bool mc_capture_handle_message(MSG *message) {
     return false;
   return IsDialogMessageW(capture.editor, message) != FALSE;
 }
-static BOOL check_style_controls(void) {
-  HWND controls[3] = {capture.colors, capture.strokes, capture.fonts};
-  const int minimum_counts[3] = {5, 3, 8};
-  for (int i = 0; i < 3; i++) {
-    int count = (int)SendMessageW(controls[i], CB_GETCOUNT, 0, 0);
-    int selected = (int)SendMessageW(controls[i], CB_GETCURSEL, 0, 0);
-    int length = (int)SendMessageW(controls[i], CB_GETLBTEXTLEN, selected, 0);
-    COMBOBOXINFO info = {sizeof(info)};
-    if (count < minimum_counts[i] || selected < 0 || selected >= count || length < 1 || length > 100 ||
-        !GetComboBoxInfo(controls[i], &info) || info.rcItem.right <= info.rcItem.left ||
-        info.rcItem.bottom <= info.rcItem.top)
-      return FALSE;
-    wchar_t label[101];
-    if (SendMessageW(controls[i], CB_GETLBTEXT, selected, (LPARAM)label) != length)
-      return FALSE;
-    printf("Screenshot style control %d: items=%d selected=%d labelLength=%d itemRect=%ldx%ld.\n", i, count,
-           selected, length, info.rcItem.right - info.rcItem.left, info.rcItem.bottom - info.rcItem.top);
-  }
-  return (int)SendMessageW(capture.fonts, CB_GETITEMDATA, SendMessageW(capture.fonts, CB_GETCURSEL, 0, 0),
-                           0) == capture.font_size;
-}
 /* Optional CI diagnostic. Print only our synthetic image and native controls.
  * Briefly show this fixture without activation so the real themed paint path runs,
  * independently of hidden-ancestor WM_PRINT behavior.
@@ -1360,8 +1349,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   capture.selected = image_session_count(capture.session) - 1;
   capture.color = 0xF26769;
   capture.stroke = 4;
-  capture.font_size = 128;
-  apply_style();
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(STYLE_FONT_BASE + 128, 0), 0);
   if (image_session_value(capture.session, capture.selected, 4) < 128 || !render_image())
     goto cleanup;
   int colored = 0;
@@ -1384,8 +1372,21 @@ int mc_capture_smoke(HINSTANCE instance) {
   capture.font_size = (int)image_session_value(capture.session, index, 7);
   sync_style_controls();
   layout_editor(capture.editor);
-  if (!check_style_controls())
-    goto cleanup;
+  // Separate visual fixture after pixel assertions; no desktop content is used.
+  for (int y = 0; y < capture.image.height; y++)
+    for (int x = 0; x < capture.image.width; x++) {
+      BYTE *pixel = capture.image.pixels + ((SIZE_T)y * capture.image.width + x) * 4;
+      double fx = (double)x / capture.image.width, fy = (double)y / capture.image.height;
+      pixel[0] = (BYTE)(65 + fx * 26 + fy * 10);
+      pixel[1] = (BYTE)(43 + fy * 37);
+      pixel[2] = (BYTE)(40 + fx * 25);
+      pixel[3] = 0;
+      for (int c = 0; c < 3; c++)
+        capture.dimmed.pixels[((SIZE_T)y * capture.image.width + x) * 4 + c] = (BYTE)(pixel[c] * .55);
+    }
+  image_session_crop(capture.session, 70, 50, 500, 270);
+  sync_viewport();
+  layout_editor(capture.editor);
   changed();
   if (!save_capture_preview())
     goto cleanup;

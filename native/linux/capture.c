@@ -304,8 +304,7 @@ static void selection_outline(cairo_t *cr, const double *r, gboolean handles) {
   if (handles)
     for (int i = 0; i < 8; i++) {
       static const double xs[] = {0, .5, 1, 1, 1, .5, 0, 0}, ys[] = {0, 0, 0, .5, 1, 1, 1, .5};
-      cairo_rectangle(cr, r[0] + r[2] * xs[i] - 3 / capture.zoom, r[1] + r[3] * ys[i] - 3 / capture.zoom,
-                      6 / capture.zoom, 6 / capture.zoom);
+      cairo_arc(cr, r[0] + r[2] * xs[i], r[1] + r[3] * ys[i], 2.5 / capture.zoom, 0, 2 * G_PI);
       cairo_set_source_rgb(cr, .98, .96, .92);
       cairo_fill_preserve(cr);
       cairo_set_source_rgb(cr, .3, .28, .32);
@@ -745,9 +744,9 @@ static void tool_clicked(GtkWidget *widget, gpointer data) {
   for (int i = 0; i < 5; i++) {
     GtkStyleContext *style = gtk_widget_get_style_context(capture.tools[i]);
     if (i == capture.tool)
-      gtk_style_context_add_class(style, "suggested-action");
+      gtk_style_context_add_class(style, "mc-selected");
     else
-      gtk_style_context_remove_class(style, "suggested-action");
+      gtk_style_context_remove_class(style, "mc-selected");
   }
   capture.selected = -1;
   gtk_widget_grab_focus(capture.canvas);
@@ -867,8 +866,9 @@ static gboolean delete_window(GtkWidget *widget, GdkEvent *event, gpointer data)
 static gboolean icon_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
   (void)widget;
   MCIconPath path = mc_icon_path((MCIcon)GPOINTER_TO_INT(data));
-  cairo_translate(cr, 3, 3);
-  cairo_scale(cr, .8, .8);
+  cairo_translate(cr, (gtk_widget_get_allocated_width(widget) - 18) / 2.0,
+                  (gtk_widget_get_allocated_height(widget) - 18) / 2.0);
+  cairo_scale(cr, .75, .75);
   for (unsigned i = 0; i < path.count; i++) {
     const MCIconCommand *c = &path.commands[i];
     switch (c->op) {
@@ -898,13 +898,64 @@ static gboolean icon_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
 static GtkWidget *icon_button(MCIcon icon, const char *label, GCallback callback, int action) {
   GtkWidget *button = gtk_button_new(), *drawing = gtk_drawing_area_new();
   gtk_widget_set_has_window(drawing, FALSE);
-  gtk_widget_set_size_request(drawing, 26, 26);
+  gtk_widget_set_size_request(drawing, 18, 18);
+  gtk_widget_set_size_request(button, 32, 32);
+  gtk_style_context_add_class(gtk_widget_get_style_context(button), "mc-icon-button");
   g_signal_connect(drawing, "draw", G_CALLBACK(icon_draw), GINT_TO_POINTER(icon));
   gtk_container_add(GTK_CONTAINER(button), drawing);
   gtk_widget_set_tooltip_text(button, label);
   atk_object_set_name(gtk_widget_get_accessible(button), label);
   g_signal_connect(button, "clicked", callback, GINT_TO_POINTER(action));
   return button;
+}
+/* Attach this provider only to the screenshot HUD subtree, including native
+ * control child widgets. Preferences, dialogs and the inline TextView retain
+ * their own theme and input behavior. */
+static void hud_provider(GtkWidget *widget, gpointer data) {
+  gtk_style_context_add_provider(gtk_widget_get_style_context(widget), GTK_STYLE_PROVIDER(data),
+                                 GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+  if (GTK_IS_CONTAINER(widget))
+    gtk_container_forall(GTK_CONTAINER(widget), hud_provider, data);
+}
+static void style_hud(void) {
+  static const char css[] =
+      ".mc-capture-hud { background-color: #292730; background-image: none; color: #ece8e2;"
+      " border: 1px solid #514b59; border-radius: 12px; box-shadow: 0 4px 12px alpha(black, 0.25); }"
+      ".mc-capture-hud button { background-image: none; background-color: transparent; color: #ece8e2;"
+      " border: 1px solid transparent; border-radius: 7px; box-shadow: none; text-shadow: none;"
+      " -gtk-icon-shadow: none; padding: 0; min-width: 30px; min-height: 30px; }"
+      ".mc-capture-hud button:hover { background-color: #403b48; }"
+      ".mc-capture-hud button:active, .mc-capture-hud button.mc-selected { background-color: #56505f;"
+      " border-color: #686170; color: #fff9ef; }"
+      ".mc-capture-hud button:focus { border-color: #b8b0bf; outline: none; }"
+      ".mc-capture-hud button:disabled { color: #77717e; }"
+      ".mc-capture-hud separator { background-color: #514b59; min-width: 1px; margin: 6px 5px; }"
+      ".mc-capture-hud colorswatch { min-width: 20px; min-height: 20px; border: 1px solid #a39aa9;"
+      " border-radius: 99px; }"
+      ".mc-capture-hud colorswatch overlay { border-radius: 99px; box-shadow: none; }"
+      ".mc-capture-hud button.color { padding: 4px; min-width: 22px; min-height: 22px; }"
+      ".mc-capture-hud spinbutton { background-image: none; background-color: #201e26; color: #ece8e2;"
+      " border: 1px solid #514b59; border-radius: 6px; min-height: 26px; padding: 0; font-size: 12px; }"
+      ".mc-capture-hud spinbutton entry, .mc-capture-hud spinbutton text { background-color: transparent;"
+      " color: #ece8e2; min-width: 26px; padding: 0 3px; border: 0; }"
+      ".mc-capture-hud spinbutton button { min-width: 14px; min-height: 24px; padding: 0; border-radius: 4px;"
+      " color: #b6afbe; }"
+      ".mc-capture-hud .mc-hint { color: #aaa3b0; font-size: 10px; }"
+      ".mc-capture-hud .mc-font-label { color: #aaa3b0; }";
+  GtkCssProvider *provider = gtk_css_provider_new();
+  GError *error = NULL;
+  if (!gtk_css_provider_load_from_data(provider, css, -1, &error)) {
+    g_warning("Screenshot HUD styling: %s", error->message);
+    g_clear_error(&error);
+  }
+  hud_provider(capture.toolbar, provider);
+  g_object_unref(provider);
+}
+static GtkWidget *hud_separator(void) {
+  GtkWidget *separator = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
+  gtk_widget_set_valign(separator, GTK_ALIGN_CENTER);
+  gtk_widget_set_size_request(separator, -1, 22);
+  return separator;
 }
 static void layout_controls(void) {
   if (!capture.canvas || !capture.toolbar)
@@ -1020,9 +1071,10 @@ static gboolean open_editor(GdkPixbuf *image) {
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), masks);
   gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), masks, TRUE);
   g_signal_connect(masks, "draw", G_CALLBACK(masks_draw), NULL);
-  capture.toolbar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  capture.toolbar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+  gtk_container_set_border_width(GTK_CONTAINER(capture.toolbar), 8);
   gtk_widget_set_no_show_all(capture.toolbar, TRUE);
-  gtk_style_context_add_class(gtk_widget_get_style_context(capture.toolbar), "toolbar");
+  gtk_style_context_add_class(gtk_widget_get_style_context(capture.toolbar), "mc-capture-hud");
   GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2),
             *row2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
   gtk_box_pack_start(GTK_BOX(capture.toolbar), row, FALSE, FALSE, 0);
@@ -1033,24 +1085,49 @@ static gboolean open_editor(GdkPixbuf *image) {
     capture.tools[i] = icon_button(icons[i], names[i], G_CALLBACK(tool_clicked), i);
     gtk_box_pack_start(GTK_BOX(row), capture.tools[i], FALSE, FALSE, 0);
   }
-  gtk_style_context_add_class(gtk_widget_get_style_context(capture.tools[0]), "suggested-action");
+  gtk_style_context_add_class(gtk_widget_get_style_context(capture.tools[0]), "mc-selected");
+  gtk_box_pack_start(GTK_BOX(row), hud_separator(), FALSE, FALSE, 0);
   capture.colors = gtk_color_button_new();
+  gtk_widget_set_valign(capture.colors, GTK_ALIGN_CENTER);
   GdkRGBA color = {242 / 255.0, 103 / 255.0, 105 / 255.0, 1};
   gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(capture.colors), &color);
   gtk_widget_set_tooltip_text(capture.colors, "文字与标注颜色");
   g_signal_connect(capture.colors, "color-set", G_CALLBACK(style_changed), NULL);
   gtk_box_pack_start(GTK_BOX(row), capture.colors, FALSE, FALSE, 0);
+  GtkWidget *font_label = gtk_drawing_area_new();
+  gtk_widget_set_has_window(font_label, FALSE);
+  gtk_widget_set_size_request(font_label, 18, 18);
+  gtk_widget_set_valign(font_label, GTK_ALIGN_CENTER);
+  gtk_style_context_add_class(gtk_widget_get_style_context(font_label), "mc-font-label");
+  g_signal_connect(font_label, "draw", G_CALLBACK(icon_draw), GINT_TO_POINTER(MC_ICON_FONT_SIZE));
+  gtk_box_pack_start(GTK_BOX(row), font_label, FALSE, FALSE, 2);
   capture.font = gtk_spin_button_new_with_range(8, 128, 1);
+  gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(capture.font), TRUE);
+  gtk_entry_set_width_chars(GTK_ENTRY(capture.font), 3);
+  gtk_entry_set_alignment(GTK_ENTRY(capture.font), .5);
+  gtk_widget_set_valign(capture.font, GTK_ALIGN_CENTER);
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(capture.font), 24);
   gtk_widget_set_tooltip_text(capture.font, "文字大小（原图像素）");
   g_signal_connect(capture.font, "value-changed", G_CALLBACK(style_changed), NULL);
   gtk_box_pack_start(GTK_BOX(row), capture.font, FALSE, FALSE, 0);
-  MCIcon action_icons[] = {MC_ICON_UNDO, MC_ICON_REDO, MC_ICON_CHECK, MC_ICON_CLOSE, MC_ICON_PIN};
-  const char *actions[] = {"撤销 Ctrl+Z", "重做 Ctrl+Shift+Z", "确认并复制 Ctrl+Enter", "取消 Esc",
-                           "固定贴图"};
-  for (int i = 0; i < 5; i++)
-    gtk_box_pack_start(GTK_BOX(row2), icon_button(action_icons[i], actions[i], G_CALLBACK(command), i + 1),
-                       FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(row), hud_separator(), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(row), icon_button(MC_ICON_UNDO, "撤销 Ctrl+Z", G_CALLBACK(command), 1), FALSE,
+                     FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(row), icon_button(MC_ICON_REDO, "重做 Ctrl+Shift+Z", G_CALLBACK(command), 2),
+                     FALSE, FALSE, 0);
+  GtkWidget *hint = gtk_label_new("拖动移动 · 双击编辑 · Ctrl+Enter 确认");
+  gtk_label_set_xalign(GTK_LABEL(hint), 0);
+  gtk_widget_set_margin_start(hint, 3);
+  gtk_style_context_add_class(gtk_widget_get_style_context(hint), "mc-hint");
+  gtk_box_pack_start(GTK_BOX(row2), hint, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(row2), icon_button(MC_ICON_PIN, "固定贴图", G_CALLBACK(command), 5), FALSE,
+                     FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(row2), icon_button(MC_ICON_CLOSE, "取消 Esc", G_CALLBACK(command), 4), FALSE,
+                     FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(row2),
+                     icon_button(MC_ICON_CHECK, "确认并复制 Ctrl+Enter", G_CALLBACK(command), 3), FALSE,
+                     FALSE, 0);
+  style_hud();
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.toolbar);
   gtk_widget_add_events(capture.canvas,
                         GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
@@ -1110,6 +1187,19 @@ void mc_linux_capture_start(GtkApplication *application) {
 }
 /* Opt-in CI check only: inject pointer input into this synthetic Xvfb fixture.
  * libXtst is dynamically loaded for the test, never a production dependency. */
+static void smoke_background(GdkPixbuf *image) {
+  int width = gdk_pixbuf_get_width(image), height = gdk_pixbuf_get_height(image);
+  int stride = gdk_pixbuf_get_rowstride(image), channels = gdk_pixbuf_get_n_channels(image);
+  guchar *pixels = gdk_pixbuf_get_pixels(image);
+  for (int y = 0; y < height; y++)
+    for (int x = 0; x < width; x++) {
+      double horizontal = (double)x / MAX(1, width - 1), vertical = (double)y / MAX(1, height - 1);
+      guchar *pixel = pixels + y * stride + x * channels;
+      pixel[0] = (guchar)(22 + 37 * horizontal + 5 * vertical);
+      pixel[1] = (guchar)(29 + 6 * horizontal + 43 * vertical);
+      pixel[2] = (guchar)(49 + 30 * horizontal + 13 * vertical);
+    }
+}
 static gboolean smoke_pump_timeout(gpointer data) {
   *(gboolean *)data = TRUE;
   return G_SOURCE_REMOVE;
@@ -1156,7 +1246,7 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
     dlclose(library);
     return FALSE;
   }
-  gdk_pixbuf_fill(source, 0xDCA050FF);
+  smoke_background(source);
   ok = open_editor(source);
   g_object_unref(source);
   if (!ok) {
@@ -1241,7 +1331,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   GdkPixbuf *source = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 640, 400);
   if (!source)
     return FALSE;
-  gdk_pixbuf_fill(source, 0xDCA050FF);
+  smoke_background(source);
   gboolean ok = open_editor(source);
   g_object_unref(source);
   if (!ok) {
