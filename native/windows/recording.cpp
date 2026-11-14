@@ -60,6 +60,10 @@ namespace fs = std::filesystem;
 namespace {
 constexpr LONGLONG second = 10000000;
 constexpr UINT32 frameRate = 15;
+constexpr DWORD videoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+constexpr DWORD audioStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
+constexpr DWORD allStreams = static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS);
+constexpr DWORD mediaSource = static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE);
 constexpr UINT doneMessage = WM_APP + 0x62;
 constexpr wchar_t hostClass[] = L"MoojiCut.Recording.WorkerHost";
 constexpr wchar_t editorClass[] = L"MoojiCut.Recording.Editor";
@@ -166,26 +170,54 @@ struct Encoder {
 
 struct Decoder {
     ComPtr<IMFSourceReader> reader;
+    // H.264 decoding can expand the backing frame to a macroblock boundary.
+    // Editing coordinates always refer to the valid display aperture instead.
     UINT32 width = 0, height = 0;
+    UINT32 bufferWidth = 0, bufferHeight = 0, offsetX = 0, offsetY = 0;
     LONG stride = 0;
     LONGLONG duration = 0;
+    void readFormat() {
+        ComPtr<IMFMediaType> actual;
+        check(reader->GetCurrentMediaType(videoStream, &actual), L"无法读取视频格式");
+        UINT32 w=0,h=0,value=0;GUID subtype={};
+        check(MFGetAttributeSize(actual.Get(),MF_MT_FRAME_SIZE,&w,&h),L"无法读取视频尺寸");
+        check(actual->GetGUID(MF_MT_SUBTYPE,&subtype),L"无法读取视频像素格式");
+        if(!w||!h||w>8192||h>8192)throw Failure{E_INVALIDARG,L"视频尺寸超出支持范围"};
+        MFVideoArea area={};UINT32 areaBytes=0;const char *aperture="minimum";
+        HRESULT hr=actual->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE,reinterpret_cast<UINT8 *>(&area),sizeof(area),&areaBytes);
+        if(hr==MF_E_ATTRIBUTENOTFOUND){aperture="geometric";hr=actual->GetBlob(MF_MT_GEOMETRIC_APERTURE,reinterpret_cast<UINT8 *>(&area),sizeof(area),&areaBytes);}
+        if(hr==MF_E_ATTRIBUTENOTFOUND){aperture="full";area={};area.Area.cx=static_cast<LONG>(w);area.Area.cy=static_cast<LONG>(h);}
+        else {check(hr,L"无法读取视频有效画面范围");if(areaBytes!=sizeof(area))throw Failure{E_INVALIDARG,L"视频有效画面范围损坏"};}
+        if(area.OffsetX.fract||area.OffsetY.fract||area.OffsetX.value<0||area.OffsetY.value<0||area.Area.cx<=0||area.Area.cy<=0||
+            static_cast<UINT32>(area.OffsetX.value)+static_cast<UINT32>(area.Area.cx)>w||
+            static_cast<UINT32>(area.OffsetY.value)+static_cast<UINT32>(area.Area.cy)>h)
+            throw Failure{E_INVALIDARG,L"视频有效画面范围无效"};
+        UINT32 visibleWidth=static_cast<UINT32>(area.Area.cx),visibleHeight=static_cast<UINT32>(area.Area.cy);
+        LONG newStride=0;
+        if(SUCCEEDED(actual->GetUINT32(MF_MT_DEFAULT_STRIDE,&value)))newStride=static_cast<LONG>(value);
+        else check(MFGetStrideForBitmapInfoHeader(subtype.Data1,w,&newStride),L"无法读取视频行距");
+        wchar_t guid[48]={};StringFromGUID2(subtype,guid,48);
+        std::fprintf(stderr,"MF decoder format: buffer=%ux%u visible=%ux%u offset=%d,%d aperture=%s stride=%ld subtype=%s\n",
+            w,h,visibleWidth,visibleHeight,area.OffsetX.value,area.OffsetY.value,aperture,newStride,utf8(guid).c_str());
+        if(subtype!=MFVideoFormat_RGB32)throw Failure{E_UNEXPECTED,L"视频解码器未返回 RGB32 画面"};
+        if(width&&(width!=visibleWidth||height!=visibleHeight))throw Failure{E_UNEXPECTED,L"录屏有效画面尺寸在处理中发生变化"};
+        if(std::llabs(static_cast<LONGLONG>(newStride))<static_cast<LONGLONG>(w)*4)
+            throw Failure{E_UNEXPECTED,L"视频画面行距过小"};
+        width=visibleWidth;height=visibleHeight;bufferWidth=w;bufferHeight=h;
+        offsetX=static_cast<UINT32>(area.OffsetX.value);offsetY=static_cast<UINT32>(area.OffsetY.value);stride=newStride;
+    }
     explicit Decoder(const fs::path &path) {
         ComPtr<IMFAttributes> attributes; check(MFCreateAttributes(&attributes, 2), L"无法配置视频解码");
         check(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE), L"无法配置视频解码");
         check(MFCreateSourceReaderFromURL(path.c_str(), attributes.Get(), &reader), L"无法读取录屏文件");
-        check(reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE), L"无法选择视频轨道");
-        check(reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE), L"录屏中没有视频轨道");
+        check(reader->SetStreamSelection(allStreams, FALSE), L"无法选择视频轨道");
+        check(reader->SetStreamSelection(videoStream, TRUE), L"录屏中没有视频轨道");
         ComPtr<IMFMediaType> input; check(MFCreateMediaType(&input), L"无法配置解码格式");
         input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); input->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-        check(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, input.Get()), L"无法将视频解码为 RGB");
-        ComPtr<IMFMediaType> actual; check(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &actual), L"无法读取视频格式");
-        check(MFGetAttributeSize(actual.Get(), MF_MT_FRAME_SIZE, &width, &height), L"无法读取视频尺寸");
-        if (!width || !height || width>8192 || height>8192) throw Failure{E_INVALIDARG, L"视频尺寸超出支持范围"};
-        UINT32 value = 0;
-        if (SUCCEEDED(actual->GetUINT32(MF_MT_DEFAULT_STRIDE, &value))) stride = static_cast<LONG>(value);
-        else check(MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, width, &stride), L"无法读取视频行距");
+        check(reader->SetCurrentMediaType(videoStream, nullptr, input.Get()), L"无法将视频解码为 RGB");
+        readFormat();
         PROPVARIANT length; PropVariantInit(&length);
-        HRESULT hr = reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &length);
+        HRESULT hr = reader->GetPresentationAttribute(mediaSource, MF_PD_DURATION, &length);
         if (SUCCEEDED(hr) && length.vt == VT_UI8) duration = static_cast<LONGLONG>(length.uhVal.QuadPart);
         PropVariantClear(&length);
         if (duration <= 0) throw Failure{E_INVALIDARG, L"无法读取视频时长"};
@@ -193,32 +225,29 @@ struct Decoder {
     bool next(std::vector<BYTE> &pixels, LONGLONG &time, LONGLONG &length) {
         for (;;) {
             DWORD flags = 0; ComPtr<IMFSample> sample;
-            check(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &time, &sample), L"无法解码视频帧");
+            check(reader->ReadSample(videoStream, 0, nullptr, &flags, &time, &sample), L"无法解码视频帧");
             if (flags & MF_SOURCE_READERF_ENDOFSTREAM) return false;
             if (flags & MF_SOURCE_READERF_ERROR) throw Failure{E_FAIL, L"视频解码器报告错误"};
-            if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
-                ComPtr<IMFMediaType> actual; check(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &actual), L"无法更新视频格式");
-                UINT32 w=0,h=0,value=0;GUID subtype={};
-                check(MFGetAttributeSize(actual.Get(),MF_MT_FRAME_SIZE,&w,&h),L"无法读取视频尺寸");
-                check(actual->GetGUID(MF_MT_SUBTYPE,&subtype),L"无法读取视频格式");
-                if(w!=width||h!=height||subtype!=MFVideoFormat_RGB32)throw Failure{E_UNEXPECTED,L"录屏尺寸在处理中发生变化"};
-                if(SUCCEEDED(actual->GetUINT32(MF_MT_DEFAULT_STRIDE,&value)))stride=static_cast<LONG>(value);
-            }
+            if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) readFormat();
             if (!sample) continue;
             length = second/frameRate; sample->GetSampleDuration(&length);
             if (length <= 0) length = second/frameRate;
             ComPtr<IMFMediaBuffer> buffer; check(sample->ConvertToContiguousBuffer(&buffer), L"无法读取解码画面");
+            pixels.resize(static_cast<size_t>(width)*height*4);
             ComPtr<IMF2DBuffer> twoD;
             BYTE *first = nullptr; LONG pitch = stride; DWORD bytes = 0;
             bool locked2D = SUCCEEDED(buffer.As(&twoD));
             if (locked2D) check(twoD->Lock2D(&first, &pitch), L"无法读取解码画面");
             else {
                 check(buffer->Lock(&first, nullptr, &bytes), L"无法读取解码画面");
-                size_t required = static_cast<size_t>(std::abs(pitch))*(height-1)+width*4;
+                size_t required = static_cast<size_t>(std::llabs(static_cast<LONGLONG>(pitch)))*(bufferHeight-1)+bufferWidth*4;
                 if (required>bytes) { buffer->Unlock(); throw Failure{E_UNEXPECTED, L"视频画面缓冲区不完整"}; }
-                if (pitch < 0) first += static_cast<size_t>(height-1)*static_cast<size_t>(-pitch);
+                if (pitch < 0) first += static_cast<size_t>(bufferHeight-1)*static_cast<size_t>(-static_cast<LONGLONG>(pitch));
             }
-            pixels.resize(static_cast<size_t>(width)*height*4);
+            if(std::llabs(static_cast<LONGLONG>(pitch))<static_cast<LONGLONG>(bufferWidth)*4){
+                if(locked2D)twoD->Unlock2D();else buffer->Unlock();throw Failure{E_UNEXPECTED,L"视频画面行距过小"};
+            }
+            first+=static_cast<ptrdiff_t>(offsetY)*pitch+static_cast<ptrdiff_t>(offsetX)*4;
             for (UINT32 y=0; y<height; y++) memcpy(pixels.data()+static_cast<size_t>(y)*width*4, first+static_cast<ptrdiff_t>(y)*pitch, width*4);
             if (locked2D) twoD->Unlock2D(); else buffer->Unlock();
             return true;
@@ -226,7 +255,7 @@ struct Decoder {
     }
     bool hasAudio() {
         ComPtr<IMFMediaType> audio;
-        return SUCCEEDED(reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &audio));
+        return SUCCEEDED(reader->GetNativeMediaType(audioStream, 0, &audio));
     }
 };
 struct Segment { LONGLONG start, end, output; };
@@ -422,7 +451,7 @@ void launchJob(JobKind kind,fs::path target,Plan plan,RECT bounds={},UINT32 widt
             if(kind==JobKind::Recording){Decoder decoder(target);result->width=decoder.width;result->height=decoder.height;result->duration=static_cast<int32_t>(std::min<LONGLONG>(604800000,decoder.duration/10000));}
             result->success=true;
         }catch(const Failure &error){result->cancelled=error.code==HRESULT_FROM_WIN32(ERROR_CANCELLED);result->error=description(error);}
-        catch(const std::exception &){result->error=L"视频处理失败，请检查磁盘空间与文件权限。原始文件仍保留在草稿目录。";}
+        catch(const std::exception &){result->error=L"视频处理失败，请检查磁盘空间与文件权限。";}
         std::error_code ignored;fs::remove(partial,ignored);
         JobResult *raw=result.release();if(!PostMessageW(host,doneMessage,0,reinterpret_cast<LPARAM>(raw)))delete raw;
     }); } catch (...) { state.kind=JobKind::None;for(HWND control:state.controls)EnableWindow(control,TRUE);notify();throw; }
@@ -601,7 +630,7 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
         }
         else std::printf("Clipboard test skipped outside CI.\n");
         std::printf("Windows Media Foundation recording/edit/export smoke passed.\n");return 0;
-    }catch(const Failure &error){if(session)native_video_close(session);std::fwprintf(stderr,L"Recording smoke failed: %ls\n",description(error).c_str());}
+    }catch(const Failure &error){if(session)native_video_close(session);std::fprintf(stderr,"Recording smoke failed: %s\n",utf8(description(error)).c_str());}
     catch(const std::exception &){if(session)native_video_close(session);std::fprintf(stderr,"Recording smoke failed: native exception.\n");}
     if(state.editor)DestroyWindow(state.editor);
     else if(state.session){native_video_close(state.session);state.session=0;}

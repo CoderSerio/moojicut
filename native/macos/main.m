@@ -6,6 +6,7 @@
 #import "capture/MCCaptureController.h"
 #import "capture/MCImageEditorController.h"
 #import "recording/MCMacRecordingController.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "moonbit.h"
 #include <stdlib.h>
 
@@ -87,6 +88,16 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 - (void)capture:(__unused id)sender {
     [self.captureController capture];
 }
+- (void)openImage:(__unused id)sender {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.allowedContentTypes = @[UTTypeImage]; panel.allowsMultipleSelection = NO;
+    panel.canChooseDirectories = NO; panel.prompt = @"标注图片";
+    [NSApp activateIgnoringOtherApps:YES];
+    if ([panel runModal] == NSModalResponseOK) {
+        NSError *error = nil;
+        if (![self.captureController showEditorForPNGURL:panel.URL error:&error]) [[NSAlert alertWithError:error] runModal];
+    }
+}
 - (void)startRecording:(__unused id)sender { [self.recordingController startRecording]; }
 - (void)stopRecording:(__unused id)sender { [self.recordingController stopRecording]; }
 - (void)resumeRecordingDraft:(__unused id)sender { [self.recordingController resumeLastDraft]; }
@@ -133,6 +144,8 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     menu.autoenablesItems = NO;
     NSMenuItem *capture = [[NSMenuItem alloc] initWithTitle:@"截图…" action:@selector(capture:) keyEquivalent:@""];
     capture.target = self; [menu addItem:capture]; [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *openImage = [[NSMenuItem alloc] initWithTitle:@"打开图片标注…" action:@selector(openImage:) keyEquivalent:@""];
+    openImage.target = self; [menu addItem:openImage]; [menu addItem:NSMenuItem.separatorItem];
     self.recordMenuItem = [[NSMenuItem alloc] initWithTitle:@"开始录屏…" action:@selector(startRecording:) keyEquivalent:@""];
     self.recordMenuItem.target = self; [menu addItem:self.recordMenuItem];
     self.stopMenuItem = [[NSMenuItem alloc] initWithTitle:@"停止录屏并编辑" action:@selector(stopRecording:) keyEquivalent:@""];
@@ -145,6 +158,15 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.statusItem.menu = menu;
     [self updateRecordingState];
     if (self.smoke) [self runSmoke];
+    else if ([NSProcessInfo.processInfo.arguments containsObject:@"--open-image"]) {
+        NSArray *arguments = NSProcessInfo.processInfo.arguments;
+        NSUInteger index = [arguments indexOfObject:@"--open-image"];
+        if (index + 1 < arguments.count) {
+            NSError *error = nil;
+            if (![self.captureController showEditorForPNGURL:[NSURL fileURLWithPath:arguments[index + 1]] error:&error])
+                [[NSAlert alertWithError:error] runModal];
+        }
+    }
     else if ([NSProcessInfo.processInfo.arguments containsObject:@"--capture"]) [self capture:nil];
     else if ([NSProcessInfo.processInfo.arguments containsObject:@"--preferences"]) [self showPreferences:nil];
 }

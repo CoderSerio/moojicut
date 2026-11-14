@@ -26,7 +26,7 @@ EXECUTABLE_NAME = "MoojiCut"
 APP = ROOT / "dist/native-app.noindex" / (APP_NAME + ".app")
 ARTIFACTS = ROOT / ".artifacts"
 FRAMEWORKS = ["AppKit", "Foundation", "Carbon", "ScreenCaptureKit", "AVKit",
-              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics"]
+              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "UniformTypeIdentifiers"]
 
 
 class NativeBuild:
