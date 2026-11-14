@@ -6,10 +6,13 @@
 @property NSTask *captureTask;
 @property NSURL *temporaryDirectory;
 @property MCImageEditorController *editor;
+@property BOOL requestedScreenAccess;
+@property BOOL showingPermissionHelp;
 @end
 
 @implementation MCCaptureController
 - (BOOL)busy { return self.captureTask != nil || self.editor != nil; }
+- (void)changed { if (self.onStateChange) self.onStateChange(); }
 - (void)showError:(NSString *)message {
     [NSApp activateIgnoringOtherApps:YES];
     NSAlert *alert = [NSAlert new];
@@ -29,8 +32,9 @@
     self.editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
     if (!self.editor) return NO;
     __weak MCCaptureController *weakSelf = self;
-    self.editor.onClose = ^{ weakSelf.editor = nil; };
+    self.editor.onClose = ^{ weakSelf.editor = nil; [weakSelf changed]; };
     [self.editor show];
+    [self changed];
     return YES;
 }
 - (void)launchWhenKeysReleased:(NSTask *)task attempts:(NSUInteger)attempts {
@@ -41,6 +45,7 @@
         if (attempts >= 40) {
             self.captureTask = nil;
             [self removeTemporaryFiles];
+            [self changed];
             [self showError:@"请松开快捷键后再试一次。"];
             return;
         }
@@ -62,6 +67,7 @@
         if (![task launchAndReturnError:&error]) {
             owner.captureTask = nil;
             [owner removeTemporaryFiles];
+            [owner changed];
             [owner showError:error.localizedDescription];
         }
     });
@@ -70,17 +76,32 @@
     NSAssert(NSThread.isMainThread, @"Capture is a main-thread operation");
     if (self.editor) { [self.editor show]; return; }
     if (self.captureTask) return;
-    if (!CGPreflightScreenCaptureAccess() && !CGRequestScreenCaptureAccess()) {
-        [NSApp activateIgnoringOtherApps:YES];
-        NSAlert *alert = [NSAlert new];
-        alert.messageText = @"允许 Mooji Cut 截取屏幕";
-        alert.informativeText = @"请在系统设置的「隐私与安全性 → 屏幕与系统音频录制」中允许 Mooji Cut，然后重新打开应用并截图。";
-        [alert addButtonWithTitle:@"打开系统设置"];
-        [alert addButtonWithTitle:@"取消"];
-        if ([alert runModal] == NSAlertFirstButtonReturn) {
-            [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]];
+    if (self.showingPermissionHelp) return;
+    if (!CGPreflightScreenCaptureAccess()) {
+        if (!self.requestedScreenAccess) {
+            self.requestedScreenAccess = YES;
+            // This API returns before the system's permission dialog closes.
+            // Do not cover that dialog with our own modal alert. A grant may
+            // require relaunching this process before preflight can see it.
+            if (!CGRequestScreenCaptureAccess()) return;
+        } else {
+            self.showingPermissionHelp = YES;
+            [NSApp activateIgnoringOtherApps:YES];
+            NSAlert *alert = [NSAlert new];
+            alert.messageText = @"屏幕录制权限尚未生效";
+            alert.informativeText = @"请先处理系统的授权窗口，允许后完全退出 Mooji Cut，再重新打开。\n\n如果开关已经打开仍无法截图，列表可能关联了旧版本：移除旧条目，再添加当前应用。可用“显示当前应用”确认安装位置。";
+            [alert addButtonWithTitle:@"打开系统设置"];
+            [alert addButtonWithTitle:@"显示当前应用"];
+            [alert addButtonWithTitle:@"取消"];
+            NSModalResponse response = [alert runModal];
+            self.showingPermissionHelp = NO;
+            if (response == NSAlertFirstButtonReturn) {
+                [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]];
+            } else if (response == NSAlertSecondButtonReturn) {
+                [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[NSBundle.mainBundle.bundleURL]];
+            }
+            return;
         }
-        return;
     }
     NSError *error = nil;
     self.temporaryDirectory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[@"moojicut-capture-" stringByAppendingString:NSUUID.UUID.UUIDString]] isDirectory:YES];
@@ -97,6 +118,7 @@
     NSPipe *errors = [NSPipe pipe];
     task.standardError = errors;
     self.captureTask = task;
+    [self changed];
     __weak MCCaptureController *weakSelf = self;
     task.terminationHandler = ^(NSTask *finished) {
         NSData *diagnostic = [errors.fileHandleForReading readDataToEndOfFile];
@@ -116,6 +138,7 @@
                     [owner showError:@"系统未能生成截图。请确认屏幕录制权限后重试。"];
             }
             [owner removeTemporaryFiles];
+            [owner changed];
         });
     };
     // Close our settings from the capture surface without terminating the app.

@@ -7,6 +7,7 @@
 #import "capture/MCImageEditorController.h"
 #import "recording/MCMacRecordingController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "updates/MCUpdateController.h"
 #include "moonbit.h"
 #include <stdlib.h>
 
@@ -52,6 +53,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @property MCCaptureController *captureController;
 @property MCGlobalShortcutManager *globalShortcuts;
 @property MCMacRecordingController *recordingController;
+@property MCUpdateController *updateController;
 @property NSMenuItem *recordMenuItem;
 @property NSMenuItem *stopMenuItem;
 @end
@@ -81,6 +83,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
             if (recording) [weakSelf.globalShortcuts suspend]; else [weakSelf.globalShortcuts resume];
         };
         self.preferences.shortcutRegistrationError = self.globalShortcuts.registrationError;
+        self.preferences.updateController = self.updateController;
     }
     [self.preferences show];
     self.report[@"windowNumber"] = @(self.preferences.window.windowNumber); [self writeReport];
@@ -121,8 +124,15 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
     self.captureController = [MCCaptureController new];
     self.recordingController = [MCMacRecordingController new];
+    self.updateController = [MCUpdateController new];
     __weak MCNativeHost *weakSelf = self;
-    self.recordingController.onStateChange = ^{ [weakSelf updateRecordingState]; };
+    self.updateController.isOperationBusy = ^BOOL{ return weakSelf.captureController.busy || weakSelf.recordingController.busy; };
+    self.captureController.onStateChange = ^{ [weakSelf.updateController operationStateDidChange]; };
+    self.recordingController.onStateChange = ^{
+        [weakSelf updateRecordingState];
+        [weakSelf.updateController operationStateDidChange];
+    };
+    if (!self.smoke) [self.updateController start];
     self.globalShortcuts = [[MCGlobalShortcutManager alloc] initWithDefaults:self.defaults onCapture:^{ [weakSelf capture:nil]; }];
     self.globalShortcuts.onRecord = ^{ [weakSelf startRecording:nil]; };
     self.globalShortcuts.onStop = ^{ [weakSelf stopRecording:nil]; };
@@ -201,7 +211,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
             self.report[@"lifecyclePolicy"] = @"AppKit may retain its last key NSWindow. Closed controllers, content views and toolbars are released; each prior window is released after opening its successor; five cycles must remain bounded to at most one cached empty NSWindow.";
             self.report[@"final"] = [self snapshot]; self.report[@"phase"] = @"complete";
             BOOL passed = [self.diagnostics[@"passed"] boolValue] && bounded;
-            for (NSString *key in @[@"lightAppearancePassed", @"darkAppearancePassed", @"appearanceRestoredOnReopen", @"aboutDisclosurePassed", @"applicationReopenPassed"])
+            for (NSString *key in @[@"lightAppearancePassed", @"darkAppearancePassed", @"appearanceRestoredOnReopen", @"aboutDisclosurePassed", @"applicationReopenPassed", @"updatesPagePassed"])
                 passed = passed && [self.report[key] boolValue];
             passed = passed && [self.report[@"startup"][@"contentWindows"] integerValue] == 0 && [self.report[@"final"][@"contentWindows"] integerValue] == 0;
             self.report[@"smokePassed"] = @(passed); [self writeReport];
@@ -218,6 +228,8 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
             self.report[@"aboutDisclosurePassed"] = @(self.preferences.technicalDetailsVisible);
             self.report[@"phase"] = @"about"; [self writeReport];
             MCAfter(1, ^{
+                [self.preferences selectPage:@"updates"];
+                self.report[@"updatesPagePassed"] = @([self.preferences.window.toolbar.selectedItemIdentifier isEqualToString:@"updates"]);
                 [self.preferences selectPage:@"general"]; [self.preferences setAppearanceChoice:@"light"]; [self.defaults synchronize];
                 self.report[@"lightAppearancePassed"] = @([NSApp.appearance.name isEqual:NSAppearanceNameAqua]);
                 self.report[@"phase"] = @"light"; [self writeReport];
@@ -245,6 +257,12 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(__unused NSApplication *)sender { return NO; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(__unused NSApplication *)sender {
+    if (self.updateController.installationPending && (self.captureController.busy || self.recordingController.busy)) {
+        NSAlert *alert = [NSAlert new]; alert.messageText = @"请先完成当前编辑";
+        alert.informativeText = @"完成或关闭截图、录屏编辑后，再安装更新。当前内容会保留。";
+        [alert addButtonWithTitle:@"继续使用"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
+        return NSTerminateCancel;
+    }
     if (self.recordingController.captureInProgress || self.recordingController.exporting) {
         NSAlert *alert = [NSAlert new]; alert.messageText = @"录屏还未完成";
         alert.informativeText = @"请先停止录屏，或等待视频导出完成，再退出 Mooji Cut，以免损坏视频文件。";

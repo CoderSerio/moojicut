@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from install_sparkle import install as install_sparkle, VERSION as SPARKLE_VERSION
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,20 +49,47 @@ class NativeBuild:
         if not self.moon.is_file() or not (self.include / "moonbit.h").is_file():
             raise RuntimeError("MoonBit native headers are missing; use a complete matching toolchain.")
         self.env = dict(os.environ, MOON_HOME=str(home))
+        self.signing_identity = self.select_signing_identity()
         manifest = (ROOT / "moon.mod").read_text()
         self.name = self.manifest_value(manifest, "name")
         self.version = self.manifest_value(manifest, "version")
-        self.release_version = release_version or self.version + "-alpha.1"
+        self.release_version = release_version or self.version + "-alpha.2"
         version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
                                self.release_version)
         if not version:
             raise RuntimeError("Release version must be X.Y.Z with an optional prerelease suffix, "
                                "for example 0.1.0-alpha.1.")
-        self.bundle_version = version.group(1)
+        self.short_version = version.group(1)
+        suffix = self.release_version[len(self.short_version):]
+        prerelease = re.fullmatch(r"-(alpha|beta|rc)\.([1-9][0-9]{0,2})", suffix)
+        if suffix and (not prerelease or int(prerelease.group(2)) > 255):
+            raise RuntimeError("macOS previews require -alpha.N, -beta.N or -rc.N (N: 1–255).")
+        self.bundle_version = self.short_version + (
+            {"alpha": "a", "beta": "b", "rc": "fc"}[prerelease.group(1)] + prerelease.group(2)
+            if prerelease else "")
         self.compiler = self.run(home / "bin/moonc", "-v", quiet=True).strip()
         self.clang = self.run("xcrun", "clang", "--version", quiet=True).splitlines()[0]
         print("MoonBit compiler:", self.compiler, flush=True)
         print(self.clang, flush=True)
+        print("Signing:", "ad-hoc (permissions may need renewing after updates)" if self.signing_identity == "-"
+              else "development/configured certificate", flush=True)
+
+    @staticmethod
+    def select_signing_identity():
+        # A hash-only ad-hoc identity changes on every build and invalidates TCC
+        # grants. Reuse an existing development certificate for local builds;
+        # never create/import a certificate or change keychain access settings.
+        configured = os.environ.get("MOOJICUT_SIGNING_IDENTITY")
+        if configured:
+            return configured
+        identities = subprocess.run(["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"],
+                                    text=True, capture_output=True, timeout=30)
+        matches = re.findall(r'^\s*\d+\) ([0-9A-Fa-f]{40}) "Apple Development: [^"]+"',
+                             identities.stdout, re.M) if identities.returncode == 0 else []
+        if len(matches) > 1:
+            raise RuntimeError("Multiple Apple Development certificates found; set MOOJICUT_SIGNING_IDENTITY "
+                               "to the desired certificate SHA-1, or '-' for an ad-hoc build.")
+        return matches[0] if matches else "-"
 
     @staticmethod
     def manifest_value(manifest, key):
@@ -132,6 +160,7 @@ class NativeBuild:
         raise RuntimeError("Cannot determine the built executable's minimum macOS version.")
 
     def build(self):
+        sparkle = install_sparkle()
         directory = ARTIFACTS / "native-app"
         archive = self.archive(directory)
         native = ROOT / "native/macos"
@@ -147,8 +176,15 @@ class NativeBuild:
             executable = contents / "MacOS" / EXECUTABLE_NAME
             executable.parent.mkdir(parents=True)
             resources.mkdir()
+            frameworks = contents / "Frameworks"
+            frameworks.mkdir()
+            embedded_sparkle = frameworks / "Sparkle.framework"
+            shutil.copytree(sparkle / "Sparkle.framework", embedded_sparkle, symlinks=True)
+            shutil.copy2(sparkle / "LICENSE", resources / "Sparkle-LICENSE.txt")
+            shutil.copy2(ROOT / "LICENSE", resources / "LICENSE.txt")
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
-                     "-I", self.include, "-I", native, *sources, archive,
+                     "-I", self.include, "-I", native, "-F", sparkle, *sources, archive,
+                     "-framework", "Sparkle", "-Wl,-rpath,@executable_path/../Frameworks",
                      *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                      "-o", executable)
             arch, minimum_macos = self.binary_platform(executable)
@@ -164,11 +200,21 @@ class NativeBuild:
                 "CFBundleDevelopmentRegion": "zh_CN", "CFBundleName": APP_NAME,
                 "CFBundleDisplayName": APP_NAME, "CFBundleIdentifier": "dev.moojicut.native",
                 "CFBundleExecutable": EXECUTABLE_NAME, "CFBundleIconFile": "MoojiCut.icns",
-                "CFBundlePackageType": "APPL", "CFBundleShortVersionString": self.bundle_version,
+                "CFBundlePackageType": "APPL", "CFBundleShortVersionString": self.short_version,
                 "CFBundleVersion": self.bundle_version, "MoonBitCoreVersion": self.version,
                 "MoojiCutReleaseVersion": self.release_version, "LSMinimumSystemVersion": minimum_macos,
                 "NSPrincipalClass": "NSApplication", "LSUIElement": True, "NSHighResolutionCapable": True,
+                "SUEnableAutomaticChecks": False, "SUAutomaticallyUpdate": False,
+                "SUAllowsAutomaticUpdates": False, "SUEnableSystemProfiling": False,
+                "SUShowReleaseNotes": False, "SUEnableJavaScript": False,
+                "SUVerifyUpdateBeforeExtraction": True,
+                "SURequireSignedFeed": True,
             }
+            update_config = native / "updates/feed.json"
+            if update_config.is_file():
+                feed = json.loads(update_config.read_text())
+                info["SUFeedURL"] = feed["feedURL"]
+                info["SUPublicEDKey"] = feed["publicKey"]
             (contents / "Info.plist").write_bytes(plistlib.dumps(info, sort_keys=False))
             self.run("/usr/bin/plutil", "-lint", contents / "Info.plist", quiet=True)
             dependencies = self.run("/usr/bin/otool", "-L", executable, quiet=True)
@@ -179,9 +225,17 @@ class NativeBuild:
                         "compilerVersion": self.compiler, "clangVersion": self.clang,
                         "arch": arch, "minimumMacOSVersion": minimum_macos,
                         "frameworks": FRAMEWORKS,
-                        "signing": "ad-hoc", "notarized": False}
+                        "sparkleVersion": SPARKLE_VERSION,
+                        "signing": "ad-hoc" if self.signing_identity == "-" else "certificate", "notarized": False}
             (resources / "build.json").write_text(json.dumps(metadata, indent=2) + "\n")
-            self.run("/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", staged_app)
+            # Sign nested code inside out; do not weaken the host's requirements.
+            version_dir = embedded_sparkle / "Versions/B"
+            for component in (version_dir / "XPCServices/Downloader.xpc",
+                              version_dir / "XPCServices/Installer.xpc",
+                              version_dir / "Updater.app", version_dir / "Autoupdate", embedded_sparkle):
+                self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity,
+                         "--timestamp=none", "--preserve-metadata=entitlements", component)
+            self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", staged_app)
             self.run("/usr/bin/codesign", "--verify", "--deep", "--strict", staged_app)
             APP.parent.mkdir(parents=True, exist_ok=True)
             # A failed compilation or bundle check must not remove the last good app.
@@ -195,8 +249,9 @@ class NativeBuild:
                     previous.rename(APP)
                 raise
         print("Native app:", APP, flush=True)
-        print("Executable: {:.0f} KiB; {} Objective-C files + MoonBit static core; ad-hoc signed."
-              .format((APP / "Contents/MacOS" / EXECUTABLE_NAME).stat().st_size / 1024, len(sources)), flush=True)
+        print("Executable: {:.0f} KiB; {} Objective-C files + MoonBit static core; {} signed."
+              .format((APP / "Contents/MacOS" / EXECUTABLE_NAME).stat().st_size / 1024, len(sources),
+                      "ad-hoc" if self.signing_identity == "-" else "certificate"), flush=True)
 
     def release(self):
         self.build()
@@ -215,10 +270,15 @@ class NativeBuild:
                 required = {str(Path(APP.name) / "Contents" / relative) for relative in (
                     "Info.plist", "MacOS/" + EXECUTABLE_NAME, "Resources/build.json",
                     "Resources/MoojiCut.icns", "Resources/MoojiCutStatusTemplate.png",
-                    "Resources/MoojiCutStatusTemplate@2x.png", "_CodeSignature/CodeResources")}
+                    "Resources/MoojiCutStatusTemplate@2x.png", "_CodeSignature/CodeResources",
+                    "Resources/LICENSE.txt", "Resources/Sparkle-LICENSE.txt",
+                    "Frameworks/Sparkle.framework/Versions/B/Sparkle")}
                 missing = required - set(packaged.namelist())
                 if missing:
                     raise RuntimeError("Release ZIP is missing files: {}.".format(sorted(missing)))
+            extracted = staging / "unpacked"
+            self.run("/usr/bin/ditto", "-x", "-k", archive, extracted)
+            self.run("/usr/bin/codesign", "--verify", "--deep", "--strict", extracted / APP.name)
             digest = hashlib.sha256()
             with archive.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -258,6 +318,22 @@ class NativeBuild:
                  preferences / "MCSystemShortcutCheck.m", ROOT / "native/macos/shortcuts/MCGlobalShortcutManager.m",
                  "-framework", "AppKit", "-framework", "Carbon", "-o", global_shortcuts)
         self.run(global_shortcuts)
+        capture_permission = shortcuts / "capture-permission"
+        capture = ROOT / "native/macos/capture"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
+                 "-I", ROOT / "native/macos", "-DCGPreflightScreenCaptureAccess=MCFakePreflight",
+                 "-DCGRequestScreenCaptureAccess=MCFakeRequest", ROOT / "test/native/capture-permission.m",
+                 capture / "MCCaptureController.m", capture / "MCImageEditorController.m", archive,
+                 "-framework", "AppKit", "-framework", "CoreGraphics", "-o", capture_permission)
+        self.run(capture_permission)
+        sparkle = install_sparkle()
+        updater = shortcuts / "updater-smoke"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
+                 "-I", ROOT / "native/macos", ROOT / "test/native/updater-smoke.m",
+                 ROOT / "native/macos/updates/MCUpdateController.m",
+                 "-framework", "AppKit", "-framework", "Security", "-framework", "Sparkle",
+                 "-Wl,-rpath," + str(sparkle), "-o", updater)
+        self.run(updater, sparkle / "bin/sign_update")
 
     def smoke(self):
         self.build()
@@ -280,7 +356,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
     parser.add_argument("--release-version", metavar="VERSION",
-                        help="Release label (default: <moon.mod version>-alpha.1).")
+                        help="Release label (default: <moon.mod version>-alpha.2).")
     args = parser.parse_args()
     native = NativeBuild(args.release_version)
     if args.command == "dev":

@@ -1,5 +1,6 @@
 #import "MCPreferencesController.h"
 #import "MCShortcutRecorder.h"
+#import "../updates/MCUpdateController.h"
 
 static NSString *const MCAppearanceKey = @"appearance";
 static NSTextField *MCLabel(NSString *text, CGFloat size, BOOL secondary) {
@@ -48,6 +49,9 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 @property NSMutableDictionary<NSString *, NSButton *> *shortcutClearButtons;
 @property NSTextField *shortcutFeedback;
 @property NSTextField *shortcutAvailability;
+@property NSButton *automaticUpdatesCheckbox;
+@property NSButton *checkUpdatesButton;
+@property NSTextField *updateStatus;
 @end
 
 @implementation MCPreferencesController
@@ -77,7 +81,8 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSTabViewItem *general = [[NSTabViewItem alloc] initWithIdentifier:@"general"]; general.label = @"通用"; general.view = [self generalPage];
     NSTabViewItem *shortcuts = [[NSTabViewItem alloc] initWithIdentifier:@"shortcuts"]; shortcuts.label = @"快捷键"; shortcuts.view = [self shortcutsPage];
     NSTabViewItem *about = [[NSTabViewItem alloc] initWithIdentifier:@"about"]; about.label = @"关于"; about.view = [self aboutPage];
-    [pages addTabViewItem:general]; [pages addTabViewItem:shortcuts]; [pages addTabViewItem:about]; [window.contentView addSubview:pages]; self.pages = pages;
+    NSTabViewItem *updates = [[NSTabViewItem alloc] initWithIdentifier:@"updates"]; updates.label = @"更新"; updates.view = [self updatesPage];
+    [pages addTabViewItem:general]; [pages addTabViewItem:shortcuts]; [pages addTabViewItem:about]; [pages addTabViewItem:updates]; [window.contentView addSubview:pages]; self.pages = pages;
     [self selectPage:@"general"]; [window center];
 }
 - (NSView *)generalPage {
@@ -241,6 +246,38 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSArray *values = @[@"system", @"light", @"dark"];
     [self setAppearanceChoice:values[(NSUInteger)sender.indexOfSelectedItem]];
 }
+- (void)setUpdateController:(MCUpdateController *)controller {
+    if (_updateController == controller) return;
+    if (_updateController) [NSNotificationCenter.defaultCenter removeObserver:self name:MCUpdateStateDidChangeNotification object:_updateController];
+    _updateController = controller;
+    if (controller) [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateStateChanged:) name:MCUpdateStateDidChangeNotification object:controller];
+    [self refreshUpdatePage];
+}
+- (void)updateStateChanged:(__unused NSNotification *)notification { [self refreshUpdatePage]; }
+- (void)refreshUpdatePage {
+    self.automaticUpdatesCheckbox.enabled = self.updateController.available;
+    self.automaticUpdatesCheckbox.state = self.updateController.automaticallyChecksForUpdates ? NSControlStateValueOn : NSControlStateValueOff;
+    self.checkUpdatesButton.enabled = self.updateController.canCheckForUpdates;
+    self.updateStatus.stringValue = self.updateController.statusText ?: @"更新服务尚未初始化。";
+}
+- (void)automaticUpdatesChanged:(NSButton *)sender {
+    self.updateController.automaticallyChecksForUpdates = sender.state == NSControlStateValueOn;
+    [self refreshUpdatePage];
+}
+- (void)checkUpdates:(id)sender { [self.updateController checkForUpdates:sender]; }
+- (NSView *)updatesPage {
+    NSView *page = [NSView new];
+    NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoojiCutReleaseVersion"] ?: [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版本";
+    self.automaticUpdatesCheckbox = [NSButton checkboxWithTitle:@"自动检查更新" target:self action:@selector(automaticUpdatesChanged:)];
+    self.checkUpdatesButton = [NSButton buttonWithTitle:@"检查更新…" target:self action:@selector(checkUpdates:)];
+    self.checkUpdatesButton.bezelStyle = NSBezelStyleRounded;
+    self.updateStatus = MCLabel(@"", 12, YES);
+    NSStackView *stack = MCStack(@[MCHeading(@"软件更新"), MCLabel([@"当前版本 " stringByAppendingString:version], 13, NO), self.automaticUpdatesCheckbox,
+        MCLabel(@"发现新版本时提醒你，由你确认下载与安装。", 12, YES), self.checkUpdatesButton, self.updateStatus], NSUserInterfaceLayoutOrientationVertical, 14);
+    [self.updateStatus.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    [stack setCustomSpacing:6 afterView:self.automaticUpdatesCheckbox];
+    MCPin(stack, page); [self refreshUpdatePage]; return page;
+}
 - (void)setAppearanceChoice:(NSString *)choice {
     NSArray *values = @[@"system", @"light", @"dark"];
     NSUInteger index = [values indexOfObject:choice]; if (index == NSNotFound) return;
@@ -255,22 +292,23 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 }
 - (void)show { if (!self.window) [self buildWindow]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
 - (void)selectPage:(NSString *)identifier {
-    if (![@[@"general", @"shortcuts", @"about"] containsObject:identifier]) return;
+    if (![@[@"general", @"shortcuts", @"about", @"updates"] containsObject:identifier]) return;
     [self cancelShortcutRecording];
     if (self.onShortcutRecordingChanged) self.onShortcutRecordingChanged(NO);
     [self.pages selectTabViewItemWithIdentifier:identifier]; self.window.toolbar.selectedItemIdentifier = identifier;
 }
 - (void)toolbarSelected:(NSToolbarItem *)sender { [self selectPage:sender.itemIdentifier]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about"]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about"]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarSelectableItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about", @"updates"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about", @"updates"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarSelectableItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about", @"updates"]; }
 - (nullable NSToolbarItem *)toolbar:(__unused NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)identifier willBeInsertedIntoToolbar:(__unused BOOL)flag {
-    if (![@[@"general", @"shortcuts", @"about"] containsObject:identifier]) return nil;
+    if (![@[@"general", @"shortcuts", @"about", @"updates"] containsObject:identifier]) return nil;
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
     BOOL general = [identifier isEqualToString:@"general"];
     BOOL shortcuts = [identifier isEqualToString:@"shortcuts"];
-    item.label = general ? @"通用" : shortcuts ? @"快捷键" : @"关于"; item.paletteLabel = item.label;
-    item.image = [NSImage imageWithSystemSymbolName:general ? @"gearshape" : shortcuts ? @"keyboard" : @"info.circle" accessibilityDescription:item.label];
+    BOOL updates = [identifier isEqualToString:@"updates"];
+    item.label = general ? @"通用" : shortcuts ? @"快捷键" : updates ? @"更新" : @"关于"; item.paletteLabel = item.label;
+    item.image = [NSImage imageWithSystemSymbolName:general ? @"gearshape" : shortcuts ? @"keyboard" : updates ? @"arrow.triangle.2.circlepath" : @"info.circle" accessibilityDescription:item.label];
     item.target = self; item.action = @selector(toolbarSelected:); return item;
 }
 - (void)windowWillClose:(NSNotification *)notification {
@@ -285,6 +323,8 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.window.contentView = nil;
     self.window.delegate = nil; self.window = nil; self.pages = nil; self.appearancePopup = nil; self.technicalDetails = nil; self.disclosure = nil;
     self.shortcutRecorders = nil; self.shortcutClearButtons = nil; self.shortcutFeedback = nil; self.shortcutAvailability = nil;
+    self.automaticUpdatesCheckbox = nil; self.checkUpdatesButton = nil; self.updateStatus = nil;
     if (self.onClose) self.onClose();
 }
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 @end
