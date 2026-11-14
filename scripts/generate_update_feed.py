@@ -21,10 +21,9 @@ from install_sparkle import ROOT, install
 def generate(archive, output, previous=None):
     sparkle = install()
     config = json.loads((ROOT / "native/macos/updates/feed.json").read_text())
-    public_key = subprocess.check_output([str(sparkle / "bin/generate_keys"), "--account",
-                                          "dev.moojicut.native", "-p"], text=True).strip()
-    if public_key != config["publicKey"]:
-        raise RuntimeError("The Keychain signing key does not match the application's public key.")
+    # The public verifier below detects the wrong signing key without reading
+    # the private key merely to inspect its corresponding public key.
+    public_key = config["publicKey"]
     with zipfile.ZipFile(archive) as package:
         info = plistlib.loads(package.read("Mooji Cut.app/Contents/Info.plist"))
     if info.get("CFBundleIdentifier") != "dev.moojicut.native" or info.get("SUPublicEDKey") != public_key:
@@ -53,7 +52,8 @@ def generate(archive, output, previous=None):
         tree.write(feed, encoding="utf-8", xml_declaration=True)
         signer = [str(sparkle / "bin/sign_update"), "--account", "dev.moojicut.native"]
         subprocess.run([*signer, str(feed)], check=True)
-        subprocess.run([*signer, "--verify", str(feed)], check=True)
+        subprocess.run(["xcrun", "swift", str(ROOT / "scripts/verify_update.swift"),
+                        str(ROOT / "native/macos/updates/feed.json"), str(feed), str(archive)], check=True)
         shutil.copy2(feed, output)
     print("Signed update feed:", output)
 
