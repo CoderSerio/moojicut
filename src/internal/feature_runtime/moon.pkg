@@ -1,0 +1,1 @@
+// Shared lifecycle policy; native hosts retain ownership of resources.

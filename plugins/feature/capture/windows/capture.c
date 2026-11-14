@@ -63,6 +63,13 @@ typedef struct {
 static Capture capture;
 static const wchar_t *OVERLAY_CLASS = L"MoojiCut.Capture.Selection";
 static const wchar_t *EDITOR_CLASS = L"MoojiCut.Capture.Editor";
+static BOOL pin_enabled(void) {
+  return !capture.host.pin_enabled || capture.host.pin_enabled(capture.host.context);
+}
+void mc_capture_refresh_capabilities(void) {
+  if (capture.buttons[7])
+    EnableWindow(capture.buttons[7], pin_enabled());
+}
 static void set_pins_hidden(BOOL hidden) {
   if (capture.host.set_pins_hidden)
     capture.host.set_pins_hidden(capture.host.context, hidden);
@@ -660,6 +667,8 @@ static BOOL add_shape(void) {
 static void editor_command(int command) {
   if (command == ID_OCR || command == ID_TRANSLATE)
     return;
+  if (command == ID_PIN && !pin_enabled())
+    return;
   if (!finish_text(FALSE))
     return;
   if (command >= ID_SELECT && command <= ID_REDACT) {
@@ -795,6 +804,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
                         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, NULL, capture.instance, NULL);
     for (int i = 0; i < 12; i++)
       capture.buttons[i] = hud_button(window, button_ids[i], labels[i]);
+    mc_capture_refresh_capabilities();
     for (int i = 10; i < 12; i++) {
       EnableWindow(capture.buttons[i], FALSE);
       TOOLINFOW tip = {sizeof(tip)};
@@ -1511,9 +1521,10 @@ static BOOL independent_text_style_smoke(void) {
   return image_session_count(capture.session) == 0;
 }
 typedef struct {
-  BOOL accept, valid_image;
+  BOOL accept, valid_image, enabled;
   int attempts, accepted, hidden, restored, x, y, width, height;
 } CaptureHostSmoke;
+static BOOL smoke_pin_enabled(void *context) { return ((CaptureHostSmoke *)context)->enabled; }
 static BOOL smoke_pin_image(void *context, HGLOBAL dib, int x, int y) {
   CaptureHostSmoke *host = context;
   host->attempts++;
@@ -1543,10 +1554,11 @@ int mc_capture_smoke(HINSTANCE instance) {
   int result = 1;
   HGLOBAL dib = NULL;
   CaptureHostSmoke host = {0};
+  host.enabled = TRUE;
   ZeroMemory(&capture, sizeof(capture));
   capture.instance = instance;
   capture.smoke = TRUE;
-  capture.host = (MCCaptureHost){&host, smoke_pin_image, smoke_pins_hidden};
+  capture.host = (MCCaptureHost){&host, smoke_pin_image, smoke_pins_hidden, smoke_pin_enabled};
   set_pins_hidden(TRUE);
   SetRect(&capture.desktop_bounds, 0, 0, 640, 480);
   if (!mc_selection_smoke() || !register_windows(instance) || !surface_new(&capture.desktop, 640, 480) ||
@@ -1717,6 +1729,13 @@ int mc_capture_smoke(HINSTANCE instance) {
   changed();
   if (!save_capture_preview())
     goto cleanup;
+  host.enabled = FALSE;
+  mc_capture_refresh_capabilities();
+  editor_command(ID_PIN);
+  if (IsWindowEnabled(capture.buttons[7]) || host.attempts || !mc_capture_busy())
+    goto cleanup;
+  host.enabled = TRUE;
+  mc_capture_refresh_capabilities();
   editor_command(ID_PIN);
   if (host.attempts != 1 || host.accepted || host.restored || !mc_capture_busy() || !host.valid_image)
     goto cleanup;

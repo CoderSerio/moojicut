@@ -1,13 +1,12 @@
 import {
   "moojicut/core/internal/desktop",
   "moojicut/core/internal/editor_style" @style,
+  "moojicut/core/internal/feature_runtime",
   "moojicut/core/internal/image",
+  "moojicut/core/internal/selection",
+  "moojicut/core/internal/updates",
   "moojicut/core/internal/video",
   "moonbitlang/core/json",
-}
-
-import {
-  "moojicut/core/internal/selection",
 }
 
 pkgtype(kind: "foreign_library")

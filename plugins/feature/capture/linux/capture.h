@@ -9,9 +9,12 @@ typedef struct {
   void (*pin_result)(GdkPixbuf *image, const GdkRectangle *bounds, gpointer data);
   void (*restore_visibility)(gpointer data);
   gpointer data;
+  /* Optional live capability query. A disabled action must retain the draft. */
+  gboolean (*can_pin)(gpointer data);
 } MCLinuxCaptureHost;
 void mc_linux_capture_start(GtkApplication *application, const MCLinuxCaptureHost *host);
 gboolean mc_linux_capture_busy(void);
 void mc_linux_capture_close(void);
+void mc_linux_capture_refresh_capabilities(void);
 gboolean mc_linux_capture_smoke(GtkApplication *application);
 #endif

@@ -8,6 +8,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) NSWindow *window;
 @property (nonatomic, copy, nullable) void (^onClose)(void);
 @property (nonatomic, copy, nullable) void (^onShortcutRecordingChanged)(BOOL recording);
+@property (nonatomic, copy, nullable) void (^onPinningEnabledChanged)(BOOL enabled);
+@property (nonatomic, readonly) BOOL pinningEnabled;
+- (void)setPinningEnabled:(BOOL)enabled;
 @property (nonatomic, copy, nullable) NSString *shortcutRegistrationError;
 @property (nonatomic, copy, nullable) NSString *pinShortcutRegistrationError;
 @property (nonatomic, readonly) NSString *appearanceChoice;

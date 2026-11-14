@@ -269,6 +269,32 @@ int main(void) {
         [controller closeAll];
         CHECK(controller.count == 0, "closing all pins releases every retained panel");
         CHECK(registrations == unregistrations, "closing the final pin releases all global recovery registrations");
+        CHECK(controller.enabled, "pin feature defaults to enabled");
+        MCPinnedImage *inert = [controller createPinPNGData:png display:NO error:&error];
+        MCPinTestPanel *inertPanel = spyPanel(inert);
+        inert.displayed = YES;
+        [controller refreshRecoveryShortcuts];
+        inert.clickThrough = YES; inert.userHidden = YES; inertPanel.ignoresMouseEvents = YES;
+        __block BOOL reentryRejected = NO;
+        __weak MCPinnedImageController *weakController = controller;
+        controller.onShortcutStatus = ^(NSString *message) {
+            (void)message;
+            if (weakController.disabling) reentryRejected = [weakController createPinPNGData:png display:NO error:NULL] == nil;
+        };
+        controller.enabled = NO;
+        CHECK(!controller.enabled && !controller.disabling && controller.count == 0 && reentryRejected,
+              "disable closes the gate before callback reentry, then finishes cleanup");
+        CHECK(!inertPanel.delegate && !inertPanel.contentView && !inertPanel.ignoresMouseEvents && registrations == unregistrations,
+              "disabling releases hidden click-through panels and every global recovery key");
+        CHECK(![controller createPinPNGData:png display:NO error:&error] && error.code == 2,
+              "disabled feature rejects new pins without losing caller image data");
+        MCPinnedImageController *restored = [[MCPinnedImageController alloc] initWithDefaults:defaults];
+        CHECK(!restored.enabled, "disabled setting persists across controller recreation");
+        controller.onShortcutStatus = nil;
+        controller.enabled = YES;
+        CHECK(controller.enabled && [controller createPinPNGData:png display:NO error:&error] && controller.count == 1,
+              "re-enabling creates working pins after complete cleanup");
+        [controller closeAll];
         [defaults removePersistentDomainForName:domain];
         puts(passed ? "PASS pinned images: floating lifecycle, selected drag/zoom/opacity, configurable keys, finalized clipboard, capture hide/restore"
                     : "FAIL pinned images");

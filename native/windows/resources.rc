@@ -17,8 +17,25 @@ BEGIN
     GROUPBOX "日常使用", -1, 14, 64, 292, 68
     LTEXT "平时驻留在通知区域。双击托盘图标打开设置。\n关闭设置后继续待命；退出请使用托盘菜单。", -1, 25, 81, 267, 26
     CONTROL "启动时打开设置", IDC_START_SETTINGS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 25, 111, 267, 13
-    GROUPBOX "开发预览版", -1, 14, 145, 292, 48
-    LTEXT "使用截图快捷键或托盘菜单框选画面。\n标注完成后确认，即可复制图片。", -1, 25, 161, 267, 27
+    GROUPBOX "内置功能", -1, 14, 143, 292, 60
+    CONTROL "启用贴图", IDC_PIN_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 25, 155, 130, 13
+    LTEXT "关闭后会关闭所有现有贴图，并停用贴图快捷键。", -1, 25, 173, 267, 13
+    LTEXT "", IDC_FEATURE_STATUS, 25, 188, 267, 12
+END
+
+IDD_UPDATES DIALOGEX 0, 0, 320, 207
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_CAPTION
+CAPTION "更新"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "GitHub Releases", -1, 17, 18, 285, 16
+    LTEXT "检查 Mooji Cut 的公开发布版本。预览版可接收新的预览更新。", -1, 17, 43, 285, 28
+    LTEXT "", IDC_UPDATE_STATUS, 17, 80, 285, 49
+    PUSHBUTTON "检查更新", IDC_UPDATE_CHECK, 17, 139, 65, 22
+    PUSHBUTTON "下载更新包…", IDC_UPDATE_DOWNLOAD, 89, 139, 86, 22
+    PUSHBUTTON "取消", IDC_UPDATE_CANCEL, 182, 139, 49, 22
+    PUSHBUTTON "打开位置", IDC_UPDATE_OPEN, 238, 139, 64, 22
+    LTEXT "下载会校验 SHA256 和文件大小。当前为便携包，请解压后运行新版本；不会自动替换正在运行的程序。", -1, 17, 176, 285, 27
 END
 
 IDD_SHORTCUTS DIALOGEX 0, 0, 320, 207

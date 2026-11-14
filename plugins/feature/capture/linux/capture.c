@@ -21,7 +21,7 @@ typedef struct {
 typedef struct {
   GtkApplication *application;
   MCLinuxCaptureHost host;
-  GtkWidget *editor, *canvas, *overlay, *toolbar, *entry, *tools[5], *future_tools[2];
+  GtkWidget *editor, *canvas, *overlay, *toolbar, *entry, *tools[5], *future_tools[2], *pin_button;
   MCStyleControls *style_controls;
   int style_bank;
   GdkPixbuf *image;
@@ -833,6 +833,15 @@ static void style_changed(unsigned fields, const double values[4], gpointer data
   sync_control_values();
   gtk_widget_queue_draw(capture.editor);
 }
+static gboolean pin_available(void) {
+  return capture.host.pin_result && (!capture.host.can_pin || capture.host.can_pin(capture.host.data));
+}
+void mc_linux_capture_refresh_capabilities(void) {
+  if (capture.pin_button) {
+    gtk_widget_set_sensitive(capture.pin_button, pin_available());
+    gtk_widget_set_tooltip_text(capture.pin_button, pin_available() ? "固定贴图" : "贴图已关闭，可在通用设置中启用");
+  }
+}
 static void command(GtkWidget *widget, gpointer data) {
   (void)widget;
   int action = GPOINTER_TO_INT(data);
@@ -840,7 +849,7 @@ static void command(GtkWidget *widget, gpointer data) {
     mc_linux_capture_close();
     return;
   }
-  if (action == 5 && !capture.host.pin_result)
+  if (action == 5 && !pin_available())
     return;
   if (!commit_text())
     return;
@@ -1094,9 +1103,9 @@ static gboolean open_editor(GdkPixbuf *image) {
                    FALSE, FALSE, 0);
   gtk_box_pack_end(GTK_BOX(row), mc_style_icon_button(MC_ICON_CLOSE, "取消 Esc", G_CALLBACK(command), GINT_TO_POINTER(4)), FALSE, FALSE,
                    0);
-  GtkWidget *pin_button = mc_style_icon_button(MC_ICON_PIN, "固定贴图", G_CALLBACK(command), GINT_TO_POINTER(5));
-  gtk_widget_set_sensitive(pin_button, capture.host.pin_result != NULL);
-  gtk_box_pack_end(GTK_BOX(row), pin_button, FALSE, FALSE, 0);
+  capture.pin_button = mc_style_icon_button(MC_ICON_PIN, "固定贴图", G_CALLBACK(command), GINT_TO_POINTER(5));
+  mc_linux_capture_refresh_capabilities();
+  gtk_box_pack_end(GTK_BOX(row), capture.pin_button, FALSE, FALSE, 0);
   MCStyleRange ranges[4];
   for (int field = 0; field < 4; field++)
     ranges[field] = (MCStyleRange){editor_style_min(field), editor_style_max(field),
@@ -1208,6 +1217,7 @@ static gboolean smoke_style_key(int field, GdkEventKey *event) {
   return handled;
 }
 typedef struct { int closed, results; gboolean valid; } CaptureHostProbe;
+static gboolean smoke_pin_unavailable(gpointer data) { (void)data; return FALSE; }
 static void smoke_host_closed(gpointer data) { ((CaptureHostProbe *)data)->closed++; }
 static void smoke_host_pin(GdkPixbuf *image, const GdkRectangle *bounds, gpointer data) {
   CaptureHostProbe *probe = data;
@@ -1326,7 +1336,7 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
   memset(&capture, 0, sizeof(capture));
   capture.application = application;
   CaptureHostProbe host_probe = {0};
-  capture.host = (MCLinuxCaptureHost){smoke_host_pin, smoke_host_closed, &host_probe};
+  capture.host = (MCLinuxCaptureHost){smoke_host_pin, smoke_host_closed, &host_probe, NULL};
   capture.smoke = capture.selecting = capture.x11 = TRUE;
   capture.root_width = 640;
   capture.root_height = 400;
@@ -1444,7 +1454,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   memset(&capture, 0, sizeof(capture));
   capture.application = application;
   CaptureHostProbe host_probe = {0};
-  capture.host = (MCLinuxCaptureHost){smoke_host_pin, smoke_host_closed, &host_probe};
+  capture.host = (MCLinuxCaptureHost){smoke_host_pin, smoke_host_closed, &host_probe, NULL};
   capture.smoke = TRUE;
   capture.selecting = TRUE;
   capture.x11 = GDK_IS_X11_DISPLAY(gdk_display_get_default());
@@ -1709,6 +1719,13 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
     g_free(path);
     g_clear_object(&preview);
   }
+  capture.host.can_pin = smoke_pin_unavailable;
+  mc_linux_capture_refresh_capabilities();
+  command(NULL, GINT_TO_POINTER(5));
+  ok = capture.editor && !gtk_widget_get_sensitive(capture.pin_button) && host_probe.closed == 0 && host_probe.results == 0 && ok;
+  capture.host.can_pin = NULL;
+  mc_linux_capture_refresh_capabilities();
+  ok = gtk_widget_get_sensitive(capture.pin_button) && ok;
   command(NULL, GINT_TO_POINTER(5));
   ok = host_probe.closed == 1 && host_probe.results == 1 && host_probe.valid && ok;
   mc_linux_capture_close();

@@ -54,7 +54,7 @@ class NativeBuild:
         manifest = (ROOT / "moon.mod").read_text()
         self.name = self.manifest_value(manifest, "name")
         self.version = self.manifest_value(manifest, "version")
-        self.release_version = release_version or self.version + "-alpha.9"
+        self.release_version = release_version or self.version + "-alpha.11"
         version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
                                self.release_version)
         if not version:
@@ -303,7 +303,7 @@ class NativeBuild:
         archive = self.archive(directory)
         executable = directory / "core-embedding"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
-                 ROOT / "test/native/core-embedding.m", archive, "-framework", "Foundation", "-o", executable)
+                 "-I", ROOT, ROOT / "test/native/core-embedding.m", archive, "-framework", "Foundation", "-o", executable)
         self.run(executable)
         shortcuts = ARTIFACTS / "native-shortcuts"
         shortcuts.mkdir(parents=True, exist_ok=True)
@@ -325,7 +325,7 @@ class NativeBuild:
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
                  "-DRegisterEventHotKey=MCTestRegisterPinHotKey", "-DUnregisterEventHotKey=MCTestUnregisterPinHotKey",
                  ROOT / "test/native/pinned-image.m", *native_sources("macos", "feature.pin"),
-                 "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
+                 archive, "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
         self.run(pinned_image)
         global_shortcuts = shortcuts / "global-shortcuts"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
@@ -358,11 +358,20 @@ class NativeBuild:
         sparkle = install_sparkle()
         updater = shortcuts / "updater-smoke"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
-                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/updater-smoke.m",
+                 "-I", ROOT, "-I", self.include, "-I", ROOT / "native/macos", ROOT / "test/native/updater-smoke.m",
                  ROOT / "native/macos/updates/MCUpdateController.m",
+                 ROOT / "native/macos/updates/MCReleaseSource.m", archive,
                  "-framework", "AppKit", "-framework", "Security", "-framework", "Sparkle",
                  "-Wl,-rpath," + str(sparkle), "-o", updater)
         self.run(updater, sparkle / "bin/sign_update")
+        update_source = shortcuts / "update-source"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
+                 "-I", ROOT, "-I", self.include, ROOT / "test/native/update-source.m",
+                 ROOT / "native/macos/updates/MCUpdateController.m",
+                 ROOT / "native/macos/updates/MCReleaseSource.m", archive,
+                 "-framework", "AppKit", "-framework", "Sparkle",
+                 "-Wl,-rpath," + str(sparkle), "-o", update_source)
+        self.run(update_source)
 
     def smoke(self):
         self.build()
@@ -385,7 +394,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
     parser.add_argument("--release-version", metavar="VERSION",
-                        help="Release label (default: <moon.mod version>-alpha.9).")
+                        help="Release label (default: <moon.mod version>-alpha.11).")
     args = parser.parse_args()
     native = NativeBuild(args.release_version)
     if args.command == "dev":

@@ -173,6 +173,12 @@ static BOOL exercise(CGFloat scale) {
         NSMakeRect(100 * scale, 60 * scale, 400 * scale, 300 * scale) toView:nil]];
     __block NSRect pinnedFrame = NSZeroRect;
     __weak MCImageEditorController *weakEditor = editor;
+    editor.onPinPNGData = ^BOOL(NSData *data) { (void)data; return NO; };
+    [editor pinImage:nil];
+    CHECK(editor.window != nil && [editor.document[@"viewport"] isEqual:viewport],
+          "a pin rejected by the feature gate keeps the crop and editor alive");
+    editor.onPinPNGData = nil;
+    CHECK(![[editor valueForKey:@"pinButton"] isEnabled], "removing pin capability disables its visible toolbar button");
     editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; pinnedFrame = weakEditor.pinScreenFrame; return YES; };
     [editor pinImage:nil];
     CHECK(pinned.length > 0 && editor.window == nil, "pin receives the final crop and finishes the capture");

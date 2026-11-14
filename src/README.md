@@ -11,6 +11,9 @@ src/
 ├── api_desktop.mbt            # 快捷键 C ABI / MoonBit 兼容入口
 ├── api_editor_style.mbt       # 编辑样式兼容入口
 ├── api_image.mbt              # 图像与图像会话兼容入口
+├── api_selection.mbt         # 三平台共享选区几何 C ABI
+├── api_updates.mbt           # GitHub 发布版本与平台资产选择 C ABI
+├── api_feature_runtime.mbt   # 内置功能启停规则 C ABI
 ├── api_video.mbt              # 视频、剪辑计划与录制规则兼容入口
 ├── preview.mbt               # 原生程序启动时的跨模块自检
 ├── preview_wbtest.mbt
@@ -19,6 +22,9 @@ src/
     ├── desktop/              # 平台无关的快捷键规则
     ├── editor_style/         # 属性范围、默认值、每个编辑器的样式状态
     ├── image/                # 图像文档、标注、裁剪、历史与会话
+    ├── selection/            # 选区/标注的数值几何，保留 macOS 基准
+    ├── updates/              # 版本比较、渠道与平台安装包筛选
+    ├── feature_runtime/      # 启用、停用中、已停用状态与调用门控
     ├── video/                # 视频文档、时间线、导出配置、录制规则与会话
     ├── protocol/             # 共享 JSON 校验、数值边界与错误响应
     └── test_support/         # 测试使用的 JSON 断言与结果读取
@@ -37,7 +43,10 @@ MoonBit 以目录为包边界；`internal` 下的包仅供本模块使用，跨�
     ├── desktop
     ├── editor_style
     ├── image ──→ editor_style、protocol
-    └── video ──→ protocol
+    ├── video ──→ protocol
+    ├── selection
+    ├── updates
+    └── feature_runtime
 
 image / video 的白盒测试 ──→ test_support（仅测试导入）
 ```
@@ -68,3 +77,11 @@ moon build --target native --release --deny-warn
 提交每个包生成的 `pkg.generated.mbti`。根包接口应保持兼容，原生静态库还需通过
 `test/native/core-embedding.m` 的实际链接、字符串所有权、样式状态与编辑流程检查。
 完整桌面验证入口是 `python3 scripts/desktop.py test`；PR 的原生预览 CI 负责 Windows 和 Linux 构建与测试。
+
+## 更新与旧版迁移
+
+更新包来自 GitHub Releases。MoonBit 选择版本、渠道和对应平台资产；原生宿主执行网络请求、文件校验和系统界面。macOS 继续使用内置公钥验证 Sparkle 更新源和安装包，Windows/Linux 目前下载校验后手动换装。
+
+已发布的 alpha.9 固定读取 `https://raw.githubusercontent.com/CoderSerio/moojicut/main/updates/macos.xml`，没有新的 GitHub 发现逻辑。给 Release 添加 `macos.xml` 附件不会改变旧包的地址。后续正式升级时，必须为更高版本生成签名源并同步旧固定路径，同时把同份源附到对应 Release；也可以明确要求一次手动换装。当前仓库中的签名源仍指向 alpha.9，不能当作升级到候选版的验收证据。
+
+验收分别记录：核心与原生回归、更新源/包签名校验、旧版实际替换并重启且保留设置、新版 GitHub 发现。最后两项不能由“未发现新版”或模拟 transport 测试代替。真实安装应在隔离账户或虚拟机进行；`MOOJICUT_NATIVE_DEFAULTS_DOMAIN` 只隔离应用设置，不隔离 Sparkle 偏好和录屏草稿。

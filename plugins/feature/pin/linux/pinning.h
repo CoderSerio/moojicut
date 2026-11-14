@@ -2,6 +2,8 @@
 #define MOOJICUT_LINUX_PINNING_H
 #include <gtk/gtk.h>
 void mc_linux_pins_init(GtkApplication *application, const char *settings_path);
+void mc_linux_pins_set_enabled(gboolean enabled);
+gboolean mc_linux_pins_enabled(void);
 void mc_linux_pin_image(GdkPixbuf *image);
 void mc_linux_pin_image_at(GdkPixbuf *image, const GdkRectangle *bounds);
 void mc_linux_pins_restore(void);

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Mooji Cut</title>
+        <item>
+            <title>Mooji Cut 0.1.0-alpha.9</title>
+            <pubDate>Sun, 15 Nov 2026 02:04:33 +0800</pubDate>
+            <link>https://github.com/CoderSerio/moojicut</link>
+            <sparkle:version>0.1.0a9</sparkle:version>
+            <sparkle:shortVersionString>0.1.0-alpha.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.9/moojicut-0.1.0-alpha.9-macos-arm64.zip" length="1568792" type="application/octet-stream" sparkle:edSignature="r2KGCvTBF76tIGd2/wDuMLFTqYWIsJRLMCMVWT+BKjqDSDZtNfY58lEhN7HY89N6h7fBOSUmguwFec2Xu6dvBg=="></enclosure>
+        </item>
+    </channel>
+</rss><!-- sparkle-signatures:
+edSignature: /hgPIy+iFjuGgLAMuPlcvow8gH8bsRDKidLjuziOpUeZ4Jno4QIQ/obRSZr5kBjmU+IXppKVoQPxQ+xYx08cBA==
+length: 1264
+-->
