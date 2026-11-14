@@ -1,4 +1,5 @@
 #import "MCStyleControls.h"
+#include "../../shared/editor_style.h"
 #include <math.h>
 
 static NSTextField *MCStyleLabel(NSString *text) {
@@ -79,7 +80,10 @@ static NSTextField *MCStyleLabel(NSString *text) {
         [self.well.widthAnchor constraintEqualToConstant:18].active = YES;
         [self.well.heightAnchor constraintEqualToConstant:18].active = YES;
         self.well.target = self; self.well.action = @selector(changed:);
-        self.opacityControl = [[MCNumberControl alloc] initWithLabel:@"不透明度" minimum:0 maximum:100 value:100];
+        self.opacityControl = [[MCNumberControl alloc] initWithLabel:@"不透明度"
+            minimum:editor_style_min(MC_STYLE_OPACITY) * 100 maximum:editor_style_max(MC_STYLE_OPACITY) * 100
+            value:editor_style_default(MC_STYLE_OPACITY) * 100];
+        self.opacityControl.stepper.increment = editor_style_step(MC_STYLE_OPACITY) * 100;
         [self.opacityControl insertArrangedSubview:MCStyleLabel(@"%") atIndex:2];
         __weak MCColorControl *weakSelf = self;
         self.opacityControl.onChange = ^(id sender) { [weakSelf changed:sender]; };
@@ -87,7 +91,9 @@ static NSTextField *MCStyleLabel(NSString *text) {
         [self addArrangedSubview:self.well];
         [self addArrangedSubview:self.opacityControl];
         [self setCustomSpacing:16 afterView:self.well];
-        self.color = [NSColor colorWithSRGBRed:0.94 green:0.27 blue:0.27 alpha:1];
+        int32_t rgb = (int32_t)editor_style_default(MC_STYLE_COLOR);
+        self.color = [NSColor colorWithSRGBRed:((rgb >> 16) & 255) / 255.0
+            green:((rgb >> 8) & 255) / 255.0 blue:(rgb & 255) / 255.0 alpha:editor_style_default(MC_STYLE_OPACITY)];
     }
     return self;
 }

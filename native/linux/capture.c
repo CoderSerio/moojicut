@@ -3,6 +3,7 @@
 #include "../shared/mc_icons.h"
 #include "moonbit.h"
 #include "pinning.h"
+#include "style_controls.h"
 #include <dlfcn.h>
 #include <gdk/gdkx.h>
 #include <math.h>
@@ -11,17 +12,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { SELECT, RECTANGLE, ARROW, TEXT, REDACT };
+enum { SELECT = MC_STYLE_TOOL_SELECT, RECTANGLE = MC_STYLE_TOOL_RECTANGLE,
+       ARROW = MC_STYLE_TOOL_ARROW, TEXT = MC_STYLE_TOOL_TEXT, REDACT = MC_STYLE_TOOL_COVER };
 typedef struct {
   char *text;
   int cursor, selection;
 } TextSnapshot;
 typedef struct {
   GtkApplication *application;
-  GtkWidget *editor, *canvas, *overlay, *toolbar, *entry, *font, *colors, *tools[5];
-  GtkWidget *color_group, *font_group, *stroke_group, *context_hint, *stroke_value, *opacity_group,
-      *opacity_value;
-  GtkWidget *font_up, *font_down, *color_dialog, *future_tools[2];
+  GtkWidget *editor, *canvas, *overlay, *toolbar, *entry, *tools[5], *future_tools[2];
+  MCStyleControls *style_controls;
+  int style_bank;
   GdkPixbuf *image;
   GdkRectangle toolbar_bounds, entry_bounds;
   GPtrArray *draft_undo, *draft_redo;
@@ -34,7 +35,7 @@ typedef struct {
   int session, tool, color, stroke, font_size, width, height, root_width, root_height;
   int selected, edit_index, handle, gesture;
   double x1, y1, x2, y2, zoom, offset_x, offset_y, opacity, crop[4], original[8], preview[8];
-  gboolean dragging, pending, smoke, closing, selecting, editing, composing, updating, x11;
+  gboolean dragging, pending, smoke, closing, selecting, editing, composing, x11;
 } Capture;
 static Capture capture;
 static guint generation;
@@ -157,16 +158,15 @@ void mc_linux_capture_close(void) {
   if (capture.canvas && gtk_widget_has_grab(capture.canvas))
     gtk_grab_remove(capture.canvas);
   release_portal(TRUE);
-  if (capture.color_dialog) {
-    gtk_widget_destroy(capture.color_dialog);
-    capture.color_dialog = NULL;
-  }
+  mc_style_controls_close_dialog(capture.style_controls);
   GtkWidget *window = capture.editor;
   capture.editor = NULL;
   if (window)
     gtk_widget_destroy(window);
   if (capture.session > 0)
     image_session_dispose(capture.session);
+  if (capture.style_bank > 0)
+    editor_style_dispose(capture.style_bank);
   g_clear_object(&capture.image);
   g_clear_pointer(&capture.draft_before, snapshot_free);
   g_clear_pointer(&capture.draft_undo, g_ptr_array_unref);
@@ -456,39 +456,23 @@ static int context_kind(void) {
     return (int)image_session_value(capture.session, capture.selected, 0);
   return capture.tool;
 }
-static void refresh_context(void) {
-  if (!capture.context_hint)
-    return;
-  int kind = context_kind();
-  gtk_widget_set_visible(capture.color_group, kind != SELECT);
-  gtk_widget_set_visible(capture.opacity_group, kind != SELECT);
-  gtk_widget_set_visible(capture.font_group, kind == TEXT);
-  gtk_widget_set_visible(capture.stroke_group, kind == RECTANGLE || kind == ARROW);
-  gtk_widget_set_visible(capture.context_hint, kind == SELECT);
-  gtk_label_set_text(GTK_LABEL(capture.context_hint),
-                     kind == REDACT ? "遮盖 · 覆盖需要隐藏的内容" : "选择标注以调整样式");
+static void current_style(double values[4]) {
+  values[MC_STYLE_COLOR] = capture.color;
+  values[MC_STYLE_OPACITY] = capture.opacity;
+  values[MC_STYLE_STROKE] = capture.stroke;
+  values[MC_STYLE_FONT] = capture.font_size;
 }
 static void sync_control_values(void) {
-  if (!capture.font)
-    return;
-  gboolean previous = capture.updating;
-  capture.updating = TRUE;
-  char number[8];
-  g_snprintf(number, sizeof(number), "%d", capture.font_size);
-  if (g_strcmp0(gtk_entry_get_text(GTK_ENTRY(capture.font)), number))
-    gtk_entry_set_text(GTK_ENTRY(capture.font), number);
-  if (capture.stroke_value) {
-    g_snprintf(number, sizeof(number), "%d", capture.stroke);
-    if (g_strcmp0(gtk_entry_get_text(GTK_ENTRY(capture.stroke_value)), number))
-      gtk_entry_set_text(GTK_ENTRY(capture.stroke_value), number);
-  }
-  if (capture.opacity_value) {
-    g_snprintf(number, sizeof(number), "%d", (int)round(capture.opacity * 100));
-    if (g_strcmp0(gtk_entry_get_text(GTK_ENTRY(capture.opacity_value)), number))
-      gtk_entry_set_text(GTK_ENTRY(capture.opacity_value), number);
-  }
-  gtk_widget_queue_draw(capture.colors);
-  capture.updating = previous;
+  double values[4];
+  current_style(values);
+  mc_style_controls_sync(capture.style_controls, editor_style_property_mask(context_kind()), values);
+}
+static void refresh_context(void) { sync_control_values(); }
+static void load_tool_style(int tool) {
+  capture.color = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_COLOR);
+  capture.opacity = editor_style_get(capture.style_bank, tool, MC_STYLE_OPACITY);
+  capture.stroke = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_STROKE);
+  capture.font_size = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_FONT);
 }
 static void sync_style(void) {
   if (capture.selected >= 0) {
@@ -497,9 +481,9 @@ static void sync_style(void) {
     capture.opacity = image_session_value(capture.session, capture.selected, 8);
     if ((int)image_session_value(capture.session, capture.selected, 0) == TEXT)
       capture.font_size = (int)image_session_value(capture.session, capture.selected, 7);
-  }
+  } else if (!capture.editing)
+    load_tool_style(capture.tool);
   sync_control_values();
-  refresh_context();
 }
 static void text_style(void) {
   char *css = g_strdup_printf("textview, textview text {background-color: transparent; color: "
@@ -527,6 +511,8 @@ static void begin_text(int index, double x, double y) {
     read_annotation(index, capture.preview);
     sync_style();
   } else {
+    load_tool_style(TEXT);
+    refresh_context();
     double right = capture.crop[0] + capture.crop[2], bottom = capture.crop[1] + capture.crop[3];
     double r[] = {x,
                   y,
@@ -594,11 +580,14 @@ static gboolean commit_text(void) {
   }
   capture.editing = FALSE;
   gtk_widget_hide(capture.entry);
+  sync_style();
   gtk_widget_queue_draw(capture.editor);
   return TRUE;
 }
 static void cancel_text(void) {
   capture.editing = FALSE;
+  capture.selected = capture.edit_index;
+  sync_style();
   gtk_widget_hide(capture.entry);
   gtk_widget_grab_focus(capture.canvas);
   gtk_widget_queue_draw(capture.editor);
@@ -667,6 +656,7 @@ static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer 
           return TRUE;
         }
       } else {
+        sync_style();
         capture.handle = handle_at(x, y, capture.crop);
         if (capture.handle >= 0 || inside(x, y, capture.crop)) {
           memcpy(capture.original, capture.crop, sizeof(capture.crop));
@@ -696,6 +686,10 @@ static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer 
     }
     if (!inside(x, y, capture.crop) && capture.gesture == 0)
       return TRUE;
+  }
+  if (!capture.selecting && !capture.gesture && capture.tool != SELECT && capture.tool != TEXT) {
+    capture.selected = -1;
+    sync_style();
   }
   memcpy(capture.preview, capture.original, sizeof(capture.preview));
   capture.dragging = TRUE;
@@ -729,7 +723,8 @@ static void motion(double x, double y) {
       r[3] = bottom - top;
       if (capture.gesture == 1 && (h % 2) == 0 &&
           (int)image_session_value(capture.session, capture.selected, 0) == TEXT)
-        r[6] = CLAMP(round(o[6] * fmin(r[2] / o[2], r[3] / o[3])), 8, 128);
+        r[6] = CLAMP(round(o[6] * fmin(r[2] / o[2], r[3] / o[3])),
+                     editor_style_min(MC_STYLE_FONT), editor_style_max(MC_STYLE_FONT));
     }
   }
 }
@@ -806,14 +801,47 @@ static void tool_clicked(GtkWidget *widget, gpointer data) {
       gtk_style_context_remove_class(style, "mc-selected");
   }
   capture.selected = -1;
-  refresh_context();
-  sync_control_values();
+  sync_style();
   gtk_widget_grab_focus(capture.canvas);
   gtk_widget_queue_draw(capture.canvas);
 }
-static void apply_style(void) {
-  if (capture.updating)
+static void style_finished(gpointer data) {
+  (void)data;
+  if (capture.editor && !capture.closing)
+    gtk_widget_grab_focus(capture.editing ? capture.entry : capture.canvas);
+}
+static void style_changed(unsigned fields, const double values[4], gpointer data) {
+  (void)data;
+  if (capture.closing || capture.composing)
     return;
+  fields &= (unsigned)editor_style_property_mask(context_kind());
+  gboolean defaults = capture.editing ? capture.edit_index < 0 : capture.selected < 0;
+  int tool = capture.editing ? TEXT : capture.tool;
+  /* Only edits to an active tool or a new text draft change its future style.
+   * Selecting/re-editing an existing object never writes the tool style bank. */
+  for (int field = 0; field < 4; field++)
+    if (fields & (1u << field)) {
+      double value = values[field];
+      if (!isfinite(value) || value < editor_style_min(field) || value > editor_style_max(field) ||
+          (field != MC_STYLE_OPACITY && value != floor(value))) {
+        sync_control_values();
+        return;
+      }
+    }
+  if (!fields) {
+    sync_control_values();
+    return;
+  }
+  if (defaults)
+    for (int field = 0; field < 4; field++)
+      if ((fields & (1u << field)) && !editor_style_set(capture.style_bank, tool, field, values[field])) {
+        sync_control_values();
+        return;
+      }
+  if (fields & (1u << MC_STYLE_COLOR)) capture.color = (int)values[MC_STYLE_COLOR];
+  if (fields & (1u << MC_STYLE_OPACITY)) capture.opacity = values[MC_STYLE_OPACITY];
+  if (fields & (1u << MC_STYLE_STROKE)) capture.stroke = (int)values[MC_STYLE_STROKE];
+  if (fields & (1u << MC_STYLE_FONT)) capture.font_size = (int)values[MC_STYLE_FONT];
   if (capture.editing)
     text_style();
   else if (capture.selected >= 0) {
@@ -823,124 +851,11 @@ static void apply_style(void) {
     r[5] = capture.stroke;
     r[6] = capture.font_size;
     r[7] = capture.opacity;
-    update_annotation(capture.selected, r);
+    if (!update_annotation(capture.selected, r))
+      sync_style();
   }
   sync_control_values();
   gtk_widget_queue_draw(capture.editor);
-}
-enum { NUMBER_FONT, NUMBER_STROKE, NUMBER_OPACITY };
-static int numeric_value(int kind) {
-  return kind == NUMBER_FONT     ? capture.font_size
-         : kind == NUMBER_STROKE ? capture.stroke
-                                 : (int)round(capture.opacity * 100);
-}
-static void numeric_set(int kind, int value) {
-  if (kind == NUMBER_FONT)
-    capture.font_size = CLAMP(value, 8, 128);
-  else if (kind == NUMBER_STROKE)
-    capture.stroke = CLAMP(value, 1, 96);
-  else
-    capture.opacity = CLAMP(value, 0, 100) / 100.0;
-  apply_style();
-}
-static void number_changed(GtkEditable *editable, gpointer data) {
-  if (capture.updating)
-    return;
-  int kind = GPOINTER_TO_INT(data);
-  const char *text = gtk_entry_get_text(GTK_ENTRY(editable));
-  char *end = NULL;
-  long value = strtol(text, &end, 10);
-  int low = kind == NUMBER_FONT     ? 8
-            : kind == NUMBER_STROKE ? 1
-                                    : 0,
-      high = kind == NUMBER_FONT     ? 128
-             : kind == NUMBER_STROKE ? 96
-                                     : 100;
-  if (*text && end && !*end && value >= low && value <= high)
-    numeric_set(kind, (int)value);
-}
-static gboolean font_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer data) {
-  (void)widget;
-  (void)event;
-  (void)data;
-  sync_control_values();
-  return FALSE;
-}
-static void number_step(GtkWidget *widget, gpointer data) {
-  if (capture.composing)
-    return;
-  int kind = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "number-kind"));
-  numeric_set(kind, numeric_value(kind) + GPOINTER_TO_INT(data));
-}
-static void font_step(GtkWidget *widget, gpointer data) {
-  (void)widget;
-  if (!capture.composing)
-    numeric_set(NUMBER_FONT, capture.font_size + GPOINTER_TO_INT(data));
-}
-static gboolean font_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
-  int kind = GPOINTER_TO_INT(data);
-  if (event->keyval == GDK_KEY_Escape || event->keyval == GDK_KEY_Return ||
-      event->keyval == GDK_KEY_KP_Enter) {
-    sync_control_values();
-    gtk_widget_grab_focus(capture.editing ? capture.entry : capture.canvas);
-    return TRUE;
-  }
-  if (event->keyval == GDK_KEY_Up || event->keyval == GDK_KEY_Down) {
-    if (!capture.composing)
-      numeric_set(kind, numeric_value(kind) + (event->keyval == GDK_KEY_Up ? 1 : -1));
-    return TRUE;
-  }
-  (void)widget;
-  return FALSE;
-}
-static void stroke_clicked(GtkWidget *widget, gpointer data) {
-  (void)widget;
-  numeric_set(NUMBER_STROKE, GPOINTER_TO_INT(data));
-}
-static gboolean swatch_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
-  (void)data;
-  double x = gtk_widget_get_allocated_width(widget) / 2.0, y = gtk_widget_get_allocated_height(widget) / 2.0;
-  cairo_arc(cr, x, y, 8, 0, 2 * G_PI);
-  cairo_set_source_rgb(cr, ((capture.color >> 16) & 255) / 255.0, ((capture.color >> 8) & 255) / 255.0,
-                       (capture.color & 255) / 255.0);
-  cairo_fill_preserve(cr);
-  cairo_set_line_width(cr, 1);
-  cairo_set_source_rgb(cr, .68, .64, .71);
-  cairo_stroke(cr);
-  return FALSE;
-}
-static void color_response(GtkDialog *dialog, int response, gpointer data) {
-  (void)data;
-  if (response == GTK_RESPONSE_OK) {
-    GdkRGBA color;
-    gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(dialog), &color);
-    capture.color = ((int)round(color.red * 255) << 16) | ((int)round(color.green * 255) << 8) |
-                    (int)round(color.blue * 255);
-    capture.opacity = color.alpha;
-    apply_style();
-  }
-  capture.color_dialog = NULL;
-  gtk_widget_destroy(GTK_WIDGET(dialog));
-  if (capture.editor)
-    gtk_widget_grab_focus(capture.editing ? capture.entry : capture.canvas);
-}
-static void choose_color(GtkWidget *widget, gpointer data) {
-  (void)widget;
-  (void)data;
-  if (capture.color_dialog) {
-    gtk_window_present(GTK_WINDOW(capture.color_dialog));
-    return;
-  }
-  capture.color_dialog = gtk_color_chooser_dialog_new("标注颜色", GTK_WINDOW(capture.editor));
-  GdkRGBA color = {((capture.color >> 16) & 255) / 255.0, ((capture.color >> 8) & 255) / 255.0,
-                   (capture.color & 255) / 255.0, capture.opacity};
-  gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(capture.color_dialog), &color);
-  gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(capture.color_dialog), TRUE);
-  gtk_window_set_modal(GTK_WINDOW(capture.color_dialog), TRUE);
-  gtk_window_set_keep_above(GTK_WINDOW(capture.color_dialog), TRUE);
-  gtk_window_set_destroy_with_parent(GTK_WINDOW(capture.color_dialog), TRUE);
-  g_signal_connect(capture.color_dialog, "response", G_CALLBACK(color_response), NULL);
-  gtk_widget_show(capture.color_dialog);
 }
 static void command(GtkWidget *widget, gpointer data) {
   (void)widget;
@@ -957,6 +872,7 @@ static void command(GtkWidget *widget, gpointer data) {
     else
       image_session_redo(capture.session);
     capture.selected = -1;
+    sync_style();
     sync_crop();
     layout_controls();
   }
@@ -1020,7 +936,7 @@ static gboolean editor_key(GtkWidget *widget, GdkEventKey *event, gpointer data)
   if (event->keyval == GDK_KEY_Delete && capture.selected >= 0) {
     image_session_remove(capture.session, capture.selected);
     capture.selected = -1;
-    refresh_context();
+    sync_style();
     gtk_widget_queue_draw(capture.canvas);
     return TRUE;
   }
@@ -1043,139 +959,6 @@ static gboolean delete_window(GtkWidget *widget, GdkEvent *event, gpointer data)
   (void)data;
   mc_linux_capture_close();
   return TRUE;
-}
-static gboolean icon_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
-  MCIconPath path = mc_icon_path((MCIcon)GPOINTER_TO_INT(data));
-  MCIcon icon = (MCIcon)GPOINTER_TO_INT(data);
-  double size = (icon == MC_ICON_CHEVRON_UP || icon == MC_ICON_CHEVRON_DOWN) ? 10 : 18;
-  cairo_translate(cr, (gtk_widget_get_allocated_width(widget) - size) / 2.0,
-                  (gtk_widget_get_allocated_height(widget) - size) / 2.0);
-  cairo_scale(cr, size / 24, size / 24);
-  for (unsigned i = 0; i < path.count; i++) {
-    const MCIconCommand *c = &path.commands[i];
-    switch (c->op) {
-    case 'M':
-      cairo_move_to(cr, c->x1, c->y1);
-      break;
-    case 'L':
-      cairo_line_to(cr, c->x1, c->y1);
-      break;
-    case 'C':
-      cairo_curve_to(cr, c->x1, c->y1, c->x2, c->y2, c->x3, c->y3);
-      break;
-    case 'Z':
-      cairo_close_path(cr);
-      break;
-    }
-  }
-  GdkRGBA color;
-  gtk_style_context_get_color(gtk_widget_get_style_context(widget), gtk_widget_get_state_flags(widget),
-                              &color);
-  gdk_cairo_set_source_rgba(cr, &color);
-  cairo_set_line_width(cr, 2);
-  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-  cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-  cairo_stroke(cr);
-  return FALSE;
-}
-static GtkWidget *icon_button(MCIcon icon, const char *label, GCallback callback, int action) {
-  GtkWidget *button = gtk_button_new(), *drawing = gtk_drawing_area_new();
-  gtk_widget_set_has_window(drawing, FALSE);
-  gtk_widget_set_size_request(drawing, 18, 18);
-  gtk_widget_set_size_request(button, 32, 32);
-  gtk_style_context_add_class(gtk_widget_get_style_context(button), "mc-icon-button");
-  g_signal_connect(drawing, "draw", G_CALLBACK(icon_draw), GINT_TO_POINTER(icon));
-  gtk_container_add(GTK_CONTAINER(button), drawing);
-  gtk_widget_set_tooltip_text(button, label);
-  atk_object_set_name(gtk_widget_get_accessible(button), label);
-  if (callback)
-    g_signal_connect(button, "clicked", callback, GINT_TO_POINTER(action));
-  return button;
-}
-static GtkWidget *numeric_control(const char *label, int kind, GtkWidget **value) {
-  GtkWidget *group = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4), *caption = gtk_label_new(label);
-  gtk_style_context_add_class(gtk_widget_get_style_context(caption), "mc-property-label");
-  gtk_box_pack_start(GTK_BOX(group), caption, FALSE, FALSE, 4);
-  *value = gtk_entry_new();
-  gtk_entry_set_width_chars(GTK_ENTRY(*value), 3);
-  gtk_entry_set_max_width_chars(GTK_ENTRY(*value), 3);
-  gtk_entry_set_max_length(GTK_ENTRY(*value), 3);
-  gtk_entry_set_input_purpose(GTK_ENTRY(*value), GTK_INPUT_PURPOSE_DIGITS);
-  gtk_entry_set_alignment(GTK_ENTRY(*value), .5);
-  gtk_widget_set_valign(*value, GTK_ALIGN_CENTER);
-  atk_object_set_name(gtk_widget_get_accessible(*value), label);
-  gtk_widget_set_tooltip_text(*value, label);
-  g_signal_connect(*value, "changed", G_CALLBACK(number_changed), GINT_TO_POINTER(kind));
-  g_signal_connect(*value, "focus-out-event", G_CALLBACK(font_focus_out), NULL);
-  g_signal_connect(*value, "key-press-event", G_CALLBACK(font_key), GINT_TO_POINTER(kind));
-  gtk_box_pack_start(GTK_BOX(group), *value, FALSE, FALSE, 0);
-  GtkWidget *steps = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  gtk_widget_set_valign(steps, GTK_ALIGN_CENTER);
-  for (int i = 0; i < 2; i++) {
-    char *tip = g_strdup_printf("%s%s", i == 0 ? "增加" : "减少", label);
-    GtkWidget *button = icon_button(i == 0 ? MC_ICON_CHEVRON_UP : MC_ICON_CHEVRON_DOWN, tip,
-                                    G_CALLBACK(number_step), i == 0 ? 1 : -1);
-    g_free(tip);
-    g_object_set_data(G_OBJECT(button), "number-kind", GINT_TO_POINTER(kind));
-    gtk_widget_set_size_request(button, 20, 14);
-    gtk_widget_set_size_request(gtk_bin_get_child(GTK_BIN(button)), 10, 10);
-    gtk_widget_set_focus_on_click(button, FALSE);
-    gtk_style_context_add_class(gtk_widget_get_style_context(button), "mc-step");
-    gtk_box_pack_start(GTK_BOX(steps), button, FALSE, FALSE, 0);
-    if (kind == NUMBER_FONT) {
-      if (i == 0)
-        capture.font_up = button;
-      else
-        capture.font_down = button;
-    }
-  }
-  gtk_box_pack_start(GTK_BOX(group), steps, FALSE, FALSE, 0);
-  return group;
-}
-/* Attach this provider only to the screenshot HUD subtree, including native
- * control child widgets. Preferences, dialogs and the inline TextView retain
- * their own theme and input behavior. */
-static void hud_provider(GtkWidget *widget, gpointer data) {
-  gtk_style_context_add_provider(gtk_widget_get_style_context(widget), GTK_STYLE_PROVIDER(data),
-                                 GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
-  if (GTK_IS_CONTAINER(widget))
-    gtk_container_forall(GTK_CONTAINER(widget), hud_provider, data);
-}
-static void style_hud(void) {
-  static const char css[] =
-      ".mc-capture-hud { background-color: #292730; background-image: none; color: #ece8e2;"
-      " border: 1px solid #514b59; border-radius: 12px; padding: 8px; box-shadow: 0 4px 12px alpha(black, "
-      "0.25); }"
-      ".mc-capture-hud button { background-image: none; background-color: transparent; color: #ece8e2;"
-      " border: 1px solid transparent; border-radius: 7px; box-shadow: none; text-shadow: none;"
-      " -gtk-icon-shadow: none; padding: 0; min-width: 30px; min-height: 30px; }"
-      ".mc-capture-hud button:hover { background-color: #403b48; }"
-      ".mc-capture-hud button:active, .mc-capture-hud button.mc-selected { background-color: #56505f;"
-      " border-color: #686170; color: #fff9ef; }"
-      ".mc-capture-hud button:focus { border-color: #b8b0bf; outline: none; }"
-      ".mc-capture-hud button:disabled, .mc-capture-hud button:disabled * { color: #6f6978; }"
-      ".mc-capture-hud separator { background-color: #514b59; min-width: 1px; margin: 6px 5px; }"
-      ".mc-capture-hud entry { background-color: #201e26; background-image:none; color:#ece8e2;"
-      " border:1px solid #514b59; border-radius:5px; min-height:26px; padding:0 4px; font-size:12px; }"
-      ".mc-capture-hud button.mc-step { min-width:18px; min-height:13px; border-radius:3px; }"
-      ".mc-capture-hud .mc-property-label { color:#b8b1bf; font-size:11px; margin-right:4px; }"
-      ".mc-capture-hud .mc-context-row { min-height:32px; }"
-      ".mc-capture-hud .mc-hint { color: #aaa3b0; font-size: 10px; }"
-      ".mc-capture-hud .mc-font-label { color: #aaa3b0; }";
-  GtkCssProvider *provider = gtk_css_provider_new();
-  GError *error = NULL;
-  if (!gtk_css_provider_load_from_data(provider, css, -1, &error)) {
-    g_warning("Screenshot HUD styling: %s", error->message);
-    g_clear_error(&error);
-  }
-  hud_provider(capture.toolbar, provider);
-  g_object_unref(provider);
-}
-static GtkWidget *hud_separator(void) {
-  GtkWidget *separator = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
-  gtk_widget_set_valign(separator, GTK_ALIGN_CENTER);
-  gtk_widget_set_size_request(separator, -1, 22);
-  return separator;
 }
 static void layout_controls(void) {
   if (!capture.canvas || !capture.toolbar)
@@ -1228,6 +1011,7 @@ static void preedit_changed(GtkTextView *view, const char *text, gpointer data) 
   (void)view;
   (void)data;
   capture.composing = text && *text;
+  mc_style_controls_set_blocked(capture.style_controls, capture.composing);
 }
 static gboolean open_editor(GdkPixbuf *image) {
   int width = gdk_pixbuf_get_width(image), height = gdk_pixbuf_get_height(image);
@@ -1238,10 +1022,10 @@ static gboolean open_editor(GdkPixbuf *image) {
   capture.height = height;
   capture.selected = capture.edit_index = -1;
   capture.tool = SELECT;
-  capture.color = 0xF26769;
-  capture.stroke = 4;
-  capture.font_size = 24;
-  capture.opacity = 1;
+  capture.style_bank = editor_style_create();
+  if (capture.style_bank <= 0)
+    return FALSE;
+  load_tool_style(SELECT);
   capture.crop[2] = width;
   capture.crop[3] = height;
   if (!capture.selecting) {
@@ -1298,79 +1082,50 @@ static gboolean open_editor(GdkPixbuf *image) {
   gtk_container_set_border_width(GTK_CONTAINER(capture.toolbar), 0);
   gtk_widget_set_no_show_all(capture.toolbar, TRUE);
   gtk_style_context_add_class(gtk_widget_get_style_context(capture.toolbar), "mc-capture-hud");
-  GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2),
-            *row2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+  GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
   gtk_box_pack_start(GTK_BOX(capture.toolbar), row, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(capture.toolbar), row2, FALSE, FALSE, 0);
   const char *names[] = {"选择 / 移动", "矩形", "箭头", "文字：单击新建，双击编辑", "遮盖"};
   MCIcon icons[] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT, MC_ICON_REDACT};
   for (int i = 0; i < 5; i++) {
-    capture.tools[i] = icon_button(icons[i], names[i], G_CALLBACK(tool_clicked), i);
+    capture.tools[i] = mc_style_icon_button(icons[i], names[i], G_CALLBACK(tool_clicked), GINT_TO_POINTER(i));
     gtk_box_pack_start(GTK_BOX(row), capture.tools[i], FALSE, FALSE, 0);
   }
   gtk_style_context_add_class(gtk_widget_get_style_context(capture.tools[0]), "mc-selected");
-  gtk_box_pack_start(GTK_BOX(row), hud_separator(), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(row), mc_style_separator(), FALSE, FALSE, 0);
   MCIcon future_icons[] = {MC_ICON_OCR, MC_ICON_TRANSLATE};
   const char *future_names[] = {"OCR · 尚未开放", "翻译 · 尚未开放"};
   for (int i = 0; i < 2; i++) {
     GtkWidget *wrapper = gtk_event_box_new();
     gtk_event_box_set_visible_window(GTK_EVENT_BOX(wrapper), FALSE);
     gtk_event_box_set_above_child(GTK_EVENT_BOX(wrapper), TRUE);
-    capture.future_tools[i] = icon_button(future_icons[i], future_names[i], NULL, 0);
+    capture.future_tools[i] = mc_style_icon_button(future_icons[i], future_names[i], NULL, NULL);
     gtk_widget_set_sensitive(capture.future_tools[i], FALSE);
     gtk_container_add(GTK_CONTAINER(wrapper), capture.future_tools[i]);
     gtk_widget_set_tooltip_text(wrapper, future_names[i]);
     gtk_box_pack_start(GTK_BOX(row), wrapper, FALSE, FALSE, 0);
   }
-  gtk_box_pack_start(GTK_BOX(row), hud_separator(), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(row), icon_button(MC_ICON_UNDO, "撤销 Ctrl+Z", G_CALLBACK(command), 1), FALSE,
+  gtk_box_pack_start(GTK_BOX(row), mc_style_separator(), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(row), mc_style_icon_button(MC_ICON_UNDO, "撤销 Ctrl+Z", G_CALLBACK(command), GINT_TO_POINTER(1)), FALSE,
                      FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(row), icon_button(MC_ICON_REDO, "重做 Ctrl+Shift+Z", G_CALLBACK(command), 2),
+  gtk_box_pack_start(GTK_BOX(row), mc_style_icon_button(MC_ICON_REDO, "重做 Ctrl+Shift+Z", G_CALLBACK(command), GINT_TO_POINTER(2)),
                      FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(row), hud_separator(), FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(row), icon_button(MC_ICON_CHECK, "确认并复制 Ctrl+Enter", G_CALLBACK(command), 3),
+  gtk_box_pack_start(GTK_BOX(row), mc_style_separator(), FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(row), mc_style_icon_button(MC_ICON_CHECK, "确认并复制 Ctrl+Enter", G_CALLBACK(command), GINT_TO_POINTER(3)),
                    FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(row), icon_button(MC_ICON_CLOSE, "取消 Esc", G_CALLBACK(command), 4), FALSE, FALSE,
+  gtk_box_pack_end(GTK_BOX(row), mc_style_icon_button(MC_ICON_CLOSE, "取消 Esc", G_CALLBACK(command), GINT_TO_POINTER(4)), FALSE, FALSE,
                    0);
-  gtk_box_pack_end(GTK_BOX(row), icon_button(MC_ICON_PIN, "固定贴图", G_CALLBACK(command), 5), FALSE, FALSE,
+  gtk_box_pack_end(GTK_BOX(row), mc_style_icon_button(MC_ICON_PIN, "固定贴图", G_CALLBACK(command), GINT_TO_POINTER(5)), FALSE, FALSE,
                    0);
-  gtk_style_context_add_class(gtk_widget_get_style_context(row2), "mc-context-row");
-  capture.context_hint = gtk_label_new("选择标注以调整样式");
-  gtk_label_set_xalign(GTK_LABEL(capture.context_hint), 0);
-  gtk_style_context_add_class(gtk_widget_get_style_context(capture.context_hint), "mc-property-label");
-  gtk_box_pack_start(GTK_BOX(row2), capture.context_hint, FALSE, FALSE, 3);
-  capture.color_group = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-  GtkWidget *color_label = gtk_label_new("颜色");
-  gtk_style_context_add_class(gtk_widget_get_style_context(color_label), "mc-property-label");
-  gtk_box_pack_start(GTK_BOX(capture.color_group), color_label, FALSE, FALSE, 0);
-  capture.colors = gtk_button_new();
-  gtk_widget_set_size_request(capture.colors, 28, 28);
-  gtk_widget_set_focus_on_click(capture.colors, FALSE);
-  GtkWidget *swatch = gtk_drawing_area_new();
-  gtk_widget_set_has_window(swatch, FALSE);
-  gtk_widget_set_size_request(swatch, 18, 18);
-  g_signal_connect(swatch, "draw", G_CALLBACK(swatch_draw), NULL);
-  gtk_container_add(GTK_CONTAINER(capture.colors), swatch);
-  gtk_widget_set_tooltip_text(capture.colors, "选择标注颜色");
-  atk_object_set_name(gtk_widget_get_accessible(capture.colors), "标注颜色");
-  g_signal_connect(capture.colors, "clicked", G_CALLBACK(choose_color), NULL);
-  gtk_box_pack_start(GTK_BOX(capture.color_group), capture.colors, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(row2), capture.color_group, FALSE, FALSE, 3);
-  capture.font_group = numeric_control("字号", NUMBER_FONT, &capture.font);
-  gtk_box_pack_start(GTK_BOX(row2), capture.font_group, FALSE, FALSE, 3);
-  capture.stroke_group = numeric_control("线宽", NUMBER_STROKE, &capture.stroke_value);
-  gtk_box_pack_start(GTK_BOX(row2), capture.stroke_group, FALSE, FALSE, 3);
-  capture.opacity_group = numeric_control("不透明度 %", NUMBER_OPACITY, &capture.opacity_value);
-  gtk_box_pack_start(GTK_BOX(row2), capture.opacity_group, FALSE, FALSE, 3);
-  GtkWidget *groups[] = {capture.color_group, capture.font_group, capture.stroke_group, capture.context_hint,
-                         capture.opacity_group};
-  for (int i = 0; i < 5; i++) {
-    gtk_widget_show_all(groups[i]);
-    gtk_widget_set_no_show_all(groups[i], TRUE);
-  }
-  refresh_context();
+  MCStyleRange ranges[4];
+  for (int field = 0; field < 4; field++)
+    ranges[field] = (MCStyleRange){editor_style_min(field), editor_style_max(field),
+      editor_style_step(field), editor_style_default(field), field == MC_STYLE_OPACITY ? 100 : 1};
+  capture.style_controls = mc_style_controls_new(GTK_WINDOW(capture.editor), ranges,
+                                                 style_changed, style_finished, NULL);
+  gtk_box_pack_start(GTK_BOX(capture.toolbar), mc_style_controls_widget(capture.style_controls),
+                     FALSE, FALSE, 0);
   sync_control_values();
-  style_hud();
+  mc_style_hud_apply(capture.toolbar);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.toolbar);
   gtk_widget_add_events(capture.canvas,
                         GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
@@ -1456,6 +1211,104 @@ static void smoke_pump(void) {
     g_main_context_iteration(NULL, TRUE);
   if (!elapsed)
     g_source_remove(timer);
+}
+static void smoke_style_step(int field, gboolean increase) {
+  gtk_button_clicked(GTK_BUTTON(mc_style_controls_step_button(capture.style_controls, field, increase)));
+}
+static void smoke_style_number(int field, const char *text) {
+  gtk_entry_set_text(GTK_ENTRY(mc_style_controls_entry(capture.style_controls, field)), text);
+}
+static gboolean smoke_style_key(int field, GdkEventKey *event) {
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(mc_style_controls_entry(capture.style_controls, field),
+                        "key-press-event", event, &handled);
+  return handled;
+}
+static void smoke_style_rgba(int color, double opacity) {
+  double values[4];
+  current_style(values);
+  values[MC_STYLE_COLOR] = color;
+  values[MC_STYLE_OPACITY] = opacity;
+  style_changed((1u << MC_STYLE_COLOR) | (1u << MC_STYLE_OPACITY), values, NULL);
+}
+static gboolean smoke_tool_styles(void) {
+  int original_session = capture.session;
+  capture.session = image_session_create(capture.width, capture.height);
+  if (capture.session <= 0) {
+    capture.session = original_session;
+    return FALSE;
+  }
+  tool_clicked(NULL, GINT_TO_POINTER(RECTANGLE));
+  smoke_style_rgba(0x225577, .45);
+  smoke_style_number(MC_STYLE_STROKE, "8");
+  tool_clicked(NULL, GINT_TO_POINTER(ARROW));
+  gboolean ok = capture.color == editor_style_default(MC_STYLE_COLOR) && capture.opacity == 1 &&
+                capture.stroke == editor_style_default(MC_STYLE_STROKE);
+  smoke_style_rgba(0x66BB88, .7);
+  smoke_style_number(MC_STYLE_STROKE, "12");
+  tool_clicked(NULL, GINT_TO_POINTER(REDACT));
+  ok = capture.color == 0x111111 && capture.opacity == 1 && ok;
+  smoke_style_rgba(0xCC8844, .25);
+  tool_clicked(NULL, GINT_TO_POINTER(TEXT));
+  ok = capture.font_size == editor_style_default(MC_STYLE_FONT) && ok;
+  smoke_style_rgba(0xABCDEF, .8);
+  smoke_style_number(MC_STYLE_FONT, "40");
+  tool_clicked(NULL, GINT_TO_POINTER(RECTANGLE));
+  ok = capture.color == 0x225577 && fabs(capture.opacity - .45) < .00001 && capture.stroke == 8 && ok;
+  ok = image_session_add_rgba(capture.session, RECTANGLE, 50, 60, 80, 60,
+                               capture.color, capture.stroke, capture.font_size, capture.opacity) == 1 && ok;
+  capture.selected = 0;
+  sync_style();
+  smoke_style_rgba(0xFF3355, .2);
+  smoke_style_number(MC_STYLE_STROKE, "6");
+  ok = image_session_value(capture.session, 0, 5) == 0xFF3355 &&
+       fabs(image_session_value(capture.session, 0, 8) - .2) < .00001 &&
+       editor_style_get(capture.style_bank, RECTANGLE, MC_STYLE_COLOR) == 0x225577 && ok;
+  tool_clicked(NULL, GINT_TO_POINTER(ARROW));
+  ok = capture.color == 0x66BB88 && fabs(capture.opacity - .7) < .00001 && capture.stroke == 12 && ok;
+  tool_clicked(NULL, GINT_TO_POINTER(RECTANGLE));
+  ok = capture.color == 0x225577 && capture.stroke == 8 && ok;
+  GdkEventButton gesture = {0};
+  gesture.button = 1;
+  gesture.x = capture.offset_x + 250 * capture.zoom;
+  gesture.y = capture.offset_y + 180 * capture.zoom;
+  ok = canvas_press(capture.canvas, &gesture, NULL) && ok;
+  gesture.x = capture.offset_x + 300 * capture.zoom;
+  gesture.y = capture.offset_y + 220 * capture.zoom;
+  ok = canvas_release(capture.canvas, &gesture, NULL) &&
+       image_session_count(capture.session) == 2 &&
+       image_session_value(capture.session, 1, 5) == 0x225577 &&
+       image_session_value(capture.session, 1, 6) == 8 &&
+       fabs(image_session_value(capture.session, 1, 8) - .45) < .00001 &&
+       image_session_value(capture.session, 0, 5) == 0xFF3355 && ok;
+  tool_clicked(NULL, GINT_TO_POINTER(TEXT));
+  begin_text(-1, 150, 100);
+  ok = capture.color == 0xABCDEF && capture.font_size == 40 && ok;
+  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), "新文字", -1);
+  smoke_style_rgba(0xAA7744, .6);
+  smoke_style_number(MC_STYLE_FONT, "42");
+  ok = commit_text() && editor_style_get(capture.style_bank, TEXT, MC_STYLE_COLOR) == 0xAA7744 &&
+       editor_style_get(capture.style_bank, TEXT, MC_STYLE_FONT) == 42 && ok;
+  int text_index = image_session_count(capture.session) - 1;
+  begin_text(text_index, 0, 0);
+  smoke_style_rgba(0x778899, .3);
+  smoke_style_number(MC_STYLE_FONT, "36");
+  ok = commit_text() && image_session_value(capture.session, text_index, 5) == 0x778899 &&
+       editor_style_get(capture.style_bank, TEXT, MC_STYLE_COLOR) == 0xAA7744 &&
+       editor_style_get(capture.style_bank, TEXT, MC_STYLE_FONT) == 42 && ok;
+  begin_text(-1, 200, 120);
+  ok = capture.color == 0xAA7744 && capture.font_size == 42 && fabs(capture.opacity - .6) < .00001 && ok;
+  cancel_text();
+  tool_clicked(NULL, GINT_TO_POINTER(REDACT));
+  ok = capture.color == 0xCC8844 && fabs(capture.opacity - .25) < .00001 && ok;
+  image_session_dispose(capture.session);
+  capture.session = original_session;
+  editor_style_dispose(capture.style_bank);
+  capture.style_bank = editor_style_create();
+  tool_clicked(NULL, GINT_TO_POINTER(SELECT));
+  g_print("Linux tool styles smoke %s: independent defaults, existing-object isolation, new/old text drafts.\n",
+           ok ? "passed" : "FAILED");
+  return ok;
 }
 static gboolean smoke_pointer_route(GtkApplication *application) {
   if (g_strcmp0(g_getenv("MOOJICUT_X11_INPUT_SMOKE"), "1") != 0)
@@ -1571,7 +1424,7 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
   }
   if (ok) {
     int x, y;
-    GtkWidget *button = capture.font_up;
+    GtkWidget *button = mc_style_controls_step_button(capture.style_controls, MC_STYLE_FONT, TRUE);
     int previous = capture.font_size;
     gtk_widget_translate_coordinates(button, capture.editor, gtk_widget_get_allocated_width(button) / 2,
                                      gtk_widget_get_allocated_height(button) / 2, &x, &y);
@@ -1604,6 +1457,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   if (!source)
     return FALSE;
   smoke_background(source);
+  gboolean controls_ok = mc_style_controls_smoke();
   gboolean ok = open_editor(source);
   g_object_unref(source);
   if (!ok) {
@@ -1612,6 +1466,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   }
   while (gtk_events_pending())
     gtk_main_iteration();
+  ok = controls_ok && ok;
   GtkWidget *original = capture.editor;
   GdkEventButton selection_event = {0};
   selection_event.button = 1;
@@ -1622,24 +1477,25 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   selection_event.y = capture.offset_y + 50 * capture.zoom;
   ok = canvas_release(capture.canvas, &selection_event, NULL) && !capture.selecting &&
        capture.editor == original && !gtk_window_get_decorated(GTK_WINDOW(original)) && ok;
-  ok = gtk_widget_get_visible(capture.context_hint) && !gtk_widget_get_visible(capture.color_group) &&
-       !gtk_widget_get_visible(capture.font_group) && ok;
+  ok = smoke_tool_styles() && ok;
+  ok = (editor_style_property_mask(context_kind()) == 0) && !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
+       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) && ok;
   tool_clicked(NULL, GINT_TO_POINTER(TEXT));
-  ok = gtk_widget_get_visible(capture.color_group) && gtk_widget_get_visible(capture.font_group) &&
-       !gtk_widget_get_visible(capture.stroke_group) && ok;
-  font_step(NULL, GINT_TO_POINTER(1));
-  ok = capture.font_size == 25 && image_session_count(capture.session) == 0 && ok;
-  font_step(NULL, GINT_TO_POINTER(-1));
+  ok = mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) && mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) &&
+       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) && ok;
+  smoke_style_step(MC_STYLE_FONT, TRUE);
+  ok = capture.font_size == editor_style_default(MC_STYLE_FONT) + editor_style_step(MC_STYLE_FONT) && image_session_count(capture.session) == 0 && ok;
+  smoke_style_step(MC_STYLE_FONT, FALSE);
   tool_clicked(NULL, GINT_TO_POINTER(RECTANGLE));
-  ok = gtk_widget_get_visible(capture.color_group) && gtk_widget_get_visible(capture.stroke_group) &&
-       !gtk_widget_get_visible(capture.font_group) && ok;
-  stroke_clicked(NULL, GINT_TO_POINTER(8));
+  ok = mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) && mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) &&
+       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) && ok;
+  smoke_style_number(MC_STYLE_STROKE, "8");
   ok = capture.stroke == 8 && ok;
-  stroke_clicked(NULL, GINT_TO_POINTER(4));
+  smoke_style_number(MC_STYLE_STROKE, "4");
   tool_clicked(NULL, GINT_TO_POINTER(REDACT));
-  ok = !gtk_widget_get_visible(capture.context_hint) && gtk_widget_get_visible(capture.color_group) &&
-       gtk_widget_get_visible(capture.opacity_group) && !gtk_widget_get_visible(capture.font_group) &&
-       !gtk_widget_get_visible(capture.stroke_group) && ok;
+  ok = !(editor_style_property_mask(context_kind()) == 0) && mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
+       mc_style_controls_property_visible(capture.style_controls, MC_STYLE_OPACITY) && !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) &&
+       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) && ok;
   for (int i = 0; i < 2; i++) {
     AtkStateSet *state = atk_object_ref_state_set(gtk_widget_get_accessible(capture.future_tools[i]));
     char *tip = gtk_widget_get_tooltip_text(gtk_widget_get_parent(capture.future_tools[i]));
@@ -1664,7 +1520,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   ok = strstr(draft->text, "追加") != NULL && ok;
   snapshot_free(draft);
   draft_undo(FALSE);
-  gtk_widget_grab_focus(capture.font);
+  gtk_widget_grab_focus(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT));
   guint undo_count = capture.draft_undo->len;
   GdkEventKey property_key = {0};
   property_key.state = GDK_CONTROL_MASK;
@@ -1678,15 +1534,15 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   ok = !editor_key(capture.editor, &property_key, NULL) && capture.editing && ok;
   property_key.keyval = GDK_KEY_Up;
   int before_font = capture.font_size;
-  ok = font_key(capture.font, &property_key, NULL) && capture.font_size == before_font + 1 && ok;
+  ok = smoke_style_key(MC_STYLE_FONT, &property_key) && capture.font_size == before_font + 1 && ok;
   property_key.keyval = GDK_KEY_Down;
-  font_key(capture.font, &property_key, NULL);
+  smoke_style_key(MC_STYLE_FONT, &property_key);
   property_key.keyval = GDK_KEY_Escape;
-  ok = font_key(capture.font, &property_key, NULL) &&
+  ok = smoke_style_key(MC_STYLE_FONT, &property_key) &&
        gtk_window_get_focus(GTK_WINDOW(capture.editor)) == capture.entry && ok;
   preedit_changed(GTK_TEXT_VIEW(capture.entry), "拼", NULL);
   before_font = capture.font_size;
-  font_step(NULL, GINT_TO_POINTER(1));
+  smoke_style_step(MC_STYLE_FONT, TRUE);
   ok = capture.font_size == before_font && ok;
   GdkEventKey ime_key = {0};
   ime_key.keyval = GDK_KEY_Escape;
@@ -1728,16 +1584,16 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   r[6] = 32;
   ok = update_annotation(0, r) && image_session_value(capture.session, 0, 7) == 32 && ok;
   sync_style();
-  ok = gtk_widget_get_visible(capture.font_group) && gtk_widget_get_visible(capture.color_group) &&
-       !gtk_widget_get_visible(capture.stroke_group) && ok;
-  font_step(NULL, GINT_TO_POINTER(1));
+  ok = mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) && mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
+       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) && ok;
+  smoke_style_step(MC_STYLE_FONT, TRUE);
   ok = image_session_value(capture.session, 0, 7) == 33 && ok;
   image_session_undo(capture.session);
   sync_style();
   ok = capture.font_size == 32 && ok;
-  gtk_entry_set_text(GTK_ENTRY(capture.font), "40");
+  gtk_entry_set_text(GTK_ENTRY(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT)), "40");
   ok = image_session_value(capture.session, 0, 7) == 40 && ok;
-  gtk_widget_grab_focus(capture.font);
+  gtk_widget_grab_focus(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT));
   int annotation_count = image_session_count(capture.session);
   property_key.keyval = GDK_KEY_Delete;
   property_key.state = 0;
@@ -1748,9 +1604,9 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   ok = !editor_key(capture.editor, &property_key, NULL) && capture.editor &&
        image_session_count(capture.session) == annotation_count && ok;
   gtk_widget_grab_focus(capture.canvas);
-  gtk_entry_set_text(GTK_ENTRY(capture.font), "999");
-  font_focus_out(capture.font, NULL, NULL);
-  ok = !strcmp(gtk_entry_get_text(GTK_ENTRY(capture.font)), "40") && ok;
+  gtk_entry_set_text(GTK_ENTRY(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT)), "999");
+  sync_control_values();
+  ok = !strcmp(gtk_entry_get_text(GTK_ENTRY(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT))), "40") && ok;
   image_session_undo(capture.session);
   sync_style();
   ok = image_session_add(capture.session, REDACT, 50, 60, 80, 60, 0, 4) == 1 && ok;
@@ -1816,7 +1672,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   image_session_undo(capture.session);
   capture.selected = 0;
   sync_style();
-  numeric_set(NUMBER_OPACITY, 35);
+  smoke_style_number(MC_STYLE_OPACITY, "35");
   read_annotation(0, r);
   r[0] += 1;
   ok = update_annotation(0, r) && fabs(image_session_value(capture.session, 0, 8) - .35) < .001 && ok;

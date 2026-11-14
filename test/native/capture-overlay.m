@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "capture/MCImageEditorController.h"
+#import "components/MCStylePropertiesView.h"
 #include "moonbit.h"
 #include <math.h>
 
@@ -9,6 +10,7 @@
 @property NSString *selectedID;
 @property NSTextView *textView;
 - (NSRect)imageFrame;
+- (BOOL)finishTextEditing:(BOOL)commit;
 @end
 @interface MCImageEditorController (MCOverlayTest)
 @property (readonly) MCImageCanvas *canvas;
@@ -32,6 +34,7 @@
 - (void)refresh;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)pinImage:(id)sender;
+- (void)prepareWindow;
 @end
 
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL capture overlay: %s\n", message); passed = NO; } } while (0)
@@ -178,6 +181,81 @@ static BOOL exercise(CGFloat scale) {
     CHECK(pin.pixelsWide == 400 && pin.pixelsHigh == 300, "pin does not receive the uncropped desktop");
     return passed;
 }
+static BOOL independentToolStyles(void) {
+    BOOL passed = YES;
+    NSError *error = nil;
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:&error];
+    [editor prepareWindow];
+    MCStylePropertiesView *properties = (MCStylePropertiesView *)editor.properties;
+    const int colors[] = {0, 0xff0000, 0x00ff00, 0x0000ff, 0x883399};
+    for (NSInteger tool = 1; tool <= 4; tool++) {
+        editor.tools.selectedSegment = tool;
+        [editor chooseTool:editor.tools];
+        MCStyleValues values = properties.values;
+        values.rgb = colors[tool]; values.opacity = tool * .2;
+        properties.values = values;
+        [editor.color sendAction:editor.color.action to:editor.color.target];
+        if (tool <= 2) {
+            editor.strokeStepper.doubleValue = 3 * tool;
+            [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
+        }
+    }
+    CHECK([editor.document[@"undo"] count] == 0, "changing creation defaults never creates document undo entries");
+    for (NSInteger tool = 4; tool >= 1; tool--) {
+        editor.tools.selectedSegment = tool;
+        [editor chooseTool:editor.tools];
+        MCStyleValues values = properties.values;
+        CHECK(values.rgb == colors[tool] && fabs(values.opacity - tool * .2) < .001,
+              "each tool restores its own RGBA values after visiting every other tool");
+        if (tool <= 2) CHECK(values.stroke == 3 * tool, "rectangle and arrow have independent line widths");
+    }
+    MCImageEditorController *other = [[MCImageEditorController alloc] initWithPNGData:fixture() error:&error];
+    [other prepareWindow];
+    CHECK(((MCStylePropertiesView *)other.properties).values.rgb == (int32_t)editor_style_default(MC_STYLE_COLOR),
+          "another editor instance retains its own defaults");
+    editor.tools.selectedSegment = 3;
+    [editor chooseTool:editor.tools];
+    [editor addTextAtPoint:NSMakePoint(30, 30)];
+    [editor.canvas.textView insertText:@"第一段" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK([editor.canvas finishTextEditing:YES], "new styled text commits through the normal inline editor");
+    NSUInteger history = [editor.document[@"undo"] count];
+    properties.colorControl.color = [NSColor colorWithSRGBRed:1 green:1 blue:0 alpha:.9];
+    [editor.color sendAction:editor.color.action to:editor.color.target];
+    NSDictionary *changed = [editor.document[@"annotations"] firstObject];
+    CHECK([changed[@"color"] isEqual:@"#ffff00"] && fabs([changed[@"opacity"] doubleValue] - .9) < .001 &&
+          [editor.document[@"undo"] count] == history + 1,
+          "editing a selected annotation commits RGBA together as one undoable change");
+    [editor undo:nil];
+    CHECK([editor.document[@"annotations"][0][@"color"] isEqual:@"#0000ff"], "one undo restores the selected object's color");
+    [editor redo:nil];
+    [editor chooseTool:editor.tools];
+    CHECK(properties.values.rgb == 0x0000ff && fabs(properties.values.opacity - .6) < .001,
+          "modifying an existing object never overwrites text creation defaults");
+    [editor addTextAtPoint:NSMakePoint(30, 180)];
+    [editor.canvas.textView insertText:@"第二段" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK([editor.canvas finishTextEditing:YES], "a subsequent text annotation commits");
+    CHECK([editor.document[@"annotations"][0][@"color"] isEqual:@"#ffff00"] &&
+          [editor.document[@"annotations"][1][@"color"] isEqual:@"#0000ff"],
+          "existing objects and new annotations retain independent styles");
+    [editor cancel:nil]; [other cancel:nil];
+
+    // Reuse the same native component outside an editor. Rebinding values must
+    // not emit user actions or route callbacks to another component instance.
+    MCStylePropertiesView *first = [[MCStylePropertiesView alloc] initWithFrame:NSZeroRect];
+    MCStylePropertiesView *second = [[MCStylePropertiesView alloc] initWithFrame:NSZeroRect];
+    first.propertyMask = second.propertyMask = editor_style_property_mask(MC_STYLE_TOOL_RECTANGLE);
+    __block NSInteger firstChanges = 0, secondChanges = 0;
+    first.onChange = ^(__unused id sender) { firstChanges++; };
+    second.onChange = ^(__unused id sender) { secondChanges++; };
+    MCStyleValues rebound = first.values; rebound.stroke = 12;
+    first.values = rebound;
+    CHECK(firstChanges == 0 && secondChanges == 0, "rebinding component values never masquerades as user input");
+    first.strokeControl.stepper.doubleValue = 13;
+    [first.strokeControl.stepper sendAction:first.strokeControl.stepper.action to:first.strokeControl.stepper.target];
+    CHECK(firstChanges == 1 && secondChanges == 0 && second.values.stroke == editor_style_default(MC_STYLE_STROKE),
+          "native numeric callbacks stay within their own component instance");
+    return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -185,6 +263,7 @@ int main(void) {
         moonbit_init();
         BOOL passed = exercise(.5);
         passed = exercise(1.5) && passed;
+        passed = independentToolStyles() && passed;
         puts(passed ? "PASS capture overlay: borderless frozen canvas, direct edit, scaled region handles, exact crop and pin output"
                     : "FAIL capture overlay");
         return passed ? 0 : 1;

@@ -261,6 +261,7 @@ static BOOL rgbaStyles(void) {
     editor.tools.selectedSegment = 4;
     [editor chooseTool:editor.tools];
     editor.colorControl.color = [NSColor colorWithSRGBRed:0 green:1 blue:0 alpha:1];
+    [editor.color sendAction:editor.color.action to:editor.color.target];
     editor.colorControl.opacityControl.stepper.doubleValue = 25;
     NSStepper *opacityStepper = editor.colorControl.opacityControl.stepper;
     [opacityStepper sendAction:opacityStepper.action to:opacityStepper.target];
@@ -278,6 +279,7 @@ static BOOL rgbaStyles(void) {
     editor.tools.selectedSegment = 3;
     [editor chooseTool:editor.tools];
     editor.colorControl.color = [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.5];
+    [editor.color sendAction:editor.color.action to:editor.color.target];
     [editor addTextAtPoint:NSMakePoint(30, 30)];
     [canvas.textView insertText:@"A" replacementRange:NSMakeRange(NSNotFound, 0)];
     CHECK(near([canvas.textDraft[@"opacity"] doubleValue], .5), "new text uses the shared color alpha");

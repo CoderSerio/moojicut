@@ -9,6 +9,7 @@
 #include "../shared/image_session.h"
 #include "../shared/mc_icons.h"
 #include "hud.h"
+#include "style_controls.h"
 #include "moonbit.h"
 #include "pinning.h"
 #include <commctrl.h>
@@ -32,17 +33,11 @@ enum {
   ID_COPY,
   ID_CANCEL,
   ID_TEXT_INPUT,
-  ID_COLOR,
-  ID_STROKE,
   ID_PIN,
-  ID_FONT,
-  ID_FONT_UP,
-  ID_FONT_DOWN,
   ID_OCR,
-  ID_TRANSLATE,
-  ID_OPACITY
+  ID_TRANSLATE
 };
-enum { STYLE_COLOR_BASE = 9200, STYLE_STROKE_BASE = 9300, STYLE_FONT_BASE = 9400, STYLE_OPACITY_BASE = 9600 };
+enum { ID_STYLE_BASE = 8500 };
 typedef struct {
   HDC dc;
   HBITMAP bitmap;
@@ -52,21 +47,20 @@ typedef struct {
 } Surface;
 typedef struct {
   HINSTANCE instance;
-  HWND owner, overlay, editor, text, colors, opacity_control, strokes, fonts, font_up, font_down, tooltip,
-      buttons[12];
+  HWND owner, overlay, editor, text, tooltip, buttons[12];
+  MCStyleControls *style_controls;
   HFONT font, text_font;
   Surface desktop, dimmed, image, rendered;
   RECT desktop_bounds, canvas, viewport, toolbar, drag_bounds, draft;
   POINT start, end;
   double zoom, opacity;
-  int32_t session;
+  int32_t session, style_bank;
   int tool, color, stroke, font_size, selected, editing, drag_mode, handle;
   BOOL dragging, dirty, smoke, closing, composing;
 } Capture;
 static Capture capture;
 static const wchar_t *OVERLAY_CLASS = L"MoojiCut.Capture.Selection";
 static const wchar_t *EDITOR_CLASS = L"MoojiCut.Capture.Editor";
-static const int PALETTE[] = {0xF26769, 0x246BFD, 0x25A56A, 0xFFFFFF, 0x111111};
 
 static int minimum(int a, int b) { return a < b ? a : b; }
 static int maximum(int a, int b) { return a > b ? a : b; }
@@ -222,7 +216,7 @@ static BOOL render_image(void) {
           (capture.handle == 0 || capture.handle == 2 || capture.handle == 4 || capture.handle == 6))
         font_size = bounded(rounded(font_size * (draft.right - draft.left) /
                                     maximum(1, capture.drag_bounds.right - capture.drag_bounds.left)),
-                            8, 128);
+                            rounded(editor_style_min(MC_STYLE_FONT)), rounded(editor_style_max(MC_STYLE_FONT)));
       BOOL painted = blend_annotation(
           kind, moving ? draft.left : image_session_value(capture.session, i, 1),
           moving ? draft.top : image_session_value(capture.session, i, 2),
@@ -329,23 +323,32 @@ static int style_context(void) {
     return TOOL_TEXT;
   return capture.tool;
 }
-static void update_style_context(void) {
-  if (!capture.colors)
-    return;
-  int context = style_context();
-  BOOL text = context == TOOL_TEXT, shape = context == TOOL_RECT || context == TOOL_ARROW,
-       colored = text || shape || context == TOOL_REDACT;
-  ShowWindow(capture.colors, colored ? SW_SHOWNA : SW_HIDE);
-  ShowWindow(capture.opacity_control, colored ? SW_SHOWNA : SW_HIDE);
-  ShowWindow(capture.strokes, shape ? SW_SHOWNA : SW_HIDE);
-  ShowWindow(capture.fonts, text ? SW_SHOWNA : SW_HIDE);
-  ShowWindow(capture.font_up, text || shape ? SW_SHOWNA : SW_HIDE);
-  ShowWindow(capture.font_down, text || shape ? SW_SHOWNA : SW_HIDE);
-  EnableWindow(capture.font_up, text ? capture.font_size < 128 : capture.stroke < 96);
-  EnableWindow(capture.font_down, text ? capture.font_size > 8 : capture.stroke > 1);
+static void sync_style_controls(void) {
+  MCStyleControlsModel model = {0};
+  model.mask = (unsigned)editor_style_property_mask(style_context());
+  model.enabled = !capture.composing;
+  const double values[] = {capture.color, capture.opacity, capture.stroke, capture.font_size};
+  for (int field = 0; field < 4; field++)
+    model.property[field] = (MCStyleProperty){values[field], editor_style_min(field),
+        editor_style_max(field), editor_style_step(field)};
+  mc_style_controls_update(capture.style_controls, &model);
+}
+static void load_tool_style(int tool) {
+  capture.color = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_COLOR));
+  capture.opacity = editor_style_get(capture.style_bank, tool, MC_STYLE_OPACITY);
+  capture.stroke = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_STROKE));
+  capture.font_size = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_FONT));
+  sync_style_controls();
+}
+static void load_annotation_style(int index) {
+  capture.color = rounded(image_session_value(capture.session, index, 5));
+  capture.opacity = image_session_value(capture.session, index, 8);
+  capture.stroke = rounded(image_session_value(capture.session, index, 6));
+  capture.font_size = rounded(image_session_value(capture.session, index, 7));
+  sync_style_controls();
 }
 static void changed(void) {
-  update_style_context();
+  sync_style_controls();
   capture.dirty = TRUE;
   if (capture.editor)
     InvalidateRect(capture.editor, NULL, FALSE);
@@ -402,19 +405,10 @@ static void layout_editor(HWND window) {
   for (int i = 7; i < 10; i++)
     MoveWindow(capture.buttons[i], x + dpi_px(window, 384 + (i - 7) * 36), y + dpi_px(window, 8), size, size,
                TRUE);
-  MoveWindow(capture.colors, x + dpi_px(window, 12), y + dpi_px(window, 52), dpi_px(window, 88), size, TRUE);
-  MoveWindow(capture.opacity_control, x + dpi_px(window, 248), y + dpi_px(window, 52), dpi_px(window, 132),
-             size, TRUE);
-  MoveWindow(capture.strokes, x + dpi_px(window, 112), y + dpi_px(window, 52), dpi_px(window, 88), size,
-             TRUE);
-  MoveWindow(capture.fonts, x + dpi_px(window, 112), y + dpi_px(window, 52), dpi_px(window, 88), size, TRUE);
-  MoveWindow(capture.font_up, x + dpi_px(window, 204), y + dpi_px(window, 52), dpi_px(window, 24),
-             dpi_px(window, 16), TRUE);
-  MoveWindow(capture.font_down, x + dpi_px(window, 204), y + dpi_px(window, 68), dpi_px(window, 24),
-             dpi_px(window, 16), TRUE);
+  mc_style_controls_layout(capture.style_controls, x + dpi_px(window, 12), y + dpi_px(window, 52));
   capture.canvas = capture.viewport;
   capture.zoom = 1;
-  update_style_context();
+  sync_style_controls();
   InvalidateRect(window, NULL, FALSE);
 }
 /* Use the export font and wrapping rules for all live/committed text geometry.
@@ -446,11 +440,14 @@ static LRESULT CALLBACK text_proc(HWND window, UINT message, WPARAM wp, LPARAM l
                                   DWORD_PTR data) {
   (void)id;
   (void)data;
-  if (message == WM_IME_STARTCOMPOSITION)
+  if (message == WM_IME_STARTCOMPOSITION) {
     capture.composing = TRUE;
+    sync_style_controls();
+  }
   if (message == WM_IME_ENDCOMPOSITION) {
     LRESULT result = DefSubclassProc(window, message, wp, lp);
     capture.composing = FALSE;
+    sync_style_controls();
     return result;
   }
   if (message == WM_NCDESTROY) {
@@ -541,24 +538,14 @@ static BOOL finish_text(BOOL cancel) {
     return FALSE;
   }
   ShowWindow(capture.text, SW_HIDE);
+  if (cancel || capture.selected < 0) {
+    if (capture.selected >= 0)
+      load_annotation_style(capture.selected);
+    else
+      load_tool_style(capture.tool);
+  }
   changed();
   return TRUE;
-}
-static void sync_style_controls(void) {
-  wchar_t label[80];
-  swprintf_s(label, 80, L"颜色：#%06X，点击选择", capture.color);
-  SetWindowTextW(capture.colors, label);
-  swprintf_s(label, 80, L"线宽：%d 像素，点击选择", capture.stroke);
-  SetWindowTextW(capture.strokes, label);
-  swprintf_s(label, 80, L"文字大小：%d 像素，点击选择", capture.font_size);
-  SetWindowTextW(capture.fonts, label);
-  swprintf_s(label, 80, L"不透明度：%d%%", rounded(capture.opacity * 100));
-  SetWindowTextW(capture.opacity_control, label);
-  InvalidateRect(capture.opacity_control, NULL, FALSE);
-  InvalidateRect(capture.colors, NULL, FALSE);
-  InvalidateRect(capture.strokes, NULL, FALSE);
-  InvalidateRect(capture.fonts, NULL, FALSE);
-  update_style_context();
 }
 static void begin_text(POINT point, int index) {
   if (!finish_text(FALSE))
@@ -567,10 +554,7 @@ static void begin_text(POINT point, int index) {
   capture.selected = index;
   if (index >= 0) {
     capture.draft = annotation_rect(index);
-    capture.font_size = (int)image_session_value(capture.session, index, 7);
-    capture.stroke = (int)image_session_value(capture.session, index, 6);
-    capture.color = (int)image_session_value(capture.session, index, 5);
-    capture.opacity = image_session_value(capture.session, index, 8);
+    load_annotation_style(index);
     moonbit_string_t value = image_session_text(capture.session, index);
     int n = Moonbit_array_length(value);
     wchar_t *text = calloc((size_t)n + 1, 2);
@@ -581,6 +565,7 @@ static void begin_text(POINT point, int index) {
     }
     moonbit_decref(value);
   } else {
+    load_tool_style(TOOL_TEXT);
     SetRect(&capture.draft, point.x, point.y, minimum(capture.viewport.right, point.x + 280),
             minimum(capture.viewport.bottom, point.y + capture.font_size * 3));
     SetWindowTextW(capture.text, L"");
@@ -702,6 +687,7 @@ static void editor_command(int command) {
   if (command >= ID_SELECT && command <= ID_REDACT) {
     capture.tool = command - ID_SELECT;
     capture.selected = -1;
+    load_tool_style(capture.tool);
     changed();
     for (int i = 0; i < 5; i++)
       InvalidateRect(capture.buttons[i], NULL, FALSE);
@@ -712,6 +698,7 @@ static void editor_command(int command) {
     else
       image_session_redo(capture.session);
     capture.selected = -1;
+    load_tool_style(capture.tool);
     sync_viewport();
     layout_editor(capture.editor);
     changed();
@@ -736,105 +723,43 @@ static void editor_command(int command) {
     }
   }
 }
-static void apply_style(void) {
+static BOOL apply_style(void) {
   if (capture.editing != -2) {
     style_text();
-    return;
+    return TRUE;
   }
   if (capture.selected >= 0) {
     RECT r = fit_annotation_bounds(capture.selected, annotation_rect(capture.selected), capture.font_size);
     preserve_text(capture.selected);
-    image_session_update_rgba(capture.session, capture.selected, r.left, r.top, r.right - r.left,
-                              r.bottom - r.top, capture.color, capture.stroke, capture.font_size,
-                              capture.opacity);
+    if (!image_session_update_rgba(capture.session, capture.selected, r.left, r.top, r.right - r.left,
+        r.bottom - r.top, capture.color, capture.stroke, capture.font_size, capture.opacity))
+      return FALSE;
     changed();
   }
-}
-static BOOL apply_style_command(int command) {
-  int context = style_context();
-  if (command == ID_FONT_UP || command == ID_FONT_DOWN) {
-    if ((context == TOOL_TEXT || context == TOOL_RECT || context == TOOL_ARROW) && !capture.composing) {
-      if (context == TOOL_TEXT)
-        capture.font_size = bounded(capture.font_size + (command == ID_FONT_UP ? 1 : -1), 8, 128);
-      else
-        capture.stroke = bounded(capture.stroke + (command == ID_FONT_UP ? 1 : -1), 1, 96);
-      apply_style();
-      sync_style_controls();
-    }
-    return TRUE;
-  }
-  if (command >= STYLE_COLOR_BASE && command < STYLE_COLOR_BASE + 5) {
-    if (context != TOOL_TEXT && context != TOOL_RECT && context != TOOL_ARROW && context != TOOL_REDACT)
-      return TRUE;
-    capture.color = PALETTE[command - STYLE_COLOR_BASE];
-  } else if (command > STYLE_STROKE_BASE && command <= STYLE_STROKE_BASE + 96) {
-    if (context != TOOL_RECT && context != TOOL_ARROW)
-      return TRUE;
-    capture.stroke = command - STYLE_STROKE_BASE;
-  } else if (command >= STYLE_FONT_BASE + 8 && command <= STYLE_FONT_BASE + 128) {
-    if (context != TOOL_TEXT)
-      return TRUE;
-    capture.font_size = command - STYLE_FONT_BASE;
-  } else if (command >= STYLE_OPACITY_BASE && command <= STYLE_OPACITY_BASE + 100) {
-    if (context == TOOL_SELECT)
-      return TRUE;
-    capture.opacity = (command - STYLE_OPACITY_BASE) / 100.0;
-  } else
-    return FALSE;
-  apply_style();
-  sync_style_controls();
   return TRUE;
 }
-static void style_menu(int control) {
+static BOOL style_changed(void *context, int field, double value) {
+  (void)context;
   if (capture.composing)
-    return;
-  HWND button = control == ID_COLOR     ? capture.colors
-                : control == ID_STROKE  ? capture.strokes
-                : control == ID_OPACITY ? capture.opacity_control
-                                        : capture.fonts;
-  HMENU menu = CreatePopupMenu();
-  if (!menu)
-    return;
-  if (control == ID_OPACITY) {
-    for (int value = 0; value <= 100; value += 10) {
-      wchar_t label[32];
-      swprintf_s(label, 32, L"%d%%", value);
-      AppendMenuW(menu, MF_STRING | (rounded(capture.opacity * 100) == value ? MF_CHECKED : 0),
-                  STYLE_OPACITY_BASE + value, label);
-    }
-  } else if (control == ID_COLOR) {
-    const wchar_t *labels[5] = {L"珊瑚红", L"蓝色", L"绿色", L"白色", L"黑色"};
-    for (int i = 0; i < 5; i++)
-      AppendMenuW(menu, MF_STRING | (capture.color == PALETTE[i] ? MF_CHECKED : 0), STYLE_COLOR_BASE + i,
-                  labels[i]);
-  } else if (control == ID_STROKE) {
-    const int widths[3] = {2, 4, 8};
-    for (int i = 0; i < 3; i++) {
-      wchar_t label[40];
-      swprintf_s(label, 40, L"%d 像素", widths[i]);
-      AppendMenuW(menu, MF_STRING | (capture.stroke == widths[i] ? MF_CHECKED : 0),
-                  STYLE_STROKE_BASE + widths[i], label);
-    }
-  } else {
-    const int sizes[9] = {8, 12, 16, 24, 28, 32, 48, 72, 128};
-    for (int i = 0; i < 9; i++) {
-      wchar_t label[40];
-      swprintf_s(label, 40, L"%d 像素", sizes[i]);
-      AppendMenuW(menu, MF_STRING | (capture.font_size == sizes[i] ? MF_CHECKED : 0),
-                  STYLE_FONT_BASE + sizes[i], label);
-    }
+    return FALSE;
+  BOOL defaults = capture.editing == -1 || (capture.editing == -2 && capture.selected < 0);
+  if (defaults && !editor_style_set(capture.style_bank, style_context(), field, value))
+    return FALSE;
+  int color = capture.color, stroke = capture.stroke, font = capture.font_size;
+  double opacity = capture.opacity;
+  if (field == MC_STYLE_COLOR) capture.color = rounded(value);
+  else if (field == MC_STYLE_OPACITY) capture.opacity = value;
+  else if (field == MC_STYLE_STROKE) capture.stroke = rounded(value);
+  else if (field == MC_STYLE_FONT) capture.font_size = rounded(value);
+  else return FALSE;
+  BOOL ok = apply_style();
+  if (!ok) {
+    capture.color = color; capture.opacity = opacity;
+    capture.stroke = stroke; capture.font_size = font;
   }
-  RECT rect;
-  GetWindowRect(button, &rect);
-  int action = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN, rect.left,
-                                   rect.bottom + 4, 0, capture.editor, NULL);
-  DestroyMenu(menu);
-  if (action)
-    SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(action, 0), 0);
-  if (capture.editing != -2)
-    SetFocus(capture.text);
-  else
-    SetFocus(capture.editor);
+  sync_style_controls();
+  changed();
+  return ok;
 }
 static void paint_editor(HDC dc) {
   BitBlt(dc, 0, 0, capture.dimmed.width, capture.dimmed.height, capture.dimmed.dc, 0, 0, SRCCOPY);
@@ -906,12 +831,10 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       tip.lpszText = (LPWSTR)labels[i];
       SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
     }
-    capture.colors = hud_button(window, ID_COLOR, L"标注颜色 · 点击选择");
-    capture.opacity_control = hud_button(window, ID_OPACITY, L"不透明度 · 0% 至 100%");
-    capture.strokes = hud_button(window, ID_STROKE, L"线条宽度 · 点击选择");
-    capture.fonts = hud_button(window, ID_FONT, L"字号 · 点击选择");
-    capture.font_up = hud_button(window, ID_FONT_UP, L"增大当前数值 1 像素");
-    capture.font_down = hud_button(window, ID_FONT_DOWN, L"减小当前数值 1 像素");
+    capture.style_controls = mc_style_controls_create(window, capture.instance, ID_STYLE_BASE,
+        style_changed, NULL);
+    if (!capture.style_controls)
+      return -1;
     sync_style_controls();
     capture.text = CreateWindowExW(0, L"EDIT", L"",
                                    WS_CHILD | WS_TABSTOP | ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL, 0,
@@ -931,6 +854,8 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     return 0;
   case WM_DRAWITEM: {
     DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
+    if (mc_style_controls_draw(capture.style_controls, item))
+      return TRUE;
     int kind = -1, value = 0;
     BOOL selected = FALSE;
     for (int i = 0; i < 12; i++)
@@ -938,24 +863,6 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
         kind = button_icons[i];
         selected = i < 5 && capture.tool == i;
       }
-    if (item->CtlID == ID_COLOR) {
-      kind = MC_HUD_COLOR;
-      value = capture.color;
-    } else if (item->CtlID == ID_STROKE) {
-      kind = MC_HUD_STROKE;
-      value = capture.stroke;
-    } else if (item->CtlID == ID_FONT) {
-      kind = MC_HUD_FONT;
-      value = capture.font_size;
-    }
-    if (item->CtlID == ID_OPACITY) {
-      kind = MC_HUD_OPACITY;
-      value = rounded(capture.opacity * 100);
-    }
-    if (item->CtlID == ID_FONT_UP)
-      kind = MC_ICON_CHEVRON_UP;
-    if (item->CtlID == ID_FONT_DOWN)
-      kind = MC_ICON_CHEVRON_DOWN;
     if (kind >= 0) {
       mc_hud_button(item->hDC, &item->rcItem, kind, value, selected,
                     GetPropW(item->hwndItem, L"MoojiCut.Hover") != NULL,
@@ -979,15 +886,13 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       style_text();
       return 0;
     }
-    if (apply_style_command(LOWORD(wp)))
+    if (mc_style_controls_command(capture.style_controls, wp, lp)) {
+      if (capture.editing != -2)
+        SetFocus(capture.text);
       return 0;
-    if (HIWORD(wp) == BN_CLICKED) {
-      if (LOWORD(wp) == ID_COLOR || LOWORD(wp) == ID_STROKE || LOWORD(wp) == ID_FONT ||
-          LOWORD(wp) == ID_OPACITY)
-        style_menu(LOWORD(wp));
-      else
-        editor_command(LOWORD(wp));
     }
+    if (HIWORD(wp) == BN_CLICKED)
+      editor_command(LOWORD(wp));
     return 0;
   case WM_ERASEBKGND:
     return 1;
@@ -1034,17 +939,14 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       capture.selected = -1;
     } else if (!PtInRect(&capture.viewport, p)) {
       capture.selected = -1;
+      load_tool_style(capture.tool);
       changed();
       return 0;
     } else {
       int index = hit_text(p);
       if (index >= 0 && (capture.tool == TOOL_SELECT || capture.tool == TOOL_TEXT)) {
         capture.selected = index;
-        capture.color = (int)image_session_value(capture.session, index, 5);
-        capture.opacity = image_session_value(capture.session, index, 8);
-        capture.font_size = (int)image_session_value(capture.session, index, 7);
-        capture.stroke = (int)image_session_value(capture.session, index, 6);
-        sync_style_controls();
+        load_annotation_style(index);
         capture.drag_mode = 1;
         capture.drag_bounds = capture.draft = annotation_rect(index);
         capture.handle = -1;
@@ -1059,6 +961,8 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       } else
         capture.selected = -1;
     }
+    if (capture.selected < 0 && capture.editing == -2)
+      load_tool_style(capture.tool);
     capture.dragging = TRUE;
     SetCapture(window);
     changed();
@@ -1087,7 +991,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
         if (capture.handle == 0 || capture.handle == 2 || capture.handle == 4 || capture.handle == 6)
           size = bounded(rounded(capture.font_size * (double)(r.right - r.left) /
                                  maximum(1, capture.drag_bounds.right - capture.drag_bounds.left)),
-                         8, 128);
+                         rounded(editor_style_min(MC_STYLE_FONT)), rounded(editor_style_max(MC_STYLE_FONT)));
         r = fit_annotation_bounds(capture.selected, r, size);
         preserve_text(capture.selected);
         image_session_update_rgba(capture.session, capture.selected, r.left, r.top, r.right - r.left,
@@ -1135,10 +1039,10 @@ static BOOL open_editor(void) {
   capture.selected = -1;
   capture.editing = -2;
   capture.tool = TOOL_SELECT;
-  capture.color = PALETTE[0];
-  capture.stroke = 4;
-  capture.font_size = 24;
-  capture.opacity = 1;
+  capture.style_bank = editor_style_create();
+  if (capture.style_bank <= 0)
+    return FALSE;
+  load_tool_style(capture.tool);
   capture.dirty = TRUE;
   HWND editor = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_CONTROLPARENT, EDITOR_CLASS,
                                 L"Mooji Cut · 标注后复制", WS_POPUP | WS_CLIPCHILDREN,
@@ -1323,10 +1227,14 @@ void mc_capture_close(void) {
     ReleaseCapture();
   if (overlay)
     DestroyWindow(overlay);
+  mc_style_controls_destroy(capture.style_controls);
+  capture.style_controls = NULL;
   if (editor)
     DestroyWindow(editor);
   if (capture.session > 0)
     image_session_dispose(capture.session);
+  if (capture.style_bank > 0)
+    editor_style_dispose(capture.style_bank);
   surface_free(&capture.desktop);
   surface_free(&capture.dimmed);
   surface_free(&capture.image);
@@ -1410,6 +1318,7 @@ bool mc_capture_handle_message(MSG *message) {
     if (!text && message->wParam == VK_DELETE && capture.selected >= 0) {
       image_session_remove(capture.session, capture.selected);
       capture.selected = -1;
+      load_tool_style(capture.tool);
       changed();
       return true;
     }
@@ -1469,39 +1378,77 @@ static BOOL save_capture_preview(void) {
   surface_free(&preview);
   return ok;
 }
-static BOOL style_visible(HWND control) { return (GetWindowLongPtrW(control, GWL_STYLE) & WS_VISIBLE) != 0; }
+static BOOL style_visible(int control) {
+  HWND window = mc_style_controls_window(capture.style_controls, control);
+  return window && (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
+}
+static BOOL choose_style(int field, double value) {
+  return mc_style_controls_choose(capture.style_controls, field, value);
+}
+static void step_style(BOOL increase) {
+  HWND button = mc_style_controls_window(capture.style_controls,
+      increase ? MC_STYLE_CONTROL_INCREASE : MC_STYLE_CONTROL_DECREASE);
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED), (LPARAM)button);
+}
 static BOOL context_toolbar_smoke(void) {
   RECT initial = capture.toolbar;
-  if (style_visible(capture.colors) || style_visible(capture.fonts) || style_visible(capture.strokes))
+  if (style_visible(MC_STYLE_CONTROL_COLOR) || style_visible(MC_STYLE_CONTROL_FONT) ||
+      style_visible(MC_STYLE_CONTROL_STROKE))
     return FALSE;
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_TEXT, BN_CLICKED), 0);
-  if (!style_visible(capture.colors) || !style_visible(capture.fonts) || !style_visible(capture.font_up) ||
-      !style_visible(capture.font_down) || style_visible(capture.strokes))
+  editor_command(ID_TEXT);
+  if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_FONT) ||
+      !style_visible(MC_STYLE_CONTROL_INCREASE) || !style_visible(MC_STYLE_CONTROL_DECREASE) ||
+      style_visible(MC_STYLE_CONTROL_STROKE) || capture.font_size != 32)
     return FALSE;
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_RECT, BN_CLICKED), 0);
-  if (!style_visible(capture.colors) || !style_visible(capture.strokes) || style_visible(capture.fonts) ||
-      !style_visible(capture.font_up))
+  if (!choose_style(MC_STYLE_COLOR, 0x246BFD) || !choose_style(MC_STYLE_OPACITY, .5))
     return FALSE;
-  SendMessageW(capture.editor, WM_COMMAND, STYLE_STROKE_BASE + 8, 0);
-  SendMessageW(capture.editor, WM_COMMAND, STYLE_COLOR_BASE + 2, 0);
-  if (capture.stroke != 8 || capture.color != PALETTE[2])
+  editor_command(ID_RECT);
+  if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_STROKE) ||
+      style_visible(MC_STYLE_CONTROL_FONT) || !style_visible(MC_STYLE_CONTROL_INCREASE) ||
+      capture.color != 0xF26769 || capture.opacity != 1)
     return FALSE;
-  SendMessageW(capture.editor, WM_COMMAND, ID_FONT_UP, 0);
+  if (!choose_style(MC_STYLE_STROKE, 8) || !choose_style(MC_STYLE_COLOR, 0x25A56A) ||
+      !choose_style(MC_STYLE_OPACITY, .3))
+    return FALSE;
+  step_style(TRUE);
   if (capture.stroke != 9)
     return FALSE;
-  SendMessageW(capture.editor, WM_COMMAND, ID_FONT_DOWN, 0);
+  step_style(FALSE);
   if (capture.stroke != 8)
     return FALSE;
-  SendMessageW(capture.editor, WM_COMMAND, STYLE_STROKE_BASE + 4, 0);
-  SendMessageW(capture.editor, WM_COMMAND, STYLE_COLOR_BASE, 0);
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_REDACT, BN_CLICKED), 0);
-  if (!style_visible(capture.colors) || !style_visible(capture.opacity_control) ||
-      style_visible(capture.fonts) || style_visible(capture.strokes))
+  editor_command(ID_ARROW);
+  if (capture.color != 0xF26769 || capture.opacity != 1 || capture.stroke != 4)
     return FALSE;
-  SendMessageW(capture.editor, WM_COMMAND, STYLE_COLOR_BASE + 2, 0);
-  if (capture.color != PALETTE[2])
+  if (!choose_style(MC_STYLE_COLOR, 0xFFFFFF) || !choose_style(MC_STYLE_OPACITY, .8))
     return FALSE;
-  SendMessageW(capture.editor, WM_COMMAND, STYLE_COLOR_BASE, 0);
+  editor_command(ID_REDACT);
+  if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_OPACITY) ||
+      style_visible(MC_STYLE_CONTROL_FONT) || style_visible(MC_STYLE_CONTROL_STROKE) ||
+      capture.color != 0x111111 || capture.opacity != 1)
+    return FALSE;
+  if (!choose_style(MC_STYLE_COLOR, 0x25A56A) || !choose_style(MC_STYLE_OPACITY, .2))
+    return FALSE;
+  editor_command(ID_TEXT);
+  if (capture.color != 0x246BFD || capture.opacity != .5)
+    return FALSE;
+  editor_command(ID_RECT);
+  if (capture.color != 0x25A56A || capture.opacity != .3 || capture.stroke != 8)
+    return FALSE;
+  editor_command(ID_ARROW);
+  if (capture.color != 0xFFFFFF || capture.opacity != .8)
+    return FALSE;
+  editor_command(ID_REDACT);
+  if (capture.color != 0x25A56A || capture.opacity != .2)
+    return FALSE;
+  // Restore the drawing defaults before the existing geometry/export fixture.
+  for (int tool = TOOL_RECT; tool <= TOOL_REDACT; tool++) {
+    editor_command(ID_SELECT + tool);
+    unsigned mask = (unsigned)editor_style_property_mask(tool);
+    for (int field = 0; field < 4; field++)
+      if ((mask & (1u << field)) && !choose_style(field,
+          tool == TOOL_REDACT && field == MC_STYLE_COLOR ? 0x111111 : editor_style_default(field)))
+        return FALSE;
+  }
   for (int i = 10; i < 12; i++) {
     if (IsWindowEnabled(capture.buttons[i]))
       return FALSE;
@@ -1525,9 +1472,60 @@ static BOOL context_toolbar_smoke(void) {
     if (!wcsstr(label, L"尚未开放"))
       return FALSE;
   }
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_SELECT, BN_CLICKED), 0);
-  return EqualRect(&initial, &capture.toolbar) && !style_visible(capture.colors) &&
-         !style_visible(capture.fonts);
+  editor_command(ID_SELECT);
+  return EqualRect(&initial, &capture.toolbar) && !style_visible(MC_STYLE_CONTROL_COLOR) &&
+         !style_visible(MC_STYLE_CONTROL_FONT);
+}
+static BOOL independent_text_style_smoke(void) {
+  editor_command(ID_TEXT);
+  if (!choose_style(MC_STYLE_COLOR, 0x246BFD) || !choose_style(MC_STYLE_OPACITY, .5) ||
+      !choose_style(MC_STYLE_FONT, 40))
+    return FALSE;
+  begin_text((POINT){50, 70}, -1);
+  SetWindowTextW(capture.text, L"独立文字样式");
+  step_style(TRUE); // A new draft updates the text tool's remembered default.
+  if (capture.font_size != 41 || !finish_text(FALSE))
+    return FALSE;
+  int index = capture.selected;
+  begin_text((POINT){50, 70}, index);
+  if (!choose_style(MC_STYLE_COLOR, 0xFFFFFF) || !choose_style(MC_STYLE_OPACITY, .8) ||
+      !choose_style(MC_STYLE_FONT, 60) || !finish_text(FALSE))
+    return FALSE;
+  // Selected-but-not-editing style changes follow the same isolation rule.
+  step_style(TRUE);
+  if (image_session_value(capture.session, index, 7) != 61 ||
+      !image_session_undo(capture.session) || image_session_value(capture.session, index, 7) != 60)
+    return FALSE;
+  load_annotation_style(index);
+  SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(600, 400));
+  if (capture.selected != -1 || capture.color != 0x246BFD || capture.opacity != .5 || capture.font_size != 41)
+    return FALSE;
+  editor_command(ID_RECT);
+  if (capture.color != 0xF26769 || capture.opacity != 1 || capture.stroke != 4)
+    return FALSE;
+  editor_command(ID_TEXT);
+  if (capture.color != 0x246BFD || capture.opacity != .5 || capture.font_size != 41 ||
+      image_session_value(capture.session, index, 5) != 0xFFFFFF ||
+      image_session_value(capture.session, index, 8) != .8 ||
+      image_session_value(capture.session, index, 7) != 60)
+    return FALSE;
+  begin_text((POINT){150, 80}, -1);
+  if (capture.color != 0x246BFD || capture.opacity != .5 || capture.font_size != 41)
+    return FALSE;
+  // Cancelling the draft cannot change the existing annotation or its style.
+  if (!finish_text(TRUE) || image_session_count(capture.session) != 1 ||
+      image_session_value(capture.session, index, 5) != 0xFFFFFF)
+    return FALSE;
+  if (!choose_style(MC_STYLE_COLOR, editor_style_default(MC_STYLE_COLOR)) ||
+      !choose_style(MC_STYLE_OPACITY, editor_style_default(MC_STYLE_OPACITY)) ||
+      !choose_style(MC_STYLE_FONT, editor_style_default(MC_STYLE_FONT)) ||
+      image_session_value(capture.session, index, 7) != 60 ||
+      image_session_value(capture.session, index, 5) != 0xFFFFFF ||
+      image_session_value(capture.session, index, 8) != .8)
+    return FALSE;
+  image_session_remove(capture.session, index);
+  editor_command(ID_SELECT);
+  return image_session_count(capture.session) == 0;
 }
 int mc_capture_smoke(HINSTANCE instance) {
   int result = 1;
@@ -1556,7 +1554,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   if (!capture.editor || capture.viewport.left != 10 || capture.viewport.top != 20 ||
       (GetWindowLongPtrW(capture.editor, GWL_STYLE) & WS_CAPTION))
     goto cleanup;
-  if (!context_toolbar_smoke())
+  if (!mc_style_controls_smoke(instance) || !context_toolbar_smoke() || !independent_text_style_smoke())
     goto cleanup;
   if (image_session_add(capture.session, TOOL_REDACT, 40, 60, 80, 60, 0, 4) != 1)
     goto cleanup;
@@ -1567,11 +1565,11 @@ int mc_capture_smoke(HINSTANCE instance) {
   SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_TRANSLATE, BN_CLICKED), 0);
   if (!capture.editor || capture.editing != -1 || image_session_count(capture.session) != 1)
     goto cleanup;
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_FONT_UP, BN_CLICKED), 0);
+  step_style(TRUE);
   if (capture.font_size != initial_font + 1 || image_session_count(capture.session) != 1)
     goto cleanup;
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_FONT_DOWN, BN_CLICKED), 0);
-  if (capture.font_size != initial_font || !style_visible(capture.fonts) || style_visible(capture.strokes))
+  step_style(FALSE);
+  if (capture.font_size != initial_font || !style_visible(MC_STYLE_CONTROL_FONT) || style_visible(MC_STYLE_CONTROL_STROKE))
     goto cleanup;
 
   SendMessageW(capture.text, WM_IME_STARTCOMPOSITION, 0, 0);
@@ -1662,7 +1660,9 @@ int mc_capture_smoke(HINSTANCE instance) {
   capture.selected = image_session_count(capture.session) - 1;
   capture.color = 0xF26769;
   capture.stroke = 4;
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(STYLE_FONT_BASE + 128, 0), 0);
+  sync_style_controls();
+  if (!choose_style(MC_STYLE_FONT, 128))
+    goto cleanup;
   if (image_session_value(capture.session, capture.selected, 4) < 128 || !render_image())
     goto cleanup;
   int colored = 0;
@@ -1710,7 +1710,8 @@ cleanup:
     GlobalFree(dib);
   mc_capture_close();
   printf("Windows screenshot smoke: %s (synthetic frozen overlay, inline multiline edit, style undo/redo, "
-         "cropped DIB, RGBA blend, pin geometry/hide/pass-through; clipboard untouched).\n",
+         "independent tool styles, isolated text edits, cropped DIB, RGBA blend, "
+         "pin geometry/hide/pass-through; clipboard untouched).\n",
          result ? "FAILED" : "passed");
   return result;
 }
