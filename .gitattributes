@@ -7,3 +7,8 @@
 # Moon package manifests are metadata, not AMPL source (.mod).
 moon.mod linguist-detectable=false
 moon.pkg linguist-detectable=false
+
+# Exclude the Objective-C platform layer from repository language statistics.
+*.m linguist-detectable=false
+*.mm linguist-detectable=false
+native/macos/**/*.h linguist-detectable=false
