@@ -47,11 +47,12 @@ void fill_round(Graphics &graphics, RectF rect, REAL radius, Color color) {
   SolidBrush brush(color);
   graphics.FillPath(&brush, &path);
 }
-void icon(Graphics &graphics, MCIcon name, RectF rect, float scale) {
+void icon(Graphics &graphics, MCIcon name, RectF rect, float scale, BOOL disabled) {
   MCIconPath data = mc_icon_path(name);
   GraphicsPath path;
-  REAL factor = 18 * scale / 24, x = rect.X + (rect.Width - 18 * scale) / 2,
-       y = rect.Y + (rect.Height - 18 * scale) / 2;
+  REAL glyph = (name == MC_ICON_CHEVRON_UP || name == MC_ICON_CHEVRON_DOWN) ? 10.0f : 18.0f;
+  REAL factor = glyph * scale / 24, x = rect.X + (rect.Width - glyph * scale) / 2,
+       y = rect.Y + (rect.Height - glyph * scale) / 2;
   PointF cursor(0, 0);
   for (unsigned i = 0; i < data.count; i++) {
     const MCIconCommand &c = data.commands[i];
@@ -69,7 +70,7 @@ void icon(Graphics &graphics, MCIcon name, RectF rect, float scale) {
     } else if (c.op == 'Z')
       path.CloseFigure();
   }
-  Pen pen(Color(255, 230, 227, 222), 1.5f * scale);
+  Pen pen(disabled ? Color(255, 111, 106, 120) : Color(255, 230, 227, 222), 1.5f * scale);
   pen.SetStartCap(LineCapRound);
   pen.SetEndCap(LineCapRound);
   pen.SetLineJoin(LineJoinRound);
@@ -107,13 +108,18 @@ extern "C" void mc_hud_card(HDC dc, const RECT *bounds, float scale, const wchar
   Pen border(Color(255, 65, 61, 73), scale);
   graphics.DrawPath(&border, &outline);
   Pen divider(Color(255, 76, 71, 83), scale);
-  graphics.DrawLine(&divider, rect.X + 194 * scale, rect.Y + 17 * scale, rect.X + 194 * scale,
-                    rect.Y + 31 * scale);
-  text(graphics, hint, RectF(rect.X + 14 * scale, rect.Y + 48 * scale, 314 * scale, 32 * scale),
+  const int separators[3] = {198, 286, 374};
+  for (int offset : separators)
+    graphics.DrawLine(&divider, rect.X + offset * scale, rect.Y + 17 * scale, rect.X + offset * scale,
+                      rect.Y + 31 * scale);
+  Pen row_separator(Color(255, 54, 51, 61), scale);
+  graphics.DrawLine(&row_separator, rect.X + 12 * scale, rect.Y + 46 * scale, rect.GetRight() - 12 * scale,
+                    rect.Y + 46 * scale);
+  text(graphics, hint, RectF(rect.X + 14 * scale, rect.Y + 52 * scale, 468 * scale, 32 * scale),
        10.5f * scale, Color(255, 151, 146, 156), StringAlignmentNear);
 }
 extern "C" void mc_hud_button(HDC dc, const RECT *bounds, int kind, int value, BOOL selected, BOOL hovered,
-                              BOOL pressed, BOOL focused, float scale) {
+                              BOOL pressed, BOOL focused, BOOL disabled, float scale) {
   ensure_runtime();
   Graphics graphics(dc);
   configure(graphics);
@@ -123,36 +129,35 @@ extern "C" void mc_hud_button(HDC dc, const RECT *bounds, int kind, int value, B
   graphics.FillRectangle(&base, rect);
   RectF highlight = rect;
   highlight.Inflate(-1 * scale, -1 * scale);
-  if (selected || hovered || pressed)
+  if (!disabled && (selected || hovered || pressed))
     fill_round(graphics, highlight, 7 * scale,
                pressed    ? Color(255, 91, 85, 101)
                : selected ? Color(255, 75, 70, 84)
                           : Color(255, 57, 53, 65));
-  if (focused) {
+  if (focused && !disabled) {
     GraphicsPath outline;
     rounded(outline, highlight, 7 * scale);
     Pen ring(Color(255, 156, 149, 167), scale);
     graphics.DrawPath(&ring, &outline);
   }
   if (kind >= 0 && kind < MC_ICON_COUNT)
-    icon(graphics, (MCIcon)kind, rect, scale);
+    icon(graphics, (MCIcon)kind, rect, scale, disabled);
   else if (kind == MC_HUD_COLOR) {
     SolidBrush swatch(Color(255, (BYTE)(value >> 16), (BYTE)(value >> 8), (BYTE)value));
-    REAL diameter = 18 * scale;
-    RectF circle(rect.X + (rect.Width - diameter) / 2, rect.Y + (rect.Height - diameter) / 2, diameter,
-                 diameter);
+    REAL diameter = 16 * scale;
+    RectF circle(rect.X + 8 * scale, rect.Y + (rect.Height - diameter) / 2, diameter, diameter);
     graphics.FillEllipse(&swatch, circle);
     Pen edge(Color(90, 255, 255, 255), scale);
     graphics.DrawEllipse(&edge, circle);
+    text(graphics, L"颜色", RectF(rect.X + 32 * scale, rect.Y, 48 * scale, rect.Height), 12 * scale,
+         Color(255, 222, 217, 228), StringAlignmentNear);
   } else if (kind == MC_HUD_STROKE) {
-    Pen stroke(Color(255, 226, 222, 230), (REAL)value * scale / 2);
-    stroke.SetStartCap(LineCapRound);
-    stroke.SetEndCap(LineCapRound);
-    graphics.DrawLine(&stroke, rect.X + 9 * scale, rect.Y + rect.Height / 2, rect.GetRight() - 9 * scale,
-                      rect.Y + rect.Height / 2);
+    wchar_t label[32];
+    swprintf_s(label, 32, L"线宽  %d px", value);
+    text(graphics, label, rect, 12 * scale, Color(255, 222, 217, 228), StringAlignmentCenter);
   } else if (kind == MC_HUD_FONT) {
     wchar_t label[32];
-    swprintf_s(label, 32, L"Aa  %d", value);
+    swprintf_s(label, 32, L"字号  %d", value);
     text(graphics, label, rect, 12 * scale, Color(255, 222, 217, 228), StringAlignmentCenter);
   }
 }

@@ -136,6 +136,14 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
 @property NSStepper *fontStepper;
 @property NSTextField *status;
 @property NSStackView *toolbar;
+@property NSStackView *properties;
+@property NSStackView *colorGroup;
+@property NSStackView *fontGroup;
+@property NSStackView *strokeGroup;
+@property NSSegmentedControl *lineWidth;
+@property NSButton *ocrButton;
+@property NSButton *translateButton;
+@property MCImageTool activeTool;
 @property NSButton *pinButton;
 @property NSVisualEffectView *floatingToolbar;
 @property BOOL overlayMode;
@@ -385,7 +393,6 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     self.editor.cancelButton.toolTip = @"取消截图";
     [self.window makeFirstResponder:self.textView];
     self.textView.selectedRange = NSMakeRange(self.textView.string.length, 0);
-    self.editor.status.stringValue = @"直接输入 · 回车换行 · ⌘回车完成 · 拖动边框移动 · 拖角缩放";
 }
 - (BOOL)finishTextEditing:(BOOL)commit {
     if (!self.textView) return YES;
@@ -709,6 +716,36 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     button.title = @"";
     button.bezelStyle = NSBezelStyleTexturedRounded;
 }
+- (NSButton *)unavailableButton:(MCIcon)icon label:(NSString *)label {
+    NSButton *button = [self button:label action:NULL key:nil];
+    [self configureIconButton:button icon:icon label:label shortcut:nil];
+    button.enabled = NO;
+    // AppKit applies the disabled appearance; avoid dimming its tint twice.
+    button.contentTintColor = NSColor.labelColor;
+    button.toolTip = [label stringByAppendingString:@" · 尚未开放"];
+    button.accessibilityHelp = @"尚未开放";
+    return button;
+}
+- (NSView *)toolbarDivider {
+    NSBox *divider = [NSBox new];
+    divider.boxType = NSBoxSeparator;
+    [divider.widthAnchor constraintEqualToConstant:1].active = YES;
+    [divider.heightAnchor constraintEqualToConstant:18].active = YES;
+    return divider;
+}
+- (NSTextField *)propertyLabel:(NSString *)text {
+    NSTextField *label = [NSTextField labelWithString:text];
+    label.font = [NSFont systemFontOfSize:11];
+    label.textColor = NSColor.secondaryLabelColor;
+    return label;
+}
+- (NSStackView *)propertyGroup:(NSArray<NSView *> *)views {
+    NSStackView *group = [NSStackView stackViewWithViews:views];
+    group.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    group.alignment = NSLayoutAttributeCenterY;
+    group.spacing = 7;
+    return group;
+}
 - (void)prepareWindow {
     if (!self.window) {
         NSScreen *screen = NSScreen.mainScreen ?: NSScreen.screens.firstObject;
@@ -720,7 +757,7 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         self.window.title = @"Mooji Cut · 标注截图";
         self.window.minSize = NSMakeSize(540, 400);
         NSView *root = self.window.contentView;
-        self.canvas = [[MCImageCanvas alloc] initWithFrame:NSMakeRect(0, 48, width, height - 108)];
+        self.canvas = [[MCImageCanvas alloc] initWithFrame:NSMakeRect(0, 0, width, height - 104)];
         self.canvas.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         self.canvas.editor = self;
         self.canvas.accessibilityLabel = @"截图标注画布";
@@ -740,13 +777,14 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
             }
         }
         self.tools.selectedSegmentBezelColor = MCSelectedToolColor();
-        self.tools.selectedSegment = MCRectTool;
+        self.tools.selectedSegment = self.activeTool = MCRectTool;
         self.tools.accessibilityLabel = @"标注工具";
-        self.color = [[NSColorWell alloc] initWithFrame:NSMakeRect(0, 0, 28, 28)];
+        self.color = [[NSColorWell alloc] initWithFrame:NSMakeRect(0, 0, 18, 18)];
         self.color.color = [NSColor colorWithSRGBRed:0.94 green:0.27 blue:0.27 alpha:1];
         self.color.accessibilityLabel = @"标注颜色";
         self.color.toolTip = @"标注颜色";
-        [self.color.widthAnchor constraintEqualToConstant:28].active = YES;
+        [self.color.widthAnchor constraintEqualToConstant:18].active = YES;
+        [self.color.heightAnchor constraintEqualToConstant:18].active = YES;
         self.color.colorWellStyle = NSColorWellStyleMinimal;
         self.color.target = self;
         self.color.action = @selector(styleChanged:);
@@ -775,43 +813,52 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         [self.redoButton.widthAnchor constraintEqualToConstant:32].active = YES;
         self.undoButton.keyEquivalentModifierMask = NSEventModifierFlagCommand;
         self.redoButton.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
-        NSImageView *fontIcon = [NSImageView imageViewWithImage:MCIconImage(MC_ICON_FONT_SIZE, @"字号")];
-        fontIcon.toolTip = @"文字字号";
-        [fontIcon.widthAnchor constraintEqualToConstant:18].active = YES;
-        NSStackView *toolbar = [NSStackView stackViewWithViews:@[self.tools, self.color,
-            fontIcon, self.fontSize, self.fontStepper, self.undoButton, self.redoButton]];
-        self.toolbar = toolbar;
-        toolbar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-        toolbar.spacing = 8;
-        toolbar.frame = NSMakeRect(18, height - 48, width - 36, 32);
-        toolbar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-        [root addSubview:toolbar];
-        self.status = [NSTextField labelWithString:@""];
-        self.status.frame = NSMakeRect(18, 15, width - 400, 20);
-        self.status.autoresizingMask = NSViewWidthSizable;
-        self.status.textColor = NSColor.secondaryLabelColor;
-        self.status.lineBreakMode = NSLineBreakByTruncatingTail;
-        [root addSubview:self.status];
         self.pinButton = [self button:@"贴图" action:@selector(pinImage:) key:nil];
         [self configureIconButton:self.pinButton icon:MC_ICON_PIN label:@"贴图置顶" shortcut:nil];
-        self.pinButton.frame = NSMakeRect(width - 140, 9, 36, 32);
-        self.pinButton.autoresizingMask = NSViewMinXMargin;
         self.pinButton.toolTip = @"将编辑结果置顶显示在桌面";
-        [root addSubview:self.pinButton];
-        NSButton *cancel = [self button:@"取消" action:@selector(cancel:) key:@"\e"];
-        [self configureIconButton:cancel icon:MC_ICON_CLOSE label:@"取消截图" shortcut:@"Esc"];
-        self.cancelButton = cancel;
-        cancel.keyEquivalentModifierMask = 0;
-        cancel.frame = NSMakeRect(width - 96, 9, 36, 32);
-        cancel.autoresizingMask = NSViewMinXMargin;
-        [root addSubview:cancel];
-        NSButton *confirm = [self button:@"确认并复制" action:@selector(confirm:) key:@"\r"];
-        [self configureIconButton:confirm icon:MC_ICON_CHECK label:@"确认并复制" shortcut:@"Return"];
-        self.confirmButton = confirm;
-        confirm.keyEquivalentModifierMask = 0;
-        confirm.frame = NSMakeRect(width - 52, 9, 36, 32);
-        confirm.autoresizingMask = NSViewMinXMargin;
-        [root addSubview:confirm];
+        self.cancelButton = [self button:@"取消" action:@selector(cancel:) key:@"\e"];
+        [self configureIconButton:self.cancelButton icon:MC_ICON_CLOSE label:@"取消截图" shortcut:@"Esc"];
+        self.cancelButton.keyEquivalentModifierMask = 0;
+        self.confirmButton = [self button:@"确认并复制" action:@selector(confirm:) key:@"\r"];
+        [self configureIconButton:self.confirmButton icon:MC_ICON_CHECK label:@"确认并复制" shortcut:@"Return"];
+        self.confirmButton.keyEquivalentModifierMask = 0;
+        self.ocrButton = [self unavailableButton:MC_ICON_OCR label:@"文字识别（OCR）"];
+        self.translateButton = [self unavailableButton:MC_ICON_TRANSLATE label:@"翻译"];
+        NSView *spacer = [NSView new];
+        [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+        self.toolbar = [NSStackView stackViewWithViews:@[self.tools, [self toolbarDivider], self.ocrButton,
+            self.translateButton, [self toolbarDivider], self.undoButton, self.redoButton, spacer,
+            self.pinButton, self.cancelButton, self.confirmButton]];
+        self.toolbar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        self.toolbar.alignment = NSLayoutAttributeCenterY;
+        self.toolbar.spacing = 6;
+        self.toolbar.frame = NSMakeRect(18, height - 46, width - 36, 32);
+        self.toolbar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+        for (NSButton *button in @[self.ocrButton, self.translateButton, self.pinButton, self.cancelButton, self.confirmButton])
+            [button.widthAnchor constraintEqualToConstant:28].active = YES;
+        [root addSubview:self.toolbar];
+        self.colorGroup = [self propertyGroup:@[[self propertyLabel:@"颜色"], self.color]];
+        self.fontGroup = [self propertyGroup:@[[self propertyLabel:@"字号"], self.fontSize, self.fontStepper]];
+        self.lineWidth = [NSSegmentedControl segmentedControlWithLabels:@[@"细 2", @"中 4", @"粗 8"]
+            trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(styleChanged:)];
+        self.lineWidth.selectedSegment = 1;
+        self.lineWidth.selectedSegmentBezelColor = MCSelectedToolColor();
+        self.lineWidth.accessibilityLabel = @"标注线宽";
+        for (NSInteger index = 0; index < 3; index++) {
+            [self.lineWidth setTag:(index == 0 ? 2 : index == 1 ? 4 : 8) forSegment:index];
+            [self.lineWidth setWidth:44 forSegment:index];
+            [self.lineWidth setToolTip:[NSString stringWithFormat:@"%@ 像素", @([self.lineWidth tagForSegment:index])]
+                forSegment:index];
+        }
+        self.strokeGroup = [self propertyGroup:@[[self propertyLabel:@"线宽"], self.lineWidth]];
+        self.status = [self propertyLabel:@""];
+        self.status.lineBreakMode = NSLineBreakByTruncatingTail;
+        self.properties = [self propertyGroup:@[self.colorGroup, self.fontGroup, self.strokeGroup, self.status]];
+        self.properties.spacing = 18;
+        self.properties.detachesHiddenViews = YES;
+        self.properties.frame = NSMakeRect(24, height - 86, width - 48, 28);
+        self.properties.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+        [root addSubview:self.properties];
         [self.window center];
     }
     [self refresh];
@@ -837,7 +884,7 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     self.floatingToolbar.layer.cornerRadius = 12;
     self.floatingToolbar.layer.masksToBounds = YES;
     self.floatingToolbar.hidden = YES;
-    for (NSView *view in @[self.toolbar, self.status, self.pinButton, self.cancelButton, self.confirmButton]) {
+    for (NSView *view in @[self.toolbar, self.properties]) {
         [view removeFromSuperview];
         view.autoresizingMask = NSViewNotSizable;
         [self.floatingToolbar addSubview:view];
@@ -861,7 +908,7 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         self.document = created;
         self.hasCaptureRegion = YES;
         // Text is immediately available once the selection is complete.
-        self.tools.selectedSegment = MCSelectTool;
+        self.tools.selectedSegment = self.activeTool = MCSelectTool;
     } else if (![viewport isEqual:self.document[@"viewport"]]) {
         passed = [self applyCommand:@{@"type":@"crop", @"rect":viewport}];
     }
@@ -875,19 +922,17 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     NSView *root = self.window.contentView;
     NSRect region = [self.canvas viewRectForImageRect:MCAnnotationRect(self.document[@"viewport"])];
     region = [self.canvas convertRect:region toView:root];
-    CGFloat width = MIN(460, NSWidth(root.bounds) - 24), height = 86;
+    CGFloat width = MIN(500, NSWidth(root.bounds) - 24), height = 92;
     CGFloat x = MAX(12, MIN(NSMinX(region), NSWidth(root.bounds) - width - 12));
     CGFloat y = NSMinY(region) - height - 10;
     if (y < 12) y = NSMaxY(region) + 10;
     y = MAX(12, MIN(y, NSHeight(root.bounds) - height - 12));
     self.floatingToolbar.frame = NSMakeRect(x, y, width, height);
-    self.toolbar.spacing = width < 420 ? 4 : 8;
-    self.toolbar.frame = NSMakeRect(12, 44, width - 24, 32);
-    self.status.frame = NSMakeRect(14, 12, width - 154, 20);
-    self.status.font = [NSFont systemFontOfSize:11];
-    self.pinButton.frame = NSMakeRect(width - 132, 8, 36, 28);
-    self.cancelButton.frame = NSMakeRect(width - 92, 8, 36, 28);
-    self.confirmButton.frame = NSMakeRect(width - 52, 8, 40, 28);
+    self.toolbar.spacing = width < 440 ? 2 : 6;
+    for (NSInteger index = 0; index < self.tools.segmentCount; index++)
+        [self.tools setWidth:width < 440 ? 21 : 28 forSegment:index];
+    self.toolbar.frame = NSMakeRect(12, 48, width - 24, 32);
+    self.properties.frame = NSMakeRect(18, 12, width - 36, 28);
 }
 - (void)show {
     if (!self.window) [self prepareWindow];
@@ -905,10 +950,10 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     [self syncTextControls];
     self.pinButton.enabled = self.onPinPNGData != nil;
     [self positionFloatingToolbar];
-    self.status.stringValue = [NSString stringWithFormat:@"%@ × %@ 像素 · %lu 条标注", self.document[@"width"], self.document[@"height"], (unsigned long)[self.document[@"annotations"] count]];
-    if (self.canvas.selectedID) self.status.stringValue = @"拖动文字移动 · 拖角缩放 · 拖左右边框换行 · 双击编辑 · Delete 删除";
 }
 - (void)showError:(NSError *)error {
+    self.colorGroup.hidden = self.fontGroup.hidden = self.strokeGroup.hidden = YES;
+    self.status.hidden = NO;
     self.status.stringValue = error.localizedDescription;
     NSBeep();
 }
@@ -920,8 +965,15 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
 - (void)syncTextControls {
     NSDictionary *annotation = [self.canvas selectedAnnotation];
     BOOL hasText = [annotation[@"type"] isEqual:@"text"];
-    self.fontSize.enabled = self.fontStepper.enabled = hasText || self.tools.selectedSegment == MCTextTool;
-    self.color.enabled = hasText || self.tools.selectedSegment != MCRedactTool;
+    BOOL textProperties = hasText || self.tools.selectedSegment == MCTextTool;
+    BOOL shapeProperties = !hasText && (self.tools.selectedSegment == MCRectTool || self.tools.selectedSegment == MCArrowTool);
+    self.fontSize.enabled = self.fontStepper.enabled = textProperties;
+    self.color.enabled = textProperties || shapeProperties;
+    self.colorGroup.hidden = !(textProperties || shapeProperties);
+    self.fontGroup.hidden = !textProperties;
+    self.strokeGroup.hidden = !shapeProperties;
+    self.status.hidden = textProperties || shapeProperties;
+    self.status.stringValue = self.tools.selectedSegment == MCRedactTool ? @"实心遮挡" : @"选择标注以调整属性";
     if (hasText) {
         self.color.color = MCAnnotationColor(annotation);
         self.fontSize.doubleValue = [annotation[@"fontSize"] doubleValue];
@@ -950,14 +1002,16 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
 }
 - (void)chooseTool:(id)sender {
     (void)sender;
-    if (![self.canvas finishTextEditing:YES]) return;
+    if (self.canvas.textView.hasMarkedText) {
+        self.tools.selectedSegment = self.activeTool;
+        return;
+    }
+    if (![self.canvas finishTextEditing:YES]) { self.tools.selectedSegment = self.activeTool; return; }
+    self.activeTool = self.tools.selectedSegment;
     [self.canvas cancelGesture];
     self.canvas.selectedID = nil;
     [self syncTextControls];
     [self.window makeFirstResponder:self.canvas];
-    self.status.stringValue = self.tools.selectedSegment == MCTextTool ? @"点击画面直接输入文字，双击已有文字继续编辑。" :
-        self.tools.selectedSegment == MCRedactTool ? @"拖动画面添加不透明遮挡。" :
-        self.tools.selectedSegment == MCSelectTool ? @"选择文字后拖动、缩放，或双击编辑。" : @"在画面上拖动添加标注。";
 }
 - (NSDictionary *)annotationFrom:(NSPoint)start to:(NSPoint)end {
     if (hypot(end.x - start.x, end.y - start.y) < 3) return nil;
@@ -967,7 +1021,7 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         @"id":NSUUID.UUID.UUIDString, @"type":arrow ? @"arrow" : redact ? @"redact" : @"rect",
         @"x":@(arrow ? start.x : MIN(start.x,end.x)), @"y":@(arrow ? start.y : MIN(start.y,end.y)),
         @"width":@(MAX(1,fabs(end.x-start.x))), @"height":@(MAX(1,fabs(end.y-start.y))),
-        @"stroke":@4, @"opacity":@1, @"color":redact ? @"#000000" : [self colorHex] } mutableCopy];
+        @"stroke":@([self.lineWidth tagForSegment:self.lineWidth.selectedSegment]), @"opacity":@1, @"color":redact ? @"#000000" : [self colorHex] } mutableCopy];
     if (arrow) { annotation[@"x2"] = @(end.x); annotation[@"y2"] = @(end.y); }
     return annotation;
 }

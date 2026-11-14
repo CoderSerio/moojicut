@@ -35,7 +35,11 @@ enum {
   ID_COLOR,
   ID_STROKE,
   ID_PIN,
-  ID_FONT
+  ID_FONT,
+  ID_FONT_UP,
+  ID_FONT_DOWN,
+  ID_OCR,
+  ID_TRANSLATE
 };
 enum { STYLE_COLOR_BASE = 9200, STYLE_STROKE_BASE = 9300, STYLE_FONT_BASE = 9400 };
 typedef struct {
@@ -47,7 +51,7 @@ typedef struct {
 } Surface;
 typedef struct {
   HINSTANCE instance;
-  HWND owner, overlay, editor, text, colors, strokes, fonts, tooltip, buttons[10];
+  HWND owner, overlay, editor, text, colors, strokes, fonts, font_up, font_down, tooltip, buttons[12];
   HFONT font, text_font;
   Surface desktop, dimmed, image, rendered;
   RECT desktop_bounds, canvas, viewport, toolbar, drag_bounds, draft;
@@ -256,7 +260,28 @@ static BOOL copy_image(void) {
   return success;
 }
 
+/* Style context follows an active text draft/selection before the current drawing tool. */
+static int style_context(void) {
+  if (capture.editing != -2 ||
+      (capture.selected >= 0 && (int)image_session_value(capture.session, capture.selected, 0) == TOOL_TEXT))
+    return TOOL_TEXT;
+  return capture.tool;
+}
+static void update_style_context(void) {
+  if (!capture.colors)
+    return;
+  int context = style_context();
+  BOOL text = context == TOOL_TEXT, shape = context == TOOL_RECT || context == TOOL_ARROW;
+  ShowWindow(capture.colors, text || shape ? SW_SHOWNA : SW_HIDE);
+  ShowWindow(capture.strokes, shape ? SW_SHOWNA : SW_HIDE);
+  ShowWindow(capture.fonts, text ? SW_SHOWNA : SW_HIDE);
+  ShowWindow(capture.font_up, text ? SW_SHOWNA : SW_HIDE);
+  ShowWindow(capture.font_down, text ? SW_SHOWNA : SW_HIDE);
+  EnableWindow(capture.font_up, capture.font_size < 128);
+  EnableWindow(capture.font_down, capture.font_size > 8);
+}
 static void changed(void) {
+  update_style_context();
   capture.dirty = TRUE;
   if (capture.editor)
     InvalidateRect(capture.editor, NULL, FALSE);
@@ -289,26 +314,41 @@ static void preserve_text(int index) {
 static void layout_editor(HWND window) {
   RECT client;
   GetClientRect(window, &client);
-  int width = dpi_px(window, 460), height = dpi_px(window, 88), gap = dpi_px(window, 10);
-  int x = bounded(capture.viewport.left, 6, maximum(6, client.right - width - 6));
-  int y = capture.viewport.bottom + gap;
+  int width = dpi_px(window, 500), height = dpi_px(window, 92), gap = dpi_px(window, 10);
+  int x = bounded(capture.viewport.left, 6, maximum(6, client.right - width - 6)),
+      y = capture.viewport.bottom + gap;
   if (y + height > client.bottom - 6)
     y = capture.viewport.top - height - gap;
   y = bounded(y, 6, maximum(6, client.bottom - height - 6));
   SetRect(&capture.toolbar, x, y, x + width, y + height);
   int size = dpi_px(window, 32);
   for (int i = 0; i < 5; i++)
-    MoveWindow(capture.buttons[i], x + dpi_px(window, 8 + i * 36), y + dpi_px(window, 8), size, size, TRUE);
-  MoveWindow(capture.colors, x + dpi_px(window, 204), y + dpi_px(window, 8), size, size, TRUE);
-  MoveWindow(capture.strokes, x + dpi_px(window, 240), y + dpi_px(window, 8), size, size, TRUE);
-  MoveWindow(capture.fonts, x + dpi_px(window, 276), y + dpi_px(window, 8), dpi_px(window, 68), size, TRUE);
-  MoveWindow(capture.buttons[5], x + dpi_px(window, 356), y + dpi_px(window, 8), size, size, TRUE);
-  MoveWindow(capture.buttons[6], x + dpi_px(window, 392), y + dpi_px(window, 8), size, size, TRUE);
+    MoveWindow(capture.buttons[i], x + dpi_px(window, 12 + i * 36), y + dpi_px(window, 8), size, size, TRUE);
+  for (int i = 10; i < 12; i++) {
+    int left = x + dpi_px(window, 208 + (i - 10) * 36), top = y + dpi_px(window, 8);
+    MoveWindow(capture.buttons[i], left, top, size, size, TRUE);
+    TOOLINFOW tip = {sizeof(tip)};
+    tip.hwnd = window;
+    tip.uId = i == 10 ? ID_OCR : ID_TRANSLATE;
+    SetRect(&tip.rect, left, top, left + size, top + size);
+    SendMessageW(capture.tooltip, TTM_NEWTOOLRECTW, 0, (LPARAM)&tip);
+  }
+  MoveWindow(capture.buttons[5], x + dpi_px(window, 296), y + dpi_px(window, 8), size, size, TRUE);
+  MoveWindow(capture.buttons[6], x + dpi_px(window, 332), y + dpi_px(window, 8), size, size, TRUE);
   for (int i = 7; i < 10; i++)
-    MoveWindow(capture.buttons[i], x + dpi_px(window, 344 + (i - 7) * 36), y + dpi_px(window, 48), size, size,
+    MoveWindow(capture.buttons[i], x + dpi_px(window, 384 + (i - 7) * 36), y + dpi_px(window, 8), size, size,
                TRUE);
+  MoveWindow(capture.colors, x + dpi_px(window, 12), y + dpi_px(window, 52), dpi_px(window, 88), size, TRUE);
+  MoveWindow(capture.strokes, x + dpi_px(window, 112), y + dpi_px(window, 52), dpi_px(window, 104), size,
+             TRUE);
+  MoveWindow(capture.fonts, x + dpi_px(window, 112), y + dpi_px(window, 52), dpi_px(window, 88), size, TRUE);
+  MoveWindow(capture.font_up, x + dpi_px(window, 204), y + dpi_px(window, 52), dpi_px(window, 24),
+             dpi_px(window, 16), TRUE);
+  MoveWindow(capture.font_down, x + dpi_px(window, 204), y + dpi_px(window, 68), dpi_px(window, 24),
+             dpi_px(window, 16), TRUE);
   capture.canvas = capture.viewport;
   capture.zoom = 1;
+  update_style_context();
   InvalidateRect(window, NULL, FALSE);
 }
 /* Use the export font and wrapping rules for all live/committed text geometry.
@@ -436,6 +476,7 @@ static void sync_style_controls(void) {
   InvalidateRect(capture.colors, NULL, FALSE);
   InvalidateRect(capture.strokes, NULL, FALSE);
   InvalidateRect(capture.fonts, NULL, FALSE);
+  update_style_context();
 }
 static void begin_text(POINT point, int index) {
   if (!finish_text(FALSE))
@@ -522,11 +563,11 @@ static void region_label(HDC dc, RECT rect) {
   TextOutW(dc, maximum(0, rect.left), maximum(0, rect.top - 24), label, (int)wcslen(label));
   SelectObject(dc, old);
 }
-static const int button_ids[10] = {ID_SELECT, ID_RECT, ID_ARROW, ID_TEXT,   ID_REDACT,
-                                   ID_UNDO,   ID_REDO, ID_PIN,   ID_CANCEL, ID_COPY};
-static const MCIcon button_icons[10] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT,
+static const int button_ids[12] = {ID_SELECT, ID_RECT, ID_ARROW,  ID_TEXT, ID_REDACT, ID_UNDO,
+                                   ID_REDO,   ID_PIN,  ID_CANCEL, ID_COPY, ID_OCR,    ID_TRANSLATE};
+static const MCIcon button_icons[12] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT,
                                         MC_ICON_REDACT, MC_ICON_UNDO,      MC_ICON_REDO,  MC_ICON_PIN,
-                                        MC_ICON_CLOSE,  MC_ICON_CHECK};
+                                        MC_ICON_CLOSE,  MC_ICON_CHECK,     MC_ICON_OCR,   MC_ICON_TRANSLATE};
 static LRESULT CALLBACK hud_button_proc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id,
                                         DWORD_PTR data) {
   (void)id;
@@ -570,6 +611,8 @@ static BOOL add_shape(void) {
                            capture.tool == TOOL_REDACT ? 0 : capture.color, capture.stroke) == 1;
 }
 static void editor_command(int command) {
+  if (command == ID_OCR || command == ID_TRANSLATE)
+    return;
   if (!finish_text(FALSE))
     return;
   if (command >= ID_SELECT && command <= ID_REDACT) {
@@ -623,14 +666,29 @@ static void apply_style(void) {
   }
 }
 static BOOL apply_style_command(int command) {
-  if (command >= STYLE_COLOR_BASE && command < STYLE_COLOR_BASE + 5)
+  int context = style_context();
+  if (command == ID_FONT_UP || command == ID_FONT_DOWN) {
+    if (context == TOOL_TEXT && !capture.composing) {
+      capture.font_size = bounded(capture.font_size + (command == ID_FONT_UP ? 1 : -1), 8, 128);
+      apply_style();
+      sync_style_controls();
+    }
+    return TRUE;
+  }
+  if (command >= STYLE_COLOR_BASE && command < STYLE_COLOR_BASE + 5) {
+    if (context != TOOL_TEXT && context != TOOL_RECT && context != TOOL_ARROW)
+      return TRUE;
     capture.color = PALETTE[command - STYLE_COLOR_BASE];
-  else if (command == STYLE_STROKE_BASE + 2 || command == STYLE_STROKE_BASE + 4 ||
-           command == STYLE_STROKE_BASE + 8)
+  } else if (command == STYLE_STROKE_BASE + 2 || command == STYLE_STROKE_BASE + 4 ||
+             command == STYLE_STROKE_BASE + 8) {
+    if (context != TOOL_RECT && context != TOOL_ARROW)
+      return TRUE;
     capture.stroke = command - STYLE_STROKE_BASE;
-  else if (command >= STYLE_FONT_BASE + 8 && command <= STYLE_FONT_BASE + 128)
+  } else if (command >= STYLE_FONT_BASE + 8 && command <= STYLE_FONT_BASE + 128) {
+    if (context != TOOL_TEXT)
+      return TRUE;
     capture.font_size = command - STYLE_FONT_BASE;
-  else
+  } else
     return FALSE;
   apply_style();
   sync_style_controls();
@@ -701,9 +759,11 @@ static void paint_editor(HDC dc) {
     frame(dc, v, TRUE);
     region_label(dc, v);
   }
+  int context = style_context();
   mc_hud_card(dc, &capture.toolbar, (float)GetDpiForWindow(capture.editor) / 96,
-              capture.editing == -2 ? L"拖动移动 · 双击编辑 · Ctrl+Enter 确认"
-                                    : L"直接输入 · Enter 换行 · Ctrl+Enter 完成");
+              context == TOOL_REDACT   ? L"不透明遮挡 · 覆盖区域不会透出原图"
+              : context == TOOL_SELECT ? L"选择标注以调整样式"
+                                       : L"");
 }
 static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
   switch (message) {
@@ -712,17 +772,40 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     capture.font =
         CreateFontW(-dpi_px(window, 14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    const wchar_t *labels[10] = {
-        L"选择",        L"矩形",        L"箭头", L"文字",     L"遮挡",
-        L"撤销 Ctrl+Z", L"重做 Ctrl+Y", L"贴图", L"取消 Esc", L"确认并复制 Ctrl+Enter"};
+    const wchar_t *labels[12] = {L"选择",
+                                 L"矩形",
+                                 L"箭头",
+                                 L"文字",
+                                 L"遮挡",
+                                 L"撤销 Ctrl+Z",
+                                 L"重做 Ctrl+Y",
+                                 L"贴图",
+                                 L"取消 Esc",
+                                 L"确认并复制 Ctrl+Enter",
+                                 L"文字识别 · 尚未开放",
+                                 L"翻译 · 尚未开放"};
     capture.tooltip =
         CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT,
                         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, NULL, capture.instance, NULL);
-    for (int i = 0; i < 10; i++)
+    for (int i = 0; i < 12; i++)
       capture.buttons[i] = hud_button(window, button_ids[i], labels[i]);
+    for (int i = 10; i < 12; i++) {
+      EnableWindow(capture.buttons[i], FALSE);
+      TOOLINFOW tip = {sizeof(tip)};
+      tip.hwnd = window;
+      tip.uId = (UINT_PTR)capture.buttons[i];
+      tip.uFlags = TTF_IDISHWND;
+      SendMessageW(capture.tooltip, TTM_DELTOOLW, 0, (LPARAM)&tip);
+      tip.uId = button_ids[i];
+      tip.uFlags = TTF_SUBCLASS;
+      tip.lpszText = (LPWSTR)labels[i];
+      SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
+    }
     capture.colors = hud_button(window, ID_COLOR, L"标注颜色 · 点击选择");
     capture.strokes = hud_button(window, ID_STROKE, L"线条宽度 · 点击选择");
-    capture.fonts = hud_button(window, ID_FONT, L"文字大小 · 点击选择");
+    capture.fonts = hud_button(window, ID_FONT, L"字号 · 点击选择");
+    capture.font_up = hud_button(window, ID_FONT_UP, L"增大字号 1 像素");
+    capture.font_down = hud_button(window, ID_FONT_DOWN, L"减小字号 1 像素");
     sync_style_controls();
     capture.text = CreateWindowExW(0, L"EDIT", L"",
                                    WS_CHILD | WS_TABSTOP | ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL, 0,
@@ -744,7 +827,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
     int kind = -1, value = 0;
     BOOL selected = FALSE;
-    for (int i = 0; i < 10; i++)
+    for (int i = 0; i < 12; i++)
       if (item->CtlID == (UINT)button_ids[i]) {
         kind = button_icons[i];
         selected = i < 5 && capture.tool == i;
@@ -759,11 +842,15 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       kind = MC_HUD_FONT;
       value = capture.font_size;
     }
+    if (item->CtlID == ID_FONT_UP)
+      kind = MC_ICON_CHEVRON_UP;
+    if (item->CtlID == ID_FONT_DOWN)
+      kind = MC_ICON_CHEVRON_DOWN;
     if (kind >= 0) {
       mc_hud_button(item->hDC, &item->rcItem, kind, value, selected,
                     GetPropW(item->hwndItem, L"MoojiCut.Hover") != NULL,
                     (item->itemState & ODS_SELECTED) != 0, (item->itemState & ODS_FOCUS) != 0,
-                    (float)GetDpiForWindow(window) / 96);
+                    !IsWindowEnabled(item->hwndItem), (float)GetDpiForWindow(window) / 96);
       return TRUE;
     }
     break;
@@ -776,6 +863,8 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     }
     break;
   case WM_COMMAND:
+    if (LOWORD(wp) == ID_OCR || LOWORD(wp) == ID_TRANSLATE)
+      return 0;
     if (LOWORD(wp) == ID_TEXT_INPUT && HIWORD(wp) == EN_CHANGE && capture.editing != -2) {
       style_text();
       return 0;
@@ -1132,6 +1221,8 @@ void mc_capture_close(void) {
 bool mc_capture_handle_message(MSG *message) {
   if (!capture.editor || (message->hwnd != capture.editor && !IsChild(capture.editor, message->hwnd)))
     return false;
+  if (message->message >= WM_MOUSEFIRST && message->message <= WM_MOUSELAST)
+    SendMessageW(capture.tooltip, TTM_RELAYEVENT, 0, (LPARAM)message);
   // Let the native EDIT/IME consume candidate selection and cancellation keys.
   if (capture.composing)
     return false;
@@ -1256,6 +1347,58 @@ static BOOL save_capture_preview(void) {
   surface_free(&preview);
   return ok;
 }
+static BOOL style_visible(HWND control) { return (GetWindowLongPtrW(control, GWL_STYLE) & WS_VISIBLE) != 0; }
+static BOOL context_toolbar_smoke(void) {
+  RECT initial = capture.toolbar;
+  if (style_visible(capture.colors) || style_visible(capture.fonts) || style_visible(capture.strokes))
+    return FALSE;
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_TEXT, BN_CLICKED), 0);
+  if (!style_visible(capture.colors) || !style_visible(capture.fonts) || !style_visible(capture.font_up) ||
+      !style_visible(capture.font_down) || style_visible(capture.strokes))
+    return FALSE;
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_RECT, BN_CLICKED), 0);
+  if (!style_visible(capture.colors) || !style_visible(capture.strokes) || style_visible(capture.fonts) ||
+      style_visible(capture.font_up))
+    return FALSE;
+  SendMessageW(capture.editor, WM_COMMAND, STYLE_STROKE_BASE + 8, 0);
+  SendMessageW(capture.editor, WM_COMMAND, STYLE_COLOR_BASE + 2, 0);
+  if (capture.stroke != 8 || capture.color != PALETTE[2])
+    return FALSE;
+  SendMessageW(capture.editor, WM_COMMAND, STYLE_STROKE_BASE + 4, 0);
+  SendMessageW(capture.editor, WM_COMMAND, STYLE_COLOR_BASE, 0);
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_REDACT, BN_CLICKED), 0);
+  if (style_visible(capture.colors) || style_visible(capture.fonts) || style_visible(capture.strokes))
+    return FALSE;
+  SendMessageW(capture.editor, WM_COMMAND, STYLE_COLOR_BASE + 2, 0);
+  if (capture.color != PALETTE[0])
+    return FALSE;
+  for (int i = 10; i < 12; i++) {
+    if (IsWindowEnabled(capture.buttons[i]))
+      return FALSE;
+    RECT button;
+    GetWindowRect(capture.buttons[i], &button);
+    POINT point = {(button.left + button.right) / 2, (button.top + button.bottom) / 2};
+    ScreenToClient(capture.editor, &point);
+    TTHITTESTINFOW hit = {0};
+    hit.hwnd = capture.editor;
+    hit.pt = point;
+    hit.ti.cbSize = sizeof(hit.ti);
+    if (!SendMessageW(capture.tooltip, TTM_HITTESTW, 0, (LPARAM)&hit) ||
+        hit.ti.uId != (UINT_PTR)button_ids[i])
+      return FALSE;
+    wchar_t label[128] = {0};
+    TOOLINFOW tip = {sizeof(tip)};
+    tip.hwnd = capture.editor;
+    tip.uId = button_ids[i];
+    tip.lpszText = label;
+    SendMessageW(capture.tooltip, TTM_GETTEXTW, ARRAYSIZE(label), (LPARAM)&tip);
+    if (!wcsstr(label, L"尚未开放"))
+      return FALSE;
+  }
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_SELECT, BN_CLICKED), 0);
+  return EqualRect(&initial, &capture.toolbar) && !style_visible(capture.colors) &&
+         !style_visible(capture.fonts);
+}
 int mc_capture_smoke(HINSTANCE instance) {
   int result = 1;
   HGLOBAL dib = NULL;
@@ -1283,10 +1426,24 @@ int mc_capture_smoke(HINSTANCE instance) {
   if (!capture.editor || capture.viewport.left != 10 || capture.viewport.top != 20 ||
       (GetWindowLongPtrW(capture.editor, GWL_STYLE) & WS_CAPTION))
     goto cleanup;
+  if (!context_toolbar_smoke())
+    goto cleanup;
   if (image_session_add(capture.session, TOOL_REDACT, 40, 60, 80, 60, 0, 4) != 1)
     goto cleanup;
   begin_text((POINT){50, 70}, -1);
   SetWindowTextW(capture.text, L"截图测试 MoonBit\r\n第二行");
+  int initial_font = capture.font_size;
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_OCR, BN_CLICKED), 0);
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_TRANSLATE, BN_CLICKED), 0);
+  if (!capture.editor || capture.editing != -1 || image_session_count(capture.session) != 1)
+    goto cleanup;
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_FONT_UP, BN_CLICKED), 0);
+  if (capture.font_size != initial_font + 1 || image_session_count(capture.session) != 1)
+    goto cleanup;
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_FONT_DOWN, BN_CLICKED), 0);
+  if (capture.font_size != initial_font || !style_visible(capture.fonts) || style_visible(capture.strokes))
+    goto cleanup;
+
   SendMessageW(capture.text, WM_IME_STARTCOMPOSITION, 0, 0);
   MSG ime_key = {0};
   ime_key.hwnd = capture.text;

@@ -14,6 +14,21 @@
 @property (readonly) MCImageCanvas *canvas;
 @property (readonly) NSView *floatingToolbar;
 @property (readonly) BOOL hasCaptureRegion;
+@property (readonly) NSSegmentedControl *tools;
+@property (readonly) NSStackView *toolbar;
+@property (readonly) NSStackView *properties;
+@property (readonly) NSStackView *colorGroup;
+@property (readonly) NSStackView *fontGroup;
+@property (readonly) NSStackView *strokeGroup;
+@property (readonly) NSSegmentedControl *lineWidth;
+@property (readonly) NSColorWell *color;
+@property (readonly) NSTextField *fontSize;
+@property (readonly) NSStepper *fontStepper;
+@property (readonly) NSButton *ocrButton;
+@property (readonly) NSButton *translateButton;
+- (void)chooseTool:(id)sender;
+- (void)styleChanged:(id)sender;
+- (void)refresh;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)pinImage:(id)sender;
 @end
@@ -60,9 +75,59 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.document[@"undo"] count] == 0, "initial selection establishes the editing baseline");
     CHECK(NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame),
           "floating toolbar stays within its screen");
+    NSRect toolbarFrame = editor.floatingToolbar.frame;
+    CHECK(editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
+          "select without a text object shows no irrelevant properties");
+    CHECK(editor.ocrButton.superview == editor.toolbar && editor.translateButton.superview == editor.toolbar &&
+          !editor.ocrButton.enabled && !editor.translateButton.enabled &&
+          !editor.ocrButton.isAccessibilityEnabled && !editor.translateButton.isAccessibilityEnabled &&
+          [editor.ocrButton.toolTip containsString:@"尚未开放"] && [editor.translateButton.toolTip containsString:@"尚未开放"],
+          "OCR and translation remain unavailable first-row actions with honest tooltips");
+    NSNumber *revision = editor.document[@"revision"];
+    [editor.ocrButton performClick:nil];
+    [editor.translateButton performClick:nil];
+    CHECK([editor.document[@"revision"] isEqual:revision], "disabled future actions never mutate the image");
+    CHECK([editor.color isDescendantOf:editor.properties] && [editor.fontSize isDescendantOf:editor.properties] &&
+          ![editor.color isDescendantOf:editor.toolbar] && ![editor.fontSize isDescendantOf:editor.toolbar],
+          "color and font controls live only in the contextual second row");
+    editor.tools.selectedSegment = 1;
+    [editor chooseTool:editor.tools];
+    CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && !editor.strokeGroup.hidden,
+          "rectangle exposes color and labelled line width only");
+    editor.lineWidth.selectedSegment = 2;
+    [editor styleChanged:editor.lineWidth];
+    [canvas mouseDown:mouse(canvas, NSEventTypeLeftMouseDown, NSMakePoint(340, 240))];
+    [canvas mouseDragged:mouse(canvas, NSEventTypeLeftMouseDragged, NSMakePoint(420, 290))];
+    [canvas mouseUp:mouse(canvas, NSEventTypeLeftMouseUp, NSMakePoint(420, 290))];
+    CHECK([editor.document[@"annotations"][0][@"stroke"] intValue] == 8,
+          "contextual line width controls the real MoonBit shape annotation");
+    [editor undo:nil];
+    editor.tools.selectedSegment = 2;
+    [editor chooseTool:editor.tools];
+    CHECK(!editor.strokeGroup.hidden && editor.fontGroup.hidden, "arrow exposes the same meaningful shape properties");
+    editor.tools.selectedSegment = 4;
+    [editor chooseTool:editor.tools];
+    CHECK(editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
+          "opaque redaction does not offer color or font settings");
+    editor.tools.selectedSegment = 3;
+    [editor chooseTool:editor.tools];
+    CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden &&
+          NSEqualRects(toolbarFrame, editor.floatingToolbar.frame),
+          "changing tools swaps properties without relocating the floating HUD");
     [editor addTextAtPoint:NSMakePoint(120, 80)];
     CHECK(canvas.textView != nil && editor.window.attachedSheet == nil, "selection can immediately host inline text");
+    [canvas.textView setMarkedText:@"yueliang" selectedRange:NSMakeRange(8, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    NSResponder *textResponder = editor.window.firstResponder;
+    editor.tools.selectedSegment = 4;
+    [editor chooseTool:editor.tools];
+    CHECK(canvas.textView.hasMarkedText && editor.tools.selectedSegment == 3 &&
+          editor.window.firstResponder == textResponder && NSEqualRects(toolbarFrame, editor.floatingToolbar.frame),
+          "tool switching preserves ongoing IME composition and HUD placement");
     [canvas.textView insertText:@"原地编辑 🌙\n第二行" replacementRange:NSMakeRange(NSNotFound, 0)];
+    editor.fontStepper.doubleValue = 32;
+    [editor styleChanged:editor.fontStepper];
+    CHECK(editor.fontSize.doubleValue == 32 && [editor.document[@"annotations"] count] == 0,
+          "native font stepper updates the text draft without premature document history");
     NSString *previewPath = NSProcessInfo.processInfo.environment[@"MOOJICUT_OVERLAY_PREVIEW"];
     if (previewPath.length && scale == 1.5) {
         NSView *content = editor.window.contentView;
@@ -77,6 +142,12 @@ static BOOL exercise(CGFloat scale) {
     NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:result];
     CHECK(bitmap.pixelsWide == 400 && bitmap.pixelsHigh == 300 && [editor.document[@"annotations"] count] == 1,
           "export commits live text and uses the selected pixel dimensions");
+    CHECK([editor.document[@"annotations"][0][@"fontSize"] intValue] == 32,
+          "second-row font size is committed into the shared text document");
+    editor.tools.selectedSegment = 0;
+    [editor refresh];
+    CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden,
+          "selecting an existing text object retains text properties in the select tool");
     // An untouched point must come from the same source location, not from a
     // downscaled full-screen image. This catches crop-origin/Retina regressions.
     NSColor *pixel = [[bitmap colorAtX:5 y:290] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];

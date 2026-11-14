@@ -8,7 +8,7 @@ extern "C" {
 enum { MC_HUD_COLOR = 100, MC_HUD_STROKE = 101, MC_HUD_FONT = 102 };
 void mc_hud_card(HDC dc, const RECT *bounds, float scale, const wchar_t *hint);
 void mc_hud_button(HDC dc, const RECT *bounds, int kind, int value, BOOL selected, BOOL hovered, BOOL pressed,
-                   BOOL focused, float scale);
+                   BOOL focused, BOOL disabled, float scale);
 void mc_hud_frame(HDC dc, const RECT *bounds, BOOL handles, float scale);
 #ifdef __cplusplus
 }

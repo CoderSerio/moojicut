@@ -14,6 +14,10 @@
     "PIN": "pin",
     "CLOSE": "x",
     "CHECK": "check",
-    "FONT_SIZE": "a-large-small"
+    "FONT_SIZE": "a-large-small",
+    "OCR": "scan-text",
+    "TRANSLATE": "languages",
+    "CHEVRON_UP": "chevron-up",
+    "CHEVRON_DOWN": "chevron-down"
   }
 }
