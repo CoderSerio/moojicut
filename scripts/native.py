@@ -323,6 +323,7 @@ class NativeBuild:
         self.run(pin_shortcuts)
         pinned_image = shortcuts / "pinned-image"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT / "native/macos",
+                 "-DRegisterEventHotKey=MCTestRegisterPinHotKey", "-DUnregisterEventHotKey=MCTestUnregisterPinHotKey",
                  ROOT / "test/native/pinned-image.m", ROOT / "native/macos/pinning/MCPinnedImageController.m",
                  preferences / "MCPinShortcutStore.m", preferences / "MCShortcutStore.m", preferences / "MCSystemShortcutCheck.m",
                  "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
@@ -335,21 +336,22 @@ class NativeBuild:
         self.run(global_shortcuts)
         capture_permission = shortcuts / "capture-permission"
         capture = ROOT / "native/macos/capture"
+        style_controls = ROOT / "native/macos/components/MCStyleControls.m"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
                  "-I", ROOT / "native/macos", "-DCGPreflightScreenCaptureAccess=MCFakePreflight",
                  "-DCGRequestScreenCaptureAccess=MCFakeRequest", ROOT / "test/native/capture-permission.m",
-                 capture / "MCCaptureController.m", capture / "MCImageEditorController.m", archive,
+                 capture / "MCCaptureController.m", capture / "MCImageEditorController.m", style_controls, archive,
                  "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", capture_permission)
         self.run(capture_permission)
         inline_text = shortcuts / "inline-text"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
                  "-I", ROOT / "native/macos", ROOT / "test/native/inline-text.m",
-                 capture / "MCImageEditorController.m", archive, "-framework", "AppKit", "-o", inline_text)
+                 capture / "MCImageEditorController.m", style_controls, archive, "-framework", "AppKit", "-o", inline_text)
         self.run(inline_text)
         capture_overlay = shortcuts / "capture-overlay"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
                  "-I", ROOT / "native/macos", ROOT / "test/native/capture-overlay.m",
-                 capture / "MCImageEditorController.m", archive, "-framework", "AppKit", "-o", capture_overlay)
+                 capture / "MCImageEditorController.m", style_controls, archive, "-framework", "AppKit", "-o", capture_overlay)
         self.run(capture_overlay)
         sparkle = install_sparkle()
         updater = shortcuts / "updater-smoke"

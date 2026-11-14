@@ -20,7 +20,8 @@
 @property (readonly) NSStackView *colorGroup;
 @property (readonly) NSStackView *fontGroup;
 @property (readonly) NSStackView *strokeGroup;
-@property (readonly) NSSegmentedControl *lineWidth;
+@property (readonly) NSTextField *lineWidth;
+@property (readonly) NSStepper *strokeStepper;
 @property (readonly) NSColorWell *color;
 @property (readonly) NSTextField *fontSize;
 @property (readonly) NSStepper *fontStepper;
@@ -94,8 +95,8 @@ static BOOL exercise(CGFloat scale) {
     [editor chooseTool:editor.tools];
     CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && !editor.strokeGroup.hidden,
           "rectangle exposes color and labelled line width only");
-    editor.lineWidth.selectedSegment = 2;
-    [editor styleChanged:editor.lineWidth];
+    editor.strokeStepper.doubleValue = 8;
+    [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
     [canvas mouseDown:mouse(canvas, NSEventTypeLeftMouseDown, NSMakePoint(340, 240))];
     [canvas mouseDragged:mouse(canvas, NSEventTypeLeftMouseDragged, NSMakePoint(420, 290))];
     [canvas mouseUp:mouse(canvas, NSEventTypeLeftMouseUp, NSMakePoint(420, 290))];
@@ -107,8 +108,8 @@ static BOOL exercise(CGFloat scale) {
     CHECK(!editor.strokeGroup.hidden && editor.fontGroup.hidden, "arrow exposes the same meaningful shape properties");
     editor.tools.selectedSegment = 4;
     [editor chooseTool:editor.tools];
-    CHECK(editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
-          "opaque redaction does not offer color or font settings");
+    CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
+          "filled cover exposes color/opacity without unrelated stroke or font properties");
     editor.tools.selectedSegment = 3;
     [editor chooseTool:editor.tools];
     CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden &&
@@ -125,7 +126,7 @@ static BOOL exercise(CGFloat scale) {
           "tool switching preserves ongoing IME composition and HUD placement");
     [canvas.textView insertText:@"原地编辑 🌙\n第二行" replacementRange:NSMakeRange(NSNotFound, 0)];
     editor.fontStepper.doubleValue = 32;
-    [editor styleChanged:editor.fontStepper];
+    [editor.fontStepper sendAction:editor.fontStepper.action to:editor.fontStepper.target];
     CHECK(editor.fontSize.doubleValue == 32 && [editor.document[@"annotations"] count] == 0,
           "native font stepper updates the text draft without premature document history");
     NSString *previewPath = NSProcessInfo.processInfo.environment[@"MOOJICUT_OVERLAY_PREVIEW"];
@@ -165,9 +166,14 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.document[@"viewport"] isEqual:viewport] && [editor.document[@"annotations"] count] == 1,
           "undoing a selection resize preserves its annotations");
     __block NSData *pinned = nil;
-    editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; return YES; };
+    NSRect expectedPinFrame = [editor.window convertRectToScreen:[canvas convertRect:
+        NSMakeRect(100 * scale, 60 * scale, 400 * scale, 300 * scale) toView:nil]];
+    __block NSRect pinnedFrame = NSZeroRect;
+    __weak MCImageEditorController *weakEditor = editor;
+    editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; pinnedFrame = weakEditor.pinScreenFrame; return YES; };
     [editor pinImage:nil];
     CHECK(pinned.length > 0 && editor.window == nil, "pin receives the final crop and finishes the capture");
+    CHECK(NSEqualRects(expectedPinFrame, pinnedFrame), "pin carries the actual screen selection frame at every backing scale");
     NSBitmapImageRep *pin = [NSBitmapImageRep imageRepWithData:pinned];
     CHECK(pin.pixelsWide == 400 && pin.pixelsHigh == 300, "pin does not receive the uncropped desktop");
     return passed;

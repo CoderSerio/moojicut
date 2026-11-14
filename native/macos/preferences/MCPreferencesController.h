@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^onClose)(void);
 @property (nonatomic, copy, nullable) void (^onShortcutRecordingChanged)(BOOL recording);
 @property (nonatomic, copy, nullable) NSString *shortcutRegistrationError;
+@property (nonatomic, copy, nullable) NSString *pinShortcutRegistrationError;
 @property (nonatomic, readonly) NSString *appearanceChoice;
 @property (nonatomic, readonly) BOOL technicalDetailsVisible;
 @property (nonatomic, readonly) MCShortcutStore *shortcutStore;

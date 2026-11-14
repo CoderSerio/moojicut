@@ -256,7 +256,7 @@ test "image undo is bounded to 100 edits and a multi-object deletion is atomic" 
 }
 
 ///|
-test "image styles and IDs are validated and redaction remains opaque" {
+test "image styles and IDs are validated and filled covers retain opacity" {
   let document = image_test_create()
   for
     (key, value) in [
@@ -298,13 +298,20 @@ test "image styles and IDs are validated and redaction remains opaque" {
     document,
     @json.parse(
       (
-        #|{"type":"add","annotations":[{"id":"mask","type":"redact","x":0,"y":0,"width":40,"height":30,"opacity":0.2}]}
+        #|{"type":"add","annotations":[{"id":"mask","type":"redact","x":0,"y":0,"width":40,"height":30,"opacity":0.2,"color":"#225577"}]}
       ),
     ),
   )
   assert_true(
-    model_test_field(image_test_first(redacted), "opacity") == Json(1),
+    model_test_field(image_test_first(redacted), "opacity") == Json(0.2),
   )
+  assert_eq(model_test_field(image_test_first(redacted), "color"), Json("#225577"))
+  let finalized = model_test_result(image_finalize(Json::object({ "document": redacted }).stringify()))
+  assert_eq(model_test_field(image_test_first(model_test_field(finalized, "document")), "opacity"), Json(0.2))
+  let mosaic = image_test_apply(document, @json.parse((
+    #|{"type":"add","annotations":[{"id":"mosaic","type":"mosaic","x":0,"y":0,"width":40,"height":30,"opacity":0.2}]}
+  )))
+  assert_eq(model_test_field(image_test_first(mosaic), "opacity"), Json(1))
 }
 
 ///|

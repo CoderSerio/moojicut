@@ -301,7 +301,7 @@ int main(void) {
             reset(true, false);
             controller = [MCPermissionCapture new];
             __block NSUInteger pinCalls = 0;
-            controller.onPinPNGData = ^BOOL(NSData *data) { pinCalls++; return data.length > 0; };
+            controller.onPinPNGData = ^BOOL(NSData *data, NSRect screenFrame) { (void)screenFrame; pinCalls++; return data.length > 0; };
             [controller capture];
             [controller captureDisplaysForSession:controller.interceptedSession];
             controller.pendingContent(fakeContent(@[@27,@14]), nil);

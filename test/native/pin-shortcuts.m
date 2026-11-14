@@ -49,6 +49,14 @@ int main(void) {
                   [[store actionForEvent:key(69, NSEventModifierFlagCommand | NSEventModifierFlagNumericPad)] isEqual:@"opacityUp"],
                   "Command+ changes opacity for both keyboard variants");
             CHECK([[store actionForEvent:key(27, NSEventModifierFlagCommand)] isEqual:@"opacityDown"], "Command− decreases opacity");
+            CHECK([[store actionForEvent:key(4, NSEventModifierFlagCommand | NSEventModifierFlagShift)] isEqual:@"visibilityToggle"] &&
+                  [[store actionForEvent:key(35, NSEventModifierFlagCommand | NSEventModifierFlagShift)] isEqual:@"clickThroughToggle"],
+                  "recoverable hide and pass-through defaults are explicit combinations");
+            CHECK(![store setShortcut:[MCPinShortcutStore shortcutWithKeyCode:4 modifiers:0] forAction:@"visibilityToggle" error:NULL],
+                  "recovery actions reject unmodified global keys");
+            MCShortcutStore *captureStore = [[MCShortcutStore alloc] initWithDefaults:defaults];
+            CHECK(![store setShortcut:[captureStore shortcutForAction:@"capture"] forAction:@"clickThroughToggle" error:NULL],
+                  "recovery actions reject capture shortcut conflicts");
             CHECK([store actionForEvent:key(0, 0)] == nil && [store actionForEvent:key(27, NSEventModifierFlagOption)] == nil,
                   "unbound keys and modifiers do not match");
             CHECK([MCShortcutStore shortcutWithKeyCode:24 modifiers:0] == nil,
@@ -127,7 +135,7 @@ int main(void) {
                   groups.selectedTabViewItem.view.fittingSize.height <= groups.bounds.size.height && !preferences.window.visible,
                   "pin settings have a separate group and fit the hidden preferences window");
             NSDictionary<NSString *, MCShortcutRecorder *> *pinRecorders = [preferences valueForKey:@"pinShortcutRecorders"];
-            CHECK(pinRecorders.count == 4, "all four pin actions are configurable");
+            CHECK(pinRecorders.count == 6, "all six pin actions are configurable");
             MCShortcutRecorder *zoomRecorder = pinRecorders[@"zoomIn"];
             [zoomRecorder beginRecording]; [zoomRecorder receiveKeyEvent:key(0, 0)];
             CHECK([[otherWindow actionForEvent:key(0, 0)] isEqual:@"zoomIn"] && !recordingSettings,

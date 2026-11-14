@@ -1,6 +1,7 @@
 #import "MCImageEditorController.h"
 #import "../MCChromeTheme.h"
 #import "../MCIcon.h"
+#import "../components/MCStyleControls.h"
 #include "moonbit.h"
 #include <math.h>
 
@@ -71,9 +72,9 @@ static void MCDrawAnnotation(NSDictionary *annotation) {
     NSColor *color = MCAnnotationColor(annotation);
     CGFloat stroke = [annotation[@"stroke"] doubleValue];
     if ([kind isEqualToString:@"redact"]) {
-        // A cover is always solid black and is rendered after every other annotation.
-        [NSColor.blackColor setFill];
-        NSRectFill(rect);
+        // Filled covers use the same RGBA style as every other annotation.
+        [color setFill];
+        NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
     } else if ([kind isEqualToString:@"rect"]) {
         [color setStroke];
         NSBezierPath *path = [NSBezierPath bezierPathWithRect:rect];
@@ -101,7 +102,7 @@ static void MCDrawAnnotation(NSDictionary *annotation) {
         [NSGraphicsContext restoreGraphicsState];
     }
 }
-static void MCDrawImage(NSImage *image, NSDictionary *document, NSDictionary *pending) {
+static void MCDrawImage(NSImage *image, NSDictionary *document, NSDictionary *pending, NSRect liveTextRect) {
     NSRect rect = NSMakeRect(0, 0, [document[@"width"] doubleValue], [document[@"height"] doubleValue]);
     [NSGraphicsContext saveGraphicsState];
     NSRectClip(rect);
@@ -109,6 +110,15 @@ static void MCDrawImage(NSImage *image, NSDictionary *document, NSDictionary *pe
     NSArray *annotations = document[@"annotations"];
     for (NSDictionary *annotation in annotations) if (![annotation[@"type"] isEqualToString:@"redact"]) MCDrawAnnotation(annotation);
     if (pending && ![pending[@"type"] isEqualToString:@"redact"]) MCDrawAnnotation(pending);
+    // The native text view paints covers above its glyphs. Exclude that area
+    // here so translucent covers are blended once, including blank text space.
+    NSRect excluded = NSIntersectionRect(rect, liveTextRect);
+    if (!NSIsEmptyRect(excluded)) {
+        NSBezierPath *clip = [NSBezierPath bezierPathWithRect:rect];
+        [clip appendBezierPathWithRect:excluded];
+        clip.windingRule = NSWindingRuleEvenOdd;
+        [clip addClip];
+    }
     for (NSDictionary *annotation in annotations) if ([annotation[@"type"] isEqualToString:@"redact"]) MCDrawAnnotation(annotation);
     if ([pending[@"type"] isEqualToString:@"redact"]) MCDrawAnnotation(pending);
     [NSGraphicsContext restoreGraphicsState];
@@ -140,7 +150,11 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
 @property NSStackView *colorGroup;
 @property NSStackView *fontGroup;
 @property NSStackView *strokeGroup;
-@property NSSegmentedControl *lineWidth;
+@property MCNumberControl *fontControl;
+@property MCNumberControl *strokeControl;
+@property MCColorControl *colorControl;
+@property NSTextField *lineWidth;
+@property NSStepper *strokeStepper;
 @property NSButton *ocrButton;
 @property NSButton *translateButton;
 @property MCImageTool activeTool;
@@ -230,14 +244,14 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     crop.origin.y -= [draft[@"y"] doubleValue];
     NSRectClip(NSIntersectionRect(crop, self.bounds));
     [super drawRect:dirtyRect];
-    // An active text editor must not paint over a privacy cover.
+    // Match the document's cover ordering without double-compositing alpha.
     for (NSDictionary *annotation in self.canvas.editor.document[@"annotations"]) {
         if (![annotation[@"type"] isEqual:@"redact"]) continue;
         NSRect cover = MCAnnotationRect(annotation);
         cover.origin.x -= [draft[@"x"] doubleValue];
         cover.origin.y -= [draft[@"y"] doubleValue];
-        [NSColor.blackColor setFill];
-        NSRectFill(NSIntersectionRect(cover, self.bounds));
+        [MCAnnotationColor(annotation) setFill];
+        NSRectFillUsingOperation(NSIntersectionRect(cover, self.bounds), NSCompositingOperationSourceOver);
     }
     [NSGraphicsContext restoreGraphicsState];
 }
@@ -461,7 +475,7 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         } else [annotations addObject:annotation];
     }
     display[@"annotations"] = annotations;
-    MCDrawImage(self.editor.image, display, self.pending);
+    MCDrawImage(self.editor.image, display, self.pending, self.textView ? MCAnnotationRect(self.textDraft) : NSZeroRect);
     [NSGraphicsContext restoreGraphicsState];
     if (self.editor.overlayMode) {
         NSRect region = [self viewRectForImageRect:[self captureRect]];
@@ -779,32 +793,18 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         self.tools.selectedSegmentBezelColor = MCSelectedToolColor();
         self.tools.selectedSegment = self.activeTool = MCRectTool;
         self.tools.accessibilityLabel = @"标注工具";
-        self.color = [[NSColorWell alloc] initWithFrame:NSMakeRect(0, 0, 18, 18)];
-        self.color.color = [NSColor colorWithSRGBRed:0.94 green:0.27 blue:0.27 alpha:1];
-        self.color.accessibilityLabel = @"标注颜色";
-        self.color.toolTip = @"标注颜色";
-        [self.color.widthAnchor constraintEqualToConstant:18].active = YES;
-        [self.color.heightAnchor constraintEqualToConstant:18].active = YES;
-        self.color.colorWellStyle = NSColorWellStyleMinimal;
-        self.color.target = self;
-        self.color.action = @selector(styleChanged:);
-        self.fontSize = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 52, 24)];
-        self.fontSize.doubleValue = 28;
-        self.fontSize.alignment = NSTextAlignmentRight;
-        self.fontSize.accessibilityLabel = @"文字字号";
-        self.fontSize.target = self; self.fontSize.action = @selector(styleChanged:);
-        NSNumberFormatter *formatter = [NSNumberFormatter new];
-        formatter.minimum = @8; formatter.maximum = @128;
-        formatter.maximumFractionDigits = 1;
-        self.fontSize.formatter = formatter;
-        self.fontSize.cell.sendsActionOnEndEditing = YES;
-        [self.fontSize.widthAnchor constraintEqualToConstant:44].active = YES;
-        self.fontStepper = [NSStepper new];
-        self.fontStepper.minValue = 8; self.fontStepper.maxValue = 128;
-        self.fontStepper.increment = 1; self.fontStepper.doubleValue = 28;
-        self.fontStepper.valueWraps = NO;
-        self.fontStepper.target = self; self.fontStepper.action = @selector(styleChanged:);
-        self.fontStepper.accessibilityLabel = @"调整文字字号";
+        self.colorControl = [[MCColorControl alloc] initWithFrame:NSZeroRect];
+        self.color = self.colorControl.well;
+        self.fontControl = [[MCNumberControl alloc] initWithLabel:@"字号" minimum:8 maximum:128 value:28];
+        self.fontSize = self.fontControl.field;
+        self.fontStepper = self.fontControl.stepper;
+        self.strokeControl = [[MCNumberControl alloc] initWithLabel:@"线宽" minimum:1 maximum:96 value:4];
+        self.lineWidth = self.strokeControl.field;
+        self.strokeStepper = self.strokeControl.stepper;
+        __weak MCImageEditorController *weakSelf = self;
+        self.colorControl.onChange = ^(id sender) { [weakSelf styleChanged:sender]; };
+        self.fontControl.onChange = ^(id sender) { [weakSelf styleChanged:sender]; };
+        self.strokeControl.onChange = ^(id sender) { [weakSelf styleChanged:sender]; };
         self.undoButton = [self button:@"撤销" action:@selector(undo:) key:@"z"];
         self.redoButton = [self button:@"重做" action:@selector(redo:) key:@"z"];
         [self configureIconButton:self.undoButton icon:MC_ICON_UNDO label:@"撤销" shortcut:@"⌘Z"];
@@ -837,20 +837,9 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         for (NSButton *button in @[self.ocrButton, self.translateButton, self.pinButton, self.cancelButton, self.confirmButton])
             [button.widthAnchor constraintEqualToConstant:28].active = YES;
         [root addSubview:self.toolbar];
-        self.colorGroup = [self propertyGroup:@[[self propertyLabel:@"颜色"], self.color]];
-        self.fontGroup = [self propertyGroup:@[[self propertyLabel:@"字号"], self.fontSize, self.fontStepper]];
-        self.lineWidth = [NSSegmentedControl segmentedControlWithLabels:@[@"细 2", @"中 4", @"粗 8"]
-            trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(styleChanged:)];
-        self.lineWidth.selectedSegment = 1;
-        self.lineWidth.selectedSegmentBezelColor = MCSelectedToolColor();
-        self.lineWidth.accessibilityLabel = @"标注线宽";
-        for (NSInteger index = 0; index < 3; index++) {
-            [self.lineWidth setTag:(index == 0 ? 2 : index == 1 ? 4 : 8) forSegment:index];
-            [self.lineWidth setWidth:44 forSegment:index];
-            [self.lineWidth setToolTip:[NSString stringWithFormat:@"%@ 像素", @([self.lineWidth tagForSegment:index])]
-                forSegment:index];
-        }
-        self.strokeGroup = [self propertyGroup:@[[self propertyLabel:@"线宽"], self.lineWidth]];
+        self.colorGroup = self.colorControl;
+        self.fontGroup = self.fontControl;
+        self.strokeGroup = self.strokeControl;
         self.status = [self propertyLabel:@""];
         self.status.lineBreakMode = NSLineBreakByTruncatingTail;
         self.properties = [self propertyGroup:@[self.colorGroup, self.fontGroup, self.strokeGroup, self.status]];
@@ -968,26 +957,29 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     BOOL textProperties = hasText || self.tools.selectedSegment == MCTextTool;
     BOOL shapeProperties = !hasText && (self.tools.selectedSegment == MCRectTool || self.tools.selectedSegment == MCArrowTool);
     self.fontSize.enabled = self.fontStepper.enabled = textProperties;
-    self.color.enabled = textProperties || shapeProperties;
-    self.colorGroup.hidden = !(textProperties || shapeProperties);
+    BOOL coverProperties = !hasText && self.tools.selectedSegment == MCRedactTool;
+    self.color.enabled = textProperties || shapeProperties || coverProperties;
+    self.colorGroup.hidden = !(textProperties || shapeProperties || coverProperties);
     self.fontGroup.hidden = !textProperties;
     self.strokeGroup.hidden = !shapeProperties;
-    self.status.hidden = textProperties || shapeProperties;
-    self.status.stringValue = self.tools.selectedSegment == MCRedactTool ? @"实心遮挡" : @"选择标注以调整属性";
+    self.status.hidden = textProperties || shapeProperties || coverProperties;
+    self.status.stringValue = @"选择标注以调整属性";
     if (hasText) {
-        self.color.color = MCAnnotationColor(annotation);
-        self.fontSize.doubleValue = [annotation[@"fontSize"] doubleValue];
-        self.fontStepper.doubleValue = self.fontSize.doubleValue;
+        self.colorControl.color = MCAnnotationColor(annotation);
+        self.fontControl.value = [annotation[@"fontSize"] doubleValue];
     }
 }
 - (void)styleChanged:(id)sender {
-    double size = MAX(8, MIN(128, sender == self.fontStepper ? self.fontStepper.doubleValue : self.fontSize.doubleValue));
-    self.fontSize.doubleValue = self.fontStepper.doubleValue = size;
+    [self.fontControl syncFromSender:sender];
+    [self.strokeControl syncFromSender:sender];
+    [self.colorControl syncFromSender:sender];
+    double size = self.fontControl.value;
     NSDictionary *selected = [self.canvas selectedAnnotation];
     if (![selected[@"type"] isEqual:@"text"]) return;
     NSMutableDictionary *changed = [selected mutableCopy];
     changed[@"fontSize"] = @(size);
     changed[@"color"] = [self colorHex];
+    changed[@"opacity"] = @(self.color.color.alphaComponent);
     changed[@"height"] = @(MIN(MCTextHeight(changed), [self.document[@"height"] doubleValue] - [changed[@"y"] doubleValue]));
     if (self.canvas.textView) {
         self.canvas.textDraft = changed;
@@ -1021,7 +1013,7 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         @"id":NSUUID.UUID.UUIDString, @"type":arrow ? @"arrow" : redact ? @"redact" : @"rect",
         @"x":@(arrow ? start.x : MIN(start.x,end.x)), @"y":@(arrow ? start.y : MIN(start.y,end.y)),
         @"width":@(MAX(1,fabs(end.x-start.x))), @"height":@(MAX(1,fabs(end.y-start.y))),
-        @"stroke":@([self.lineWidth tagForSegment:self.lineWidth.selectedSegment]), @"opacity":@1, @"color":redact ? @"#000000" : [self colorHex] } mutableCopy];
+        @"stroke":@(self.strokeControl.value), @"opacity":@(self.color.color.alphaComponent), @"color":[self colorHex] } mutableCopy];
     if (arrow) { annotation[@"x2"] = @(end.x); annotation[@"y2"] = @(end.y); }
     return annotation;
 }
@@ -1034,7 +1026,7 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     CGFloat y = MAX(NSMinY(region), MIN(point.y, NSMaxY(region) - boxHeight));
     [self.canvas beginEditingText:@{@"id":NSUUID.UUID.UUIDString, @"type":@"text", @"text":@"",
         @"x":@(x), @"y":@(y), @"width":@(MIN(boxWidth, NSMaxX(region) - x)), @"height":@(boxHeight),
-        @"fontSize":@(size), @"stroke":@3, @"opacity":@1, @"color":[self colorHex]}];
+        @"fontSize":@(size), @"stroke":@3, @"opacity":@(self.color.color.alphaComponent), @"color":[self colorHex]}];
 }
 - (BOOL)applyCommand:(NSDictionary *)command {
     NSError *error = nil;
@@ -1078,7 +1070,7 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
     CGContextScaleCTM(cg, 1, -1);
     CGContextTranslateCTM(cg, -[self.document[@"viewport"][@"x"] doubleValue], -[self.document[@"viewport"][@"y"] doubleValue]);
     [NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithCGContext:cg flipped:YES]];
-    MCDrawImage(self.image, self.document, nil);
+    MCDrawImage(self.image, self.document, nil, NSZeroRect);
     [NSGraphicsContext restoreGraphicsState];
     NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
     if (!png && error) *error = MCEditorError(@"无法编码 PNG 图片。");
@@ -1103,10 +1095,17 @@ typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool,
         (self.overlayMode && !self.hasCaptureRegion)) return;
     // Validate/commit a pending numeric field before serializing the image.
     if (self.fontSize.currentEditor) [self styleChanged:self.fontSize];
+    if (self.lineWidth.currentEditor) [self styleChanged:self.lineWidth];
+    if (self.colorControl.opacityControl.field.currentEditor) [self styleChanged:self.colorControl.opacityControl.field];
     if (![self.canvas finishTextEditing:YES]) return;
     NSError *error = nil;
     if ([self copyToPasteboard:NSPasteboard.generalPasteboard error:&error]) [self.window close];
     else [self showError:error];
+}
+- (NSRect)pinScreenFrame {
+    if (!self.window || !self.canvas) return NSZeroRect;
+    NSRect region = [self.canvas viewRectForImageRect:MCAnnotationRect(self.document[@"viewport"])];
+    return [self.window convertRectToScreen:[self.canvas convertRect:region toView:nil]];
 }
 - (void)pinImage:(id)sender {
     (void)sender;

@@ -237,12 +237,16 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.pinShortcutFeedback.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
     if (error) NSAccessibilityPostNotification(self.pinShortcutFeedback, NSAccessibilityValueChangedNotification);
 }
+- (void)setPinShortcutRegistrationError:(NSString *)message {
+    _pinShortcutRegistrationError = [message copy];
+    if (self.pinShortcutFeedback) [self setPinShortcutFeedback:message ?: @"贴图快捷键已就绪。" error:message.length > 0];
+}
 - (NSView *)pinShortcutsPage {
     NSView *page = [NSView new];
     self.pinShortcutRecorders = [NSMutableDictionary dictionary];
     self.pinShortcutClearButtons = [NSMutableDictionary dictionary];
-    NSArray *actions = @[@"zoomIn", @"zoomOut", @"opacityUp", @"opacityDown"];
-    NSArray *names = @[@"放大", @"缩小", @"更不透明", @"更透明"];
+    NSArray *actions = @[@"zoomIn", @"zoomOut", @"opacityUp", @"opacityDown", @"visibilityToggle", @"clickThroughToggle"];
+    NSArray *names = @[@"放大", @"缩小", @"更不透明", @"更透明", @"隐藏/恢复", @"鼠标穿透"];
     NSMutableArray *rows = [NSMutableArray array];
     __weak MCPreferencesController *weakSelf = self;
     for (NSUInteger i = 0; i < actions.count; i++) {
@@ -287,14 +291,15 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
         [rows addObject:@[MCLabel(name, 13, NO), recorder, clear]];
     }
     NSGridView *grid = MCGrid(rows); grid.rowSpacing = 8;
-    self.pinShortcutFeedback = MCLabel(@"支持单键或组合键；设置会自动保存。", 12, YES);
+    self.pinShortcutFeedback = MCLabel(@"缩放可用单键；隐藏/穿透需要组合键，设置会自动保存。", 12, YES);
+    if (self.pinShortcutRegistrationError.length) [self setPinShortcutFeedback:self.pinShortcutRegistrationError error:YES];
     [self.pinShortcutFeedback.heightAnchor constraintGreaterThanOrEqualToConstant:30].active = YES;
     NSButton *reset = [NSButton buttonWithTitle:@"恢复默认" target:self action:@selector(resetPinShortcuts:)];
     reset.bezelStyle = NSBezelStyleRounded; reset.accessibilityLabel = @"恢复贴图内快捷键为默认值";
     NSView *spacer = [NSView new];
     NSStackView *resetRow = MCStack(@[spacer, reset], NSUserInterfaceLayoutOrientationHorizontal, 0);
     [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSTextField *description = MCLabel(@"单击选中贴图后生效，不占用全局快捷键。\n+ 同时支持主键盘的 = / ⇧= 和数字键盘。", 12, YES);
+    NSTextField *description = MCLabel(@"缩放与透明度作用于选中的贴图。隐藏/穿透使用全局组合键。\n双击或 Esc 关闭；菜单栏可恢复隐藏、解除穿透。", 12, YES);
     NSStackView *stack = MCStack(@[MCHeading(@"贴图内快捷键"), description, grid, self.pinShortcutFeedback, resetRow],
         NSUserInterfaceLayoutOrientationVertical, 12);
     [description.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
@@ -422,7 +427,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     if (self.onShortcutRecordingChanged) self.onShortcutRecordingChanged(NO);
     [self.pages selectTabViewItemWithIdentifier:identifier]; self.window.toolbar.selectedItemIdentifier = identifier;
     NSRect frame = self.window.frame;
-    CGFloat height = [identifier isEqualToString:@"shortcuts"] ? 420 : 340;
+    CGFloat height = [identifier isEqualToString:@"shortcuts"] ? 500 : 340;
     CGFloat difference = height - self.window.contentView.bounds.size.height;
     frame.size.height += difference; frame.origin.y -= difference;
     [self.window setFrame:frame display:YES];

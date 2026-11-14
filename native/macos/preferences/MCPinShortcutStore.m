@@ -1,5 +1,6 @@
 #import "MCPinShortcutStore.h"
 #import "MCShortcutStore.h"
+#import "MCSystemShortcutCheck.h"
 #include <math.h>
 
 NSNotificationName const MCPinShortcutsDidChangeNotification = @"MCPinShortcutsDidChangeNotification";
@@ -7,12 +8,14 @@ static NSString *const MCPinShortcutsKey = @"pinShortcuts.v1";
 static NSEventModifierFlags const MCPinModifiers = NSEventModifierFlagCommand | NSEventModifierFlagOption |
     NSEventModifierFlagControl | NSEventModifierFlagShift;
 
-static NSArray<NSString *> *MCPinActions(void) { return @[@"zoomIn", @"zoomOut", @"opacityUp", @"opacityDown"]; }
+static NSArray<NSString *> *MCPinActions(void) { return @[@"zoomIn", @"zoomOut", @"opacityUp", @"opacityDown", @"visibilityToggle", @"clickThroughToggle"]; }
 static NSDictionary *MCPinDefaults(void) {
     return @{@"zoomIn":[MCPinShortcutStore shortcutWithKeyCode:24 modifiers:0],
         @"zoomOut":[MCPinShortcutStore shortcutWithKeyCode:27 modifiers:0],
         @"opacityUp":[MCPinShortcutStore shortcutWithKeyCode:24 modifiers:NSEventModifierFlagCommand],
-        @"opacityDown":[MCPinShortcutStore shortcutWithKeyCode:27 modifiers:NSEventModifierFlagCommand]};
+        @"opacityDown":[MCPinShortcutStore shortcutWithKeyCode:27 modifiers:NSEventModifierFlagCommand],
+        @"visibilityToggle":[MCPinShortcutStore shortcutWithKeyCode:4 modifiers:NSEventModifierFlagCommand | NSEventModifierFlagShift],
+        @"clickThroughToggle":[MCPinShortcutStore shortcutWithKeyCode:35 modifiers:NSEventModifierFlagCommand | NSEventModifierFlagShift]};
 }
 static NSDictionary *MCPinNormalize(id value) {
     if (![value isKindOfClass:NSDictionary.class] || ![value[@"keyCode"] isKindOfClass:NSNumber.class] ||
@@ -77,10 +80,24 @@ static BOOL MCPinEqual(NSDictionary *a, NSDictionary *b) {
     if (![MCPinActions() containsObject:action]) { if (error) *error = @"无法识别这个贴图操作。"; return NO; }
     NSDictionary *value = shortcut ? MCPinNormalize(shortcut) : nil;
     if (shortcut && !value) { if (error) *error = @"请按一个普通按键，可同时按住 ⌘、⌃、⌥ 或 ⇧。"; return NO; }
+    if (value && ([action isEqual:@"visibilityToggle"] || [action isEqual:@"clickThroughToggle"])) {
+        NSEventModifierFlags flags = [value[@"modifiers"] unsignedIntegerValue];
+        if (!(flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption))) {
+            if (error) *error = @"隐藏和鼠标穿透需要组合键，以便切换应用后恢复贴图。";
+            return NO;
+        }
+        NSString *conflict = MCSystemShortcutConflict([value[@"keyCode"] unsignedShortValue], flags);
+        if (conflict) { if (error) *error = conflict; return NO; }
+        MCShortcutStore *global = [[MCShortcutStore alloc] initWithDefaults:self.defaults];
+        for (NSString *other in @[@"capture", @"record", @"stop"]) if (MCPinEqual(value, [global shortcutForAction:other])) {
+            if (error) *error = @"此组合键已用于截图或录屏。";
+            return NO;
+        }
+    }
     NSMutableDictionary *values = [[self currentShortcuts] mutableCopy];
     if (value) for (NSString *other in MCPinActions()) {
         if (![other isEqual:action] && MCPinEqual(values[other], value)) {
-            NSDictionary *names = @{@"zoomIn":@"放大", @"zoomOut":@"缩小", @"opacityUp":@"提高不透明度", @"opacityDown":@"降低不透明度"};
+            NSDictionary *names = @{@"zoomIn":@"放大", @"zoomOut":@"缩小", @"opacityUp":@"提高不透明度", @"opacityDown":@"降低不透明度", @"visibilityToggle":@"隐藏/恢复", @"clickThroughToggle":@"鼠标穿透"};
             if (error) *error = [NSString stringWithFormat:@"此按键已用于“%@”，请选择其他按键。", names[other]];
             return NO;
         }

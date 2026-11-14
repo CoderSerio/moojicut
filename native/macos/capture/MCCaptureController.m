@@ -104,7 +104,7 @@ static NSError *MCCaptureError(NSString *message) {
     __weak MCCaptureController *weakSelf = self;
     if (self.onPinPNGData) self.editor.onPinPNGData = ^BOOL(NSData *png) {
         MCCaptureController *owner = weakSelf;
-        return owner.onPinPNGData ? owner.onPinPNGData(png) : NO;
+        return owner.onPinPNGData ? owner.onPinPNGData(png, owner.editor.pinScreenFrame) : NO;
     };
     self.editor.onClose = ^{ weakSelf.editor = nil; [weakSelf changed]; };
     [self.editor show];
@@ -173,9 +173,10 @@ static NSError *MCCaptureError(NSString *message) {
             MCCaptureController *owner = weakSelf;
             if ([owner.captureSession isEqualToString:session]) [owner cancelCapture];
         };
+        __weak MCImageEditorController *weakEditor = editor;
         if (self.onPinPNGData) editor.onPinPNGData = ^BOOL(NSData *png) {
             MCCaptureController *owner = weakSelf;
-            return owner.onPinPNGData ? owner.onPinPNGData(png) : NO;
+            return owner.onPinPNGData ? owner.onPinPNGData(png, weakEditor.pinScreenFrame) : NO;
         };
         [editors addObject:editor];
         if (NSPointInRect(pointer, [snapshot[@"frame"] rectValue])) focused = editor;

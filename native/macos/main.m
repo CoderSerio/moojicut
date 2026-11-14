@@ -80,11 +80,13 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoonBitCoreVersion"] ?: @"开发版本";
         self.preferences = [[MCPreferencesController alloc] initWithDefaults:self.defaults coreVersion:version diagnostics:self.diagnostics];
         __weak MCNativeHost *weakSelf = self;
-        self.preferences.onClose = ^{ [weakSelf.globalShortcuts resume]; weakSelf.preferences = nil; };
+        self.preferences.onClose = ^{ [weakSelf.globalShortcuts resume]; [weakSelf.pinnedImages setShortcutsSuspended:NO]; weakSelf.preferences = nil; };
         self.preferences.onShortcutRecordingChanged = ^(BOOL recording) {
             if (recording) [weakSelf.globalShortcuts suspend]; else [weakSelf.globalShortcuts resume];
+            [weakSelf.pinnedImages setShortcutsSuspended:recording];
         };
         self.preferences.shortcutRegistrationError = self.globalShortcuts.registrationError;
+        self.preferences.pinShortcutRegistrationError = self.pinnedImages.shortcutRegistrationError;
         self.preferences.updateController = self.updateController;
     }
     [self.preferences show];
@@ -94,6 +96,9 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [self.captureController capture];
 }
 - (void)closePinnedImages:(__unused id)sender { [self.pinnedImages closeAll]; }
+- (void)togglePinnedImages:(__unused id)sender { [self.pinnedImages toggleVisibility]; }
+- (void)restorePinnedImages:(__unused id)sender { [self.pinnedImages restoreHiddenPins]; }
+- (void)unlockPinnedImages:(__unused id)sender { [self.pinnedImages disableClickThrough]; }
 - (void)openImage:(__unused id)sender {
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.allowedContentTypes = @[UTTypeImage]; panel.allowsMultipleSelection = NO;
@@ -131,13 +136,14 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.updateController = [MCUpdateController new];
     __weak MCNativeHost *weakSelf = self;
     self.updateController.isOperationBusy = ^BOOL{ return weakSelf.captureController.busy || weakSelf.recordingController.busy; };
+    self.pinnedImages.onShortcutStatus = ^(NSString *error) { weakSelf.preferences.pinShortcutRegistrationError = error; };
     self.captureController.onStateChange = ^{
         [weakSelf.pinnedImages setCaptureHidden:weakSelf.captureController.busy];
         [weakSelf.updateController operationStateDidChange];
     };
-    self.captureController.onPinPNGData = ^BOOL(NSData *data) {
+    self.captureController.onPinPNGData = ^BOOL(NSData *data, NSRect screenFrame) {
         NSError *error = nil;
-        BOOL pinned = [weakSelf.pinnedImages pinPNGData:data error:&error];
+        BOOL pinned = [weakSelf.pinnedImages pinPNGData:data screenFrame:screenFrame error:&error];
         if (!pinned) NSLog(@"Unable to create pinned image: %@", error.localizedDescription);
         return pinned;
     };
@@ -169,6 +175,12 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     capture.target = self; [menu addItem:capture]; [menu addItem:NSMenuItem.separatorItem];
     NSMenuItem *openImage = [[NSMenuItem alloc] initWithTitle:@"打开图片标注…" action:@selector(openImage:) keyEquivalent:@""];
     openImage.target = self; [menu addItem:openImage]; [menu addItem:NSMenuItem.separatorItem];
+    for (NSDictionary *item in @[@{@"title":@"隐藏/恢复贴图", @"action":NSStringFromSelector(@selector(togglePinnedImages:))},
+        @{@"title":@"恢复所有隐藏贴图", @"action":NSStringFromSelector(@selector(restorePinnedImages:))},
+        @{@"title":@"解除贴图鼠标穿透", @"action":NSStringFromSelector(@selector(unlockPinnedImages:))}]) {
+        NSMenuItem *entry = [[NSMenuItem alloc] initWithTitle:item[@"title"] action:NSSelectorFromString(item[@"action"]) keyEquivalent:@""];
+        entry.target = self; [menu addItem:entry];
+    }
     NSMenuItem *closePins = [[NSMenuItem alloc] initWithTitle:@"关闭所有贴图" action:@selector(closePinnedImages:) keyEquivalent:@""];
     closePins.target = self; [menu addItem:closePins]; [menu addItem:NSMenuItem.separatorItem];
     self.recordMenuItem = [[NSMenuItem alloc] initWithTitle:@"开始录屏…" action:@selector(startRecording:) keyEquivalent:@""];

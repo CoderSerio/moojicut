@@ -80,8 +80,9 @@ fn image_annotation(raw : Json) -> Json raise InputError {
     }
   }
   let opacity = image_number(m, "opacity", if kind == "marker" { 0.3 } else { 1.0 })
-  if opacity < 0.01 || opacity > 1 { raise InputError("invalid_annotation", "Opacity must be 0.01–1") }
-  m["opacity"] = Json(if kind == "redact" || kind == "mosaic" { 1.0 } else { opacity })
+  if !(opacity >= 0 && opacity <= 1) { raise InputError("invalid_annotation", "Opacity must be 0–1") }
+  // Filled covers share editable RGBA style. Mosaic remains an opaque filter.
+  m["opacity"] = Json(if kind == "mosaic" { 1.0 } else { opacity })
   let stroke = image_number(m, "stroke", if kind == "marker" { 24 } else { 3 })
   if stroke < 1 || stroke > 96 { raise InputError("invalid_annotation", "Stroke must be 1–96 px") }
   m["stroke"] = Json(stroke)

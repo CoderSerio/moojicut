@@ -113,3 +113,72 @@ test "native viewport baseline and resize share annotation undo history" {
   assert_eq(image_session_crop(id, 0, 0, 20, 20), 0)
   assert_eq(image_session_viewport_value(id, 0), 0)
 }
+
+///|
+test "native RGBA cover edits preserve opacity across history and legacy geometry updates" {
+  let id = image_session_create(640, 480)
+  assert_eq(image_session_add_rgba(id, 4, 10, 20, 100, 80, 0x225577, 4, 24, 0.35), 1)
+  assert_eq(image_session_value(id, 0, 5), (0x225577).to_double())
+  assert_eq(image_session_value(id, 0, 8), 0.35)
+  // Older hosts can move a translucent object without turning it opaque.
+  assert_eq(image_session_update(id, 0, 30, 40, 120, 90, 0xf26769, 4, 24), 1)
+  assert_eq(image_session_value(id, 0, 8), 0.35)
+  assert_eq(image_session_update_rgba(id, 0, 30, 40, 120, 90, 0xf26769, 4, 24, 0.35), 1)
+  assert_eq(image_session_undo(id), 1)
+  assert_eq(image_session_value(id, 0, 1), 10)
+  assert_eq(image_session_value(id, 0, 5), (0x225577).to_double())
+  assert_eq(image_session_value(id, 0, 8), 0.35)
+  assert_eq(image_session_redo(id), 1)
+  assert_eq(image_session_value(id, 0, 1), 30)
+  // Opacity alone is an undoable style edit, including a fully clear cover.
+  assert_eq(image_session_update_rgba(id, 0, 30, 40, 120, 90, 0xf26769, 4, 24, 0), 1)
+  assert_eq(image_session_value(id, 0, 8), 0)
+  assert_eq(image_session_undo(id), 1)
+  assert_eq(image_session_value(id, 0, 8), 0.35)
+  assert_eq(image_session_redo(id), 1)
+  assert_eq(image_session_value(id, 0, 8), 0)
+  image_session_dispose(id)
+}
+
+///|
+test "native RGBA text changes commit content and alpha together" {
+  let id = image_session_create(640, 480)
+  assert_eq(image_session_set_text(id, "月亮 🌙\n第一行"), 1)
+  assert_eq(image_session_add_rgba(id, 3, 10, 20, 200, 80, 0xffffff, 3, 24, 0.5), 1)
+  assert_eq(image_session_set_text(id, "半透明文字 ✂️"), 1)
+  assert_eq(image_session_update_rgba(id, 0, 20, 30, 220, 90, 0x225577, 4, 32, 0.75), 1)
+  assert_eq(image_session_text(id, 0), "半透明文字 ✂️")
+  assert_eq(image_session_value(id, 0, 8), 0.75)
+  assert_eq(image_session_undo(id), 1)
+  assert_eq(image_session_text(id, 0), "月亮 🌙\n第一行")
+  assert_eq(image_session_value(id, 0, 7), 24)
+  assert_eq(image_session_value(id, 0, 8), 0.5)
+  assert_eq(image_session_redo(id), 1)
+  assert_eq(image_session_text(id, 0), "半透明文字 ✂️")
+  assert_eq(image_session_value(id, 0, 8), 0.75)
+  image_session_dispose(id)
+}
+
+///|
+test "native RGBA rejects nonfinite and out of range alpha without history changes" {
+  let id = image_session_create(640, 480)
+  let invalid : Array[Double] = [-0.01, 1.01, 0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0]
+  for opacity in invalid {
+    assert_eq(image_session_add_rgba(id, 1, 10, 20, 100, 80, 0, 4, 24, opacity), 0)
+  }
+  assert_eq(image_session_count(id), 0)
+  assert_eq(image_session_add_rgba(id, 2, 50, 60, -20, 30, 0, 4, 24, 0), 1)
+  assert_eq(image_session_value(id, 0, 8), 0)
+  for opacity in invalid {
+    assert_eq(image_session_update_rgba(id, 0, 60, 70, -20, 30, 0, 4, 24, opacity), 0)
+  }
+  assert_eq(image_session_value(id, 0, 1), 50)
+  assert_eq(image_session_undo(id), 1)
+  assert_eq(image_session_count(id), 0)
+  assert_eq(image_session_redo(id), 1)
+  assert_eq(image_session_value(id, 0, 8), 0)
+  assert_eq(image_session_add_styled(id, 1, 10, 20, 100, 80, 0, 4, 24), 1)
+  assert_eq(image_session_value(id, 1, 8), 1)
+  image_session_dispose(id)
+  assert_eq(image_session_value(id, 0, 8), 0)
+}

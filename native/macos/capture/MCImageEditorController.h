@@ -4,6 +4,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface MCImageEditorController : NSObject <NSWindowDelegate>
 @property (nonatomic, readonly, nullable) NSWindow *window;
 @property (nonatomic, readonly) NSDictionary *document;
+@property (nonatomic, readonly) NSRect pinScreenFrame;
 @property (nonatomic, copy, nullable) void (^onClose)(void);
 @property (nonatomic, copy, nullable) BOOL (^onPinPNGData)(NSData *data);
 - (nullable instancetype)initWithPNGData:(NSData *)data error:(NSError **)error;

@@ -19,7 +19,8 @@ typedef struct {
 typedef struct {
   GtkApplication *application;
   GtkWidget *editor, *canvas, *overlay, *toolbar, *entry, *font, *colors, *tools[5];
-  GtkWidget *color_group, *font_group, *stroke_group, *context_hint, *stroke_choices[3];
+  GtkWidget *color_group, *font_group, *stroke_group, *context_hint, *stroke_value, *opacity_group,
+      *opacity_value;
   GtkWidget *font_up, *font_down, *color_dialog, *future_tools[2];
   GdkPixbuf *image;
   GdkRectangle toolbar_bounds, entry_bounds;
@@ -32,7 +33,7 @@ typedef struct {
   guint subscription;
   int session, tool, color, stroke, font_size, width, height, root_width, root_height;
   int selected, edit_index, handle, gesture;
-  double x1, y1, x2, y2, zoom, offset_x, offset_y, crop[4], original[7], preview[7];
+  double x1, y1, x2, y2, zoom, offset_x, offset_y, opacity, crop[4], original[8], preview[8];
   gboolean dragging, pending, smoke, closing, selecting, editing, composing, updating, x11;
 } Capture;
 static Capture capture;
@@ -180,7 +181,7 @@ static gboolean inside(double x, double y, const double *r) {
   return x >= r[0] && y >= r[1] && x <= r[0] + r[2] && y <= r[1] + r[3];
 }
 static void read_annotation(int index, double *r) {
-  for (int i = 0; i < 7; i++)
+  for (int i = 0; i < 8; i++)
     r[i] = image_session_value(capture.session, index, i + 1);
 }
 static char *annotation_text(int index) {
@@ -204,7 +205,7 @@ static gboolean pending_text(const char *text) {
   return result == 1;
 }
 static gboolean update_annotation(int index, const double *r) {
-  double adjusted[7];
+  double adjusted[8];
   memcpy(adjusted, r, sizeof(adjusted));
   int kind = (int)image_session_value(capture.session, index, 0);
   if (kind == TEXT && !capture.editing) {
@@ -225,10 +226,10 @@ static gboolean update_annotation(int index, const double *r) {
     if (!ok)
       return FALSE;
   }
-  return image_session_update(capture.session, index, (int)adjusted[0], (int)adjusted[1],
-                              kind == ARROW ? (int)adjusted[2] : MAX(1, (int)adjusted[2]),
-                              kind == ARROW ? (int)adjusted[3] : MAX(1, (int)adjusted[3]), (int)adjusted[4],
-                              (int)adjusted[5], (int)adjusted[6]) == 1;
+  return image_session_update_rgba(capture.session, index, (int)adjusted[0], (int)adjusted[1],
+                                   kind == ARROW ? (int)adjusted[2] : MAX(1, (int)adjusted[2]),
+                                   kind == ARROW ? (int)adjusted[3] : MAX(1, (int)adjusted[3]),
+                                   (int)adjusted[4], (int)adjusted[5], (int)adjusted[6], adjusted[7]) == 1;
 }
 static PangoLayout *text_layout(cairo_t *cr, const char *text, double width, double size) {
   PangoLayout *layout = pango_cairo_create_layout(cr);
@@ -245,7 +246,8 @@ static void draw_shape(cairo_t *cr, int kind, const double *r, const char *text)
   double x = r[0], y = r[1], w = r[2], h = r[3], stroke = r[5];
   int rgb = (int)r[4];
   cairo_save(cr);
-  cairo_set_source_rgb(cr, ((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0);
+  cairo_set_source_rgba(cr, ((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0,
+                        r[7]);
   cairo_set_line_width(cr, stroke);
   cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
   if (kind == RECTANGLE) {
@@ -253,7 +255,6 @@ static void draw_shape(cairo_t *cr, int kind, const double *r, const char *text)
     cairo_stroke(cr);
   } else if (kind == REDACT) {
     cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
-    cairo_set_source_rgb(cr, 0, 0, 0);
     cairo_rectangle(cr, x, y, w, h);
     cairo_fill(cr);
   } else if (kind == ARROW) {
@@ -289,9 +290,9 @@ static void draw_document(cairo_t *cr, gboolean export) {
       int kind = (int)image_session_value(capture.session, i, 0);
       if ((kind == REDACT) != (pass == 1))
         continue;
-      if (!export && capture.editing && capture.edit_index == i)
+      if (!export && capture.editing && (capture.edit_index == i || kind == REDACT))
         continue;
-      double r[7];
+      double r[8];
       read_annotation(i, r);
       if (!export && capture.dragging && capture.gesture == 1 && capture.selected == i)
         memcpy(r, capture.preview, sizeof(r));
@@ -365,7 +366,7 @@ static gboolean canvas_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
     cairo_restore(cr);
   }
   if (capture.selected >= 0 && !capture.editing) {
-    double r[7];
+    double r[8];
     read_annotation(capture.selected, r);
     if (capture.dragging && capture.gesture == 1)
       memcpy(r, capture.preview, sizeof(r));
@@ -378,7 +379,8 @@ static gboolean canvas_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
                   capture.tool == ARROW ? capture.y2 - capture.y1 : fabs(capture.y2 - capture.y1),
                   capture.color,
                   capture.stroke,
-                  capture.font_size};
+                  capture.font_size,
+                  capture.opacity};
     draw_shape(cr, capture.tool, r, NULL);
   }
   cairo_restore(cr);
@@ -405,7 +407,7 @@ static gboolean masks_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
   cairo_clip(cr);
   for (int i = 0; i < image_session_count(capture.session); i++)
     if ((int)image_session_value(capture.session, i, 0) == REDACT) {
-      double r[7];
+      double r[8];
       read_annotation(i, r);
       draw_shape(cr, REDACT, r, NULL);
     }
@@ -458,12 +460,13 @@ static void refresh_context(void) {
   if (!capture.context_hint)
     return;
   int kind = context_kind();
-  gtk_widget_set_visible(capture.color_group, kind == TEXT || kind == RECTANGLE || kind == ARROW);
+  gtk_widget_set_visible(capture.color_group, kind != SELECT);
+  gtk_widget_set_visible(capture.opacity_group, kind != SELECT);
   gtk_widget_set_visible(capture.font_group, kind == TEXT);
   gtk_widget_set_visible(capture.stroke_group, kind == RECTANGLE || kind == ARROW);
-  gtk_widget_set_visible(capture.context_hint, kind == SELECT || kind == REDACT);
+  gtk_widget_set_visible(capture.context_hint, kind == SELECT);
   gtk_label_set_text(GTK_LABEL(capture.context_hint),
-                     kind == REDACT ? "实心遮挡 · 覆盖需要隐藏的内容" : "选择标注以调整样式");
+                     kind == REDACT ? "遮盖 · 覆盖需要隐藏的内容" : "选择标注以调整样式");
 }
 static void sync_control_values(void) {
   if (!capture.font)
@@ -474,15 +477,16 @@ static void sync_control_values(void) {
   g_snprintf(number, sizeof(number), "%d", capture.font_size);
   if (g_strcmp0(gtk_entry_get_text(GTK_ENTRY(capture.font)), number))
     gtk_entry_set_text(GTK_ENTRY(capture.font), number);
-  static const int widths[] = {2, 4, 8};
-  for (int i = 0; i < 3; i++)
-    if (capture.stroke_choices[i]) {
-      GtkStyleContext *style = gtk_widget_get_style_context(capture.stroke_choices[i]);
-      if (capture.stroke == widths[i])
-        gtk_style_context_add_class(style, "mc-selected");
-      else
-        gtk_style_context_remove_class(style, "mc-selected");
-    }
+  if (capture.stroke_value) {
+    g_snprintf(number, sizeof(number), "%d", capture.stroke);
+    if (g_strcmp0(gtk_entry_get_text(GTK_ENTRY(capture.stroke_value)), number))
+      gtk_entry_set_text(GTK_ENTRY(capture.stroke_value), number);
+  }
+  if (capture.opacity_value) {
+    g_snprintf(number, sizeof(number), "%d", (int)round(capture.opacity * 100));
+    if (g_strcmp0(gtk_entry_get_text(GTK_ENTRY(capture.opacity_value)), number))
+      gtk_entry_set_text(GTK_ENTRY(capture.opacity_value), number);
+  }
   gtk_widget_queue_draw(capture.colors);
   capture.updating = previous;
 }
@@ -490,6 +494,7 @@ static void sync_style(void) {
   if (capture.selected >= 0) {
     capture.color = (int)image_session_value(capture.session, capture.selected, 5);
     capture.stroke = (int)image_session_value(capture.session, capture.selected, 6);
+    capture.opacity = image_session_value(capture.session, capture.selected, 8);
     if ((int)image_session_value(capture.session, capture.selected, 0) == TEXT)
       capture.font_size = (int)image_session_value(capture.session, capture.selected, 7);
   }
@@ -497,10 +502,11 @@ static void sync_style(void) {
   refresh_context();
 }
 static void text_style(void) {
-  char *css =
-      g_strdup_printf("textview, textview text {background-color: transparent; color: #%06x; font-family: "
-                      "Sans; font-weight: bold; font-size: %.2fpx; padding: 0; border: 0;}",
-                      capture.color, capture.font_size * capture.zoom);
+  char *css = g_strdup_printf("textview, textview text {background-color: transparent; color: "
+                              "rgba(%d,%d,%d,%.3f); caret-color:#faf5eb; font-family: "
+                              "Sans; font-weight: bold; font-size: %.2fpx; padding: 0; border: 0;}",
+                              (capture.color >> 16) & 255, (capture.color >> 8) & 255, capture.color & 255,
+                              capture.opacity, capture.font_size * capture.zoom);
   GtkCssProvider *provider = gtk_css_provider_new();
   gtk_css_provider_load_from_data(provider, css, -1, NULL);
   gtk_style_context_add_provider(gtk_widget_get_style_context(capture.entry), GTK_STYLE_PROVIDER(provider),
@@ -522,8 +528,14 @@ static void begin_text(int index, double x, double y) {
     sync_style();
   } else {
     double right = capture.crop[0] + capture.crop[2], bottom = capture.crop[1] + capture.crop[3];
-    double r[] = {
-        x, y, fmin(240, right - x), fmin(80, bottom - y), capture.color, capture.stroke, capture.font_size};
+    double r[] = {x,
+                  y,
+                  fmin(240, right - x),
+                  fmin(80, bottom - y),
+                  capture.color,
+                  capture.stroke,
+                  capture.font_size,
+                  capture.opacity};
     memcpy(capture.preview, r, sizeof(r));
   }
   char *text = index >= 0 ? annotation_text(index) : g_strdup("");
@@ -552,6 +564,7 @@ static gboolean commit_text(void) {
       double *r = capture.preview;
       r[4] = capture.color;
       r[6] = capture.font_size;
+      r[7] = capture.opacity;
       cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
       cairo_t *cr = cairo_create(s);
       PangoLayout *layout = text_layout(cr, text, r[2], r[6]);
@@ -564,8 +577,8 @@ static gboolean commit_text(void) {
       if (capture.edit_index >= 0)
         ok = update_annotation(capture.edit_index, r);
       else {
-        ok = image_session_add_styled(capture.session, TEXT, (int)r[0], (int)r[1], (int)r[2], (int)r[3],
-                                      (int)r[4], (int)r[5], (int)r[6]) == 1;
+        ok = image_session_add_rgba(capture.session, TEXT, (int)r[0], (int)r[1], (int)r[2], (int)r[3],
+                                    (int)r[4], (int)r[5], (int)r[6], r[7]) == 1;
         if (ok)
           capture.selected = image_session_count(capture.session) - 1;
       }
@@ -600,7 +613,7 @@ static int handle_at(double x, double y, const double *r) {
 }
 static int hit_test(double x, double y) {
   for (int i = image_session_count(capture.session) - 1; i >= 0; i--) {
-    double r[7];
+    double r[8];
     read_annotation(i, r);
     if (r[2] < 0) {
       r[0] += r[2];
@@ -772,8 +785,8 @@ static gboolean canvas_release(GtkWidget *widget, GdkEventButton *event, gpointe
         w = (int)(capture.tool == ARROW ? capture.x2 - capture.x1 : fabs(capture.x2 - capture.x1)),
         h = (int)(capture.tool == ARROW ? capture.y2 - capture.y1 : fabs(capture.y2 - capture.y1));
     if ((capture.tool == ARROW && abs(w) + abs(h) >= 3) || (w >= 2 && h >= 2))
-      image_session_add(capture.session, capture.tool, x0, y0, w, h,
-                        capture.tool == REDACT ? 0 : capture.color, capture.stroke);
+      image_session_add_rgba(capture.session, capture.tool, x0, y0, w, h, capture.color, capture.stroke,
+                             capture.font_size, capture.opacity);
   }
   capture.gesture = 0;
   layout_controls();
@@ -804,27 +817,47 @@ static void apply_style(void) {
   if (capture.editing)
     text_style();
   else if (capture.selected >= 0) {
-    double r[7];
+    double r[8];
     read_annotation(capture.selected, r);
     r[4] = capture.color;
     r[5] = capture.stroke;
     r[6] = capture.font_size;
+    r[7] = capture.opacity;
     update_annotation(capture.selected, r);
   }
   sync_control_values();
   gtk_widget_queue_draw(capture.editor);
 }
-static void font_changed(GtkEditable *editable, gpointer data) {
-  (void)data;
+enum { NUMBER_FONT, NUMBER_STROKE, NUMBER_OPACITY };
+static int numeric_value(int kind) {
+  return kind == NUMBER_FONT     ? capture.font_size
+         : kind == NUMBER_STROKE ? capture.stroke
+                                 : (int)round(capture.opacity * 100);
+}
+static void numeric_set(int kind, int value) {
+  if (kind == NUMBER_FONT)
+    capture.font_size = CLAMP(value, 8, 128);
+  else if (kind == NUMBER_STROKE)
+    capture.stroke = CLAMP(value, 1, 96);
+  else
+    capture.opacity = CLAMP(value, 0, 100) / 100.0;
+  apply_style();
+}
+static void number_changed(GtkEditable *editable, gpointer data) {
   if (capture.updating)
     return;
+  int kind = GPOINTER_TO_INT(data);
   const char *text = gtk_entry_get_text(GTK_ENTRY(editable));
   char *end = NULL;
   long value = strtol(text, &end, 10);
-  if (*text && end && !*end && value >= 8 && value <= 128) {
-    capture.font_size = (int)value;
-    apply_style();
-  }
+  int low = kind == NUMBER_FONT     ? 8
+            : kind == NUMBER_STROKE ? 1
+                                    : 0,
+      high = kind == NUMBER_FONT     ? 128
+             : kind == NUMBER_STROKE ? 96
+                                     : 100;
+  if (*text && end && !*end && value >= low && value <= high)
+    numeric_set(kind, (int)value);
 }
 static gboolean font_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer data) {
   (void)widget;
@@ -833,15 +866,19 @@ static gboolean font_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer
   sync_control_values();
   return FALSE;
 }
-static void font_step(GtkWidget *widget, gpointer data) {
-  (void)widget;
+static void number_step(GtkWidget *widget, gpointer data) {
   if (capture.composing)
     return;
-  capture.font_size = CLAMP(capture.font_size + GPOINTER_TO_INT(data), 8, 128);
-  apply_style();
+  int kind = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "number-kind"));
+  numeric_set(kind, numeric_value(kind) + GPOINTER_TO_INT(data));
+}
+static void font_step(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  if (!capture.composing)
+    numeric_set(NUMBER_FONT, capture.font_size + GPOINTER_TO_INT(data));
 }
 static gboolean font_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
-  (void)data;
+  int kind = GPOINTER_TO_INT(data);
   if (event->keyval == GDK_KEY_Escape || event->keyval == GDK_KEY_Return ||
       event->keyval == GDK_KEY_KP_Enter) {
     sync_control_values();
@@ -849,15 +886,16 @@ static gboolean font_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
     return TRUE;
   }
   if (event->keyval == GDK_KEY_Up || event->keyval == GDK_KEY_Down) {
-    font_step(widget, GINT_TO_POINTER(event->keyval == GDK_KEY_Up ? 1 : -1));
+    if (!capture.composing)
+      numeric_set(kind, numeric_value(kind) + (event->keyval == GDK_KEY_Up ? 1 : -1));
     return TRUE;
   }
+  (void)widget;
   return FALSE;
 }
 static void stroke_clicked(GtkWidget *widget, gpointer data) {
   (void)widget;
-  capture.stroke = GPOINTER_TO_INT(data);
-  apply_style();
+  numeric_set(NUMBER_STROKE, GPOINTER_TO_INT(data));
 }
 static gboolean swatch_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
   (void)data;
@@ -878,6 +916,7 @@ static void color_response(GtkDialog *dialog, int response, gpointer data) {
     gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(dialog), &color);
     capture.color = ((int)round(color.red * 255) << 16) | ((int)round(color.green * 255) << 8) |
                     (int)round(color.blue * 255);
+    capture.opacity = color.alpha;
     apply_style();
   }
   capture.color_dialog = NULL;
@@ -894,9 +933,9 @@ static void choose_color(GtkWidget *widget, gpointer data) {
   }
   capture.color_dialog = gtk_color_chooser_dialog_new("标注颜色", GTK_WINDOW(capture.editor));
   GdkRGBA color = {((capture.color >> 16) & 255) / 255.0, ((capture.color >> 8) & 255) / 255.0,
-                   (capture.color & 255) / 255.0, 1};
+                   (capture.color & 255) / 255.0, capture.opacity};
   gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(capture.color_dialog), &color);
-  gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(capture.color_dialog), FALSE);
+  gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(capture.color_dialog), TRUE);
   gtk_window_set_modal(GTK_WINDOW(capture.color_dialog), TRUE);
   gtk_window_set_keep_above(GTK_WINDOW(capture.color_dialog), TRUE);
   gtk_window_set_destroy_with_parent(GTK_WINDOW(capture.color_dialog), TRUE);
@@ -931,8 +970,14 @@ static void command(GtkWidget *widget, gpointer data) {
   if (action == 5) {
     GdkPixbuf *image = flatten();
     if (image) {
+      int origin_x = 0, origin_y = 0;
+      gdk_window_get_origin(gtk_widget_get_window(capture.editor), &origin_x, &origin_y);
+      GdkRectangle bounds = {origin_x + (int)round(capture.offset_x + capture.crop[0] * capture.zoom),
+                             origin_y + (int)round(capture.offset_y + capture.crop[1] * capture.zoom),
+                             (int)round(capture.crop[2] * capture.zoom),
+                             (int)round(capture.crop[3] * capture.zoom)};
       mc_linux_capture_close();
-      mc_linux_pin_image(image);
+      mc_linux_pin_image_at(image, &bounds);
       g_object_unref(image);
     }
     return;
@@ -1047,6 +1092,46 @@ static GtkWidget *icon_button(MCIcon icon, const char *label, GCallback callback
     g_signal_connect(button, "clicked", callback, GINT_TO_POINTER(action));
   return button;
 }
+static GtkWidget *numeric_control(const char *label, int kind, GtkWidget **value) {
+  GtkWidget *group = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4), *caption = gtk_label_new(label);
+  gtk_style_context_add_class(gtk_widget_get_style_context(caption), "mc-property-label");
+  gtk_box_pack_start(GTK_BOX(group), caption, FALSE, FALSE, 4);
+  *value = gtk_entry_new();
+  gtk_entry_set_width_chars(GTK_ENTRY(*value), 3);
+  gtk_entry_set_max_width_chars(GTK_ENTRY(*value), 3);
+  gtk_entry_set_max_length(GTK_ENTRY(*value), 3);
+  gtk_entry_set_input_purpose(GTK_ENTRY(*value), GTK_INPUT_PURPOSE_DIGITS);
+  gtk_entry_set_alignment(GTK_ENTRY(*value), .5);
+  gtk_widget_set_valign(*value, GTK_ALIGN_CENTER);
+  atk_object_set_name(gtk_widget_get_accessible(*value), label);
+  gtk_widget_set_tooltip_text(*value, label);
+  g_signal_connect(*value, "changed", G_CALLBACK(number_changed), GINT_TO_POINTER(kind));
+  g_signal_connect(*value, "focus-out-event", G_CALLBACK(font_focus_out), NULL);
+  g_signal_connect(*value, "key-press-event", G_CALLBACK(font_key), GINT_TO_POINTER(kind));
+  gtk_box_pack_start(GTK_BOX(group), *value, FALSE, FALSE, 0);
+  GtkWidget *steps = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_set_valign(steps, GTK_ALIGN_CENTER);
+  for (int i = 0; i < 2; i++) {
+    char *tip = g_strdup_printf("%s%s", i == 0 ? "增加" : "减少", label);
+    GtkWidget *button = icon_button(i == 0 ? MC_ICON_CHEVRON_UP : MC_ICON_CHEVRON_DOWN, tip,
+                                    G_CALLBACK(number_step), i == 0 ? 1 : -1);
+    g_free(tip);
+    g_object_set_data(G_OBJECT(button), "number-kind", GINT_TO_POINTER(kind));
+    gtk_widget_set_size_request(button, 20, 14);
+    gtk_widget_set_size_request(gtk_bin_get_child(GTK_BIN(button)), 10, 10);
+    gtk_widget_set_focus_on_click(button, FALSE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(button), "mc-step");
+    gtk_box_pack_start(GTK_BOX(steps), button, FALSE, FALSE, 0);
+    if (kind == NUMBER_FONT) {
+      if (i == 0)
+        capture.font_up = button;
+      else
+        capture.font_down = button;
+    }
+  }
+  gtk_box_pack_start(GTK_BOX(group), steps, FALSE, FALSE, 0);
+  return group;
+}
 /* Attach this provider only to the screenshot HUD subtree, including native
  * control child widgets. Preferences, dialogs and the inline TextView retain
  * their own theme and input behavior. */
@@ -1156,6 +1241,7 @@ static gboolean open_editor(GdkPixbuf *image) {
   capture.color = 0xF26769;
   capture.stroke = 4;
   capture.font_size = 24;
+  capture.opacity = 1;
   capture.crop[2] = width;
   capture.crop[3] = height;
   if (!capture.selecting) {
@@ -1216,7 +1302,7 @@ static gboolean open_editor(GdkPixbuf *image) {
             *row2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
   gtk_box_pack_start(GTK_BOX(capture.toolbar), row, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(capture.toolbar), row2, FALSE, FALSE, 0);
-  const char *names[] = {"选择 / 移动", "矩形", "箭头", "文字：单击新建，双击编辑", "实心遮挡"};
+  const char *names[] = {"选择 / 移动", "矩形", "箭头", "文字：单击新建，双击编辑", "遮盖"};
   MCIcon icons[] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT, MC_ICON_REDACT};
   for (int i = 0; i < 5; i++) {
     capture.tools[i] = icon_button(icons[i], names[i], G_CALLBACK(tool_clicked), i);
@@ -1270,56 +1356,15 @@ static gboolean open_editor(GdkPixbuf *image) {
   g_signal_connect(capture.colors, "clicked", G_CALLBACK(choose_color), NULL);
   gtk_box_pack_start(GTK_BOX(capture.color_group), capture.colors, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(row2), capture.color_group, FALSE, FALSE, 3);
-  capture.font_group = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-  GtkWidget *font_label = gtk_label_new("字号");
-  gtk_style_context_add_class(gtk_widget_get_style_context(font_label), "mc-property-label");
-  gtk_box_pack_start(GTK_BOX(capture.font_group), font_label, FALSE, FALSE, 8);
-  capture.font = gtk_entry_new();
-  gtk_entry_set_width_chars(GTK_ENTRY(capture.font), 3);
-  gtk_entry_set_max_width_chars(GTK_ENTRY(capture.font), 3);
-  gtk_entry_set_max_length(GTK_ENTRY(capture.font), 3);
-  gtk_entry_set_input_purpose(GTK_ENTRY(capture.font), GTK_INPUT_PURPOSE_DIGITS);
-  gtk_entry_set_alignment(GTK_ENTRY(capture.font), .5);
-  gtk_entry_set_text(GTK_ENTRY(capture.font), "24");
-  gtk_widget_set_tooltip_text(capture.font, "文字大小 8–128");
-  atk_object_set_name(gtk_widget_get_accessible(capture.font), "字号");
-  gtk_widget_set_valign(capture.font, GTK_ALIGN_CENTER);
-  g_signal_connect(capture.font, "changed", G_CALLBACK(font_changed), NULL);
-  g_signal_connect(capture.font, "focus-out-event", G_CALLBACK(font_focus_out), NULL);
-  g_signal_connect(capture.font, "key-press-event", G_CALLBACK(font_key), NULL);
-  gtk_box_pack_start(GTK_BOX(capture.font_group), capture.font, FALSE, FALSE, 0);
-  GtkWidget *steps = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  gtk_widget_set_valign(steps, GTK_ALIGN_CENTER);
-  capture.font_up = icon_button(MC_ICON_CHEVRON_UP, "增大字号", G_CALLBACK(font_step), 1);
-  capture.font_down = icon_button(MC_ICON_CHEVRON_DOWN, "减小字号", G_CALLBACK(font_step), -1);
-  GtkWidget *step_buttons[] = {capture.font_up, capture.font_down};
-  for (int i = 0; i < 2; i++) {
-    gtk_widget_set_size_request(step_buttons[i], 20, 14);
-    gtk_widget_set_size_request(gtk_bin_get_child(GTK_BIN(step_buttons[i])), 10, 10);
-    gtk_widget_set_focus_on_click(step_buttons[i], FALSE);
-    gtk_style_context_add_class(gtk_widget_get_style_context(step_buttons[i]), "mc-step");
-    gtk_box_pack_start(GTK_BOX(steps), step_buttons[i], FALSE, FALSE, 0);
-  }
-  gtk_box_pack_start(GTK_BOX(capture.font_group), steps, FALSE, FALSE, 0);
+  capture.font_group = numeric_control("字号", NUMBER_FONT, &capture.font);
   gtk_box_pack_start(GTK_BOX(row2), capture.font_group, FALSE, FALSE, 3);
-  capture.stroke_group = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
-  GtkWidget *stroke_label = gtk_label_new("线宽");
-  gtk_style_context_add_class(gtk_widget_get_style_context(stroke_label), "mc-property-label");
-  gtk_box_pack_start(GTK_BOX(capture.stroke_group), stroke_label, FALSE, FALSE, 8);
-  static const int widths[] = {2, 4, 8};
-  for (int i = 0; i < 3; i++) {
-    char label[8];
-    g_snprintf(label, sizeof(label), "%d px", widths[i]);
-    capture.stroke_choices[i] = gtk_button_new_with_label(label);
-    gtk_widget_set_focus_on_click(capture.stroke_choices[i], FALSE);
-    gtk_widget_set_tooltip_text(capture.stroke_choices[i], label);
-    g_signal_connect(capture.stroke_choices[i], "clicked", G_CALLBACK(stroke_clicked),
-                     GINT_TO_POINTER(widths[i]));
-    gtk_box_pack_start(GTK_BOX(capture.stroke_group), capture.stroke_choices[i], FALSE, FALSE, 0);
-  }
+  capture.stroke_group = numeric_control("线宽", NUMBER_STROKE, &capture.stroke_value);
   gtk_box_pack_start(GTK_BOX(row2), capture.stroke_group, FALSE, FALSE, 3);
-  GtkWidget *groups[] = {capture.color_group, capture.font_group, capture.stroke_group, capture.context_hint};
-  for (int i = 0; i < 4; i++) {
+  capture.opacity_group = numeric_control("不透明度 %", NUMBER_OPACITY, &capture.opacity_value);
+  gtk_box_pack_start(GTK_BOX(row2), capture.opacity_group, FALSE, FALSE, 3);
+  GtkWidget *groups[] = {capture.color_group, capture.font_group, capture.stroke_group, capture.context_hint,
+                         capture.opacity_group};
+  for (int i = 0; i < 5; i++) {
     gtk_widget_show_all(groups[i]);
     gtk_widget_set_no_show_all(groups[i], TRUE);
   }
@@ -1592,8 +1637,9 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   ok = capture.stroke == 8 && ok;
   stroke_clicked(NULL, GINT_TO_POINTER(4));
   tool_clicked(NULL, GINT_TO_POINTER(REDACT));
-  ok = gtk_widget_get_visible(capture.context_hint) && !gtk_widget_get_visible(capture.color_group) &&
-       !gtk_widget_get_visible(capture.font_group) && !gtk_widget_get_visible(capture.stroke_group) && ok;
+  ok = !gtk_widget_get_visible(capture.context_hint) && gtk_widget_get_visible(capture.color_group) &&
+       gtk_widget_get_visible(capture.opacity_group) && !gtk_widget_get_visible(capture.font_group) &&
+       !gtk_widget_get_visible(capture.stroke_group) && ok;
   for (int i = 0; i < 2; i++) {
     AtkStateSet *state = atk_object_ref_state_set(gtk_widget_get_accessible(capture.future_tools[i]));
     char *tip = gtk_widget_get_tooltip_text(gtk_widget_get_parent(capture.future_tools[i]));
@@ -1675,7 +1721,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   text = annotation_text(0);
   ok = g_strcmp0(text, "改过的文字") == 0 && ok;
   g_free(text);
-  double r[7];
+  double r[8];
   read_annotation(0, r);
   r[2] = 100;
   r[4] = 0x225577;
@@ -1722,6 +1768,61 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   ok = image && gdk_pixbuf_get_width(image) == 320 && ok;
   g_clear_object(&image);
   gtk_clipboard_clear(clip);
+  /* A translucent colored cover must blend once on the source, including the
+   * blank portion of an active native text editor, and preserve alpha on move. */
+  ok = image_session_add_rgba(capture.session, REDACT, 180, 160, 80, 50, 0xFF0000, 4, 24, .5) == 1 && ok;
+  int cover = image_session_count(capture.session) - 1;
+  double cover_rect[8];
+  read_annotation(cover, cover_rect);
+  cover_rect[0] += 5;
+  ok = update_annotation(cover, cover_rect) && image_session_value(capture.session, cover, 8) == .5 && ok;
+  const guchar *source_pixel = gdk_pixbuf_get_pixels(capture.image) +
+                               180 * gdk_pixbuf_get_rowstride(capture.image) +
+                               210 * gdk_pixbuf_get_n_channels(capture.image);
+  int expected[3] = {(source_pixel[0] + 255 + 1) / 2, (source_pixel[1] + 1) / 2, (source_pixel[2] + 1) / 2};
+  image = flatten();
+  if (image) {
+    const guchar *pixel = gdk_pixbuf_get_pixels(image) +
+                          (180 - (int)capture.crop[1]) * gdk_pixbuf_get_rowstride(image) +
+                          (210 - (int)capture.crop[0]) * gdk_pixbuf_get_n_channels(image);
+    for (int c = 0; c < 3; c++)
+      ok = abs(pixel[c] - expected[c]) <= 1 && ok;
+    g_object_unref(image);
+  } else
+    ok = FALSE;
+  begin_text(-1, 190, 170);
+  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), "", -1);
+  cairo_surface_t *live = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, capture.width, capture.height);
+  cairo_t *live_cr = cairo_create(live);
+  draw_document(live_cr, FALSE);
+  cairo_save(live_cr);
+  cairo_scale(live_cr, 1 / capture.zoom, 1 / capture.zoom);
+  cairo_translate(live_cr, -capture.offset_x, -capture.offset_y);
+  masks_draw(NULL, live_cr, NULL);
+  cairo_restore(live_cr);
+  cairo_destroy(live_cr);
+  GdkPixbuf *live_image = gdk_pixbuf_get_from_surface(live, 0, 0, capture.width, capture.height);
+  cairo_surface_destroy(live);
+  if (live_image) {
+    const guchar *pixel = gdk_pixbuf_get_pixels(live_image) + 180 * gdk_pixbuf_get_rowstride(live_image) +
+                          210 * gdk_pixbuf_get_n_channels(live_image);
+    for (int c = 0; c < 3; c++)
+      ok = abs(pixel[c] - expected[c]) <= 1 && ok;
+    g_object_unref(live_image);
+  } else
+    ok = FALSE;
+  cancel_text();
+  image_session_undo(capture.session);
+  image_session_undo(capture.session);
+  capture.selected = 0;
+  sync_style();
+  numeric_set(NUMBER_OPACITY, 35);
+  read_annotation(0, r);
+  r[0] += 1;
+  ok = update_annotation(0, r) && fabs(image_session_value(capture.session, 0, 8) - .35) < .001 && ok;
+  image_session_undo(capture.session);
+  image_session_undo(capture.session);
+  sync_style();
   ok = image_session_crop(capture.session, 40, 60, 200, 120) == 1 && ok;
   sync_crop();
   image = flatten();

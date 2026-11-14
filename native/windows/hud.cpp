@@ -155,6 +155,10 @@ extern "C" void mc_hud_button(HDC dc, const RECT *bounds, int kind, int value, B
     wchar_t label[32];
     swprintf_s(label, 32, L"线宽  %d px", value);
     text(graphics, label, rect, 12 * scale, Color(255, 222, 217, 228), StringAlignmentCenter);
+  } else if (kind == MC_HUD_OPACITY) {
+    wchar_t label[40];
+    swprintf_s(label, 40, L"不透明度  %d%%", value);
+    text(graphics, label, rect, 12 * scale, Color(255, 222, 217, 228), StringAlignmentCenter);
   } else if (kind == MC_HUD_FONT) {
     wchar_t label[32];
     swprintf_s(label, 32, L"字号  %d", value);

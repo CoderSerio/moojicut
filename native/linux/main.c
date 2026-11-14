@@ -299,7 +299,7 @@ static void show_preferences(void) {
   gtk_widget_set_halign(reset, GTK_ALIGN_END);
   g_signal_connect(reset, "clicked", G_CALLBACK(reset_shortcuts), NULL);
   gtk_box_pack_start(GTK_BOX(shortcuts), reset, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(shortcuts), label("配置自动保存；Linux 全局快捷键尚未接入。请从托盘菜单或通用设置启动截图。录屏功能仍在开发中。", TRUE), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(shortcuts), label("配置自动保存；截图全局快捷键尚未接入，请从托盘菜单或通用设置启动。贴图全局恢复键见“贴图按键”；录屏仍在开发中。", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), shortcuts, gtk_label_new("快捷键"));
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_pin_preferences(), gtk_label_new("贴图按键"));
 
@@ -401,8 +401,14 @@ static gboolean smoke_check(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
+static void restore_pins(GtkWidget *widget, gpointer data) {
+  (void)widget;(void)data;mc_linux_pins_restore();
+}
+static void restore_pin_input(GtkWidget *widget, gpointer data) {
+  (void)widget;(void)data;mc_linux_pins_restore_input();
+}
 static void close_pins(GtkWidget *widget, gpointer data) {
-  (void)widget; (void)data; mc_linux_pins_close();
+  (void)widget; (void)data; mc_linux_pins_close_interactive();
 }
 
 static void startup(GApplication *application, gpointer data) {
@@ -419,6 +425,12 @@ static void startup(GApplication *application, gpointer data) {
   GtkWidget *screenshot = gtk_menu_item_new_with_label("截图并标注…");
   g_signal_connect(screenshot, "activate", G_CALLBACK(menu_capture), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), screenshot);
+  GtkWidget *restore = gtk_menu_item_new_with_label("恢复隐藏贴图");
+  g_signal_connect(restore,"activate",G_CALLBACK(restore_pins),NULL);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu),restore);
+  GtkWidget *restore_input = gtk_menu_item_new_with_label("关闭鼠标穿透");
+  g_signal_connect(restore_input,"activate",G_CALLBACK(restore_pin_input),NULL);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu),restore_input);
   GtkWidget *pins = gtk_menu_item_new_with_label("关闭所有贴图");
   g_signal_connect(pins, "activate", G_CALLBACK(close_pins), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), pins);

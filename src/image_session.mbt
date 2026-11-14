@@ -92,13 +92,22 @@ pub fn image_session_add_styled(
   id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int,
 ) -> Int {
+  image_session_add_rgba(id, kind, x, y, width, height, color, stroke, font_size, 1)
+}
+
+///|
+#export_name("image_session_add_rgba")
+pub fn image_session_add_rgba(
+  id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
+  color : Int, stroke : Int, font_size : Int, opacity : Double,
+) -> Int {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
-  if kind < 1 || kind > 4 || color < 0 || color > 16777215 { return 0 }
+  if kind < 1 || kind > 4 || color < 0 || color > 16777215 || !(opacity >= 0 && opacity <= 1) { return 0 }
   let name = ["rect", "arrow", "text", "redact"][kind - 1]
   let annotation : Map[String, Json] = {
     "id": Json("native-\{session.next_annotation}"), "type": Json(name),
     "x": Json(x), "y": Json(y), "width": Json(width), "height": Json(height),
-    "color": Json(native_image_color(color)), "stroke": Json(stroke), "opacity": Json(1),
+    "color": Json(native_image_color(color)), "stroke": Json(stroke), "opacity": Json(opacity),
   }
   if kind == 2 {
     annotation["x2"] = Json(x.to_double() + width.to_double())
@@ -119,12 +128,23 @@ pub fn image_session_update(
   id : Int, index : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int,
 ) -> Int {
+  let annotation = match native_image_annotation(id, index) { Some(value) => value; None => return 0 }
+  image_session_update_rgba(id, index, x, y, width, height, color, stroke, font_size,
+    image_number(annotation, "opacity", 1))
+}
+
+///|
+#export_name("image_session_update_rgba")
+pub fn image_session_update_rgba(
+  id : Int, index : Int, x : Int, y : Int, width : Int, height : Int,
+  color : Int, stroke : Int, font_size : Int, opacity : Double,
+) -> Int {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
   let annotation = match native_image_annotation(id, index) { Some(value) => value; None => return 0 }
-  if color < 0 || color > 16777215 { return 0 }
+  if color < 0 || color > 16777215 || !(opacity >= 0 && opacity <= 1) { return 0 }
   let patch : Map[String, Json] = {
     "x": Json(x), "y": Json(y), "width": Json(width), "height": Json(height),
-    "color": Json(native_image_color(color)), "stroke": Json(stroke),
+    "color": Json(native_image_color(color)), "stroke": Json(stroke), "opacity": Json(opacity),
   }
   let kind = image_string(annotation, "type", "")
   if kind == "arrow" {
@@ -235,6 +255,7 @@ pub fn image_session_value(id : Int, index : Int, field : Int) -> Double {
     }
     return number.to_double()
   }
+  if field == 8 { return image_number(annotation, "opacity", 1) }
   let key = match field { 1 => "x"; 2 => "y"; 3 => "width"; 4 => "height"; 6 => "stroke"; 7 => "fontSize"; _ => return 0 }
   image_number(annotation, key, 0)
 }

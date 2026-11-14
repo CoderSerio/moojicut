@@ -3,7 +3,8 @@
 NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSNotificationName const MCPinShortcutsDidChangeNotification;
 
-// Local to the focused pinned-image window. Never registers global hotkeys.
+// Zoom/opacity act locally. Visibility and click-through use recoverable global
+// combinations while pins exist; registration belongs to the pin controller.
 @interface MCPinShortcutStore : NSObject
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults;
 - (nullable NSDictionary *)shortcutForAction:(NSString *)action;
