@@ -1,3 +1,7 @@
+using @json {type Json}
+
+using @protocol {type InputError}
+
 ///|
 // Image documents are data only: UI and agent use the same checked command reducer.
 fn image_request(text : String) -> Map[String, Json] raise InputError {
@@ -34,10 +38,10 @@ fn image_copy(m : Map[String, Json]) -> Map[String, Json] {
 
 ///|
 fn image_rect(m : Map[String, Json], width : Double, height : Double) -> Json raise InputError {
-  let x = integer_field(m, "x", 0, width - 1)
-  let y = integer_field(m, "y", 0, height - 1)
-  let w = integer_field(m, "width", 1, width - x)
-  let h = integer_field(m, "height", 1, height - y)
+  let x = @protocol.integer_field(m, "x", 0, width - 1)
+  let y = @protocol.integer_field(m, "y", 0, height - 1)
+  let w = @protocol.integer_field(m, "width", 1, width - x)
+  let h = @protocol.integer_field(m, "height", 1, height - y)
   Json::object({ "x": Json(x), "y": Json(y), "width": Json(w), "height": Json(h) })
 }
 
@@ -80,11 +84,11 @@ fn image_annotation(raw : Json) -> Json raise InputError {
     }
   }
   let opacity = image_number(m, "opacity", if kind == "marker" { 0.3 } else { 1.0 })
-  if !editor_style_value_valid(1, opacity) { raise InputError("invalid_annotation", "Opacity must be 0–1") }
+  if !@style.editor_style_value_valid(1, opacity) { raise InputError("invalid_annotation", "Opacity must be 0–1") }
   // Filled covers share editable RGBA style. Mosaic remains an opaque filter.
   m["opacity"] = Json(if kind == "mosaic" { 1.0 } else { opacity })
   let stroke = image_number(m, "stroke", if kind == "marker" { 24 } else { 3 })
-  if !editor_style_value_valid(2, stroke) { raise InputError("invalid_annotation", "Stroke must be 1–96 px") }
+  if !@style.editor_style_value_valid(2, stroke) { raise InputError("invalid_annotation", "Stroke must be 1–96 px") }
   m["stroke"] = Json(stroke)
   let color = image_string(m, "color", "#ef4444")
   if color.length() != 7 || !color.has_prefix("#") { raise InputError("invalid_annotation", "Expected #rrggbb color") }
@@ -102,7 +106,7 @@ fn image_annotation(raw : Json) -> Json raise InputError {
     let text = image_string(m, "text", "")
     if text == "" || text.length() > 10000 { raise InputError("invalid_annotation", "Text must have 1–10000 characters") }
     let size = image_number(m, "fontSize", 24)
-    if !editor_style_value_valid(3, size) { raise InputError("invalid_annotation", "Font size must be 8–128") }
+    if !@style.editor_style_value_valid(3, size) { raise InputError("invalid_annotation", "Font size must be 8–128") }
     m["fontSize"] = Json(size)
   }
   if kind == "mosaic" {
@@ -126,12 +130,11 @@ fn image_bounded_history(a : Array[Json]) -> Array[Json] {
 }
 
 ///|
-#export_name("image_create")
 pub fn image_create(request : String) -> String {
-  response(() => {
+  @protocol.response(() => {
     let m = image_request(request)
-    let width = integer_field(m, "width", 1, 32768)
-    let height = integer_field(m, "height", 1, 32768)
+    let width = @protocol.integer_field(m, "width", 1, 32768)
+    let height = @protocol.integer_field(m, "height", 1, 32768)
     let viewport = match m.get("viewport") {
       Some(Null) => Json::null()
       Some(Object(rect)) => image_rect(rect, width, height)
@@ -160,18 +163,17 @@ fn image_translate(raw : Json, dx : Double, dy : Double) -> Json raise InputErro
 }
 
 ///|
-#export_name("image_apply")
 pub fn image_apply(request : String) -> String {
-  response(() => {
+  @protocol.response(() => {
     let req = image_request(request)
-    let doc = image_copy(object_field(req, "document"))
-    let width = integer_field(doc, "width", 1, 32768)
-    let height = integer_field(doc, "height", 1, 32768)
-    let revision = integer_field(doc, "revision", 0, 9007199254740990)
-    if req.contains("expectedRevision") && integer_field(req, "expectedRevision", 0, 9007199254740990) != revision {
+    let doc = image_copy(@protocol.object_field(req, "document"))
+    let width = @protocol.integer_field(doc, "width", 1, 32768)
+    let height = @protocol.integer_field(doc, "height", 1, 32768)
+    let revision = @protocol.integer_field(doc, "revision", 0, 9007199254740990)
+    if req.contains("expectedRevision") && @protocol.integer_field(req, "expectedRevision", 0, 9007199254740990) != revision {
       raise InputError("revision_conflict", "Screenshot changed; read the latest revision")
     }
-    let command = object_field(req, "command")
+    let command = @protocol.object_field(req, "command")
     let kind = image_string(command, "type", "")
     let before = image_snapshot(doc)
     let annotations = image_array(doc, "annotations")
@@ -192,7 +194,7 @@ pub fn image_apply(request : String) -> String {
       let next : Array[Json] = []
       let mut found = false
       if kind == "crop" {
-        doc["viewport"] = image_rect(object_field(command, "rect"), width, height)
+        doc["viewport"] = image_rect(@protocol.object_field(command, "rect"), width, height)
         for a in annotations { next.push(a) }
       } else if kind == "add" {
         for a in annotations { next.push(a) }
@@ -223,7 +225,7 @@ pub fn image_apply(request : String) -> String {
               if annotation_type == "redact" || annotation_type == "mosaic" { raise InputError("invalid_command", "Mask stacking is fixed") }
               ordered = a
             } else {
-              let patch = object_field(command, if kind == "resize" { "rect" } else { "patch" })
+              let patch = @protocol.object_field(command, if kind == "resize" { "rect" } else { "patch" })
               let copy = image_copy(am)
               for key, value in patch { if key != "id" && key != "type" { copy[key] = value } }
               next.push(image_annotation(Json::object(copy)))
@@ -248,12 +250,11 @@ pub fn image_apply(request : String) -> String {
 }
 
 ///|
-#export_name("image_finalize")
 pub fn image_finalize(request : String) -> String {
-  response(() => {
+  @protocol.response(() => {
     let req = image_request(request)
-    let doc = image_copy(object_field(req, "document"))
-    let v = object_field(doc, "viewport")
+    let doc = image_copy(@protocol.object_field(req, "document"))
+    let v = @protocol.object_field(doc, "viewport")
     let x = image_number(v, "x", 0)
     let y = image_number(v, "y", 0)
     let width = image_number(v, "width", 0)

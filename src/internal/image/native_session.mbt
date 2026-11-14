@@ -36,14 +36,12 @@ fn native_image_create(request : Json) -> Int {
 }
 
 ///|
-#export_name("image_session_create")
 pub fn image_session_create(width : Int, height : Int) -> Int {
   native_image_create(Json::object({ "width": Json(width), "height": Json(height) }))
 }
 
 ///|
 // Initial region selection is the document baseline, not an undoable edit.
-#export_name("image_session_create_viewport")
 pub fn image_session_create_viewport(
   width : Int, height : Int, x : Int, y : Int, viewport_width : Int, viewport_height : Int,
 ) -> Int {
@@ -78,7 +76,6 @@ fn native_image_color(color : Int) -> String {
 }
 
 ///|
-#export_name("image_session_add")
 pub fn image_session_add(
   id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int,
@@ -87,7 +84,6 @@ pub fn image_session_add(
 }
 
 ///|
-#export_name("image_session_add_styled")
 pub fn image_session_add_styled(
   id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int,
@@ -96,7 +92,6 @@ pub fn image_session_add_styled(
 }
 
 ///|
-#export_name("image_session_add_rgba")
 pub fn image_session_add_rgba(
   id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int, opacity : Double,
@@ -123,7 +118,6 @@ pub fn image_session_add_rgba(
 
 ///|
 // Hosts keep live drag/typing drafts outside the document, then commit once.
-#export_name("image_session_update")
 pub fn image_session_update(
   id : Int, index : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int,
@@ -134,7 +128,6 @@ pub fn image_session_update(
 }
 
 ///|
-#export_name("image_session_update_rgba")
 pub fn image_session_update_rgba(
   id : Int, index : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int, opacity : Double,
@@ -164,7 +157,6 @@ pub fn image_session_update_rgba(
 }
 
 ///|
-#export_name("image_session_remove")
 pub fn image_session_remove(id : Int, index : Int) -> Int {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
   let annotation = match native_image_annotation(id, index) { Some(value) => value; None => return 0 }
@@ -174,7 +166,6 @@ pub fn image_session_remove(id : Int, index : Int) -> Int {
 }
 
 ///|
-#export_name("image_session_crop")
 pub fn image_session_crop(id : Int, x : Int, y : Int, width : Int, height : Int) -> Int {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
   let rect = Json::object({ "x": Json(x), "y": Json(y), "width": Json(width), "height": Json(height) })
@@ -183,7 +174,6 @@ pub fn image_session_crop(id : Int, x : Int, y : Int, width : Int, height : Int)
 }
 
 ///|
-#export_name("image_session_viewport_value")
 pub fn image_session_viewport_value(id : Int, field : Int) -> Double {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
   let viewport = match session.document.get("viewport") { Some(Object(rect)) => rect; _ => return 0 }
@@ -192,7 +182,6 @@ pub fn image_session_viewport_value(id : Int, field : Int) -> Double {
 }
 
 ///|
-#export_name("image_session_set_text")
 pub fn image_session_set_text(id : Int, text : String) -> Int {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
   if text.is_empty() || text.length() > 10000 { return 0 }
@@ -201,14 +190,12 @@ pub fn image_session_set_text(id : Int, text : String) -> Int {
 }
 
 ///|
-#export_name("image_session_undo")
 pub fn image_session_undo(id : Int) -> Int {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
   native_image_command(session, Json::object({ "type": Json("undo") }))
 }
 
 ///|
-#export_name("image_session_redo")
 pub fn image_session_redo(id : Int) -> Int {
   let session = match native_image_sessions.get(id) { Some(value) => value; None => return 0 }
   native_image_command(session, Json::object({ "type": Json("redo") }))
@@ -226,7 +213,6 @@ fn native_image_annotations(id : Int) -> Array[Json] {
 }
 
 ///|
-#export_name("image_session_count")
 pub fn image_session_count(id : Int) -> Int { native_image_annotations(id).length() }
 
 ///|
@@ -237,7 +223,6 @@ fn native_image_annotation(id : Int, index : Int) -> Map[String, Json]? {
 }
 
 ///|
-#export_name("image_session_value")
 pub fn image_session_value(id : Int, index : Int, field : Int) -> Double {
   let annotation = match native_image_annotation(id, index) { Some(value) => value; None => return 0 }
   if field == 0 {
@@ -261,7 +246,6 @@ pub fn image_session_value(id : Int, index : Int, field : Int) -> Double {
 }
 
 ///|
-#export_name("image_session_text")
 pub fn image_session_text(id : Int, index : Int) -> String {
   match native_image_annotation(id, index) {
     Some(value) => image_string(value, "text", "")
@@ -270,5 +254,4 @@ pub fn image_session_text(id : Int, index : Int) -> String {
 }
 
 ///|
-#export_name("image_session_dispose")
 pub fn image_session_dispose(id : Int) -> Unit { native_image_sessions.remove(id) }
