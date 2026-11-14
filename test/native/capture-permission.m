@@ -3,8 +3,8 @@
 #endif
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
-#import "capture/MCCaptureController.h"
-#import "capture/MCImageEditorController.h"
+#import "plugins/feature/capture/macos/MCCaptureController.h"
+#import "plugins/feature/image_editor/macos/MCImageEditorController.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include "moonbit.h"
 

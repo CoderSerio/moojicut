@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #import <Sparkle/Sparkle.h>
-#import "updates/MCUpdateController.h"
+#import "native/macos/updates/MCUpdateController.h"
 
 static BOOL require(BOOL condition, NSString *message) {
     if (!condition) fprintf(stderr, "FAIL updater: %s\n", message.UTF8String);

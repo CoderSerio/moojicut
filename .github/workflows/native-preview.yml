@@ -16,7 +16,11 @@ on:
       - native/windows/**
       - native/linux/**
       - native/shared/**
+      - plugins/**
+      - components/**
       - scripts/desktop.py
+      - scripts/native_modules.py
+      - test/build/**
       - scripts/install_moon.py
       - scripts/generate_icons.py
       - assets/icons/**

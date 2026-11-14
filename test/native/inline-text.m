@@ -1,6 +1,6 @@
 #import <AppKit/AppKit.h>
-#import "capture/MCImageEditorController.h"
-#import "components/MCStyleControls.h"
+#import "plugins/feature/image_editor/macos/MCImageEditorController.h"
+#import "components/style_controls/macos/MCStyleControls.h"
 #include "moonbit.h"
 #include <math.h>
 

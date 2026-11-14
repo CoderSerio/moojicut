@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from native_modules import native_sources, object_path
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -68,11 +69,13 @@ class DesktopBuild:
         return self.run(self.moon, "-C", ROOT, "--target-dir", self.directory / "moon", *args)
 
     def core_tests(self):
+        self.run(sys.executable, "-m", "unittest", "discover", "-s", ROOT / "test/build", "-v")
         self.moon_command("check", "--target", "native", "--deny-warn")
         self.moon_command("test", "--target", "native", "--release", "--deny-warn")
 
     def build(self):
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check")
+        sources = native_sources(self.system)
         output = self.moon_command("build", "--target", "native", "--release", "--deny-warn", "--output-json")
         archive = None
         for line in output.splitlines():
@@ -100,11 +103,15 @@ class DesktopBuild:
                 self.run("rc", "/nologo", "/fo" + str(resource), "resources.rc", cwd=source)
                 common = ["/nologo", "/utf-8", "/MT", "/O2", "/W4", "/DUNICODE", "/D_UNICODE",
                           '/DMOOJICUT_VERSION="' + self.version + '"', "/I" + str(self.home / "include"),
-                          "/Fo" + str(Path(name)) + os.sep]
-                self.run("cl", *common, "/std:c11", "/c", *sorted(source.glob("*.c")))
-                if list(source.glob("*.cpp")):
-                    self.run("cl", *common, "/std:c++17", "/EHsc", "/c", *sorted(source.glob("*.cpp")))
-                self.run("cl", "/nologo", *sorted(Path(name).glob("*.obj")), archive, resource, "/Fe" + str(linked_executable),
+                          "/I" + str(ROOT)]
+                objects = []
+                for unit in sources:
+                    obj = object_path(name, unit)
+                    obj.parent.mkdir(parents=True, exist_ok=True)
+                    language = ["/std:c++17", "/EHsc"] if unit.suffix == ".cpp" else ["/std:c11"]
+                    self.run("cl", *common, *language, "/Fo" + str(obj), "/c", unit)
+                    objects.append(obj)
+                self.run("cl", "/nologo", *objects, archive, resource, "/Fe" + str(linked_executable),
                          "/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup", "/MANIFEST:NO",
                          "/IMPLIB:" + str(Path(name) / "MoojiCut.lib"),
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
@@ -116,7 +123,7 @@ class DesktopBuild:
                 flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1"))
                 self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                          '-DMOOJICUT_VERSION="' + self.version + '"', "-I", self.home / "include",
-                         *sorted(source.glob("*.c")), archive, *flags, "-lm", "-o", executable)
+                         "-I", ROOT, *sources, archive, *flags, "-lm", "-o", executable)
                 self.run("strip", executable)
                 dependencies = self.run("ldd", executable)
                 if "not found" in dependencies:

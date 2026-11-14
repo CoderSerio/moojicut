@@ -14,9 +14,9 @@
 #include <wchar.h>
 #include "moonbit.h"
 #include "resource.h"
-#include "capture.h"
-#include "pinning.h"
-#include "recording.h"
+#include "plugins/feature/capture/windows/capture.h"
+#include "plugins/feature/pin/windows/pinning.h"
+#include "plugins/feature/recording/windows/recording.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "0.1.0-alpha.2"
@@ -107,6 +107,16 @@ static void refresh_global_shortcuts(void) {
                 L"快捷键已启用。录入时暂时停用，离开输入框后恢复。");
     }
 }
+
+static BOOL capture_pin_image(void *context, HGLOBAL dib, int x, int y) {
+    HINSTANCE application = *(HINSTANCE *)context;
+    return mc_pin_image(application, dib, x, y, TRUE);
+}
+static void capture_set_pins_hidden(void *context, BOOL hidden) {
+    (void)context;
+    mc_pins_hide(hidden);
+}
+static const MCCaptureHost capture_services = {&instance, capture_pin_image, capture_set_pins_hidden};
 
 static void start_capture(void) {
     if (mc_capture_busy()) { mc_capture_activate(); return; }
@@ -428,7 +438,7 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         }
         if (wp == CAPTURE_TIMER) {
             KillTimer(window, CAPTURE_TIMER);
-            if (!mc_capture_start(instance, host)) MessageBoxW(host,
+            if (!mc_capture_start(instance, host, &capture_services)) MessageBoxW(host,
                 L"无法读取当前桌面。请退出安全桌面或远程会话限制后重试。", L"Mooji Cut", MB_OK | MB_ICONWARNING);
         }
         if (wp == RECORD_TIMER) { KillTimer(window, RECORD_TIMER); mc_recording_start(instance, host); }
@@ -688,6 +698,7 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
     if (smoke_mode) {
         result = run_smoke();
         if (result == 0) result = mc_capture_smoke(instance);
+        if (result == 0 && !mc_pin_smoke(instance)) result = 1;
         if (result == 0) result = mc_recording_smoke(instance);
         DestroyWindow(host);
     } else {

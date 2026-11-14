@@ -1,14 +1,14 @@
 #import <AppKit/AppKit.h>
 #import <mach/mach.h>
 #import <unistd.h>
-#import "preferences/MCPreferencesController.h"
-#import "shortcuts/MCGlobalShortcutManager.h"
-#import "capture/MCCaptureController.h"
-#import "capture/MCImageEditorController.h"
-#import "pinning/MCPinnedImageController.h"
-#import "recording/MCMacRecordingController.h"
+#import "native/macos/preferences/MCPreferencesController.h"
+#import "native/macos/shortcuts/MCGlobalShortcutManager.h"
+#import "plugins/feature/capture/macos/MCCaptureController.h"
+#import "plugins/feature/image_editor/macos/MCImageEditorController.h"
+#import "plugins/feature/pin/macos/MCPinnedImageController.h"
+#import "plugins/feature/recording/macos/MCMacRecordingController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
-#import "updates/MCUpdateController.h"
+#import "native/macos/updates/MCUpdateController.h"
 #include "moonbit.h"
 #include <stdlib.h>
 

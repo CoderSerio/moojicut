@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets/icons/lucide"
-TARGET = ROOT / "native/shared/mc_icons.h"
+TARGET = ROOT / "components/icons/shared/mc_icons.h"
 
 
 def arc(start, args):

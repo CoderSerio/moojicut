@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "moonbit.h"
-#include "capture.h"
-#include "pinning.h"
+#include "plugins/feature/capture/linux/capture.h"
+#include "plugins/feature/pin/linux/pinning.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "development"
@@ -333,9 +333,19 @@ static void menu_preferences(GtkWidget *widget, gpointer data) {
   show_preferences();
 }
 
+static void capture_closed(gpointer data) {
+  (void)data;
+  mc_linux_pins_hide(FALSE);
+}
+static void pin_capture_result(GdkPixbuf *image, const GdkRectangle *bounds, gpointer data) {
+  (void)data;
+  mc_linux_pin_image_at(image, bounds);
+}
+static const MCLinuxCaptureHost capture_host = {pin_capture_result, capture_closed, NULL};
+
 static gboolean begin_capture(gpointer data) {
   (void)data;
-  mc_linux_capture_start(host.application);
+  mc_linux_capture_start(host.application, &capture_host);
   return G_SOURCE_REMOVE;
 }
 
@@ -395,6 +405,7 @@ static gboolean smoke_check(gpointer data) {
   gtk_widget_destroy(host.window);
   passed = passed && host.window == NULL;
   passed = mc_linux_capture_smoke(host.application) && passed;
+  passed = mc_linux_pin_smoke() && passed;
   host.exit_code = passed ? 0 : 1;
   g_print("Linux native UI smoke %s: core, settings persistence, clear/reset, duplicate validation, five close/reopen cycles.\n", passed ? "passed" : "FAILED");
   g_application_quit(G_APPLICATION(host.application));

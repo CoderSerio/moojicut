@@ -1,8 +1,8 @@
 #import <AppKit/AppKit.h>
-#import "preferences/MCPinShortcutStore.h"
-#import "preferences/MCShortcutStore.h"
-#import "preferences/MCShortcutRecorder.h"
-#import "preferences/MCPreferencesController.h"
+#import "native/macos/preferences/MCPinShortcutStore.h"
+#import "native/macos/preferences/MCShortcutStore.h"
+#import "native/macos/preferences/MCShortcutRecorder.h"
+#import "native/macos/preferences/MCPreferencesController.h"
 
 // The preferences fixture does not create or start an updater. Its notification
 // name is the only updater symbol referenced by the otherwise real controller.

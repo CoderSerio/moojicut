@@ -1,6 +1,6 @@
 #import "MCPreferencesController.h"
 #import "MCShortcutRecorder.h"
-#import "../updates/MCUpdateController.h"
+#import "native/macos/updates/MCUpdateController.h"
 
 static NSString *const MCAppearanceKey = @"appearance";
 static NSTextField *MCLabel(NSString *text, CGFloat size, BOOL secondary) {

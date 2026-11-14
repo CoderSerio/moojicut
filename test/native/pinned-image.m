@@ -1,6 +1,6 @@
 #import <AppKit/AppKit.h>
-#import "pinning/MCPinnedImageController.h"
-#import "preferences/MCPinShortcutStore.h"
+#import "plugins/feature/pin/macos/MCPinnedImageController.h"
+#import "native/macos/preferences/MCPinShortcutStore.h"
 #include <math.h>
 #import <Carbon/Carbon.h>
 #include <stdlib.h>
