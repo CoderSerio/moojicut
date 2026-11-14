@@ -53,6 +53,7 @@ static HICON app_icon;
 static UINT taskbar_created;
 static NOTIFYICONDATAW tray;
 static BOOL tray_added, smoke_mode, updating;
+static BOOL smoke_shortcut_registration;
 static WORD hotkeys[3];
 static BOOL open_on_start;
 static int core_ok;
@@ -80,7 +81,7 @@ static void refresh_global_shortcuts(void) {
     int i;
     HWND focused = GetFocus();
     wchar_t class_name[64];
-    if (smoke_mode || !host) return;
+    if ((smoke_mode && !smoke_shortcut_registration) || !host) return;
     unregister_shortcuts();
     shortcut_registration_error[0] = L'\0';
     if (focused && GetClassNameW(focused, class_name, ARRAYSIZE(class_name)) &&
@@ -93,6 +94,8 @@ static void refresh_global_shortcuts(void) {
         if (flags & HOTKEYF_ALT) modifiers |= MOD_ALT;
         if (flags & HOTKEYF_SHIFT) modifiers |= MOD_SHIFT;
         global_registered[i] = RegisterHotKey(host, CAPTURE_HOTKEY + i, modifiers, LOBYTE(hotkeys[i]));
+        if (!global_registered[i] && smoke_shortcut_registration)
+            fprintf(stderr, "Hotkey smoke: RegisterHotKey action=%d failed, error=%lu.\n", i, GetLastError());
         if (!global_registered[i]) swprintf_s(shortcut_registration_error, ARRAYSIZE(shortcut_registration_error),
             L"%s快捷键未能启用，可能已被其他程序占用。请换一个组合。", i == 0 ? L"截图" : i == 1 ? L"开始录屏" : L"停止录屏");
     }
@@ -345,6 +348,7 @@ static void tray_menu(void) {
     AppendMenuW(menu, MF_STRING, IDM_CAPTURE, L"截图…");
     AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RECORD, L"开始录屏（无声音）…");
     AppendMenuW(menu, MF_STRING | (mc_recording_recording() ? 0 : MF_GRAYED), IDM_STOP_RECORD, L"停止录屏并编辑");
+    AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RESUME_RECORD, L"继续编辑上次录屏…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"设置…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
@@ -358,6 +362,7 @@ static void tray_menu(void) {
     if (chosen == IDM_CAPTURE) start_capture();
     else if (chosen == IDM_RECORD) start_recording();
     else if (chosen == IDM_STOP_RECORD) mc_recording_stop();
+    else if (chosen == IDM_RESUME_RECORD) mc_recording_resume_last(instance, host);
     else if (chosen == IDM_SETTINGS) show_settings();
     else if (chosen == IDM_QUIT) PostMessageW(host, WM_CLOSE, 0, 0);
 }
@@ -369,12 +374,17 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
     }
     switch (message) {
     case WM_HOTKEY:
+        // Tests register real, uncommon shortcuts but never capture the desktop.
+        if (smoke_mode) return 0;
         if (wp == CAPTURE_HOTKEY) start_capture();
         else if (wp == RECORD_HOTKEY) start_recording();
         else if (wp == STOP_HOTKEY) mc_recording_stop();
         return 0;
     case WM_REFRESH_SHORTCUTS: refresh_global_shortcuts(); return 0;
     case WM_TIMER:
+        if (smoke_mode && (wp == CAPTURE_TIMER || wp == RECORD_TIMER)) {
+            KillTimer(window, (UINT_PTR)wp); return 0;
+        }
         if (wp == CAPTURE_TIMER) { KillTimer(window, CAPTURE_TIMER); mc_capture_start(instance, host); }
         if (wp == RECORD_TIMER) { KillTimer(window, RECORD_TIMER); mc_recording_start(instance, host); }
         return 0;
@@ -467,6 +477,54 @@ cleanup:
     return passed;
 }
 
+static BOOL run_shortcut_smoke(HWND page) {
+    WORD saved[3];
+    HWND previous_focus = GetFocus(), recorder = GetDlgItem(page, IDC_HOTKEY_CAPTURE);
+    HWND neutral = GetDlgItem(settings, IDOK);
+    MSG message;
+    BOOL passed = FALSE;
+    int i;
+    const BYTE modifiers = HOTKEYF_CONTROL | HOTKEYF_ALT | HOTKEYF_SHIFT;
+    if (!smoke_mode || !recorder || !neutral) return FALSE;
+    for (i = 0; i < 3; i++) saved[i] = hotkeys[i];
+    unregister_shortcuts();
+    smoke_shortcut_registration = TRUE;
+    for (i = 0; i < 3; i++) hotkeys[i] = MAKEWORD(VK_F17 + i, modifiers);
+    SetFocus(neutral);
+    if (GetFocus() != neutral) { fprintf(stderr, "Hotkey smoke: cannot focus neutral control.\n"); goto cleanup; }
+    refresh_global_shortcuts();
+    if (!global_registered[0] || !global_registered[1] || !global_registered[2]) goto cleanup;
+    SetFocus(recorder);
+    if (GetFocus() != recorder || global_registered[0] || global_registered[1] || global_registered[2]) {
+        fprintf(stderr, "Hotkey smoke: entering recorder did not suspend all shortcuts.\n"); goto cleanup;
+    }
+    SetFocus(neutral);
+    if (GetFocus() != neutral) { fprintf(stderr, "Hotkey smoke: cannot leave recorder.\n"); goto cleanup; }
+    while (PeekMessageW(&message, host, WM_REFRESH_SHORTCUTS, WM_REFRESH_SHORTCUTS, PM_REMOVE))
+        DispatchMessageW(&message);
+    if (!global_registered[0] || !global_registered[1] || !global_registered[2]) {
+        fprintf(stderr, "Hotkey smoke: leaving recorder did not restore all shortcuts.\n"); goto cleanup;
+    }
+    hotkeys[1] = 0;
+    refresh_global_shortcuts();
+    if (!global_registered[0] || global_registered[1] || !global_registered[2]) {
+        fprintf(stderr, "Hotkey smoke: disabled recording shortcut was registered.\n"); goto cleanup;
+    }
+    // Exercise the smoke guard without synthesizing or sending user input.
+    for (i = 0; i < 3; i++) SendMessageW(host, WM_HOTKEY, CAPTURE_HOTKEY + i, 0);
+    passed = !mc_capture_busy() && !mc_recording_busy();
+    if (!passed) fprintf(stderr, "Hotkey smoke: test events started a capture operation.\n");
+cleanup:
+    unregister_shortcuts();
+    smoke_shortcut_registration = FALSE;
+    for (i = 0; i < 3; i++) hotkeys[i] = saved[i];
+    shortcut_registration_error[0] = L'\0';
+    if (previous_focus && IsWindow(previous_focus)) SetFocus(previous_focus);
+    printf("Windows global shortcut smoke: %s (real registration, focus suspend/resume, disabled action).\n",
+        passed ? "passed" : "FAILED");
+    return passed;
+}
+
 static int run_smoke(void) {
     HWND page, first;
     WORD changed = MAKEWORD(VK_F6, HOTKEYF_CONTROL);
@@ -497,6 +555,7 @@ static int run_smoke(void) {
     if ((WORD)SendDlgItemMessageW(page, IDC_HOTKEY_CAPTURE, HKM_GETHOTKEY, 0, 0) != changed) goto cleanup;
     SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_RESET_SHORTCUTS, BN_CLICKED), 0);
     if (hotkeys[0] != DEFAULT_KEYS[0] || hotkeys[1] != DEFAULT_KEYS[1]) goto cleanup;
+    if (!run_shortcut_smoke(page)) goto cleanup;
     PropSheet_SetCurSel(settings, NULL, 2);
     page = PropSheet_GetCurrentPageHwnd(settings);
     if (!page || !GetDlgItem(page, IDC_CORE_STATUS)) goto cleanup;

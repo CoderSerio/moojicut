@@ -7,6 +7,7 @@
 extern "C" {
 #endif
 bool mc_recording_start(HINSTANCE instance, HWND owner);
+bool mc_recording_resume_last(HINSTANCE instance, HWND owner);
 void mc_recording_stop(void);
 bool mc_recording_busy(void);
 bool mc_recording_recording(void);

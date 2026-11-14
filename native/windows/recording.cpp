@@ -531,20 +531,63 @@ bool initialize(HINSTANCE instance,HWND owner) {
     klass.lpfnWndProc=editorProcedure;klass.lpszClassName=editorClass;klass.hCursor=LoadCursorW(nullptr,IDC_ARROW);klass.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_MOOJICUT));klass.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_BTNFACE+1);
     return state.host&&(RegisterClassExW(&klass)||GetLastError()==ERROR_CLASS_ALREADY_EXISTS);
 }
+void discardUnshownSession() {
+    if(!state.editor&&state.session){native_video_close(state.session);state.session=0;}
+}
+void loadDraftSession(UINT32 width,UINT32 height,int32_t duration) {
+    fs::path file=state.directory/L"edit.json";
+    if(fs::exists(file)) {
+        if(!fs::is_regular_file(file)||fs::file_size(file)==0||fs::file_size(file)>4*1024*1024)
+            throw Failure{E_INVALIDARG,L"编辑草稿为空或损坏，已保留原片和草稿文件"};
+        std::ifstream saved(file,std::ios::binary);
+        if(!saved)throw Failure{E_ACCESSDENIED,L"无法读取编辑草稿，请检查文件权限"};
+        std::string bytes((std::istreambuf_iterator<char>(saved)),std::istreambuf_iterator<char>());
+        if(saved.bad())throw Failure{E_FAIL,L"读取编辑草稿失败，原文件未修改"};
+        moonbit_string_t draft=toString(fromUtf8(bytes));
+        state.session=native_video_resume(duration,static_cast<int32_t>(width),static_cast<int32_t>(height),0,draft);moonbit_decref(draft);
+        if(!state.session)throw Failure{E_INVALIDARG,L"无法恢复编辑草稿，原文件未修改。\n"+takeString(native_video_error(0))};
+    }else{
+        state.session=native_video_open(duration,static_cast<int32_t>(width),static_cast<int32_t>(height),0);
+        if(!state.session)throw Failure{E_INVALIDARG,takeString(native_video_error(0))};
+    }
+}
+void createEditor(bool visible) {
+    saveDraft();
+    UINT dpi=GetDpiForSystem();RECT rectangle={0,0,MulDiv(800,static_cast<int>(dpi),96),MulDiv(442,static_cast<int>(dpi),96)};
+    DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX;AdjustWindowRectExForDpi(&rectangle,style,FALSE,WS_EX_CONTROLPARENT,dpi);
+    state.editor=CreateWindowExW(WS_EX_CONTROLPARENT,editorClass,L"编辑录屏 · Mooji Cut",style,CW_USEDEFAULT,CW_USEDEFAULT,rectangle.right-rectangle.left,rectangle.bottom-rectangle.top,state.owner,nullptr,state.instance,nullptr);
+    if(!state.editor)throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法打开录屏编辑器"};
+    refresh();if(visible){ShowWindow(state.editor,SW_SHOWNORMAL);SetForegroundWindow(state.editor);}notify();
+}
 void openEditor(UINT32 width,UINT32 height,int32_t duration) {
-    try{
-        std::ifstream saved(state.directory/L"edit.json",std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(saved)),std::istreambuf_iterator<char>());
-        if(!bytes.empty()){moonbit_string_t draft=toString(fromUtf8(bytes));state.session=native_video_resume(duration,static_cast<int32_t>(width),static_cast<int32_t>(height),0,draft);moonbit_decref(draft);}
-        else state.session=native_video_open(duration,static_cast<int32_t>(width),static_cast<int32_t>(height),0);
-        if(!state.session){showFailure(takeString(native_video_error(0)));return;}
-        saveDraft();
-        UINT dpi=GetDpiForSystem();RECT rectangle={0,0,MulDiv(800,static_cast<int>(dpi),96),MulDiv(442,static_cast<int>(dpi),96)};
-        DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX;AdjustWindowRectExForDpi(&rectangle,style,FALSE,WS_EX_CONTROLPARENT,dpi);
-        state.editor=CreateWindowExW(WS_EX_CONTROLPARENT,editorClass,L"编辑录屏 · Mooji Cut",style,CW_USEDEFAULT,CW_USEDEFAULT,rectangle.right-rectangle.left,rectangle.bottom-rectangle.top,state.owner,nullptr,state.instance,nullptr);
-        if(!state.editor){native_video_close(state.session);state.session=0;throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法打开录屏编辑器"};}
-        refresh();ShowWindow(state.editor,SW_SHOWNORMAL);SetForegroundWindow(state.editor);notify();
-    }catch(const Failure &error){if(!state.editor&&state.session){native_video_close(state.session);state.session=0;}showFailure(description(error));}
-    catch(const std::exception &){if(!state.editor&&state.session){native_video_close(state.session);state.session=0;}showFailure(L"无法打开草稿，原始文件已保留。");}
+    try{loadDraftSession(width,height,duration);createEditor(true);}
+    catch(const Failure &error){discardUnshownSession();showFailure(description(error));}
+    catch(const std::exception &){discardUnshownSession();showFailure(L"无法打开草稿，请检查文件权限与磁盘空间。");}
+}
+fs::path latestDraft(const fs::path &root) {
+    fs::path latest;fs::file_time_type newest=fs::file_time_type::min();
+    if(fs::exists(root))for(const auto &entry:fs::directory_iterator(root)) {
+        if(!entry.is_directory())continue;
+        fs::path source=entry.path()/L"source.mp4",edit=entry.path()/L"edit.json";
+        bool hasSource=fs::is_regular_file(source),hasEdit=fs::is_regular_file(edit);
+        if(!hasSource&&!hasEdit)continue;
+        auto modified=hasEdit?fs::last_write_time(edit):fs::last_write_time(source);
+        if(hasSource)modified=std::max(modified,fs::last_write_time(source));
+        if(latest.empty()||modified>newest){latest=entry.path();newest=modified;}
+    }
+    if(latest.empty())throw Failure{HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND),L"没有可继续编辑的录屏。完成一次录屏后，原片与编辑草稿会保存在本机。"};
+    return latest;
+}
+void restoreDraft(const fs::path &directory,bool visible) {
+    fs::path source=directory/L"source.mp4";
+    if(!fs::is_regular_file(source))throw Failure{HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND),L"上次录屏的原片 source.mp4 已被移动或删除，无法恢复编辑。\n"+directory.wstring()};
+    // A restarted tray process has not initialized Media Foundation yet.
+    MediaRuntime runtime;Decoder decoder(source);
+    std::vector<BYTE> pixels;LONGLONG time=0,length=0;
+    if(!decoder.next(pixels,time,length))throw Failure{E_INVALIDARG,L"录屏文件没有可读取的画面，可能已损坏。\n"+source.wstring()};
+    if(decoder.duration<10000||decoder.duration/10000>604800000)throw Failure{E_INVALIDARG,L"录屏时长超出支持范围"};
+    state.directory=directory;state.source=source;
+    loadDraftSession(decoder.width,decoder.height,static_cast<int32_t>(decoder.duration/10000));createEditor(visible);
 }
 }
 
@@ -563,6 +606,14 @@ extern "C" bool mc_recording_start(HINSTANCE instance,HWND owner) {
         state.directory=applicationDirectory()/L"Drafts"/identifier();fs::create_directories(state.directory);state.source=state.directory/L"source.mp4";
         launchJob(JobKind::Recording,state.source,Plan{},monitor.rcMonitor,width,height);return true;
     }catch(const Failure &error){showFailure(description(error));}catch(const std::exception &){showFailure(L"无法开始录屏，请检查磁盘空间和用户目录权限。");}return false;
+}
+extern "C" bool mc_recording_resume_last(HINSTANCE instance,HWND owner) {
+    if(mc_recording_busy()){mc_recording_activate();return false;}
+    if(!initialize(instance,owner)){showFailure(L"无法初始化录屏编辑器。");return false;}
+    try{restoreDraft(latestDraft(applicationDirectory()/L"Drafts"),true);return true;}
+    catch(const Failure &error){discardUnshownSession();showFailure(L"无法继续编辑上次录屏。\n"+description(error));}
+    catch(const std::exception &){discardUnshownSession();showFailure(L"无法读取录屏草稿目录，请检查文件权限。原片与草稿未修改。");}
+    return false;
 }
 extern "C" void mc_recording_stop(void){if(state.kind==JobKind::Recording){state.stop.store(true);notify();}}
 extern "C" bool mc_recording_busy(void){return state.prompt||state.kind!=JobKind::None||state.editor!=nullptr;}
