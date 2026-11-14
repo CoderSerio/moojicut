@@ -697,7 +697,8 @@ static void motion(double x, double y) {
   if (capture.gesture) {
     double *r = capture.preview, *o = capture.original;
     memcpy(r, o, sizeof(capture.preview));
-    selection_values(mc_selection_transform(&capture.selection, capture.width, capture.height, 8), r);
+    selection_values(mc_selection_transform(&capture.selection, capture.width, capture.height,
+                                            capture.gesture == 2 ? 2 : 8), r);
     int handle = capture.selection.handle;
     if (capture.gesture == 1 && handle >= 0 && (handle % 2) == 0 &&
         (int)image_session_value(capture.session, capture.selected, 0) == TEXT)

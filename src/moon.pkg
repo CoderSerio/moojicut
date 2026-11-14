@@ -3,4 +3,8 @@ import {
   "moonbitlang/core/double",
 }
 
+import {
+  "moojicut/core/internal/selection",
+}
+
 pkgtype(kind: "foreign_library")

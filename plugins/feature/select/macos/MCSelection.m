@@ -1,24 +1,24 @@
 #import "MCSelection.h"
 #include <math.h>
+#include "../../../../native/shared/selection.h"
+
+static MCCoreRect CoreRect(NSRect rect) {
+    return (MCCoreRect){rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
+}
+static MCCorePoint CorePoint(NSPoint point) { return (MCCorePoint){point.x, point.y}; }
+static NSRect NativeRect(MCCoreRect rect) { return NSMakeRect(rect.x, rect.y, rect.width, rect.height); }
 
 NSPoint MCSelectionHandlePoint(NSInteger handle, NSRect rect) {
-    static const CGFloat xs[] = {0, .5, 1, 1, 1, .5, 0, 0};
-    static const CGFloat ys[] = {0, 0, 0, .5, 1, 1, 1, .5};
     if (handle < 0 || handle >= 8) return NSZeroPoint;
-    return NSMakePoint(rect.origin.x + xs[handle] * rect.size.width,
-                      rect.origin.y + ys[handle] * rect.size.height);
+    MCCorePoint point = mc_core_handle_point(CoreRect(rect), (int32_t)handle, MC_SELECTION_MIDPOINT_EXACT);
+    return NSMakePoint(point.x, point.y);
 }
 NSInteger MCSelectionHandleAtPoint(NSPoint point, NSRect rect, CGFloat radius) {
-    for (NSInteger handle = 0; handle < 8; handle++) {
-        NSPoint center = MCSelectionHandlePoint(handle, rect);
-        if (NSPointInRect(point, NSMakeRect(center.x - radius, center.y - radius,
-                                          radius * 2, radius * 2))) return handle;
-    }
-    return -1;
+    return mc_core_hit_handle(CoreRect(rect), CorePoint(point), radius,
+                             MC_SELECTION_MIDPOINT_EXACT);
 }
 BOOL MCSelectionBorderContains(NSPoint point, NSRect rect, CGFloat radius) {
-    return NSPointInRect(point, NSInsetRect(rect, -radius, -radius)) &&
-           !NSPointInRect(point, NSInsetRect(rect, radius, radius));
+    return mc_core_border_contains(CoreRect(rect), CorePoint(point), radius) != 0;
 }
 NSInteger MCSelectionHitTest(BOOL hasSelection, NSRect imageRect, NSRect viewRect,
                             NSPoint imagePoint, NSPoint viewPoint) {
@@ -43,23 +43,16 @@ void MCSelectionUpdate(MCSelectionGesture *gesture, NSPoint point) {
     if (!gesture || !gesture->active || !isfinite(point.x) || !isfinite(point.y)) return;
     point.x = MAX(0, MIN(gesture->bounds.width, point.x));
     point.y = MAX(0, MIN(gesture->bounds.height, point.y));
-    CGFloat dx = point.x - gesture->anchor.x, dy = point.y - gesture->anchor.y;
-    NSRect rect = gesture->original;
+    MCCoreRect preview;
     if (gesture->operation == MCSelectionCreate) {
-        rect = NSMakeRect(MIN(gesture->anchor.x, point.x), MIN(gesture->anchor.y, point.y), fabs(dx), fabs(dy));
-    } else if (gesture->operation == MCSelectionMove) {
-        rect.origin.x = MAX(0, MIN(gesture->bounds.width - rect.size.width, rect.origin.x + dx));
-        rect.origin.y = MAX(0, MIN(gesture->bounds.height - rect.size.height, rect.origin.y + dy));
+        preview = mc_core_region(CorePoint(gesture->anchor), CorePoint(point));
     } else {
-        CGFloat left = NSMinX(rect), right = NSMaxX(rect), top = NSMinY(rect), bottom = NSMaxY(rect);
-        NSInteger handle = gesture->operation;
-        if (handle == 0 || handle == 6 || handle == 7) left = MIN(right - 2, MAX(0, left + dx));
-        if (handle == 2 || handle == 3 || handle == 4) right = MAX(left + 2, MIN(gesture->bounds.width, right + dx));
-        if (handle == 0 || handle == 1 || handle == 2) top = MIN(bottom - 2, MAX(0, top + dy));
-        if (handle == 4 || handle == 5 || handle == 6) bottom = MAX(top + 2, MIN(gesture->bounds.height, bottom + dy));
-        rect = NSMakeRect(left, top, right - left, bottom - top);
+        preview = mc_core_transform(CoreRect(gesture->original), CorePoint(gesture->anchor),
+            CorePoint(point), (int32_t)gesture->operation,
+            (MCCoreRect){0, 0, gesture->bounds.width, gesture->bounds.height},
+            2);
     }
-    gesture->preview = rect;
+    gesture->preview = NativeRect(preview);
 }
 BOOL MCSelectionFinish(MCSelectionGesture *gesture, NSPoint point, NSRect *selection) {
     if (!gesture || !gesture->active) return NO;

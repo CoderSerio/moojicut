@@ -588,12 +588,12 @@ static int hit_text(POINT p) {
   return -1;
 }
 static int hit_handle(RECT rect, POINT point) {
-  int radius = dpi_px(capture.editor ? capture.editor : capture.overlay, 7);
+  int radius = dpi_px(capture.editor ? capture.editor : capture.overlay, 6);
   return mc_selection_hit_handle(rect, point, radius);
 }
-static RECT drag_rect(RECT rect, POINT from, POINT to, int handle) {
+static RECT drag_rect(RECT rect, POINT from, POINT to, int handle, int minimum_size) {
   RECT bounds = {0, 0, capture.image.width, capture.image.height};
-  return mc_selection_transform(rect, from, to, handle, bounds, 8);
+  return mc_selection_transform(rect, from, to, handle, bounds, minimum_size);
 }
 static void frame(HDC dc, RECT r, BOOL handles) {
   HWND window = capture.editor ? capture.editor : capture.overlay;
@@ -949,7 +949,8 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       capture.end.x = bounded(GET_X_LPARAM(lp), 0, capture.image.width);
       capture.end.y = bounded(GET_Y_LPARAM(lp), 0, capture.image.height);
       if (capture.drag_mode) {
-        capture.draft = drag_rect(capture.drag_bounds, capture.start, capture.end, capture.handle);
+        capture.draft = drag_rect(capture.drag_bounds, capture.start, capture.end, capture.handle,
+                                  capture.drag_mode == 2 ? 2 : 8);
         if (capture.drag_mode == 2)
           capture.viewport = capture.draft;
       }
@@ -1123,7 +1124,7 @@ static BOOL register_windows(HINSTANCE instance) {
   return RegisterClassExW(&k) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 static BOOL show_selection(void) {
-  mc_selection_init(&capture.selection, (RECT){0, 0, capture.desktop.width, capture.desktop.height}, 8);
+  mc_selection_init(&capture.selection, (RECT){0, 0, capture.desktop.width, capture.desktop.height}, 2);
   capture.overlay =
       CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, OVERLAY_CLASS, L"Mooji Cut · 框选", WS_POPUP,
                       capture.desktop_bounds.left, capture.desktop_bounds.top, capture.desktop.width,
@@ -1272,7 +1273,7 @@ bool mc_capture_handle_message(MSG *message) {
         to.y = -step;
       else
         to.y = step;
-      r = drag_rect(r, from, to, -1);
+      r = drag_rect(r, from, to, -1, 8);
       preserve_text(capture.selected);
       image_session_update_rgba(capture.session, capture.selected, r.left, r.top, r.right - r.left,
                                 r.bottom - r.top,
