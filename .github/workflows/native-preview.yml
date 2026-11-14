@@ -84,8 +84,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          git ls-files --eol -- src/pkg.generated.mbti
-          git diff --exit-code -- src/pkg.generated.mbti
+          git ls-files --eol -- ':(glob)src/**/pkg.generated.mbti'
+          git diff --exit-code -- ':(glob)src/**/pkg.generated.mbti'
       - name: Upload tested packages
         uses: actions/upload-artifact@v4
         with:

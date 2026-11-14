@@ -1,4 +1,5 @@
 import {
+  "moojicut/core/internal/editor_style" @style,
   "moonbitlang/core/json",
   "moonbitlang/core/double",
 }
