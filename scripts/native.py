@@ -53,7 +53,7 @@ class NativeBuild:
         manifest = (ROOT / "moon.mod").read_text()
         self.name = self.manifest_value(manifest, "name")
         self.version = self.manifest_value(manifest, "version")
-        self.release_version = release_version or self.version + "-alpha.2"
+        self.release_version = release_version or self.version + "-alpha.5"
         version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
                                self.release_version)
         if not version:
@@ -113,6 +113,7 @@ class NativeBuild:
         return self.run(self.moon, "-C", ROOT, "--target-dir", directory / "moon", *args, quiet=quiet)
 
     def archive(self, directory):
+        self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check", quiet=True)
         directory.mkdir(parents=True, exist_ok=True)
         output = self.moon_command(directory, "build", "--target", "native", "--release",
                                    "--deny-warn", "--output-json", quiet=True)
@@ -182,6 +183,7 @@ class NativeBuild:
             shutil.copytree(sparkle / "Sparkle.framework", embedded_sparkle, symlinks=True)
             shutil.copy2(sparkle / "LICENSE", resources / "Sparkle-LICENSE.txt")
             shutil.copy2(ROOT / "LICENSE", resources / "LICENSE.txt")
+            shutil.copy2(ROOT / "assets/icons/lucide/LICENSE", resources / "Lucide-LICENSE.txt")
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
                      "-I", self.include, "-I", native, "-F", sparkle, *sources, archive,
                      "-framework", "Sparkle", "-Wl,-rpath,@executable_path/../Frameworks",
@@ -271,7 +273,7 @@ class NativeBuild:
                     "Info.plist", "MacOS/" + EXECUTABLE_NAME, "Resources/build.json",
                     "Resources/MoojiCut.icns", "Resources/MoojiCutStatusTemplate.png",
                     "Resources/MoojiCutStatusTemplate@2x.png", "_CodeSignature/CodeResources",
-                    "Resources/LICENSE.txt", "Resources/Sparkle-LICENSE.txt",
+                    "Resources/LICENSE.txt", "Resources/Sparkle-LICENSE.txt", "Resources/Lucide-LICENSE.txt",
                     "Frameworks/Sparkle.framework/Versions/B/Sparkle")}
                 missing = required - set(packaged.namelist())
                 if missing:
@@ -312,6 +314,19 @@ class NativeBuild:
                  preferences / "MCSystemShortcutCheck.m", "-framework", "AppKit", "-framework", "Carbon",
                  "-o", executable)
         self.run(executable)
+        pin_shortcuts = shortcuts / "pin-shortcuts"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT / "native/macos",
+                 ROOT / "test/native/pin-shortcuts.m", preferences / "MCPinShortcutStore.m",
+                 preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
+                 preferences / "MCPreferencesController.m",
+                 "-framework", "AppKit", "-framework", "Carbon", "-o", pin_shortcuts)
+        self.run(pin_shortcuts)
+        pinned_image = shortcuts / "pinned-image"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT / "native/macos",
+                 ROOT / "test/native/pinned-image.m", ROOT / "native/macos/pinning/MCPinnedImageController.m",
+                 preferences / "MCPinShortcutStore.m", preferences / "MCShortcutStore.m", preferences / "MCSystemShortcutCheck.m",
+                 "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
+        self.run(pinned_image)
         global_shortcuts = shortcuts / "global-shortcuts"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT / "native/macos",
                  ROOT / "test/native/global-shortcuts.m", preferences / "MCShortcutStore.m",
@@ -324,8 +339,18 @@ class NativeBuild:
                  "-I", ROOT / "native/macos", "-DCGPreflightScreenCaptureAccess=MCFakePreflight",
                  "-DCGRequestScreenCaptureAccess=MCFakeRequest", ROOT / "test/native/capture-permission.m",
                  capture / "MCCaptureController.m", capture / "MCImageEditorController.m", archive,
-                 "-framework", "AppKit", "-framework", "CoreGraphics", "-o", capture_permission)
+                 "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", capture_permission)
         self.run(capture_permission)
+        inline_text = shortcuts / "inline-text"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
+                 "-I", ROOT / "native/macos", ROOT / "test/native/inline-text.m",
+                 capture / "MCImageEditorController.m", archive, "-framework", "AppKit", "-o", inline_text)
+        self.run(inline_text)
+        capture_overlay = shortcuts / "capture-overlay"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
+                 "-I", ROOT / "native/macos", ROOT / "test/native/capture-overlay.m",
+                 capture / "MCImageEditorController.m", archive, "-framework", "AppKit", "-o", capture_overlay)
+        self.run(capture_overlay)
         sparkle = install_sparkle()
         updater = shortcuts / "updater-smoke"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
@@ -356,7 +381,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
     parser.add_argument("--release-version", metavar="VERSION",
-                        help="Release label (default: <moon.mod version>-alpha.2).")
+                        help="Release label (default: <moon.mod version>-alpha.5).")
     args = parser.parse_args()
     native = NativeBuild(args.release_version)
     if args.command == "dev":

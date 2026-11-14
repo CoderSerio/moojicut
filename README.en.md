@@ -23,6 +23,7 @@
 | Task | With Mooji Cut |
 | --- | --- |
 | Explain with a screenshot | Select an area, add arrows, rectangles, and text, cover sensitive details, then copy the result into a chat or document. |
+| Keep a reference visible | Pin a screenshot on screen and adjust its size and opacity while you work. |
 | Show a process | Record a walkthrough, trim the beginning and end, remove unwanted sections, crop the frame, and export the result. |
 
 Undo and redo let you make adjustments as you go.

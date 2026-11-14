@@ -4,13 +4,15 @@
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #import "capture/MCCaptureController.h"
+#import "capture/MCImageEditorController.h"
+#import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include "moonbit.h"
 
 // Compile MCCaptureController.m with both CG APIs redirected to these fakes.
 // No real TCC request, screencapture process, modal window, or clipboard access
 // is permitted by this test, even when checking the granted branch.
 static bool preflightResult, requestResult;
-static NSUInteger preflightCalls, requestCalls, alertCalls, unexpectedLaunches;
+static NSUInteger preflightCalls, requestCalls, alertCalls, unexpectedLaunches, unexpectedCaptures;
 static __weak MCCaptureController *reentrantController;
 
 bool MCFakePreflight(void) { preflightCalls++; return preflightResult; }
@@ -52,18 +54,168 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @end
 
 @interface MCCaptureController (MCPermissionTestHooks)
-- (void)launchWhenKeysReleased:(NSTask *)task attempts:(NSUInteger)attempts;
+- (void)captureWhenKeysReleased:(NSString *)session attempts:(NSUInteger)attempts;
+- (void)captureDisplaysForSession:(NSString *)session;
+- (NSArray<NSDictionary *> *)screenDescriptors;
+- (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion;
+- (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
+            completion:(void (^)(NSData *, NSError *))completion;
+- (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error;
+- (void)screenParametersChanged:(NSNotification *)notification;
+- (NSRunningApplication *)frontmostApplication;
+- (void)prepareCaptureFocus;
+- (void)restoreCaptureFocus:(NSRunningApplication *)application;
+@end
+@interface MCFakeDisplay : NSObject
+@property CGDirectDisplayID displayID;
+@end
+@implementation MCFakeDisplay
+@end
+@interface MCFakeContent : NSObject
+@property NSArray *displays;
+@property NSArray *applications;
+@end
+@implementation MCFakeContent
+@end
+@interface MCFakeApplication : NSObject
+@property pid_t processID;
+@end
+@implementation MCFakeApplication
+@end
+@interface MCFakeRunningApplication : NSObject
+@property pid_t processIdentifier;
+@end
+@implementation MCFakeRunningApplication
+@end
+@interface MCFakeOverlay : MCImageEditorController
+@property NSUInteger shows;
+@property NSUInteger cancellations;
+@end
+@implementation MCFakeOverlay
+- (void)show { self.shows++; }
+- (void)cancel:(id)sender {
+    (void)sender;
+    self.cancellations++;
+    void (^closed)(void) = self.onClose;
+    self.onClose = nil;
+    if (closed) closed();
+}
 @end
 @interface MCPermissionCapture : MCCaptureController
 @property NSUInteger launchCount;
 @property BOOL invalidLaunch;
+@property NSString *interceptedSession;
+@property (copy) void (^pendingContent)(SCShareableContent *, NSError *);
+@property NSMutableDictionary<NSNumber *, id> *imageCompletions;
+@property NSMutableArray<NSNumber *> *requestedDisplayIDs;
+@property NSMutableArray<NSDictionary *> *createdSnapshots;
+@property NSMutableArray<MCFakeOverlay *> *createdEditors;
+@property NSArray *excludedApplications;
+@property NSRunningApplication *fakeFrontmost;
+@property NSRunningApplication *restoredApplication;
+@property NSMutableArray<NSString *> *focusEvents;
 @end
 @implementation MCPermissionCapture
-- (void)launchWhenKeysReleased:(NSTask *)task attempts:(NSUInteger)attempts {
+- (instancetype)init {
+    if ((self = [super init])) {
+        _imageCompletions = [NSMutableDictionary dictionary];
+        _requestedDisplayIDs = [NSMutableArray array];
+        _createdSnapshots = [NSMutableArray array];
+        _createdEditors = [NSMutableArray array];
+        _focusEvents = [NSMutableArray array];
+        MCFakeRunningApplication *external = [MCFakeRunningApplication new];
+        external.processIdentifier = NSProcessInfo.processInfo.processIdentifier + 1;
+        _fakeFrontmost = (NSRunningApplication *)external;
+    }
+    return self;
+}
+- (NSRunningApplication *)frontmostApplication { return self.fakeFrontmost; }
+- (void)prepareCaptureFocus { [self.focusEvents addObject:@"prepare"]; }
+- (void)restoreCaptureFocus:(NSRunningApplication *)application {
+    self.restoredApplication = application;
+    [self.focusEvents addObject:@"restore"];
+}
+- (void)captureWhenKeysReleased:(NSString *)session attempts:(NSUInteger)attempts {
     self.launchCount++;
-    self.invalidLaunch = task == nil || task.running || attempts != 0;
+    self.invalidLaunch = session.length == 0 || attempts != 0;
+    self.interceptedSession = session;
+}
+- (NSArray<NSDictionary *> *)screenDescriptors {
+    return @[
+        @{@"displayID":@14, @"frame":[NSValue valueWithRect:NSMakeRect(0,0,1440,900)]},
+        @{@"displayID":@27, @"frame":[NSValue valueWithRect:NSMakeRect(-1920,-180,1920,1080)]}
+    ];
+}
+- (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion { self.pendingContent = completion; }
+- (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
+            completion:(void (^)(NSData *, NSError *))completion {
+    [self.requestedDisplayIDs addObject:@(display.displayID)];
+    self.imageCompletions[@(display.displayID)] = [completion copy];
+    self.excludedApplications = applications;
+}
+- (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error {
+    (void)error;
+    [self.createdSnapshots addObject:snapshot];
+    MCFakeOverlay *editor = [MCFakeOverlay new];
+    [self.createdEditors addObject:editor];
+    return editor;
 }
 @end
+
+// Last-resort interceptions make an accidental call to a real capture API fail
+// this test without reading the desktop, even if a future refactor bypasses a fake.
+@interface SCShareableContent (MCPermissionTest)
++ (void)mc_permission_content:(BOOL)exclude onScreenWindowsOnly:(BOOL)onScreen completionHandler:(void (^)(SCShareableContent *, NSError *))completion;
+@end
+@implementation SCShareableContent (MCPermissionTest)
++ (void)mc_permission_content:(BOOL)exclude onScreenWindowsOnly:(BOOL)onScreen completionHandler:(void (^)(SCShareableContent *, NSError *))completion {
+    (void)exclude; (void)onScreen;
+    unexpectedCaptures++;
+    completion(nil, [NSError errorWithDomain:@"MoojiCut.PermissionTest" code:1 userInfo:nil]);
+}
+@end
+@interface SCScreenshotManager (MCPermissionTest)
++ (void)mc_permission_image:(SCContentFilter *)filter configuration:(SCStreamConfiguration *)configuration
+        completionHandler:(void (^)(CGImageRef, NSError *))completion;
+@end
+@implementation SCScreenshotManager (MCPermissionTest)
++ (void)mc_permission_image:(SCContentFilter *)filter configuration:(SCStreamConfiguration *)configuration
+        completionHandler:(void (^)(CGImageRef, NSError *))completion {
+    (void)filter; (void)configuration;
+    unexpectedCaptures++;
+    completion(NULL, [NSError errorWithDomain:@"MoojiCut.PermissionTest" code:1 userInfo:nil]);
+}
+@end
+
+static SCShareableContent *fakeContent(NSArray<NSNumber *> *ids) {
+    MCFakeContent *content = [MCFakeContent new];
+    NSMutableArray *displays = [NSMutableArray array];
+    for (NSNumber *identifier in ids) {
+        MCFakeDisplay *display = [MCFakeDisplay new]; display.displayID = identifier.unsignedIntValue;
+        [displays addObject:display];
+    }
+    content.displays = displays;
+    MCFakeApplication *ownApplication = [MCFakeApplication new];
+    ownApplication.processID = NSProcessInfo.processInfo.processIdentifier;
+    MCFakeApplication *otherApplication = [MCFakeApplication new]; otherApplication.processID = 1;
+    content.applications = @[otherApplication, ownApplication];
+    return (SCShareableContent *)content;
+}
+static void drainMainQueue(void) {
+    __block BOOL drained = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ drained = YES; });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.5];
+    while (!drained && deadline.timeIntervalSinceNow > 0) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+    }
+    NSCAssert(drained, @"The test must drain asynchronous capture completions");
+}
+static void finishImage(MCPermissionCapture *controller, NSNumber *displayID, NSString *pixels, NSError *error) {
+    void (^completion)(NSData *, NSError *) = controller.imageCompletions[displayID];
+    NSCAssert(completion, @"Expected an intercepted screenshot request");
+    completion([pixels dataUsingEncoding:NSUTF8StringEncoding], error);
+    drainMainQueue();
+}
 
 static void exchange(Class type, SEL original, SEL replacement) {
     Method first = class_getInstanceMethod(type, original);
@@ -77,6 +229,13 @@ static void toggleInterceptions(void) {
     exchange(NSApplication.class, @selector(hide:), @selector(mc_permission_hide:));
     exchange(NSTask.class, @selector(launchAndReturnError:), @selector(mc_permission_launchAndReturnError:));
     exchange(NSTask.class, @selector(launch), @selector(mc_permission_launch));
+    exchange(object_getClass(SCShareableContent.class),
+        @selector(getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:),
+        @selector(mc_permission_content:onScreenWindowsOnly:completionHandler:));
+    if (@available(macOS 14.0, *)) {
+        exchange(object_getClass(SCScreenshotManager.class), @selector(captureImageWithFilter:configuration:completionHandler:),
+            @selector(mc_permission_image:configuration:completionHandler:));
+    }
 }
 static void reset(bool preflight, bool request) {
     preflightResult = preflight; requestResult = request;
@@ -127,7 +286,7 @@ int main(void) {
             [controller capture];
             CHECK(preflightCalls == 1 && requestCalls == 1 && alertCalls == 0 && controller.launchCount == 1,
                   "a successful initial permission request proceeds without an app alert");
-            CHECK(!controller.invalidLaunch, "the granted request supplies a new unstarted task");
+            CHECK(!controller.invalidLaunch, "the granted request supplies a new capture session");
             controller = nil;
 
             reset(true, false);
@@ -135,14 +294,107 @@ int main(void) {
             [controller capture];
             CHECK(preflightCalls == 1 && requestCalls == 0 && alertCalls == 0 && controller.launchCount == 1,
                   "an existing grant bypasses permission UI and reaches launch");
-            CHECK(!controller.invalidLaunch, "an existing grant supplies a new unstarted task");
+            CHECK(!controller.invalidLaunch, "an existing grant supplies a new capture session");
             controller = nil;
-            CHECK(unexpectedLaunches == 0, "no NSTask launch API was invoked");
+            // Display enumeration order differs from NSScreen order; callbacks
+            // complete out of order. Both snapshots must retain their own frame.
+            reset(true, false);
+            controller = [MCPermissionCapture new];
+            __block NSUInteger pinCalls = 0;
+            controller.onPinPNGData = ^BOOL(NSData *data) { pinCalls++; return data.length > 0; };
+            [controller capture];
+            [controller captureDisplaysForSession:controller.interceptedSession];
+            controller.pendingContent(fakeContent(@[@27,@14]), nil);
+            drainMainQueue();
+            CHECK(([controller.requestedDisplayIDs isEqual:@[@14,@27]]), "display IDs map snapshots to NSScreen frames, not enumeration indices");
+            CHECK(controller.excludedApplications.count == 1 &&
+                  [(SCRunningApplication *)controller.excludedApplications.firstObject processID] == NSProcessInfo.processInfo.processIdentifier,
+                  "the app's own settings and pinned windows are excluded from the capture");
+            finishImage(controller, @27, @"left screen pixels", nil);
+            CHECK(controller.createdEditors.count == 0, "no overlay is shown while any screen is still being captured");
+            finishImage(controller, @14, @"main screen pixels", nil);
+            CHECK(controller.createdEditors.count == 2 && controller.createdEditors[0].shows == 1 && controller.createdEditors[1].shows == 1,
+                  "all frozen overlays are shown after every image has arrived");
+            CHECK(NSEqualRects([controller.createdSnapshots[1][@"frame"] rectValue], NSMakeRect(-1920,-180,1920,1080)) &&
+                  [controller.createdSnapshots[1][@"png"] isEqual:[@"left screen pixels" dataUsingEncoding:NSUTF8StringEncoding]],
+                  "secondary display keeps its negative coordinates and corresponding pixels");
+            CHECK(controller.createdEditors[1].onPinPNGData([@"pin" dataUsingEncoding:NSUTF8StringEncoding]) && pinCalls == 1,
+                  "overlay pin actions delegate the final PNG to the application");
+            [controller.createdEditors[1] cancel:nil];
+            CHECK(!controller.busy && controller.createdEditors[0].cancellations > 0 && controller.createdEditors[1].cancellations > 0,
+                  "closing any overlay closes the whole capture session");
+            controller = nil;
+
+            // Cancellation and monitor reconfiguration invalidate asynchronous
+            // results. A stale callback must not reopen an old capture session.
+            reset(true, false);
+            controller = [MCPermissionCapture new];
+            [controller capture];
+            [controller captureDisplaysForSession:controller.interceptedSession];
+            void (^oldContent)(SCShareableContent *, NSError *) = controller.pendingContent;
+            [controller cancelCapture];
+            CHECK(!controller.busy, "pending capture can be cancelled");
+            [controller capture];
+            oldContent(fakeContent(@[@14,@27]), nil);
+            drainMainQueue();
+            CHECK(controller.busy && controller.requestedDisplayIDs.count == 0, "late content from a cancelled session cannot affect the new session");
+            [controller screenParametersChanged:nil];
+            CHECK(!controller.busy && controller.createdEditors.count == 0, "monitor changes cancel pending capture without showing an overlay");
+            controller = nil;
+
+            // App focus is restored before changed brings pins back. All app
+            // access and activation is intercepted; no external app is touched.
+            reset(true, false);
+            controller = [MCPermissionCapture new];
+            __weak MCPermissionCapture *weakCapture = controller;
+            controller.onStateChange = ^{
+                MCPermissionCapture *current = weakCapture;
+                [current.focusEvents addObject:current.busy ? @"busy" : @"idle"];
+            };
+            NSRunningApplication *external = controller.fakeFrontmost;
+            [controller capture];
+            [controller capture];
+            [controller cancelCapture];
+            CHECK(controller.restoredApplication == external, "capture returns focus to the original external application");
+            CHECK(([controller.focusEvents isEqual:@[@"busy", @"prepare", @"restore", @"idle"]]),
+                  "prepare runs once and focus restores before pins are allowed to reappear");
+            [controller cancelCapture];
+            CHECK(controller.focusEvents.count == 4, "cancelling an ended session does not steal focus again");
+            MCFakeRunningApplication *ownApplication = [MCFakeRunningApplication new];
+            ownApplication.processIdentifier = NSProcessInfo.processInfo.processIdentifier;
+            controller.fakeFrontmost = (NSRunningApplication *)ownApplication;
+            [controller capture];
+            [controller cancelCapture];
+            CHECK(controller.restoredApplication == nil, "a capture started from Settings does not reactivate Settings afterwards");
+            controller = nil;
+
+            // A missing screen or a failed screenshot produces no partial UI.
+            reset(true, false);
+            controller = [MCPermissionCapture new];
+            [controller capture];
+            [controller captureDisplaysForSession:controller.interceptedSession];
+            controller.pendingContent(fakeContent(@[@14]), nil);
+            drainMainQueue();
+            CHECK(!controller.busy && controller.requestedDisplayIDs.count == 0 && alertCalls == 1,
+                  "a missing display is reported before any screenshots or overlays are created");
+            controller = nil;
+            reset(true, false);
+            controller = [MCPermissionCapture new];
+            [controller capture];
+            [controller captureDisplaysForSession:controller.interceptedSession];
+            controller.pendingContent(fakeContent(@[@14,@27]), nil);
+            drainMainQueue();
+            finishImage(controller, @14, nil, [NSError errorWithDomain:@"SyntheticCaptureFailure" code:1 userInfo:nil]);
+            finishImage(controller, @27, @"late pixels", nil);
+            CHECK(!controller.busy && controller.createdEditors.count == 0 && alertCalls == 1,
+                  "screenshot failure closes the session and discards late results");
+            controller = nil;
+            CHECK(unexpectedLaunches == 0 && unexpectedCaptures == 0, "no real process or ScreenCaptureKit capture API was invoked");
         } @finally {
             reentrantController = nil;
             toggleInterceptions();
         }
-        printf("Capture permission sequencing (fake TCC, intercepted launch, no modal UI): %s\n",
+        printf("Capture sessions (fake TCC/pixels, display mapping, cancellation, pin dispatch, no modal UI): %s\n",
                passed ? "passed" : "FAILED");
         return passed ? 0 : 1;
     }

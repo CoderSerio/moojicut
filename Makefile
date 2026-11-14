@@ -1,5 +1,5 @@
 PYTHON ?= python3
-RELEASE_VERSION ?= 0.1.0-alpha.2
+RELEASE_VERSION ?= 0.1.0-alpha.5
 
 .DEFAULT_GOAL := build
 .NOTPARALLEL:

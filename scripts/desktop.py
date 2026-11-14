@@ -72,6 +72,7 @@ class DesktopBuild:
         self.moon_command("test", "--target", "native", "--release", "--deny-warn")
 
     def build(self):
+        self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check")
         output = self.moon_command("build", "--target", "native", "--release", "--deny-warn", "--output-json")
         archive = None
         for line in output.splitlines():
@@ -107,7 +108,7 @@ class DesktopBuild:
                          "/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup", "/MANIFEST:NO",
                          "/IMPLIB:" + str(Path(name) / "MoojiCut.lib"),
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
-                         "gdi32.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
+                         "gdi32.lib", "gdiplus.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
                          "mfplat.lib", "mfreadwrite.lib", "mfuuid.lib", "mf.lib", "propsys.lib")
                 shutil.copy2(linked_executable, executable)
                 dependencies = self.run("dumpbin", "/nologo", "/dependents", executable)
@@ -136,6 +137,7 @@ class DesktopBuild:
             (staging / "build.json").write_text(json.dumps(self.metadata, indent=2) + "\n", encoding="utf-8")
             (staging / "README.txt").write_text(self.instructions(), encoding="utf-8")
             shutil.copy2(ROOT / "LICENSE", staging / "LICENSE.txt")
+            shutil.copy2(ROOT / "assets/icons/lucide/LICENSE", staging / "Lucide-LICENSE.txt")
             self.verify_bundle(staging)
             self.bundle.parent.mkdir(parents=True, exist_ok=True)
             previous = Path(name) / "previous"
@@ -150,13 +152,15 @@ class DesktopBuild:
 
     def scope(self):
         if self.system == "windows":
-            return ("Native tray and configurable global shortcuts; screenshot selection, annotation and confirmed image copy; "
+            return ("Native tray and configurable global shortcuts; frozen-desktop inline screenshot editing, "
+                    "editable text, pinned images with configurable local zoom/opacity keys, confirmed image copy; "
                     "silent main-display recording, trim, cuts, crop and confirmed MP4 file copy.")
-        return ("Native tray and preferences; X11 screenshot selection or Wayland screenshot portal, "
-                "annotation and confirmed image copy. Global shortcuts and recording are not connected.")
+        return ("Native tray and preferences; X11 frozen-desktop inline editing or Wayland portal image editing; "
+                "editable text, pinned images with configurable local zoom/opacity keys, confirmed image copy. "
+                "Wayland positioning/keep-above is compositor-dependent. Global shortcuts and recording are not connected.")
 
     def verify_bundle(self, directory):
-        expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt"}
+        expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt"}
         if self.system == "linux":
             expected.add("launch.sh")
         actual = {path.name for path in directory.iterdir()}
@@ -170,6 +174,10 @@ class DesktopBuild:
         shared = ("Mooji Cut " + self.version + "\n\n"
                   "以 MoonBit 为核心的本地截图与录屏工具。\n"
                   "截图后可添加矩形、箭头、文字和实心遮挡，确认后才复制图片。\n"
+                  "框选后直接标注；点击文字工具后在画面输入，双击已有文字继续编辑。\n"
+                  "选中文字可拖动、拖拽控制点缩放，并在工具条调整颜色和字号。\n"
+                  "点击图钉将结果贴在屏幕上。选中贴图后按 + / - 缩放，Ctrl + / - 调透明度。\n"
+                  "贴图按键可在设置中更改；这些按键仅对选中的贴图生效。\n"
                   "关闭设置会保留托盘；从托盘菜单选择退出以结束应用。\n\n")
         if self.system == "windows":
             return shared + ("适用 Windows 10/11 x64（Intel/AMD）。解压全部文件，双击 MoojiCut.exe。\n"
@@ -190,6 +198,8 @@ class DesktopBuild:
                          "从托盘菜单或设置中启动截图，也可运行 ./moojicut --capture。\n"
                          "X11 支持桌面框选；Wayland 使用系统截图门户，需要可用的\n"
                          "xdg-desktop-portal 和当前桌面对应的后端。\n"
+                         "Wayland 门户返回图片后在无边框界面编辑；窗口位置、跨工作区与置顶效果\n"
+                         "由桌面合成器决定，无法保证与 X11 的桌面原位编辑完全相同。\n"
                          "本版尚不支持 Linux 录屏或应用内注册全局快捷键。可在桌面系统设置中\n"
                          "将快捷键绑定到解压目录下 moojicut --capture 的完整路径。\n"
                          "部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘；没有扩展也可用\n"
@@ -252,7 +262,7 @@ class DesktopBuild:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
-    parser.add_argument("--release-version", default="0.1.0-alpha.2")
+    parser.add_argument("--release-version", default="0.1.0-alpha.5")
     args = parser.parse_args()
     if sys.platform == "darwin":
         from native import NativeBuild

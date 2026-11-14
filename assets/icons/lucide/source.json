@@ -1,0 +1,19 @@
+{
+  "project": "Lucide",
+  "version": "1.72.0",
+  "commit": "03eae6069edfc373673bd05d723491f05ba936e3",
+  "source": "https://github.com/lucide-icons/lucide",
+  "icons": {
+    "SELECT": "mouse-pointer-2",
+    "RECTANGLE": "rectangle-horizontal",
+    "ARROW": "move-up-right",
+    "TEXT": "type",
+    "REDACT": "square-slash",
+    "UNDO": "undo-2",
+    "REDO": "redo-2",
+    "PIN": "pin",
+    "CLOSE": "x",
+    "CHECK": "check",
+    "FONT_SIZE": "a-large-small"
+  }
+}

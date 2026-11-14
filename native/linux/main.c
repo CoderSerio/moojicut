@@ -6,6 +6,7 @@
 #include <string.h>
 #include "moonbit.h"
 #include "capture.h"
+#include "pinning.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "development"
@@ -238,6 +239,7 @@ static void window_destroyed(GtkWidget *widget, gpointer data) {
 static void quit_app(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
   mc_linux_capture_close();
+  mc_linux_pins_close();
   g_application_quit(G_APPLICATION(host.application));
 }
 
@@ -299,6 +301,7 @@ static void show_preferences(void) {
   gtk_box_pack_start(GTK_BOX(shortcuts), reset, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(shortcuts), label("配置自动保存；Linux 全局快捷键尚未接入。请从托盘菜单或通用设置启动截图。录屏功能仍在开发中。", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), shortcuts, gtk_label_new("快捷键"));
+  gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_pin_preferences(), gtk_label_new("贴图按键"));
 
   GtkWidget *about = page();
   GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale(host.icon_path, 72, 72, TRUE, NULL);
@@ -310,7 +313,7 @@ static void show_preferences(void) {
   }
   gtk_box_pack_start(GTK_BOX(about), label("Mooji Cut  " MOOJICUT_VERSION, FALSE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(about), label("以 MoonBit 为核心的本地截图与录屏工具。", FALSE), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(about), label("Linux 原生预览版\n支持截图、标注、确认复制。X11 使用框选，Wayland 由系统截图门户提供选择。录屏仍在开发中。", TRUE), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(about), label("Linux 原生预览版\n截图后原地标注、编辑文字、确认复制或固定贴图。X11 保留冻结桌面；Wayland 由系统门户提供截图，编辑位置与贴图置顶由桌面决定。录屏仍在开发中。", TRUE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(about), label(host.core_ok ? "MoonBit native 核心已连接" : "MoonBit 核心检查失败", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), about, gtk_label_new("关于"));
 
@@ -340,7 +343,8 @@ static void menu_capture(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
   cancel_recording();
   if (host.window) gtk_widget_hide(host.window);
-  /* Let the desktop remove the menu/settings before freezing the frame. */
+  mc_linux_pins_hide(TRUE);
+  /* Let the desktop remove the menu/settings and pinned images before freezing the frame. */
   g_timeout_add(120, begin_capture, NULL);
 }
 
@@ -367,7 +371,7 @@ static gboolean save_smoke_screenshot(void) {
 static gboolean smoke_check(gpointer data) {
   (void)data;
   gboolean passed = host.core_ok && host.window && gtk_widget_get_visible(host.window);
-  passed = passed && gtk_notebook_get_n_pages(GTK_NOTEBOOK(host.notebook)) == 3;
+  passed = passed && gtk_notebook_get_n_pages(GTK_NOTEBOOK(host.notebook)) == 4;
   passed = save_smoke_screenshot() && passed;
   gtk_notebook_set_current_page(GTK_NOTEBOOK(host.notebook), 1);
   passed = passed && validate_shortcut(0, host.shortcuts[1]) == 2;
@@ -397,11 +401,16 @@ static gboolean smoke_check(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
+static void close_pins(GtkWidget *widget, gpointer data) {
+  (void)widget; (void)data; mc_linux_pins_close();
+}
+
 static void startup(GApplication *application, gpointer data) {
   (void)data;
   g_application_hold(application);
   g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &host.system_dark, NULL);
   load_settings();
+  mc_linux_pins_init(host.application, host.config_path);
   g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", host.prefer_dark || host.system_dark, NULL);
   host.indicator = app_indicator_new("moojicut", host.icon_path, APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
   app_indicator_set_title(host.indicator, "Mooji Cut");
@@ -410,6 +419,9 @@ static void startup(GApplication *application, gpointer data) {
   GtkWidget *screenshot = gtk_menu_item_new_with_label("截图并标注…");
   g_signal_connect(screenshot, "activate", G_CALLBACK(menu_capture), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), screenshot);
+  GtkWidget *pins = gtk_menu_item_new_with_label("关闭所有贴图");
+  g_signal_connect(pins, "activate", G_CALLBACK(close_pins), NULL);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu), pins);
   GtkWidget *preferences = gtk_menu_item_new_with_label("设置…");
   g_signal_connect(preferences, "activate", G_CALLBACK(menu_preferences), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), preferences);
@@ -475,13 +487,14 @@ int main(int argc, char **argv) {
   g_signal_connect(host.application, "command-line", G_CALLBACK(command_line), NULL);
   int result = g_application_run(G_APPLICATION(host.application), argc, argv);
   mc_linux_capture_close();
+  mc_linux_pins_close();
   if (host.window) gtk_widget_destroy(host.window);
   if (host.indicator) {
     app_indicator_set_status(host.indicator, APP_INDICATOR_STATUS_PASSIVE);
     g_object_unref(host.indicator);
   }
   g_object_unref(host.application);
-  if (host.smoke_dir) { g_unlink(host.config_path); g_rmdir(host.smoke_dir); }
+  if (host.smoke_dir) { char *pins = g_strconcat(host.config_path, ".pins", NULL); g_unlink(pins); g_free(pins); g_unlink(host.config_path); g_rmdir(host.smoke_dir); }
   g_free(host.smoke_dir);
   g_free(host.config_path);
   g_free(host.icon_path);

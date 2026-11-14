@@ -53,3 +53,22 @@ BEGIN
     LTEXT "", IDC_CORE_STATUS, 17, 115, 285, 15
     LTEXT "截图标注与录屏剪辑，确认后复制。\nWindows 本版录制主显示器，不录声音。\n本预览包尚未进行 Windows 代码签名。", -1, 17, 150, 285, 40
 END
+
+IDD_PINS DIALOGEX 0, 0, 320, 207
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_CAPTION
+CAPTION "贴图按键"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "单击选中贴图后生效；按住图片拖动位置。", -1, 17, 14, 285, 13
+    LTEXT "放大", -1, 17, 42, 95, 14
+    CONTROL "", IDC_PIN_ZOOM_IN, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 114, 38, 186, 19
+    LTEXT "缩小", -1, 17, 70, 95, 14
+    CONTROL "", IDC_PIN_ZOOM_OUT, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 114, 66, 186, 19
+    LTEXT "增加不透明度", -1, 17, 98, 95, 14
+    CONTROL "", IDC_PIN_OPACITY_UP, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 114, 94, 186, 19
+    LTEXT "降低不透明度", -1, 17, 126, 95, 14
+    CONTROL "", IDC_PIN_OPACITY_DOWN, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 114, 122, 186, 19
+    LTEXT "", IDC_PIN_STATUS, 17, 151, 194, 27
+    PUSHBUTTON "恢复默认", IDC_PIN_RESET, 228, 151, 72, 20
+    LTEXT "Esc 取消选中 · Delete 关闭 · Ctrl+C 复制原图", -1, 17, 185, 286, 13
+END

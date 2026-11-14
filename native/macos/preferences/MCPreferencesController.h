@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "MCShortcutStore.h"
+#import "MCPinShortcutStore.h"
 
 NS_ASSUME_NONNULL_BEGIN
 @class MCUpdateController;
@@ -11,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSString *appearanceChoice;
 @property (nonatomic, readonly) BOOL technicalDetailsVisible;
 @property (nonatomic, readonly) MCShortcutStore *shortcutStore;
+@property (nonatomic, readonly) MCPinShortcutStore *pinShortcutStore;
 @property (nonatomic, strong, nullable) MCUpdateController *updateController;
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults coreVersion:(NSString *)coreVersion diagnostics:(NSDictionary *)diagnostics;
 - (void)show;
