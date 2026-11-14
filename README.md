@@ -1,54 +1,54 @@
-<p>
+<p align="center">
   <img src="assets/brand/mooji-cut/app-icon-rounded-preview.png" width="96" alt="Mooji Cut logo" />
 </p>
 
-# Mooji Cut
+<h1 align="center">Mooji Cut</h1>
 
-English · [简体中文](README.zh-CN.md)
+<p align="center"><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
 
-**Consider it captured.**
+<p align="center"><strong>这一幕，我截下了。</strong></p>
 
-A simple screenshot and screen recording app, powered by MoonBit. Capture your screen, highlight what matters, and trim recordings. We plan to add plugin support so you can extend it to fit your workflow.
+<p align="center">简洁的截图与录屏工具，MoonBit 驱动。截取画面、标出重点、剪辑录屏，让日常操作保持直接。未来，你还可以通过插件添加需要的能力。</p>
 
-[Download Preview](https://github.com/CoderSerio/moojicut/releases) · [Report an Issue](https://github.com/CoderSerio/moojicut/issues) · [Source Code](https://github.com/CoderSerio/moojicut)
+<p align="center"><a href="https://github.com/CoderSerio/moojicut/releases">下载预览版</a> · <a href="https://github.com/CoderSerio/moojicut/issues">反馈问题</a> · <a href="https://github.com/CoderSerio/moojicut">查看源码</a></p>
 
-## Why Mooji Cut
+## 为什么选择 Mooji Cut
 
-- **Simple by default.** Focus on everyday capture, annotation, and basic editing. Mooji Cut stays in your menu bar or system tray, ready when you need it.
-- **Extend as needed · Planned.** We plan to support plugin development, so you can add tools for your own workflow while keeping the default experience simple.
-- **Processed locally.** Capture and edit on your computer. You choose how to save and share the results.
+- **简洁优先。** 围绕截图、标注和基础剪辑，做好每天都会用到的操作。平时留在菜单栏或托盘，需要时随手唤起。
+- **按需扩展 · 规划中。** 计划开放插件开发，让你为自己的工作流程添加能力，同时保持默认体验简洁。
+- **本地完成。** 截图、录屏与编辑在本机进行，处理后的内容由你决定如何保存和分享。
 
-## Capture and Edit
+## 捕捉与编辑
 
-| Task | With Mooji Cut |
+| 场景 | 用 Mooji Cut |
 | --- | --- |
-| Explain with a screenshot | Select an area, add arrows, rectangles, and text, cover sensitive details, then copy the result into a chat or document. |
-| Show a process | Record a walkthrough, trim the beginning and end, remove unwanted sections, crop the frame, and export the result. |
+| 截图说明 | 框选画面，用箭头、矩形和文字标出重点，遮住敏感内容，复制到聊天或文档。 |
+| 录屏演示 | 记录操作过程，裁掉首尾、删除多余片段、调整画面范围，再导出视频。 |
 
-Undo and redo let you make adjustments as you go.
+编辑支持撤销与重做，可以边试边调整。
 
-Mooji Cut is in early preview. This README describes the development version; published builds may not include all of these features. Platform support and known limitations are listed in the release notes for each version.
+Mooji Cut 目前处于早期预览阶段。本文介绍开发中的功能，发布包可能尚未包含全部能力。各平台的具体支持范围与已知限制，请查看对应版本的发布说明。
 
-## Plugin Plans
+## 插件计划
 
-We want Mooji Cut to fit the way you work.
+我们希望 Mooji Cut 能适应你的用法。
 
-We plan to support community-developed plugins for custom processing, connections to other tools, and personal workflows. The aim is to keep the core experience simple, with additional tools available as you need them.
+未来计划开放插件开发，让社区能够补充处理能力、连接其他工具，或组合自己的工作流程。基础体验保持简洁，更多能力按需添加。
 
-**Plugin support is not available yet.** The scope and APIs are still being planned. We welcome discussions grounded in real use cases.
+**插件系统尚未上线，扩展范围与接口仍在规划中。** 欢迎带着实际使用场景参与讨论。
 
-## Get Started
+## 开始使用
 
-Download a version for your system from the [releases page](https://github.com/CoderSerio/moojicut/releases). Each release includes installation instructions, permission setup, and a list of changes. The [usage and build guide (简体中文)](docs/guide.zh-CN.md) covers the development version in more detail.
+前往 [发布页](https://github.com/CoderSerio/moojicut/releases)，下载适合你系统的版本。安装方式、权限设置和版本变化均随发布说明提供。开发版的完整操作说明见[使用与构建指南](docs/guide.zh-CN.md)。
 
-## Development and Contributions
+## 开发与贡献
 
-Mooji Cut's annotation and video editing core is written in **MoonBit**, with native interfaces and system capture APIs on each platform.
+Mooji Cut 的标注与剪辑核心使用 **MoonBit** 编写，搭配各平台的原生界面与系统采集能力。
 
-See the [build instructions (简体中文)](docs/guide.zh-CN.md#从源码构建) to get started.
+开始开发前，请参考[源码构建说明](docs/guide.zh-CN.md#从源码构建)。
 
-Bug reports, UI improvements, and code contributions are welcome. We'd also love to discuss how plugins could fit into your everyday workflow.
+欢迎提交问题、改进交互、贡献代码，也欢迎一起讨论插件应该怎样融入日常使用。
 
-## License
+## 许可
 
-[MIT License](LICENSE). Third-party components are covered by their respective licenses.
+[MIT License](LICENSE)。第三方组件遵循各自的许可。

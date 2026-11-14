@@ -1,6 +1,6 @@
 # Mooji Cut 使用与构建指南
 
-[English overview](../README.md) · [返回中文首页](../README.zh-CN.md)
+[English overview](../README.en.md) · [返回中文首页](../README.md)
 
 本指南介绍 `main` 分支中的开发版能力。发布包可能尚未包含这些功能；安装前请先查看对应版本的[发布说明](https://github.com/CoderSerio/moojicut/releases)。
 
