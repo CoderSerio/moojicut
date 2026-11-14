@@ -153,11 +153,14 @@ class DesktopBuild:
     def scope(self):
         if self.system == "windows":
             return ("Native tray and configurable global shortcuts; frozen-desktop inline screenshot editing, "
-                    "editable text, pinned images with configurable local zoom/opacity keys, confirmed image copy; "
+                    "editable text, RGBA annotation styles, in-place pinned images with configurable zoom/opacity "
+                    "and global hide/recover/click-through keys, confirmed image copy; "
                     "silent main-display recording, trim, cuts, crop and confirmed MP4 file copy.")
         return ("Native tray and preferences; X11 frozen-desktop inline editing or Wayland portal image editing; "
-                "editable text, pinned images with configurable local zoom/opacity keys, confirmed image copy. "
-                "Wayland positioning/keep-above is compositor-dependent. Global shortcuts and recording are not connected.")
+                "editable text, RGBA annotation styles, pinned images with configurable zoom/opacity keys "
+                "and X11 global hide/recover/click-through keys, confirmed image copy. "
+                "Wayland positioning/keep-above is compositor-dependent; click-through is disabled. "
+                "Capture global shortcuts and recording are not connected.")
 
     def verify_bundle(self, directory):
         expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt"}
@@ -175,9 +178,13 @@ class DesktopBuild:
                   "以 MoonBit 为核心的本地截图与录屏工具。\n"
                   "截图后可添加矩形、箭头、文字和实心遮挡，确认后才复制图片。\n"
                   "框选后直接标注；点击文字工具后在画面输入，双击已有文字继续编辑。\n"
-                  "选中文字可拖动、拖拽控制点缩放，并在工具条调整颜色和字号。\n"
-                  "点击图钉将结果贴在屏幕上。选中贴图后按 + / - 缩放，Ctrl + / - 调透明度。\n"
-                  "贴图按键可在设置中更改；这些按键仅对选中的贴图生效。\n"
+                  "选中文字可拖动、拖拽控制点缩放；工具条第二行可调整颜色、不透明度、字号或线宽。\n"
+                  "点击图钉将结果固定在当前选区的位置。双击或选中后按 Esc 关闭。\n"
+                  "选中贴图后按 + / - 缩放，Ctrl + / - 调透明度。贴图按键可在设置中更改。\n"
+                  "Windows / Linux X11：Ctrl + Shift + H 切换选中贴图的隐藏状态；\n"
+                  "没有选中时，若有隐藏项则恢复，否则隐藏全部。恢复时保留原来的不透明度。\n"
+                  "Ctrl + Shift + P 切换鼠标穿透；穿透期间仅响应解除穿透，不响应 Esc 等操作。\n"
+                  "隐藏和穿透恢复键支持全局响应，托盘菜单也提供恢复入口。\n"
                   "关闭设置会保留托盘；从托盘菜单选择退出以结束应用。\n\n")
         if self.system == "windows":
             return shared + ("适用 Windows 10/11 x64（Intel/AMD）。解压全部文件，双击 MoojiCut.exe。\n"
@@ -200,7 +207,8 @@ class DesktopBuild:
                          "xdg-desktop-portal 和当前桌面对应的后端。\n"
                          "Wayland 门户返回图片后在无边框界面编辑；窗口位置、跨工作区与置顶效果\n"
                          "由桌面合成器决定，无法保证与 X11 的桌面原位编辑完全相同。\n"
-                         "本版尚不支持 Linux 录屏或应用内注册全局快捷键。可在桌面系统设置中\n"
+                         "Wayland 暂不启用鼠标穿透；全局贴图恢复按键仅支持 X11。\n"
+                         "本版尚不支持 Linux 录屏或应用内注册全局截图快捷键。可在桌面系统设置中\n"
                          "将快捷键绑定到解压目录下 moojicut --capture 的完整路径。\n"
                          "部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘；没有扩展也可用\n"
                          "./launch.sh 重新打开设置。包不自动安装依赖或修改桌面配置。\n")
