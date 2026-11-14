@@ -15,3 +15,4 @@
 #define IDC_VERSION 1200
 #define IDM_SETTINGS 2001
 #define IDM_QUIT 2002
+#define IDM_CAPTURE 2003

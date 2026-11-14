@@ -14,6 +14,7 @@
 #include <wchar.h>
 #include "moonbit.h"
 #include "resource.h"
+#include "capture.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "0.1.0-alpha.2"
@@ -22,6 +23,9 @@
 #define WIDE(x) WIDE_IMPL(x)
 #define WM_TRAY (WM_APP + 1)
 #define WM_SHOW_SETTINGS (WM_APP + 2)
+#define WM_REFRESH_SHORTCUTS (WM_APP + 3)
+#define CAPTURE_TIMER 6101
+#define CAPTURE_HOTKEY 6102
 #define SETTINGS_SUBCLASS 1
 
 extern int32_t preview_core_check(void);
@@ -48,6 +52,51 @@ static BOOL tray_added, smoke_mode, updating;
 static WORD hotkeys[3];
 static BOOL open_on_start;
 static int core_ok;
+static BOOL global_capture_registered;
+static wchar_t shortcut_registration_error[180];
+static void refresh_global_shortcuts(void);
+
+static LRESULT CALLBACK hotkey_recorder_proc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
+    (void)id; (void)data;
+    if (message == WM_SETFOCUS) {
+        if (global_capture_registered) UnregisterHotKey(host, CAPTURE_HOTKEY);
+        global_capture_registered = FALSE;
+    } else if (message == WM_KILLFOCUS) PostMessageW(host, WM_REFRESH_SHORTCUTS, 0, 0);
+    else if (message == WM_NCDESTROY) RemoveWindowSubclass(window, hotkey_recorder_proc, 1);
+    return DefSubclassProc(window, message, wp, lp);
+}
+
+static void refresh_global_shortcuts(void) {
+    UINT modifiers = MOD_NOREPEAT;
+    BYTE flags = HIBYTE(hotkeys[0]);
+    HWND focused = GetFocus();
+    wchar_t class_name[64];
+    if (smoke_mode || !host) return;
+    if (global_capture_registered) UnregisterHotKey(host, CAPTURE_HOTKEY);
+    global_capture_registered = FALSE;
+    shortcut_registration_error[0] = L'\0';
+    if (focused && GetClassNameW(focused, class_name, ARRAYSIZE(class_name)) &&
+        wcscmp(class_name, HOTKEY_CLASSW) == 0) return;
+    if (!LOBYTE(hotkeys[0])) return;
+    if (flags & HOTKEYF_CONTROL) modifiers |= MOD_CONTROL;
+    if (flags & HOTKEYF_ALT) modifiers |= MOD_ALT;
+    if (flags & HOTKEYF_SHIFT) modifiers |= MOD_SHIFT;
+    global_capture_registered = RegisterHotKey(host, CAPTURE_HOTKEY, modifiers, LOBYTE(hotkeys[0]));
+    if (!global_capture_registered) wcscpy_s(shortcut_registration_error, ARRAYSIZE(shortcut_registration_error),
+        L"截图快捷键未能启用，可能已被其他程序占用。请换一个组合。");
+    if (settings) {
+        HWND page = PropSheet_GetCurrentPageHwnd(settings);
+        if (page && GetDlgItem(page, IDC_SHORTCUT_STATUS))
+            SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, shortcut_registration_error[0] ? shortcut_registration_error :
+                L"截图快捷键已启用。录入时暂时停用，离开输入框后恢复。");
+    }
+}
+
+static void start_capture(void) {
+    if (mc_capture_busy()) { mc_capture_activate(); return; }
+    if (settings) ShowWindow(settings, SW_HIDE);
+    SetTimer(host, CAPTURE_TIMER, 160, NULL);
+}
 
 static int normalized_key(WORD combination) {
     int vk = LOBYTE(combination);
@@ -133,7 +182,10 @@ static void update_shortcuts(HWND page) {
         return;
     }
     for (i = 0; i < 3; i++) { previous[i] = hotkeys[i]; hotkeys[i] = proposed[i]; }
-    if (save_preferences()) SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"已保存");
+    if (save_preferences()) {
+        SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"已保存；离开输入框后启用截图快捷键。");
+        refresh_global_shortcuts();
+    }
     else {
         for (i = 0; i < 3; i++) hotkeys[i] = previous[i];
         SetDlgItemTextW(page, IDC_SHORTCUT_STATUS, L"保存失败，请检查账户权限。");
@@ -161,7 +213,13 @@ static INT_PTR CALLBACK general_page(HWND window, UINT message, WPARAM wp, LPARA
 
 static INT_PTR CALLBACK shortcuts_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     (void)lp;
-    if (message == WM_INITDIALOG) { fill_shortcuts(window); return TRUE; }
+    if (message == WM_INITDIALOG) {
+        int i;
+        fill_shortcuts(window);
+        for (i = 0; i < 3; i++) SetWindowSubclass(GetDlgItem(window, IDC_HOTKEY_CAPTURE + i), hotkey_recorder_proc, 1, 0);
+        if (shortcut_registration_error[0]) SetDlgItemTextW(window, IDC_SHORTCUT_STATUS, shortcut_registration_error);
+        return TRUE;
+    }
     if (message == WM_COMMAND) {
         int id = LOWORD(wp);
         if (id >= IDC_HOTKEY_CAPTURE && id <= IDC_HOTKEY_STOP && HIWORD(wp) == EN_CHANGE) {
@@ -204,6 +262,7 @@ static LRESULT CALLBACK settings_subclass(HWND window, UINT message, WPARAM wp, 
     if (message == WM_NCDESTROY) {
         RemoveWindowSubclass(window, settings_subclass, SETTINGS_SUBCLASS);
         settings = NULL;
+        PostMessageW(host, WM_REFRESH_SHORTCUTS, 0, 0);
     }
     return DefSubclassProc(window, message, wp, lp);
 }
@@ -266,6 +325,8 @@ static void tray_menu(void) {
     POINT point;
     UINT chosen;
     if (!menu) return;
+    AppendMenuW(menu, MF_STRING, IDM_CAPTURE, L"截图…");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"设置…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, IDM_QUIT, L"退出 Mooji Cut");
@@ -275,7 +336,8 @@ static void tray_menu(void) {
     chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, host, NULL);
     PostMessageW(host, WM_NULL, 0, 0);
     DestroyMenu(menu);
-    if (chosen == IDM_SETTINGS) show_settings();
+    if (chosen == IDM_CAPTURE) start_capture();
+    else if (chosen == IDM_SETTINGS) show_settings();
     else if (chosen == IDM_QUIT) DestroyWindow(host);
 }
 
@@ -285,6 +347,13 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         return 0;
     }
     switch (message) {
+    case WM_HOTKEY:
+        if (wp == CAPTURE_HOTKEY) start_capture();
+        return 0;
+    case WM_REFRESH_SHORTCUTS: refresh_global_shortcuts(); return 0;
+    case WM_TIMER:
+        if (wp == CAPTURE_TIMER) { KillTimer(window, CAPTURE_TIMER); mc_capture_start(instance, host); }
+        return 0;
     case WM_TRAY:
         switch (LOWORD(lp)) {
         case WM_CONTEXTMENU: tray_menu(); break;
@@ -294,6 +363,8 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
     case WM_SHOW_SETTINGS: show_settings(); return 0;
     case WM_CLOSE: DestroyWindow(window); return 0;
     case WM_DESTROY:
+        if (global_capture_registered) UnregisterHotKey(window, CAPTURE_HOTKEY);
+        mc_capture_close();
         if (settings) DestroyWindow(settings);
         if (tray_added) Shell_NotifyIconW(NIM_DELETE, &tray);
         tray_added = FALSE;
@@ -466,11 +537,14 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
     load_preferences();
     if (smoke_mode) {
         result = run_smoke();
+        if (result == 0) result = mc_capture_smoke(instance);
         DestroyWindow(host);
     } else {
         taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
+        refresh_global_shortcuts();
         if (!add_tray() || preferences_requested || open_on_start) show_settings();
         while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {
+            if (mc_capture_handle_message(&message)) continue;
             if (!settings || !PropSheet_IsDialogMessage(settings, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);

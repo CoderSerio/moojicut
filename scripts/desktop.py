@@ -96,8 +96,8 @@ class DesktopBuild:
                 self.run("rc", "/nologo", "/fo" + str(resource), "resources.rc", cwd=source)
                 self.run("cl", "/nologo", "/std:c11", "/utf-8", "/MT", "/O2", "/W4",
                          "/DUNICODE", "/D_UNICODE", '/DMOOJICUT_VERSION="' + self.version + '"',
-                         "/I" + str(self.home / "include"), source / "main.c", archive, resource,
-                         "/Fo" + str(Path(name) / "host.obj"), "/Fe" + str(executable),
+                         "/I" + str(self.home / "include"), *sorted(source.glob("*.c")), archive, resource,
+                         "/Fo" + str(Path(name)) + os.sep, "/Fe" + str(executable),
                          "/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup", "/MANIFEST:NO",
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
                          "gdi32.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib")

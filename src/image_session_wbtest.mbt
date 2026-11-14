@@ -1,0 +1,23 @@
+///|
+test "typed native image sessions preserve reducer history and Unicode text" {
+  let id = image_session_create(640, 480)
+  assert_true(id > 0)
+  assert_eq(image_session_add(id, 1, 10, 20, 100, 80, 0xf26769, 3), 1)
+  assert_eq(image_session_add(id, 2, 150, 100, -100, -50, 0, 3), 1)
+  assert_eq(image_session_set_text(id, "月兔 ✂️"), 1)
+  assert_eq(image_session_add(id, 3, 20, 30, 180, 40, 0xffffff, 3), 1)
+  assert_eq(image_session_count(id), 3)
+  assert_eq(image_session_value(id, 0, 5), (0xf26769).to_double())
+  assert_eq(image_session_value(id, 1, 3), -100)
+  assert_eq(image_session_text(id, 2), "月兔 ✂️")
+  assert_eq(image_session_undo(id), 1)
+  assert_eq(image_session_count(id), 2)
+  assert_eq(image_session_redo(id), 1)
+  assert_eq(image_session_text(id, 2), "月兔 ✂️")
+  assert_eq(image_session_add(id, 4, 0, 0, -1, 20, 0, 3), 0)
+  assert_eq(image_session_count(id), 3)
+  image_session_dispose(id)
+  assert_eq(image_session_add(id, 1, 0, 0, 20, 20, 0, 3), 0)
+  assert_eq(image_session_count(id), 0)
+  assert_eq(image_session_create(0, 480), 0)
+}
