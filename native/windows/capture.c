@@ -644,6 +644,34 @@ static void apply_style(void) {
     changed();
   }
 }
+static void paint_editor(HDC dc) {
+  BitBlt(dc, 0, 0, capture.dimmed.width, capture.dimmed.height, capture.dimmed.dc, 0, 0, SRCCOPY);
+  if (render_image()) {
+    RECT v = capture.viewport;
+    BitBlt(dc, v.left, v.top, v.right - v.left, v.bottom - v.top, capture.rendered.dc, v.left, v.top,
+           SRCCOPY);
+    int saved = SaveDC(dc);
+    IntersectClipRect(dc, v.left, v.top, v.right, v.bottom);
+    if (capture.dragging && capture.drag_mode == 0) {
+      RECT b = selection(capture.start, capture.end);
+      draw_annotation(dc, capture.tool, capture.tool == TOOL_ARROW ? capture.start.x : b.left,
+                      capture.tool == TOOL_ARROW ? capture.start.y : b.top,
+                      capture.tool == TOOL_ARROW ? capture.end.x - capture.start.x : b.right - b.left,
+                      capture.tool == TOOL_ARROW ? capture.end.y - capture.start.y : b.bottom - b.top,
+                      capture.color, capture.stroke, NULL, 0, capture.font_size, 1, 0, 0);
+    }
+    if (capture.selected >= 0 && capture.editing == -2) {
+      RECT r = capture.dragging && capture.drag_mode == 1 ? capture.draft : annotation_rect(capture.selected);
+      frame(dc, r, TRUE);
+    }
+    RestoreDC(dc, saved);
+    frame(dc, v, TRUE);
+    region_label(dc, v);
+  }
+  HBRUSH brush = CreateSolidBrush(RGB(43, 41, 48));
+  FillRect(dc, &capture.toolbar, brush);
+  DeleteObject(brush);
+}
 static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
   switch (message) {
   case WM_CREATE: {
@@ -753,36 +781,13 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     return 0;
   case WM_ERASEBKGND:
     return 1;
+  case WM_PRINTCLIENT:
+    paint_editor((HDC)wp);
+    return 0;
   case WM_PAINT: {
     PAINTSTRUCT paint;
     HDC dc = BeginPaint(window, &paint);
-    BitBlt(dc, 0, 0, capture.dimmed.width, capture.dimmed.height, capture.dimmed.dc, 0, 0, SRCCOPY);
-    if (render_image()) {
-      RECT v = capture.viewport;
-      BitBlt(dc, v.left, v.top, v.right - v.left, v.bottom - v.top, capture.rendered.dc, v.left, v.top,
-             SRCCOPY);
-      int saved = SaveDC(dc);
-      IntersectClipRect(dc, v.left, v.top, v.right, v.bottom);
-      if (capture.dragging && capture.drag_mode == 0) {
-        RECT b = selection(capture.start, capture.end);
-        draw_annotation(dc, capture.tool, capture.tool == TOOL_ARROW ? capture.start.x : b.left,
-                        capture.tool == TOOL_ARROW ? capture.start.y : b.top,
-                        capture.tool == TOOL_ARROW ? capture.end.x - capture.start.x : b.right - b.left,
-                        capture.tool == TOOL_ARROW ? capture.end.y - capture.start.y : b.bottom - b.top,
-                        capture.color, capture.stroke, NULL, 0, capture.font_size, 1, 0, 0);
-      }
-      if (capture.selected >= 0 && capture.editing == -2) {
-        RECT r =
-            capture.dragging && capture.drag_mode == 1 ? capture.draft : annotation_rect(capture.selected);
-        frame(dc, r, TRUE);
-      }
-      RestoreDC(dc, saved);
-      frame(dc, v, TRUE);
-      region_label(dc, v);
-    }
-    HBRUSH brush = CreateSolidBrush(RGB(43, 41, 48));
-    FillRect(dc, &capture.toolbar, brush);
-    DeleteObject(brush);
+    paint_editor(dc);
     EndPaint(window, &paint);
     return 0;
   }
@@ -1190,6 +1195,48 @@ bool mc_capture_handle_message(MSG *message) {
     return false;
   return IsDialogMessageW(capture.editor, message) != FALSE;
 }
+/* Optional CI diagnostic. WM_PRINT only renders our synthetic image and our
+ * own hidden native controls; there is no screen DC or desktop fallback. */
+static BOOL save_capture_preview(void) {
+  wchar_t path[32768];
+  DWORD length = GetEnvironmentVariableW(L"MOOJICUT_SMOKE_SCREENSHOT", path, ARRAYSIZE(path));
+  if (!length)
+    return TRUE;
+  if (length >= ARRAYSIZE(path) - 16 || !capture.smoke)
+    return FALSE;
+  wcscat_s(path, ARRAYSIZE(path), L".capture.bmp");
+  RECT client;
+  GetClientRect(capture.editor, &client);
+  Surface preview = {0};
+  if (!surface_new(&preview, client.right, client.bottom))
+    return FALSE;
+  SendMessageW(capture.editor, WM_PRINT, (WPARAM)preview.dc, PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
+  GdiFlush();
+  BITMAPFILEHEADER file_header = {0};
+  BITMAPINFOHEADER info = {0};
+  DWORD bytes = (DWORD)preview.width * (DWORD)preview.height * 4, written;
+  info.biSize = sizeof(info);
+  info.biWidth = preview.width;
+  info.biHeight = -preview.height;
+  info.biPlanes = 1;
+  info.biBitCount = 32;
+  info.biCompression = BI_RGB;
+  info.biSizeImage = bytes;
+  file_header.bfType = 0x4d42;
+  file_header.bfOffBits = sizeof(file_header) + sizeof(info);
+  file_header.bfSize = file_header.bfOffBits + bytes;
+  HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  BOOL ok = FALSE;
+  if (file != INVALID_HANDLE_VALUE) {
+    ok = WriteFile(file, &file_header, sizeof(file_header), &written, NULL) &&
+         written == sizeof(file_header) && WriteFile(file, &info, sizeof(info), &written, NULL) &&
+         written == sizeof(info) && WriteFile(file, preview.pixels, bytes, &written, NULL) &&
+         written == bytes;
+    CloseHandle(file);
+  }
+  surface_free(&preview);
+  return ok;
+}
 int mc_capture_smoke(HINSTANCE instance) {
   int result = 1;
   HGLOBAL dib = NULL;
@@ -1297,6 +1344,14 @@ int mc_capture_smoke(HINSTANCE instance) {
   if (colored < 100)
     goto cleanup;
   if (!mc_pin_smoke(instance))
+    goto cleanup;
+  // Keep the optional visual fixture readable after the large-font regression.
+  image_session_remove(capture.session, capture.selected);
+  capture.selected = index;
+  capture.tool = TOOL_TEXT;
+  layout_editor(capture.editor);
+  changed();
+  if (!save_capture_preview())
     goto cleanup;
   result = 0;
 cleanup:

@@ -3,6 +3,7 @@
 #include "../shared/mc_icons.h"
 #include "moonbit.h"
 #include "pinning.h"
+#include <dlfcn.h>
 #include <gdk/gdkx.h>
 #include <math.h>
 #include <pango/pangocairo.h>
@@ -715,9 +716,10 @@ static gboolean canvas_release(GtkWidget *widget, GdkEventButton *event, gpointe
     gtk_grab_remove(widget);
   if (capture.selecting)
     finish_selection();
-  else if (capture.gesture == 1)
+  else if (capture.gesture == 1) {
     update_annotation(capture.selected, capture.preview);
-  else if (capture.gesture == 2) {
+    sync_style();
+  } else if (capture.gesture == 2) {
     image_session_crop(capture.session, (int)capture.preview[0], (int)capture.preview[1],
                        (int)capture.preview[2], (int)capture.preview[3]);
     sync_crop();
@@ -1102,6 +1104,116 @@ void mc_linux_capture_start(GtkApplication *application) {
   } else
     start_portal();
 }
+/* Opt-in CI check only: inject pointer input into this synthetic Xvfb fixture.
+ * libXtst is dynamically loaded for the test, never a production dependency. */
+static gboolean smoke_pump_timeout(gpointer data) {
+  *(gboolean *)data = TRUE;
+  return G_SOURCE_REMOVE;
+}
+static void smoke_pump(void) {
+  gboolean elapsed = FALSE;
+  gint64 deadline = g_get_monotonic_time() + 100000;
+  guint timer = g_timeout_add(100, smoke_pump_timeout, &elapsed);
+  gdk_display_sync(gdk_display_get_default());
+  while (!elapsed && g_get_monotonic_time() < deadline)
+    g_main_context_iteration(NULL, TRUE);
+  if (!elapsed)
+    g_source_remove(timer);
+}
+static gboolean smoke_pointer_route(GtkApplication *application) {
+  if (g_strcmp0(g_getenv("MOOJICUT_X11_INPUT_SMOKE"), "1") != 0)
+    return TRUE;
+  if (!GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
+    g_printerr("XTest fixture: an X11/Xvfb display is required\n");
+    return FALSE;
+  }
+  void *library = dlopen("libXtst.so.6", RTLD_NOW | RTLD_LOCAL);
+  if (!library) {
+    g_printerr("XTest fixture: libXtst.so.6 unavailable\n");
+    return FALSE;
+  }
+  typedef int (*MotionFn)(Display *, int, int, int, unsigned long);
+  typedef int (*ButtonFn)(Display *, unsigned int, int, unsigned long);
+  MotionFn motion_event = (MotionFn)dlsym(library, "XTestFakeMotionEvent");
+  ButtonFn button_event = (ButtonFn)dlsym(library, "XTestFakeButtonEvent");
+  gboolean ok = motion_event && button_event;
+  if (!ok) {
+    g_printerr("XTest fixture: required event entry points unavailable\n");
+    dlclose(library);
+    return FALSE;
+  }
+  memset(&capture, 0, sizeof(capture));
+  capture.application = application;
+  capture.smoke = capture.selecting = capture.x11 = TRUE;
+  capture.root_width = 640;
+  capture.root_height = 400;
+  GdkPixbuf *source = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 640, 400);
+  if (!source) {
+    dlclose(library);
+    return FALSE;
+  }
+  gdk_pixbuf_fill(source, 0xDCA050FF);
+  ok = open_editor(source);
+  g_object_unref(source);
+  if (!ok) {
+    mc_linux_capture_close();
+    dlclose(library);
+    return FALSE;
+  }
+  GdkWindow *window = gtk_widget_get_window(capture.editor);
+  gdk_window_focus(window, GDK_CURRENT_TIME);
+  smoke_pump();
+  int ox, oy;
+  gdk_window_get_origin(window, &ox, &oy);
+  Display *display = gdk_x11_display_get_xdisplay(gdk_display_get_default());
+  motion_event(display, -1, ox + 20, oy + 30, 0);
+  button_event(display, 1, TRUE, 0);
+  smoke_pump();
+  motion_event(display, -1, ox + 300, oy + 230, 0);
+  smoke_pump();
+  button_event(display, 1, FALSE, 0);
+  smoke_pump();
+  ok = !capture.selecting && capture.crop[0] == 20 && capture.crop[1] == 30 && capture.crop[2] == 280 &&
+       capture.crop[3] == 200;
+  if (!ok)
+    g_printerr("XTest fixture: frozen canvas selection routing failed\n");
+  if (ok) {
+    int x, y;
+    GtkWidget *button = capture.tools[TEXT];
+    gtk_widget_translate_coordinates(button, capture.editor, gtk_widget_get_allocated_width(button) / 2,
+                                     gtk_widget_get_allocated_height(button) / 2, &x, &y);
+    motion_event(display, -1, ox + x, oy + y, 0);
+    button_event(display, 1, TRUE, 0);
+    button_event(display, 1, FALSE, 0);
+    smoke_pump();
+    ok = capture.tool == TEXT;
+    if (!ok)
+      g_printerr("XTest fixture: toolbar click routing failed\n");
+  }
+  if (ok) {
+    motion_event(display, -1, ox + 100, oy + 100, 0);
+    button_event(display, 1, TRUE, 0);
+    button_event(display, 1, FALSE, 0);
+    smoke_pump();
+    ok = capture.editing && gtk_window_get_focus(GTK_WINDOW(capture.editor)) == capture.entry;
+    if (!ok)
+      g_printerr("XTest fixture: inline text activation/focus failed\n");
+  }
+  if (ok) {
+    motion_event(display, -1, ox + 110, oy + 110, 0);
+    button_event(display, 1, TRUE, 0);
+    button_event(display, 1, FALSE, 0);
+    smoke_pump();
+    ok = capture.editing && gtk_window_get_focus(GTK_WINDOW(capture.editor)) == capture.entry;
+    if (!ok)
+      g_printerr("XTest fixture: inline native TextView pointer routing failed\n");
+  }
+  mc_linux_capture_close();
+  dlclose(library);
+  g_print("Linux XTest pointer fixture %s: frozen canvas, toolbar, inline text focus.\n",
+          ok ? "passed" : "FAILED");
+  return ok;
+}
 gboolean mc_linux_capture_smoke(GtkApplication *application) {
   if (mc_linux_capture_busy())
     return FALSE;
@@ -1215,6 +1327,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   ok = capture.crop[2] == 320 && ok;
   const char *preview_path = g_getenv("MOOJICUT_SMOKE_SCREENSHOT");
   if (preview_path && *preview_path) {
+    sync_style();
     layout_controls();
     gtk_widget_queue_draw(capture.editor);
     while (gtk_events_pending())
@@ -1230,6 +1343,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   }
   mc_linux_capture_close();
   ok = mc_linux_pin_smoke() && ok;
+  ok = smoke_pointer_route(application) && ok;
   g_print("Linux screenshot/pin smoke %s: retained overlay, inline multilingual text/re-edit/undo/style, "
           "crop export, masks, private clipboard, pin zoom/opacity/focus.\n",
           ok ? "passed" : "FAILED");
