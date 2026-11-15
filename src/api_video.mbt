@@ -26,6 +26,45 @@ pub fn video_seek(id : Int, milliseconds : Double) -> String {
 }
 
 ///|
+#export_name("video_source_time")
+pub fn video_source_time(id : Int, milliseconds : Double) -> Double {
+  @video.video_source_time(id, milliseconds)
+}
+
+///|
+#export_name("video_timeline_x_for_time")
+pub fn video_timeline_x_for_time(
+  time_ms : Double, duration_ms : Double, track_x : Double, track_width : Double,
+) -> Double {
+  @video.timeline_x_for_time(time_ms, duration_ms, track_x, track_width)
+}
+
+///|
+#export_name("video_timeline_time_for_x")
+pub fn video_timeline_time_for_x(
+  x : Double, duration_ms : Double, track_x : Double, track_width : Double,
+) -> Double {
+  @video.timeline_time_for_x(x, duration_ms, track_x, track_width)
+}
+
+///|
+#export_name("video_timeline_trim_boundary")
+pub fn video_timeline_trim_boundary(
+  edge : Int, candidate_ms : Double, start_ms : Double, end_ms : Double,
+  duration_ms : Double, min_span_ms : Double,
+) -> Double {
+  @video.timeline_trim_boundary(edge, candidate_ms, start_ms, end_ms, duration_ms, min_span_ms)
+}
+
+///|
+#export_name("video_timeline_tick_step")
+pub fn video_timeline_tick_step(
+  duration_ms : Double, track_width : Double, min_label_spacing : Double,
+) -> Double {
+  @video.timeline_tick_step(duration_ms, track_width, min_label_spacing)
+}
+
+///|
 #export_name("video_dispose")
 pub fn video_dispose(id : Int) -> Unit {
   @video.video_dispose(id)

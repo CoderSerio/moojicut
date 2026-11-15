@@ -1,7 +1,13 @@
 # MoonBit 核心代码
 
-共享业务逻辑优先用 MoonBit 实现，平台宿主负责系统 API、界面交互和媒体执行。
+共享业务逻辑优先用 MoonBit 实现。复杂编辑组件的目标是由同一套 MoonBit 代码负责布局、外观描述和交互，平台宿主负责系统 API、底层输入/渲染接入和媒体执行。
 目前核心编译为原生静态库，由 macOS、Windows 和 Linux 宿主链接；不是通过 Wasm 运行。
+
+macOS 正式视频编辑器已采用共享 MoonBit UI，应用其他界面仍有平台实现。Windows 保留旧编辑窗，Linux 尚无视频编辑链；共享核心不代表三端共享 UI 已完成。视频编辑器按[共享编辑组件约定](../docs/shared-editor-ui.zh-CN.md)推进，不继续分别扩展三套复杂界面。
+
+正式 macOS 编辑窗与独立样例共用同一套组件，已贯通单素材切分、多段按钮调序/拼接、修剪、删除与撤销、实际片段加速、关联音频解除和独立偏移，以及真实导出；时间轴可缩放/横移，空隙可选中删除合拢。全片静音与画面裁剪进入 v2 文档、预览及导出，裁剪候选在应用前仅为 UI 暂态。观看用的预览倍率与改变成片的片段倍率分开。v2 核心还提供目标时长、版本检查、批量事务和请求重试去重；多文件素材导入、字幕/效果、视频 MCP/CLI 入口及 Windows/Linux 媒体宿主仍按[视频编辑器推进计划](../docs/video-editor-roadmap.zh-CN.md)推进。
+
+macOS 应用接入层负责原子保存 `edit-v2.json`，保留原片与旧 `edit.json`。恢复时严格校验已有 v2，仅不存在时才读取旧版并在内存迁移；无效的新草稿不会被旧版覆盖。最近草稿恢复跳过无效候选，不改写文件。保存失败时保留内存状态并拒绝关闭、退出和导出，允许修复后重试。这些路径有隔离媒体与文件回归，不代表人工录屏或更新验收已经完成。
 
 ## 目录与边界
 
@@ -17,6 +23,8 @@ src/
 ├── api_feature_runtime.mbt   # 内置功能启停规则 C ABI
 ├── api_tool_registry.mbt     # 内置工具目录、显示开关与排序 C ABI
 ├── api_video.mbt              # 视频、剪辑计划与录制规则兼容入口
+├── api_video_project.mbt      # v2 多片段文档/事务 C ABI，保留旧接口
+├── api_video_ui.mbt           # 共享编辑组件的批量绘制/事件接口
 ├── preview.mbt               # 原生程序启动时的跨模块自检
 ├── preview_wbtest.mbt
 ├── pkg.generated.mbti        # 保持兼容的根包公开接口
@@ -30,12 +38,16 @@ src/
     ├── feature_runtime/      # 启用、停用中、已停用状态与调用门控
     ├── tool_registry/        # 稳定工具 ID、版本化布局、启用与排序校验
     ├── video/                # 视频文档、时间线、导出配置、录制规则与会话
+    ├── video_project/        # v2 片段、链接、恒速、版本事务与媒体计划
+    ├── video_ui/             # 正式 macOS 编辑窗与样例共用：布局、主题、命中、手势和语义
     ├── protocol/             # 共享 JSON 校验、数值边界与错误响应
     └── test_support/         # 测试使用的 JSON 断言与结果读取
 ```
 
 各包通过自己的 `moon.pkg` 声明依赖，并提交生成的接口文件；业务测试与实现放在同一个包中。
 MoonBit 以目录为包边界；`internal` 下的包仅供本模块使用，跨包依赖仍须显式导入。
+
+视频沿用截图的分层：`internal/image` 对应新 `internal/video_project` 文档核心，旧 `internal/video` 保留录制、v1 兼容和共用几何；复杂组件统一在 `internal/video_ui`，播放条、时间线和属性面板作为包内模块；`plugins/feature/video_editor` 做应用和媒体接线，`components/shared_canvas` 做通用绘制/输入适配。`plugins/system/builtins.json` 描述原生装配依赖，不代表用户 Wasm 插件接口；当前 Windows 编辑窗仍在 `recording.cpp`，Linux 视频媒体链尚缺。详见[实际目录与目标职责](../docs/shared-editor-ui.zh-CN.md#沿用截图的目录分层)。
 
 根包保留现有 `#export_name` 名称和参数类型，`api_*.mbt` 只做转发。
 业务规则和会话状态保留在内部包中，原生宿主链接同一个根包静态库。
@@ -51,6 +63,8 @@ MoonBit 以目录为包边界；`internal` 下的包仅供本模块使用，跨�
     ├── editor_style
     ├── image ──→ editor_style、protocol、selection
     ├── video ──→ protocol
+    ├── video_project ──→ video（v1迁移）、protocol
+    ├── video_ui ──→ video、protocol
     ├── selection
     ├── updates
     ├── feature_runtime
@@ -68,7 +82,10 @@ image / video 的白盒测试 ──→ test_support（仅测试导入）
 ## 新代码放在哪里
 
 - 跨平台的规则、状态、命令和文档处理优先放在相应 MoonBit 业务包。
-- 平台权限、窗口、绘制、采集和编码继续由原生宿主负责。
+- 复杂组件的布局、样式、绘制描述、命中、拖动事务、焦点及语义状态放在共享 MoonBit UI 中；底层库可以提供通用控件、排版和渲染能力。
+- 播放条的观看状态与动作放在共享 UI，片段恒速、目标时长、音画链接、ripple 和时间舍入放在 `video_project`；原生层只执行媒体请求，不自行计算另一套剪辑结果。预览倍率和时间轴视口不写文档，片段变速与空隙删除才进入原子事务与撤销历史。
+- 平台权限、窗口、原始输入与输入法接入、渲染表面、采集和编码由宿主或底层库提供，不在平台适配层重写时间线、属性面板等产品组件。
+- 媒体库消费由权威文档生成的 RenderPlan；MLT 组合是派生执行状态，不另存为第二份可独立编辑的项目。共享 UI 不依赖 MLT/AVPlayer 等具体类型。
 - 只有形成独立职责时才新增包；不要按单个文件建包，也不要把新业务都堆进 `protocol`。
 - 包内测试与实现放在一起。测试辅助代码通过 `for "wbtest"` 导入，不进入应用的依赖链。
 - 依赖保持单向，内部包不反向依赖根包。跨模块集成检查留在调用方。

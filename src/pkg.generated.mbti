@@ -184,9 +184,35 @@ pub fn video_dispose(Int32) -> Unit
 
 pub fn video_open(String, String) -> String
 
+pub fn video_project_close(Int32) -> Unit
+
+pub fn video_project_command(Int32, String) -> String
+
+pub fn video_project_open(String, String) -> String
+
+pub fn video_project_snapshot(Int32) -> String
+
 pub fn video_seek(Int32, Double) -> String
 
 pub fn video_snapshot(Int32) -> String
+
+pub fn video_source_time(Int32, Double) -> Double
+
+pub fn video_timeline_tick_step(Double, Double, Double) -> Double
+
+pub fn video_timeline_time_for_x(Double, Double, Double, Double) -> Double
+
+pub fn video_timeline_trim_boundary(Int32, Double, Double, Double, Double, Double) -> Double
+
+pub fn video_timeline_x_for_time(Double, Double, Double, Double) -> Double
+
+pub fn video_ui_close(Int32) -> Unit
+
+pub fn video_ui_event(Int32, String) -> String
+
+pub fn video_ui_frame(Int32, Double, Double) -> String
+
+pub fn video_ui_open(String) -> Int32
 
 // Errors
 

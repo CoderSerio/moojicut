@@ -28,7 +28,9 @@
 
 Undo and redo let you make adjustments as you go.
 
-Mooji Cut is in early preview. This README covers the `0.1.0-alpha.15` development candidate; published builds may not include all of these features. Platform support and known limitations are listed in the release notes for each version.
+The macOS candidate includes a new recording timeline editor for splitting and reordering clips, editing audio independently, changing clip speed, and exporting MP4 files. Preview speed only changes playback; clip speed changes the exported duration. Editing currently uses a single recording, without multiple source files, subtitles, transitions, or zoom-and-pan keyframes. Windows and Linux retain their existing native interfaces.
+
+Mooji Cut is in early preview. This README covers the `0.1.0-alpha.16` development candidate; published builds may not include all of these features. Platform support and known limitations are listed in the release notes for each version.
 
 ## Tools and Plugins
 

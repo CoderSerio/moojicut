@@ -13,5 +13,7 @@ output/
 /docs/*
 !/docs/guide.zh-CN.md
 !/docs/interaction-design.zh-CN.md
+!/docs/shared-editor-ui.zh-CN.md
+!/docs/video-editor-roadmap.zh-CN.md
 /native/README.md
 /assets/brand/README.md

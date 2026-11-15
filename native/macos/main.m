@@ -470,6 +470,11 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     });
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(__unused NSApplication *)sender { return NO; }
+- (void)showVideoDraftSaveError:(NSError *)error {
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"录屏草稿尚未保存";
+    alert.informativeText = error.localizedDescription ?: @"请完成保存后再退出，当前编辑仍保留在窗口中。";
+    [alert addButtonWithTitle:@"继续编辑"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
+}
 - (NSApplicationTerminateReply)applicationShouldTerminate:(__unused NSApplication *)sender {
     if (self.updateController.installationPending && (self.captureController.busy || self.recordingController.busy)) {
         NSAlert *alert = [NSAlert new]; alert.messageText = @"请先完成当前编辑";
@@ -481,6 +486,11 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         NSAlert *alert = [NSAlert new]; alert.messageText = @"录屏还未完成";
         alert.informativeText = @"请先停止录屏，或等待视频导出完成，再退出 Mooji Cut，以免损坏视频文件。";
         [alert addButtonWithTitle:@"继续使用"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
+        return NSTerminateCancel;
+    }
+    NSError *draftError = nil;
+    if (self.recordingController && ![self.recordingController prepareForTermination:&draftError]) {
+        [self showVideoDraftSaveError:draftError];
         return NSTerminateCancel;
     }
     self.scrollCapture.onCompletion = nil;

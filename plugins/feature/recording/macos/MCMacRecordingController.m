@@ -57,6 +57,16 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 - (BOOL)captureInProgress { return [self.stateCapabilities[@"captureInProgress"] boolValue]; }
 - (BOOL)canStop { return [self.stateCapabilities[@"canStop"] boolValue]; }
 - (BOOL)exporting { return self.editor.exporting; }
+- (BOOL)prepareForTermination:(NSError **)error {
+    if (self.captureInProgress || self.exporting) {
+        if (error) *error = MCRecordingError(@"请先结束录屏或导出。");
+        return NO;
+    }
+    if (!self.editor) return YES;
+    if ([self.editor prepareForTermination:error]) return YES;
+    [self.editor show];
+    return NO;
+}
 - (NSString *)stopActionTitle { return self.recording ? @"停止录屏并编辑" : self.stopping ? @"正在结束录屏…" : @"取消录屏"; }
 - (NSString *)elapsedText {
     double seconds = CMTimeGetSeconds(self.output.recordedDuration);

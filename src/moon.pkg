@@ -9,6 +9,8 @@ import {
   "moojicut/core/internal/tool_registry",
   "moojicut/core/internal/updates",
   "moojicut/core/internal/video",
+  "moojicut/core/internal/video_project",
+  "moojicut/core/internal/video_ui",
   "moonbitlang/core/json",
 }
 

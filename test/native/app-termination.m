@@ -40,7 +40,7 @@ static void Check(BOOL condition, NSString *message) {
 
 @interface MCHostRecordingFixture : MCMacRecordingController
 @property NSUInteger starts, resumes, stops;
-@property BOOL fixtureBusy, fixtureCaptureInProgress;
+@property BOOL fixtureBusy, fixtureCaptureInProgress, fixtureSaveFailure;
 @end
 @implementation MCHostRecordingFixture
 - (BOOL)busy { return self.fixtureBusy; }
@@ -48,6 +48,19 @@ static void Check(BOOL condition, NSString *message) {
 - (void)startRecording { self.starts++; }
 - (void)resumeLastDraft { self.resumes++; }
 - (void)stopRecording { self.stops++; }
+- (BOOL)prepareForTermination:(NSError **)error {
+    if (!self.fixtureSaveFailure) return YES;
+    if (error) *error = [NSError errorWithDomain:@"DraftFixture" code:1
+        userInfo:@{NSLocalizedDescriptionKey:@"Cannot save the retained editing draft"}];
+    return NO;
+}
+@end
+
+@interface MCHostDraftFailureFixture : MCNativeHost
+@property NSError *saveError;
+@end
+@implementation MCHostDraftFailureFixture
+- (void)showVideoDraftSaveError:(NSError *)error { self.saveError = error; }
 @end
 
 @interface MCHostStatusItemFixture : NSObject
@@ -87,6 +100,14 @@ static void CheckRecordingEntryRouting(void) {
     recording.fixtureCaptureInProgress = YES;
     [host updateRecordingState];
     Check(!resume.enabled, @"draft recovery stays disabled during active recording");
+    MCHostDraftFailureFixture *quitting = [MCHostDraftFailureFixture new];
+    recording.fixtureCaptureInProgress = NO; recording.fixtureSaveFailure = YES;
+    quitting.recordingController = recording;
+    Check([quitting applicationShouldTerminate:NSApp] == NSTerminateCancel && quitting.saveError != nil,
+          @"application quit must preserve an editor whose draft failed to save");
+    recording.fixtureSaveFailure = NO;
+    Check([quitting applicationShouldTerminate:NSApp] == NSTerminateNow,
+          @"successful draft retry allows the normal application shutdown");
 }
 
 @interface MCTerminationApplication : NSApplication

@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 EXECUTABLE_NAME = "MoojiCut"
 ARTIFACTS = ROOT / ".artifacts"
 FRAMEWORKS = ["AppKit", "Foundation", "Carbon", "ScreenCaptureKit", "AVKit",
-              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "UniformTypeIdentifiers",
+              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "QuartzCore", "UniformTypeIdentifiers",
               "Vision", "ImageIO", "SwiftUI", "Translation"]
 TEXT_FRAMEWORKS = ("AppKit", "Foundation", "CoreGraphics", "Vision", "ImageIO", "SwiftUI", "Translation")
 SWIFT_MINIMUM_MACOS = "26.0"
@@ -61,7 +61,7 @@ class NativeBuild:
         manifest = (ROOT / "moon.mod").read_text()
         self.name = self.manifest_value(manifest, "name")
         self.version = self.manifest_value(manifest, "version")
-        self.release_version = release_version or self.version + "-alpha.15"
+        self.release_version = release_version or self.version + "-alpha.16"
         version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
                                self.release_version)
         if not version:
@@ -454,7 +454,8 @@ class NativeBuild:
                  *native_sources("macos", "feature.recording"), archive,
                  "-framework", "AppKit", "-framework", "ScreenCaptureKit", "-framework", "AVKit",
                  "-framework", "AVFoundation", "-framework", "UniformTypeIdentifiers",
-                 "-framework", "CoreMedia", "-framework", "CoreVideo", "-o", recording_experience)
+                 "-framework", "CoreMedia", "-framework", "CoreVideo", "-framework", "CoreGraphics",
+                 "-framework", "QuartzCore", "-o", recording_experience)
         with tempfile.TemporaryDirectory(prefix="moojicut-recording-test-") as media_directory:
             self.run(recording_experience, media_directory)
         scroll_capture = shortcuts / "scroll-capture"
@@ -623,7 +624,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "test-text", "smoke", "release", "archive-test"))
     parser.add_argument("--release-version", metavar="VERSION",
-                        help="Release label (default: <moon.mod version>-alpha.15).")
+                        help="Release label (default: <moon.mod version>-alpha.16).")
     parser.add_argument("--profile", choices=("development", "smoke", "production"),
                         help="Default: isolated development; release uses production, smoke uses smoke.")
     parser.add_argument("--test-id", help="Stable lowercase identifier for an isolated test profile.")

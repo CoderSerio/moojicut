@@ -27,6 +27,10 @@
         "sources": ["components/style_controls/macos/MCStyleControls.m", "components/style_controls/macos/MCStylePropertiesView.m"],
         "requires": []
       },
+      "component.shared_canvas": {
+        "sources": ["components/shared_canvas/macos/MCSharedCanvas.m"],
+        "requires": []
+      },
       "feature.select": {
         "sources": ["plugins/feature/select/macos/MCSelection.m"],
         "requires": []
@@ -52,8 +56,8 @@
         "requires": ["system.shortcut_config"]
       },
       "feature.video_editor": {
-        "sources": ["plugins/feature/video_editor/macos/MCVideoEditor.m"],
-        "requires": []
+        "sources": ["plugins/feature/video_editor/macos/MCVideoEditor.m", "plugins/feature/video_editor/macos/MCVideoMedia.m"],
+        "requires": ["component.shared_canvas"]
       },
       "feature.recording": {
         "sources": ["plugins/feature/recording/macos/MCMacRecordingController.m"],
