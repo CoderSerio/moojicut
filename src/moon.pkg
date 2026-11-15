@@ -4,6 +4,7 @@ import {
   "moojicut/core/internal/feature_runtime",
   "moojicut/core/internal/image",
   "moojicut/core/internal/selection",
+  "moojicut/core/internal/tool_registry",
   "moojicut/core/internal/updates",
   "moojicut/core/internal/video",
   "moonbitlang/core/json",

@@ -1,5 +1,6 @@
 #import "MCPreferencesController.h"
 #import "MCShortcutRecorder.h"
+#import "MCPluginManagementController.h"
 #import "native/macos/updates/MCUpdateController.h"
 #import "plugins/feature/pin/macos/MCPinnedImageController.h"
 
@@ -61,6 +62,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 @property NSButton *releasePageButton;
 @property NSButton *pinningCheckbox;
 @property NSTextField *updateStatus;
+@property MCPluginManagementController *pluginManagement;
 @end
 
 @implementation MCPreferencesController
@@ -93,9 +95,11 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     pages.tabViewType = NSNoTabsNoBorder; pages.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     NSTabViewItem *general = [[NSTabViewItem alloc] initWithIdentifier:@"general"]; general.label = @"通用"; general.view = [self generalPage];
     NSTabViewItem *shortcuts = [[NSTabViewItem alloc] initWithIdentifier:@"shortcuts"]; shortcuts.label = @"快捷键"; shortcuts.view = [self shortcutsPage];
+    self.pluginManagement = [[MCPluginManagementController alloc] initWithStore:self.toolRegistryStore];
+    NSTabViewItem *plugins = [[NSTabViewItem alloc] initWithIdentifier:@"plugins"]; plugins.label = @"插件管理"; plugins.view = self.pluginManagement.view;
     NSTabViewItem *about = [[NSTabViewItem alloc] initWithIdentifier:@"about"]; about.label = @"关于"; about.view = [self aboutPage];
     NSTabViewItem *updates = [[NSTabViewItem alloc] initWithIdentifier:@"updates"]; updates.label = @"更新"; updates.view = [self updatesPage];
-    [pages addTabViewItem:general]; [pages addTabViewItem:shortcuts]; [pages addTabViewItem:about]; [pages addTabViewItem:updates]; [window.contentView addSubview:pages]; self.pages = pages;
+    [pages addTabViewItem:general]; [pages addTabViewItem:shortcuts]; [pages addTabViewItem:plugins]; [pages addTabViewItem:about]; [pages addTabViewItem:updates]; [window.contentView addSubview:pages]; self.pages = pages;
     [self selectPage:@"general"]; [window center];
 }
 - (NSView *)generalPage {
@@ -448,29 +452,34 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.disclosure.accessibilityLabel = self.technicalDetails.hidden ? @"展开技术信息" : @"收起技术信息";
 }
 - (void)show { if (!self.window) [self buildWindow]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+- (void)setToolRegistryStore:(MCToolRegistryStore *)store {
+    _toolRegistryStore = store;
+    self.pluginManagement.toolRegistryStore = store;
+}
 - (void)selectPage:(NSString *)identifier {
-    if (![@[@"general", @"shortcuts", @"about", @"updates"] containsObject:identifier]) return;
+    if (![@[@"general", @"shortcuts", @"plugins", @"about", @"updates"] containsObject:identifier]) return;
     [self cancelShortcutRecording];
     if (self.onShortcutRecordingChanged) self.onShortcutRecordingChanged(NO);
     [self.pages selectTabViewItemWithIdentifier:identifier]; self.window.toolbar.selectedItemIdentifier = identifier;
     NSRect frame = self.window.frame;
-    CGFloat height = [identifier isEqualToString:@"shortcuts"] ? 500 : 340;
+    CGFloat height = ([identifier isEqualToString:@"shortcuts"] || [identifier isEqualToString:@"plugins"]) ? 500 : 340;
     CGFloat difference = height - self.window.contentView.bounds.size.height;
     frame.size.height += difference; frame.origin.y -= difference;
     [self.window setFrame:frame display:YES];
 }
 - (void)toolbarSelected:(NSToolbarItem *)sender { [self selectPage:sender.itemIdentifier]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about", @"updates"]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about", @"updates"]; }
-- (NSArray<NSToolbarItemIdentifier> *)toolbarSelectableItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"about", @"updates"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"plugins", @"about", @"updates"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"plugins", @"about", @"updates"]; }
+- (NSArray<NSToolbarItemIdentifier> *)toolbarSelectableItemIdentifiers:(__unused NSToolbar *)toolbar { return @[@"general", @"shortcuts", @"plugins", @"about", @"updates"]; }
 - (nullable NSToolbarItem *)toolbar:(__unused NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)identifier willBeInsertedIntoToolbar:(__unused BOOL)flag {
-    if (![@[@"general", @"shortcuts", @"about", @"updates"] containsObject:identifier]) return nil;
+    if (![@[@"general", @"shortcuts", @"plugins", @"about", @"updates"] containsObject:identifier]) return nil;
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
     BOOL general = [identifier isEqualToString:@"general"];
     BOOL shortcuts = [identifier isEqualToString:@"shortcuts"];
+    BOOL plugins = [identifier isEqualToString:@"plugins"];
     BOOL updates = [identifier isEqualToString:@"updates"];
-    item.label = general ? @"通用" : shortcuts ? @"快捷键" : updates ? @"更新" : @"关于"; item.paletteLabel = item.label;
-    item.image = [NSImage imageWithSystemSymbolName:general ? @"gearshape" : shortcuts ? @"keyboard" : updates ? @"arrow.triangle.2.circlepath" : @"info.circle" accessibilityDescription:item.label];
+    item.label = general ? @"通用" : shortcuts ? @"快捷键" : plugins ? @"插件管理" : updates ? @"更新" : @"关于"; item.paletteLabel = item.label;
+    item.image = [NSImage imageWithSystemSymbolName:general ? @"gearshape" : shortcuts ? @"keyboard" : plugins ? @"puzzlepiece.extension" : updates ? @"arrow.triangle.2.circlepath" : @"info.circle" accessibilityDescription:item.label];
     item.target = self; item.action = @selector(toolbarSelected:); return item;
 }
 - (void)windowWillClose:(NSNotification *)notification {
@@ -479,6 +488,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     if (self.onShortcutRecordingChanged) self.onShortcutRecordingChanged(NO);
     // Preference toolbars keep AppKit view/validation state. Detach that state
     // before relinquishing the one settings window owned by this controller.
+    [self.pluginManagement invalidate]; self.pluginManagement = nil;
     self.window.toolbar.delegate = nil;
     for (NSToolbarItem *item in self.window.toolbar.items) item.target = nil;
     self.window.toolbar = nil;

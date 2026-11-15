@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#include "moonbit.h"
 #import "native/macos/preferences/MCPinShortcutStore.h"
 #import "native/macos/preferences/MCShortcutStore.h"
 #import "native/macos/preferences/MCShortcutRecorder.h"
@@ -26,6 +27,7 @@ static NSEvent *key(unsigned short code, NSEventModifierFlags flags) {
 
 int main(void) {
     @autoreleasepool {
+        moonbit_init();
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         NSString *domain = [@"dev.moojicut.pin-shortcuts-test." stringByAppendingString:NSUUID.UUID.UUIDString];

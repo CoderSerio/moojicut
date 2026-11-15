@@ -315,10 +315,11 @@ class NativeBuild:
                  "-o", executable)
         self.run(executable)
         pin_shortcuts = shortcuts / "pin-shortcuts"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos", "-I", self.include,
                  ROOT / "test/native/pin-shortcuts.m", preferences / "MCPinShortcutStore.m",
                  preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
-                 preferences / "MCPreferencesController.m",
+                 preferences / "MCPreferencesController.m", preferences / "MCToolRegistryStore.m",
+                 preferences / "MCPluginManagementController.m", archive,
                  "-framework", "AppKit", "-framework", "Carbon", "-o", pin_shortcuts)
         self.run(pin_shortcuts)
         pinned_image = shortcuts / "pinned-image"
@@ -355,6 +356,20 @@ class NativeBuild:
                  "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/capture-overlay.m",
                  *native_sources("macos", "feature.image_editor"), archive, "-framework", "AppKit", "-o", capture_overlay)
         self.run(capture_overlay)
+        tool_layout = shortcuts / "tool-layout"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
+                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/tool-layout.m",
+                 *native_sources("macos", "feature.capture"), archive,
+                 "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", tool_layout)
+        self.run(tool_layout)
+        tool_settings = shortcuts / "tool-registry-settings"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
+                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/tool-registry-settings.m",
+                 preferences / "MCToolRegistryStore.m", preferences / "MCPluginManagementController.m",
+                 preferences / "MCPreferencesController.m", preferences / "MCPinShortcutStore.m",
+                 preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
+                 archive, "-framework", "AppKit", "-framework", "Carbon", "-o", tool_settings)
+        self.run(tool_settings)
         sparkle = install_sparkle()
         updater = shortcuts / "updater-smoke"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,

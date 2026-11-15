@@ -4,6 +4,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 @class MCUpdateController;
+@class MCToolRegistryStore;
 @interface MCPreferencesController : NSObject <NSWindowDelegate, NSToolbarDelegate>
 @property (nonatomic, readonly, nullable) NSWindow *window;
 @property (nonatomic, copy, nullable) void (^onClose)(void);
@@ -18,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) MCShortcutStore *shortcutStore;
 @property (nonatomic, readonly) MCPinShortcutStore *pinShortcutStore;
 @property (nonatomic, strong, nullable) MCUpdateController *updateController;
+@property (nonatomic, strong, nullable) MCToolRegistryStore *toolRegistryStore;
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults coreVersion:(NSString *)coreVersion diagnostics:(NSDictionary *)diagnostics;
 - (void)show;
 - (void)selectPage:(NSString *)identifier;

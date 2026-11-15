@@ -5,9 +5,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) NSWindow *window;
 @property (nonatomic, readonly) NSDictionary *document;
 @property (nonatomic, readonly) NSRect pinScreenFrame;
+@property (nonatomic, copy, readonly, nullable) NSDictionary *toolConfiguration;
 @property (nonatomic, copy, nullable) void (^onClose)(void);
 @property (nonatomic, copy, nullable) BOOL (^onPinPNGData)(NSData *data);
 - (nullable instancetype)initWithPNGData:(NSData *)data error:(NSError **)error;
+// Call preflight for every editor before applying on the main thread.
+// A failed preflight leaves the configuration, input and document untouched.
+- (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error;
+- (void)applyToolConfiguration:(NSDictionary *)candidate;
 - (void)show;
 - (void)prepareOverlayInFrame:(NSRect)screenFrame;
 - (BOOL)applyAnnotation:(NSDictionary *)annotation;

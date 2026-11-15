@@ -6,6 +6,8 @@
         "sources": [
           "native/macos/main.m",
           "native/macos/preferences/MCPreferencesController.m",
+          "native/macos/preferences/MCToolRegistryStore.m",
+          "native/macos/preferences/MCPluginManagementController.m",
           "native/macos/preferences/MCShortcutRecorder.m",
           "native/macos/shortcuts/MCGlobalShortcutManager.m",
           "native/macos/updates/MCUpdateController.m",

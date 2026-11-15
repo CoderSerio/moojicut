@@ -2,6 +2,7 @@
 #import <mach/mach.h>
 #import <unistd.h>
 #import "native/macos/preferences/MCPreferencesController.h"
+#import "native/macos/preferences/MCToolRegistryStore.h"
 #import "native/macos/shortcuts/MCGlobalShortcutManager.h"
 #import "plugins/feature/capture/macos/MCCaptureController.h"
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
@@ -43,6 +44,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @interface MCNativeHost : NSObject <NSApplicationDelegate>
 @property NSStatusItem *statusItem;
 @property MCPreferencesController *preferences;
+@property MCToolRegistryStore *toolRegistryStore;
 @property NSUserDefaults *defaults;
 @property NSDictionary *diagnostics;
 @property NSMutableDictionary *report;
@@ -80,6 +82,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     if (!self.preferences) {
         NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoonBitCoreVersion"] ?: @"开发版本";
         self.preferences = [[MCPreferencesController alloc] initWithDefaults:self.defaults coreVersion:version diagnostics:self.diagnostics];
+        self.preferences.toolRegistryStore = self.toolRegistryStore;
         __weak MCNativeHost *weakSelf = self;
         self.preferences.onClose = ^{ [weakSelf.globalShortcuts resume]; [weakSelf.pinnedImages setShortcutsSuspended:NO]; weakSelf.preferences = nil; };
         self.preferences.onShortcutRecordingChanged = ^(BOOL recording) {
@@ -161,11 +164,19 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
     self.pinnedImages = [[MCPinnedImageController alloc] initWithDefaults:self.defaults];
     self.captureController = [MCCaptureController new];
+    self.toolRegistryStore = [[MCToolRegistryStore alloc] initWithDefaults:self.defaults];
+    [self.captureController applyToolConfiguration:self.toolRegistryStore.snapshot];
     self.recordingController = [MCMacRecordingController new];
     self.updateController = [MCUpdateController new];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateStateChanged:)
         name:MCUpdateStateDidChangeNotification object:self.updateController];
     __weak MCNativeHost *weakSelf = self;
+    self.toolRegistryStore.prepareChange = ^BOOL(NSDictionary *candidate, NSError **error) {
+        return [weakSelf.captureController canApplyToolConfiguration:candidate error:error];
+    };
+    self.toolRegistryStore.applyChange = ^(NSDictionary *candidate) {
+        [weakSelf.captureController applyToolConfiguration:candidate];
+    };
     self.updateController.isOperationBusy = ^BOOL{
         return weakSelf.captureController.busy || weakSelf.recordingController.busy || weakSelf.choosingImage;
     };

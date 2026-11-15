@@ -39,6 +39,16 @@
 
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL capture overlay: %s\n", message); passed = NO; } } while (0)
 
+static void selectTool(MCImageEditorController *editor, NSInteger kind) {
+    for (NSInteger index = 0; index < editor.tools.segmentCount; index++) {
+        if ([editor.tools tagForSegment:index] == kind) {
+            editor.tools.selectedSegment = index;
+            [editor chooseTool:editor.tools];
+            return;
+        }
+    }
+}
+
 static NSEvent *mouse(MCImageCanvas *canvas, NSEventType type, NSPoint point) {
     NSRect frame = canvas.imageFrame;
     NSPoint local = NSMakePoint(frame.origin.x + point.x * frame.size.width / 800,
@@ -94,8 +104,7 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.color isDescendantOf:editor.properties] && [editor.fontSize isDescendantOf:editor.properties] &&
           ![editor.color isDescendantOf:editor.toolbar] && ![editor.fontSize isDescendantOf:editor.toolbar],
           "color and font controls live only in the contextual second row");
-    editor.tools.selectedSegment = 1;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 1);
     CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && !editor.strokeGroup.hidden,
           "rectangle exposes color and labelled line width only");
     editor.strokeStepper.doubleValue = 8;
@@ -106,15 +115,12 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.document[@"annotations"][0][@"stroke"] intValue] == 8,
           "contextual line width controls the real MoonBit shape annotation");
     [editor undo:nil];
-    editor.tools.selectedSegment = 2;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 2);
     CHECK(!editor.strokeGroup.hidden && editor.fontGroup.hidden, "arrow exposes the same meaningful shape properties");
-    editor.tools.selectedSegment = 4;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 4);
     CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
           "filled cover exposes color/opacity without unrelated stroke or font properties");
-    editor.tools.selectedSegment = 3;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 3);
     CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden &&
           NSEqualRects(toolbarFrame, editor.floatingToolbar.frame),
           "changing tools swaps properties without relocating the floating HUD");
@@ -122,9 +128,8 @@ static BOOL exercise(CGFloat scale) {
     CHECK(canvas.textView != nil && editor.window.attachedSheet == nil, "selection can immediately host inline text");
     [canvas.textView setMarkedText:@"yueliang" selectedRange:NSMakeRange(8, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
     NSResponder *textResponder = editor.window.firstResponder;
-    editor.tools.selectedSegment = 4;
-    [editor chooseTool:editor.tools];
-    CHECK(canvas.textView.hasMarkedText && editor.tools.selectedSegment == 3 &&
+    selectTool(editor, 4);
+    CHECK(canvas.textView.hasMarkedText && [editor.tools tagForSegment:editor.tools.selectedSegment] == 3 &&
           editor.window.firstResponder == textResponder && NSEqualRects(toolbarFrame, editor.floatingToolbar.frame),
           "tool switching preserves ongoing IME composition and HUD placement");
     [canvas.textView insertText:@"原地编辑 🌙\n第二行" replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -148,7 +153,9 @@ static BOOL exercise(CGFloat scale) {
           "export commits live text and uses the selected pixel dimensions");
     CHECK([editor.document[@"annotations"][0][@"fontSize"] intValue] == 32,
           "second-row font size is committed into the shared text document");
-    editor.tools.selectedSegment = 0;
+    NSString *textID = canvas.selectedID;
+    selectTool(editor, 0);
+    canvas.selectedID = textID;
     [editor refresh];
     CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden,
           "selecting an existing text object retains text properties in the select tool");
@@ -195,8 +202,7 @@ static BOOL independentToolStyles(void) {
     MCStylePropertiesView *properties = (MCStylePropertiesView *)editor.properties;
     const int colors[] = {0, 0xff0000, 0x00ff00, 0x0000ff, 0x883399};
     for (NSInteger tool = 1; tool <= 4; tool++) {
-        editor.tools.selectedSegment = tool;
-        [editor chooseTool:editor.tools];
+        selectTool(editor, tool);
         MCStyleValues values = properties.values;
         values.rgb = colors[tool]; values.opacity = tool * .2;
         properties.values = values;
@@ -208,8 +214,7 @@ static BOOL independentToolStyles(void) {
     }
     CHECK([editor.document[@"undo"] count] == 0, "changing creation defaults never creates document undo entries");
     for (NSInteger tool = 4; tool >= 1; tool--) {
-        editor.tools.selectedSegment = tool;
-        [editor chooseTool:editor.tools];
+        selectTool(editor, tool);
         MCStyleValues values = properties.values;
         CHECK(values.rgb == colors[tool] && fabs(values.opacity - tool * .2) < .001,
               "each tool restores its own RGBA values after visiting every other tool");
@@ -219,8 +224,7 @@ static BOOL independentToolStyles(void) {
     [other prepareWindow];
     CHECK(((MCStylePropertiesView *)other.properties).values.rgb == (int32_t)editor_style_default(MC_STYLE_COLOR),
           "another editor instance retains its own defaults");
-    editor.tools.selectedSegment = 3;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 3);
     [editor addTextAtPoint:NSMakePoint(30, 30)];
     [editor.canvas.textView insertText:@"第一段" replacementRange:NSMakeRange(NSNotFound, 0)];
     CHECK([editor.canvas finishTextEditing:YES], "new styled text commits through the normal inline editor");

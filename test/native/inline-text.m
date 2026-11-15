@@ -37,6 +37,16 @@
     if (!(condition)) { fprintf(stderr, "FAIL inline text: %s\n", message); passed = NO; } \
 } while (0)
 
+static void selectTool(MCImageEditorController *editor, NSInteger kind) {
+    for (NSInteger index = 0; index < editor.tools.segmentCount; index++) {
+        if ([editor.tools tagForSegment:index] == kind) {
+            editor.tools.selectedSegment = index;
+            [editor chooseTool:editor.tools];
+            return;
+        }
+    }
+}
+
 static MCImageEditorController *fixture(CGFloat scale, NSError **error) {
     NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
         initWithBitmapDataPlanes:NULL pixelsWide:800 pixelsHigh:500
@@ -47,8 +57,7 @@ static MCImageEditorController *fixture(CGFloat scale, NSError **error) {
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:png error:error];
     [editor prepareWindow];
     editor.canvas.frame = NSMakeRect(0, 48, 800 * scale + 32, 500 * scale + 32);
-    for (NSInteger i = 0; i < editor.tools.segmentCount; i++)
-        if ([[editor.tools toolTipForSegment:i] isEqualToString:@"文字"]) editor.tools.selectedSegment = i;
+    selectTool(editor, 3);
     return editor;
 }
 
@@ -258,8 +267,7 @@ static BOOL rgbaStyles(void) {
     NSError *error = nil;
     MCImageEditorController *editor = fixture(1, &error);
     MCImageCanvas *canvas = editor.canvas;
-    editor.tools.selectedSegment = 4;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 4);
     editor.colorControl.color = [NSColor colorWithSRGBRed:0 green:1 blue:0 alpha:1];
     [editor.color sendAction:editor.color.action to:editor.color.target];
     editor.colorControl.opacityControl.stepper.doubleValue = 25;
@@ -276,8 +284,7 @@ static BOOL rgbaStyles(void) {
     // Device RGB profiles differ; this range still rejects opaque or twice-blended fills.
     CHECK(pixel.redComponent > .70 && pixel.redComponent < .85 && pixel.greenComponent > .95 && pixel.blueComponent > .70 && pixel.blueComponent < .85,
           "export blends a 25 percent green cover over white instead of forcing black/opaque");
-    editor.tools.selectedSegment = 3;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 3);
     editor.colorControl.color = [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.5];
     [editor.color sendAction:editor.color.action to:editor.color.target];
     [editor addTextAtPoint:NSMakePoint(30, 30)];

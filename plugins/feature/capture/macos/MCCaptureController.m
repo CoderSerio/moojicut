@@ -16,6 +16,7 @@ static NSError *MCCaptureError(NSString *message) {
 @property BOOL snapshotsPending;
 @property BOOL requestedScreenAccess;
 @property BOOL showingPermissionHelp;
+@property (nonatomic, copy, readwrite) NSDictionary *toolConfiguration;
 @end
 
 @implementation MCCaptureController
@@ -27,6 +28,25 @@ static NSError *MCCaptureError(NSString *message) {
     return self;
 }
 - (BOOL)busy { return self.captureSession != nil || self.editor != nil; }
+- (NSArray<MCImageEditorController *> *)toolConfigurationEditors {
+    NSMutableOrderedSet *editors = [NSMutableOrderedSet orderedSetWithArray:self.overlayEditors ?: @[]];
+    if (self.editor) [editors addObject:self.editor];
+    return editors.array;
+}
+- (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error {
+    NSAssert(NSThread.isMainThread, @"Tool configuration must be applied on the main thread");
+    for (MCImageEditorController *editor in [self toolConfigurationEditors])
+        if (![editor canApplyToolConfiguration:candidate error:error]) return NO;
+    return YES;
+}
+- (void)applyToolConfiguration:(NSDictionary *)candidate {
+    NSAssert(NSThread.isMainThread, @"Tool configuration must be applied on the main thread");
+    // No editor is changed until all existing screens accept the same snapshot.
+    if (![self canApplyToolConfiguration:candidate error:NULL]) return;
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [editor applyToolConfiguration:candidate];
+    self.toolConfiguration = candidate;
+}
+
 - (void)configurePinActionForEditor:(MCImageEditorController *)editor {
     if (!self.onPinPNGData) { editor.onPinPNGData = nil; return; }
     __weak MCCaptureController *weakSelf = self;
@@ -116,6 +136,7 @@ static NSError *MCCaptureError(NSString *message) {
     if (!data) return NO;
     self.editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
     if (!self.editor) return NO;
+    if (self.toolConfiguration) [self.editor applyToolConfiguration:self.toolConfiguration];
     __weak MCCaptureController *weakSelf = self;
     [self configurePinActionForEditor:self.editor];
     self.editor.onClose = ^{ weakSelf.editor = nil; [weakSelf changed]; };
@@ -164,6 +185,7 @@ static NSError *MCCaptureError(NSString *message) {
 }
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error {
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:snapshot[@"png"] error:error];
+    if (self.toolConfiguration) [editor applyToolConfiguration:self.toolConfiguration];
     [editor prepareOverlayInFrame:[snapshot[@"frame"] rectValue]];
     return editor;
 }
