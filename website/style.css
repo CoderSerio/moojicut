@@ -1138,6 +1138,7 @@ h2 em {
 }
 .toolbar-example {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1782,7 +1783,7 @@ footer > div {
     letter-spacing: 1.5px;
   }
   .hero h1 {
-    font-size: 76px;
+    font-size: clamp(58px, 17vw, 76px);
     letter-spacing: -4px;
     margin-top: 25px;
   }
