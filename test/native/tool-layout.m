@@ -286,12 +286,77 @@ static BOOL pinAction(void) {
     CHECK(!success.window && success.activeTool == 2, "successful pin closes through the existing action without selecting an action as a tool");
     return passed;
 }
+static BOOL userActions(void) {
+    BOOL passed = YES;
+    MCImageEditorController *e = editor();
+    NSDictionary *base = configuration(@[@1,@2,@3,@4], [NSSet set]);
+    NSMutableArray *entries = [base[@"groups"][@"screenshot"] mutableCopy];
+    NSString *firstID = @"user.com.example.capture/info";
+    [entries insertObject:@{@"id":firstID, @"pluginId":@"com.example.capture", @"toolId":@"info",
+        @"type":@"action", @"action":@"run", @"target":@"screenshot", @"title":@"截图信息", @"enabled":@YES} atIndex:0];
+    // Enough actions to overflow even a wide editor. All remain addressable by
+    // stable identity while the annotation controls keep their semantic tags.
+    for (NSUInteger index = 0; index < 15; index++) {
+        NSString *tool = [NSString stringWithFormat:@"extra-%lu", (unsigned long)index];
+        [entries addObject:@{@"id":[@"user.com.example.capture/" stringByAppendingString:tool],
+            @"pluginId":@"com.example.capture", @"toolId":tool, @"type":@"action", @"action":@"run",
+            @"target":@"screenshot", @"title":tool, @"enabled":@YES}];
+    }
+    NSDictionary *candidate = @{@"ok":@YES,@"layout":@{},@"groups":@{@"screenshot":entries,@"recording":@[],@"videoEditing":@[]}};
+    CHECK([e canApplyToolConfiguration:candidate error:NULL], "user action catalog is accepted alongside all built-ins");
+    [e applyToolConfiguration:candidate];
+    CHECK(e.tools.segmentCount == 22 && ![e.tools isEnabledForSegment:1], "user tools need a host callback before invocation");
+    choose(e, 2);
+    CHECK(e.activeTool == 2, "user action insertion does not remap annotation kinds");
+    NSDictionary *before = e.document;
+    __block NSUInteger calls = 0;
+    __block NSString *calledID = nil;
+    __block NSDictionary *metadata = nil;
+    e.onUserTool = ^(MCImageEditorController *source, NSString *identifier) {
+        calls++; calledID = identifier; metadata = source.pluginCaptureMetadata;
+    };
+    CHECK([e.tools isEnabledForSegment:1], "attaching the host enables existing user action segments");
+    e.tools.selectedSegment = 1; [e.tools sendAction:e.tools.action to:e.tools.target];
+    CHECK(calls == 1 && [calledID isEqual:firstID] && e.activeTool == 2 && [e.document isEqual:before],
+          "real action dispatch uses global ID and preserves annotation mode, document and history");
+    CHECK(([metadata isEqual:@{@"width":@800,@"height":@500,@"format":@"png",@"revision":@0}]),
+          "the host exposes only current capture metadata");
+    [e.window setContentSize:NSMakeSize(540,400)]; [e.window.contentView layoutSubtreeIfNeeded];
+    NSScrollView *scroll = e.tools.enclosingScrollView;
+    CHECK(scroll && scroll.documentVisibleRect.size.width < e.tools.frame.size.width &&
+          scroll.frame.size.width <= 245 && e.toolbar.fittingSize.width <= 504,
+          "many user actions scroll without forcing the editor toolbar beyond its minimum window width");
+    [e.tools scrollRectToVisible:NSMakeRect(NSMaxX(e.tools.bounds)-30,0,30,28)];
+    CHECK(NSMaxX(scroll.documentVisibleRect) >= NSMaxX(e.tools.bounds)-1,
+          "the last user tool remains reachable through horizontal scrolling");
+    choose(e,3);
+    [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(50,220))];
+    [e.canvas.textView setMarkedText:@"zhongwen" selectedRange:NSMakeRange(8,0) replacementRange:NSMakeRange(NSNotFound,0)];
+    NSTextView *draft = e.canvas.textView; NSResponder *responder = e.window.firstResponder;
+    e.tools.selectedSegment = 1; [e.tools sendAction:e.tools.action to:e.tools.target];
+    CHECK(calls == 2 && e.canvas.textView == draft && draft.hasMarkedText && e.window.firstResponder == responder &&
+          e.activeTool == 3 && [e.document isEqual:before], "metadata actions do not commit or discard ongoing IME input");
+    NSMutableArray *moved = [entries mutableCopy]; [moved removeObjectAtIndex:0]; [moved addObject:entries[0]];
+    NSDictionary *reordered = @{@"ok":@YES,@"layout":@{},@"groups":@{@"screenshot":moved,@"recording":@[],@"videoEditing":@[]}};
+    [e applyToolConfiguration:reordered];
+    e.tools.selectedSegment = e.tools.segmentCount-1; [e.tools sendAction:e.tools.action to:e.tools.target];
+    CHECK(calls == 3 && [calledID isEqual:firstID] && draft.hasMarkedText && [e.document isEqual:before],
+          "moving a live user tool preserves its identity and the current input transaction");
+    __block NSString *closedOwner = nil;
+    NSString *owner = e.pluginContextIdentifier;
+    e.onPluginContextClosed = ^(NSString *identifier) { closedOwner = identifier; };
+    [e cancel:nil];
+    CHECK([closedOwner isEqual:owner] && e.pluginCaptureMetadata == nil,
+          "closing the editor invalidates metadata and notifies its plugin invocation owner");
+    return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         moonbit_init();
         BOOL passed = interactions(); passed = validationAndFanout() && passed; passed = pinAction() && passed;
-        puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME, pin actions and capture fanout" : "FAIL tool layout");
+        passed = userActions() && passed;
+        puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME, pin/user actions, overflow and capture fanout" : "FAIL tool layout");
         return passed ? 0 : 1;
     }
 }

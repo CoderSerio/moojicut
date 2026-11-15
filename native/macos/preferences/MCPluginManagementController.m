@@ -1,5 +1,7 @@
 #import "MCPluginManagementController.h"
 #import "MCToolRegistryStore.h"
+#import "native/macos/plugins/MCUserPluginManager.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "components/icons/macos/MCIcon.h"
 
 static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row";
@@ -12,6 +14,8 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
 @property NSTextField *feedback;
 @property NSButton *moveUpButton;
 @property NSButton *moveDownButton;
+@property NSButton *importButton;
+@property NSPopUpButton *uninstallButton;
 @property NSArray<NSDictionary *> *rows;
 @property (nullable) NSString *draggedIdentifier;
 @property (nullable) NSString *draggedGroup;
@@ -28,6 +32,12 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
     _toolRegistryStore = store;
     if (store) [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(registryChanged:)
         name:MCToolRegistryDidChangeNotification object:store];
+    if (self.isViewLoaded) [self reloadPreservingIdentifier:[self selectedIdentifier]];
+}
+- (void)setUserPluginManager:(MCUserPluginManager *)manager {
+    if (_userPluginManager) [NSNotificationCenter.defaultCenter removeObserver:self name:MCUserPluginsDidChangeNotification object:_userPluginManager];
+    _userPluginManager = manager;
+    if (manager) [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(registryChanged:) name:MCUserPluginsDidChangeNotification object:manager];
     if (self.isViewLoaded) [self reloadPreservingIdentifier:[self selectedIdentifier]];
 }
 - (NSString *)currentGroup {
@@ -68,13 +78,12 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
     self.moveUpButton = [NSButton buttonWithTitle:@"上移" target:self action:@selector(moveUp:)];
     self.moveDownButton = [NSButton buttonWithTitle:@"下移" target:self action:@selector(moveDown:)];
     self.moveUpButton.identifier = @"plugin-tool-move-up"; self.moveDownButton.identifier = @"plugin-tool-move-down";
-    NSButton *importButton = [NSButton buttonWithTitle:@"导入插件…" target:nil action:nil];
-    importButton.enabled = NO; importButton.identifier = @"plugin-import";
-    importButton.toolTip = @"插件导入即将支持"; importButton.accessibilityHelp = @"即将支持，当前版本不可导入插件";
-    NSTextField *importHint = [NSTextField labelWithString:@"即将支持"];
-    importHint.font = [NSFont systemFontOfSize:11]; importHint.textColor = NSColor.secondaryLabelColor;
+    self.importButton = [NSButton buttonWithTitle:@"导入插件…" target:self action:@selector(importPlugin:)];
+    self.importButton.identifier = @"plugin-import";
+    self.uninstallButton = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
+    self.uninstallButton.identifier = @"plugin-uninstall";
     NSView *spacer = [NSView new]; [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *actions = [NSStackView stackViewWithViews:@[self.moveUpButton, self.moveDownButton, spacer, importButton, importHint]];
+    NSStackView *actions = [NSStackView stackViewWithViews:@[self.moveUpButton, self.moveDownButton, spacer, self.uninstallButton, self.importButton]];
     actions.orientation = NSUserInterfaceLayoutOrientationHorizontal; actions.spacing = 8; actions.alignment = NSLayoutAttributeCenterY;
     self.feedback = [NSTextField wrappingLabelWithString:@""];
     self.feedback.font = [NSFont systemFontOfSize:11]; self.feedback.textColor = NSColor.secondaryLabelColor;
@@ -116,6 +125,17 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
     self.emptyLabel.stringValue = self.toolRegistryStore ? @"暂无可管理项" : @"工具管理尚未初始化";
     self.feedback.stringValue = self.toolRegistryStore.loadError ? @"上次工具设置无法读取，当前显示默认布局。修改后将替换原设置。" : @"设置自动保存，新加入的工具显示在列表末尾。";
     self.feedback.textColor = self.toolRegistryStore.loadError ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+    if (!self.toolRegistryStore.loadError && self.userPluginManager.statusMessage.length)
+        self.feedback.stringValue = self.userPluginManager.statusMessage;
+    self.importButton.enabled = self.userPluginManager && !self.userPluginManager.busy;
+    self.importButton.toolTip = self.userPluginManager ? @"选择包含 manifest.json 和 plugin.wasm 的本地 ZIP" : @"插件服务尚未初始化";
+    [self.uninstallButton removeAllItems]; [self.uninstallButton addItemWithTitle:@"卸载插件…"];
+    for (NSString *pluginID in self.userPluginManager.installedPluginIDs) {
+        NSString *name = [self.userPluginManager nameForPlugin:pluginID] ?: pluginID;
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:name action:@selector(uninstallPlugin:) keyEquivalent:@""];
+        item.representedObject = pluginID; item.target = self; [self.uninstallButton.menu addItem:item];
+    }
+    self.uninstallButton.enabled = self.userPluginManager.installedPluginIDs.count > 0 && !self.userPluginManager.busy;
     [self updateMoveButtons];
 }
 - (void)updateMoveButtons {
@@ -135,6 +155,8 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
 - (NSImage *)iconForTool:(NSDictionary *)tool {
     NSDictionary *icons = @{@"builtin.image.rectangle":@(MC_ICON_RECTANGLE), @"builtin.image.arrow":@(MC_ICON_ARROW),
         @"builtin.image.text":@(MC_ICON_TEXT), @"builtin.image.cover":@(MC_ICON_REDACT), @"builtin.image.pin":@(MC_ICON_PIN)};
+    NSImage *custom = [self.userPluginManager iconForPlugin:tool[@"pluginId"]];
+    if (custom) return custom;
     NSNumber *icon = icons[tool[@"id"]];
     NSImage *image = icon ? MCIconImage((MCIcon)icon.integerValue, tool[@"title"]) : nil;
     return image ?: [NSImage imageWithSystemSymbolName:@"puzzlepiece.extension" accessibilityDescription:@"工具"];
@@ -155,7 +177,8 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
     NSTextField *label = [NSTextField labelWithString:title];
     label.lineBreakMode = NSLineBreakByTruncatingTail; label.font = [NSFont systemFontOfSize:13];
     NSString *type = tool[@"type"];
-    NSString *detail = [type isEqualToString:@"action"] ? @"内置 · 操作" :
+    BOOL external = [tool[@"id"] hasPrefix:@"user."];
+    NSString *detail = external ? [NSString stringWithFormat:@"插件 · %@", [self.userPluginManager nameForPlugin:tool[@"pluginId"]] ?: tool[@"pluginId"]] : [type isEqualToString:@"action"] ? @"内置 · 操作" :
         [type isEqualToString:@"annotation"] ? @"内置 · 工具" : @"工具";
     NSTextField *subtitle = [NSTextField labelWithString:detail];
     subtitle.font = [NSFont systemFontOfSize:11]; subtitle.textColor = NSColor.secondaryLabelColor;
@@ -228,9 +251,38 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
 - (void)tableView:(__unused NSTableView *)tableView draggingSession:(__unused NSDraggingSession *)session endedAtPoint:(__unused NSPoint)point operation:(__unused NSDragOperation)operation {
     self.draggedIdentifier = nil; self.draggedGroup = nil;
 }
+- (void)importPlugin:(__unused id)sender {
+    if (!self.userPluginManager || self.userPluginManager.busy) return;
+    NSOpenPanel *panel = NSOpenPanel.openPanel;
+    panel.allowedContentTypes = @[[UTType typeWithFilenameExtension:@"zip"]];
+    panel.canChooseDirectories = NO; panel.allowsMultipleSelection = NO; panel.prompt = @"导入插件";
+    __weak MCPluginManagementController *weakSelf = self;
+    [panel beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
+        if (response != NSModalResponseOK || !weakSelf) return;
+        [weakSelf.userPluginManager importZIPAtURL:panel.URL completion:^(NSError *error) {
+            if (error && weakSelf.isViewLoaded) [weakSelf showError:error];
+        }];
+    }];
+}
+- (void)uninstallPlugin:(NSMenuItem *)sender {
+    if (!self.userPluginManager || self.userPluginManager.busy) return;
+    NSString *pluginID = sender.representedObject;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = [NSString stringWithFormat:@"卸载“%@”？", [self.userPluginManager nameForPlugin:pluginID] ?: pluginID];
+    alert.informativeText = @"将移除该插件的全部工具并取消正在运行的任务。工具顺序和开关会保留，重新安装时可恢复。";
+    [alert addButtonWithTitle:@"卸载"]; [alert addButtonWithTitle:@"取消"];
+    __weak MCPluginManagementController *weakSelf = self;
+    [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn || !weakSelf) return;
+        [weakSelf.userPluginManager uninstallPlugin:pluginID completion:^(NSError *error) {
+            if (error && weakSelf.isViewLoaded) [weakSelf showError:error];
+        }];
+    }];
+}
 - (void)invalidate {
     [NSNotificationCenter.defaultCenter removeObserver:self];
     self.table.delegate = nil; self.table.dataSource = nil;
+    self.userPluginManager = nil;
     self.toolRegistryStore = nil;
     self.draggedIdentifier = nil; self.draggedGroup = nil;
 }

@@ -32,7 +32,10 @@ fn bool_field(
 }
 
 ///|
-fn decode_layout(fields : Map[String, Json]) -> Layout raise InputError {
+fn decode_layout(
+  fields : Map[String, Json],
+  catalog : Catalog,
+) -> Layout raise InputError {
   match fields.get("version") {
     Some(Number(value, ..)) if value == 1 => ()
     _ =>
@@ -67,14 +70,14 @@ fn decode_layout(fields : Map[String, Json]) -> Layout raise InputError {
       }
       let key = string_field(fields, "id")
       let enabled = bool_field(fields, "enabled")
-      let id = match ToolId::from_key(key) {
+      let id = match catalog.find(key) {
         Some(tool) => {
           if !tool.belongs_to(group) {
             raise InputError(
               "invalid_group", "Tool is saved in the wrong group",
             )
           }
-          Builtin(tool)
+          Known(tool)
         }
         None => Unknown(key)
       }
@@ -84,9 +87,9 @@ fn decode_layout(fields : Map[String, Json]) -> Layout raise InputError {
         seen[key] = true
       }
     }
-    for tool in catalog(group) {
+    for tool in catalog.all(group) {
       if !seen.contains(tool.key()) {
-        entries.push({ id: Builtin(tool), enabled: true, })
+        entries.push({ id: Known(tool), enabled: true, })
         seen[tool.key()] = true
       }
     }
@@ -97,7 +100,7 @@ fn decode_layout(fields : Map[String, Json]) -> Layout raise InputError {
     layout.video_editing.length() >
     256 {
     raise InputError(
-      "invalid_input", "Tool layout exceeds 256 entries after adding built-ins",
+      "invalid_input", "Tool layout exceeds 256 entries after adding available tools",
     )
   }
   // Leave space inside the shared request bound for an update command. Escaped
@@ -109,8 +112,11 @@ fn decode_layout(fields : Map[String, Json]) -> Layout raise InputError {
 }
 
 ///|
-fn known_tool(key : String) -> ToolId raise InputError {
-  match ToolId::from_key(key) {
+fn known_tool(
+  key : String,
+  catalog : Catalog,
+) -> AvailableTool raise InputError {
+  match catalog.find(key) {
     Some(tool) => tool
     None =>
       raise InputError(
@@ -120,8 +126,11 @@ fn known_tool(key : String) -> ToolId raise InputError {
 }
 
 ///|
-fn decode_command(fields : Map[String, Json]) -> Command raise InputError {
-  let tool = known_tool(string_field(fields, "id"))
+fn decode_command(
+  fields : Map[String, Json],
+  catalog : Catalog,
+) -> Command raise InputError {
+  let tool = known_tool(string_field(fields, "id"), catalog)
   match string_field(fields, "type") {
     "enabled" => SetEnabled(tool, bool_field(fields, "enabled"))
     "move" => {
@@ -135,7 +144,7 @@ fn decode_command(fields : Map[String, Json]) -> Command raise InputError {
       let before = match fields.get("beforeId") {
         Some(Null) => None
         Some(String(key)) => {
-          let before = known_tool(key)
+          let before = known_tool(key, catalog)
           if !before.belongs_to(group) {
             raise InputError(
               "invalid_group", "Move destination must be in the same group",
@@ -179,7 +188,7 @@ fn result(layout : Layout) -> Json {
     let tools : Array[Json] = []
     for entry in layout.entries(group) {
       match entry.id {
-        Builtin(tool) => {
+        Known(BuiltinTool(tool)) => {
           let descriptor : Map[String, Json] = {
             "id": Json(tool.key()),
             "pluginId": Json(tool.plugin_id()),
@@ -199,6 +208,8 @@ fn result(layout : Layout) -> Json {
           }
           tools.push(Json::object(descriptor))
         }
+        Known(PluginTool(tool)) =>
+          tools.push(@plugin_protocol.encode_tool(tool, entry.enabled))
         Unknown(_) => ()
       }
     }
@@ -218,9 +229,9 @@ pub fn tool_registry_normalize(saved_json : String) -> String {
   @protocol.response(() => {
     result(
       if saved_json == "" {
-        default_layout()
+        default_layout({ users: [], })
       } else {
-        decode_layout(@protocol.request_object(saved_json))
+        decode_layout(@protocol.request_object(saved_json), { users: [], })
       },
     )
   })
@@ -232,8 +243,78 @@ pub fn tool_registry_normalize(saved_json : String) -> String {
 pub fn tool_registry_update(request_json : String) -> String {
   @protocol.response(() => {
     let request = @protocol.request_object(request_json)
-    let layout = decode_layout(@protocol.object_field(request, "layout"))
-    let command = decode_command(@protocol.object_field(request, "command"))
+    let catalog : Catalog = { users: [], }
+    let layout = decode_layout(
+      @protocol.object_field(request, "layout"),
+      catalog,
+    )
+    let command = decode_command(
+      @protocol.object_field(request, "command"),
+      catalog,
+    )
     result(layout.apply(command))
+  })
+}
+
+///|
+fn decode_catalog(value : Json) -> Catalog raise InputError {
+  let manifests = match value {
+    Array(items) if items.length() <= 64 => items
+    _ =>
+      raise InputError(
+        "invalid_catalog", "manifests must be an array with at most 64 packages",
+      )
+  }
+  let seen : Map[String, Bool] = Map([])
+  let users : Array[@plugin_protocol.UserTool] = []
+  for value in manifests {
+    let manifest = @plugin_protocol.decode_manifest(value)
+    if seen.contains(manifest.plugin_id()) {
+      raise InputError(
+        "invalid_catalog", "Duplicate pluginId in installed catalog",
+      )
+    }
+    seen[manifest.plugin_id()] = true
+    for tool in manifest.tools() {
+      if users.length() >= 64 {
+        raise InputError(
+          "invalid_catalog", "Installed catalog exceeds 64 user tools",
+        )
+      }
+      users.push(tool)
+    }
+  }
+  { users, }
+}
+
+///|
+/// Resolve against the caller's current installed-package snapshot. Removed
+/// tools become unknown saved entries, retaining their preferences for reinstall.
+pub fn tool_registry_resolve(request_json : String) -> String {
+  @protocol.response(() => {
+    let request = @plugin_protocol.parse_object(request_json, 262144)
+    for key, _ in request {
+      if !["layout", "manifests", "command"].contains(key) {
+        raise InputError(
+          "invalid_input",
+          "Unsupported registry request field: \{key}",
+        )
+      }
+    }
+    let catalog = match request.get("manifests") {
+      Some(value) => decode_catalog(value)
+      None => raise InputError("invalid_catalog", "manifests is required")
+    }
+    let layout = match request.get("layout") {
+      Some(Null) => default_layout(catalog)
+      Some(Object(fields)) => decode_layout(fields, catalog)
+      _ => raise InputError("invalid_input", "layout must be an object or null")
+    }
+    let layout = match request.get("command") {
+      None => layout
+      Some(Object(fields)) => layout.apply(decode_command(fields, catalog))
+      _ => raise InputError("invalid_input", "command must be an object")
+    }
+    result(layout)
   })
 }

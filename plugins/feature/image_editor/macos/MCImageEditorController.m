@@ -147,7 +147,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSArray *ids = @[@"builtin.image.rectangle", @"builtin.image.arrow", @"builtin.image.text", @"builtin.image.cover"];
     NSMutableSet *seen = [NSMutableSet set];
     BOOL valid = [candidate isKindOfClass:NSDictionary.class] && [candidate[@"ok"] isKindOfClass:NSNumber.class] && [candidate[@"ok"] boolValue] &&
-        [entries isKindOfClass:NSArray.class] && entries.count == ids.count + 1;
+        [entries isKindOfClass:NSArray.class] && entries.count >= ids.count + 1 && entries.count <= 69;
+    NSUInteger builtins = 0;
     if (valid) for (id entry in entries) {
         if (![entry isKindOfClass:NSDictionary.class] || ![entry[@"enabled"] isKindOfClass:NSNumber.class] ||
             ![entry[@"title"] isKindOfClass:NSString.class] || ![entry[@"id"] isKindOfClass:NSString.class] ||
@@ -155,14 +156,21 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         if ([entry[@"id"] isEqual:@"builtin.image.pin"]) {
             if (![entry[@"type"] isEqual:@"action"] || ![entry[@"action"] isEqual:@"pin"] ||
                 ![entry[@"pluginId"] isEqual:@"builtin.pin"] || entry[@"kind"]) { valid = NO; break; }
+            builtins++;
+        } else if ([entry[@"action"] isEqual:@"run"]) {
+            if (![entry[@"type"] isEqual:@"action"] || ![entry[@"pluginId"] isKindOfClass:NSString.class] ||
+                ![entry[@"toolId"] isKindOfClass:NSString.class] || entry[@"kind"] ||
+                ![entry[@"id"] isEqual:[NSString stringWithFormat:@"user.%@/%@",entry[@"pluginId"],entry[@"toolId"]]]) { valid = NO; break; }
         } else {
             if (![entry[@"type"] isEqual:@"annotation"] || ![entry[@"kind"] isKindOfClass:NSNumber.class]) { valid = NO; break; }
             NSInteger kind = [entry[@"kind"] integerValue];
             if (kind < MCRectTool || kind > MCRedactTool || [entry[@"kind"] doubleValue] != kind ||
                 ![entry[@"id"] isEqual:ids[kind - 1]]) { valid = NO; break; }
+            builtins++;
         }
         [seen addObject:entry[@"id"]];
     }
+    valid = valid && builtins == 5;
     if (!valid && error) *error = MCEditorError(@"无法读取截图工具配置。");
     return valid;
 }
@@ -178,6 +186,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property NSImage *image;
 @property MCImageCanvas *canvas;
 @property NSSegmentedControl *tools;
+@property NSScrollView *toolScroll;
+@property NSLayoutConstraint *toolScrollWidth;
+@property NSArray<NSDictionary *> *visibleTools;
+@property (nonatomic, copy, readwrite) NSString *pluginContextIdentifier;
 @property (readonly) NSColorWell *color;
 @property NSButton *undoButton;
 @property NSButton *redoButton;
@@ -739,6 +751,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSMutableArray *visible = [NSMutableArray arrayWithObject:@{@"kind":@0, @"title":@"选择"}];
     for (NSDictionary *entry in MCImageToolDescriptors(self.toolConfiguration))
         if ([entry[@"enabled"] boolValue]) [visible addObject:entry];
+    self.visibleTools = visible;
     self.tools.segmentCount = visible.count;
     const MCIcon icons[] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT, MC_ICON_REDACT};
     for (NSUInteger index = 0; index < visible.count; index++) {
@@ -746,9 +759,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         BOOL pin = [entry[@"id"] isEqual:@"builtin.image.pin"];
         NSInteger kind = [entry[@"kind"] integerValue];
         NSString *title = entry[@"title"];
-        NSImage *icon = MCIconImage(pin ? MC_ICON_PIN : icons[kind], title);
-        [self.tools setTag:pin ? MCPinActionTag : kind forSegment:index];
-        [self.tools setEnabled:YES forSegment:index];
+        BOOL userAction = [entry[@"action"] isEqual:@"run"];
+        NSImage *icon = userAction ? (self.pluginIcons[entry[@"id"]] ?: [NSImage imageWithSystemSymbolName:@"puzzlepiece.extension" accessibilityDescription:title]) : MCIconImage(pin ? MC_ICON_PIN : icons[kind], title);
+        [self.tools setTag:userAction ? (NSInteger)(1000 + index) : pin ? MCPinActionTag : kind forSegment:index];
+        [self.tools setEnabled:!userAction || self.onUserTool != nil forSegment:index];
         [self.tools setToolTip:title forSegment:index];
         [self.tools setImage:icon forSegment:index];
         [self.tools setLabel:icon ? @"" : title forSegment:index];
@@ -757,6 +771,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     }
     [self selectActiveToolSegment];
     [self syncPinAction];
+    [self.tools setFrameSize:NSMakeSize(visible.count * 30 + 5, 28)];
+    self.toolScrollWidth.constant = MIN(245, visible.count * 30 + 5);
     [self positionFloatingToolbar];
 }
 - (BOOL)configurationEndsCurrentTool:(NSDictionary *)candidate {
@@ -871,6 +887,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     }
     _document = MCCallImage(image_create, @{@"width":@(bitmap.pixelsWide), @"height":@(bitmap.pixelsHigh)}, error);
     if (!_document) return nil;
+    _pluginContextIdentifier = NSUUID.UUID.UUIDString;
+    _pluginIcons = @{};
     _styleHandle = editor_style_create();
     if (!_styleHandle) {
         if (error) *error = MCEditorError(@"无法创建标注样式，请关闭其他编辑窗口后重试。");
@@ -971,7 +989,13 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.translateButton = [self unavailableButton:MC_ICON_TRANSLATE label:@"翻译"];
         NSView *spacer = [NSView new];
         [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-        self.toolbar = [NSStackView stackViewWithViews:@[self.tools, [self toolbarDivider], self.ocrButton,
+        self.toolScroll = [NSScrollView new];
+        self.toolScroll.drawsBackground = NO; self.toolScroll.borderType = NSNoBorder;
+        self.toolScroll.hasHorizontalScroller = YES; self.toolScroll.autohidesScrollers = YES;
+        self.toolScroll.scrollerStyle = NSScrollerStyleOverlay; self.toolScroll.documentView = self.tools;
+        self.toolScrollWidth = [self.toolScroll.widthAnchor constraintEqualToConstant:MIN(245, self.visibleTools.count * 30 + 5)];
+        self.toolScrollWidth.active = YES; [self.toolScroll.heightAnchor constraintEqualToConstant:30].active = YES;
+        self.toolbar = [NSStackView stackViewWithViews:@[self.toolScroll, [self toolbarDivider], self.ocrButton,
             self.translateButton, [self toolbarDivider], self.undoButton, self.redoButton, spacer,
             self.cancelButton, self.confirmButton]];
         self.toolbar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -1078,6 +1102,20 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [self syncPinAction];
     [self positionFloatingToolbar];
 }
+- (void)setOnUserTool:(void (^)(MCImageEditorController *,NSString *))handler {
+    _onUserTool = [handler copy]; [self rebuildToolSegments];
+}
+- (void)setPluginIcons:(NSDictionary<NSString *,NSImage *> *)icons {
+    _pluginIcons = [icons copy] ?: @{}; [self rebuildToolSegments];
+}
+- (NSDictionary *)pluginCaptureMetadata {
+    if (!self.window || (self.overlayMode && !self.hasCaptureRegion)) return nil;
+    NSDictionary *viewport = self.document[@"viewport"];
+    return @{@"width":viewport[@"width"], @"height":viewport[@"height"], @"format":@"png", @"revision":self.document[@"revision"]};
+}
+- (void)showPluginMessage:(NSString *)message {
+    self.properties.status.stringValue = message; self.properties.status.hidden = NO;
+}
 - (void)setOnPinPNGData:(BOOL (^)(NSData *))handler {
     _onPinPNGData = [handler copy];
     [self syncPinAction];
@@ -1150,6 +1188,12 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     (void)sender;
     NSInteger segment = self.tools.selectedSegment;
     NSInteger tag = segment >= 0 ? [self.tools tagForSegment:segment] : MCSelectTool;
+    NSDictionary *entry = segment >= 0 && segment < (NSInteger)self.visibleTools.count ? self.visibleTools[(NSUInteger)segment] : nil;
+    if ([entry[@"action"] isEqual:@"run"]) {
+        [self selectActiveToolSegment];
+        if (self.onUserTool && self.pluginCaptureMetadata) self.onUserTool(self, entry[@"id"]);
+        return;
+    }
     if (tag == MCPinActionTag) {
         // Pin is a momentary action: it never becomes an annotation tool or a
         // style-bank key. The explicit click uses the existing pin transaction.
@@ -1300,6 +1344,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     (void)notification;
     void (^closed)(void) = self.onClose;
     self.onClose = nil;
+    if (self.onPluginContextClosed) self.onPluginContextClosed(self.pluginContextIdentifier);
     self.window.delegate = nil;
     self.window.contentView = nil;
     self.window = nil;

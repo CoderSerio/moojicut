@@ -1,4 +1,5 @@
 import {
+  "moojicut/core/internal/plugin_protocol",
   "moojicut/core/internal/protocol",
   "moonbitlang/core/json",
 }

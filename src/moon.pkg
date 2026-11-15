@@ -3,6 +3,7 @@ import {
   "moojicut/core/internal/editor_style" @style,
   "moojicut/core/internal/feature_runtime",
   "moojicut/core/internal/image",
+  "moojicut/core/internal/plugin_protocol",
   "moojicut/core/internal/selection",
   "moojicut/core/internal/tool_registry",
   "moojicut/core/internal/updates",

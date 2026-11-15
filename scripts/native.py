@@ -19,6 +19,7 @@ import sys
 import tempfile
 import zipfile
 from install_sparkle import install as install_sparkle, VERSION as SPARKLE_VERSION
+from install_extism import install as install_extism, VERSION as EXTISM_VERSION
 from native_modules import native_sources
 
 
@@ -161,6 +162,34 @@ class NativeBuild:
                 return arch, minimum.group(1)
         raise RuntimeError("Cannot determine the built executable's minimum macOS version.")
 
+    def build_plugin_worker(self, contents):
+        """Keep the Wasm engine in a separate, bounded helper process."""
+        runtime = install_extism(platform.machine())
+        frameworks, helpers, resources = (contents / name for name in ("Frameworks", "Helpers", "Resources"))
+        for directory in (frameworks, helpers, resources):
+            directory.mkdir(parents=True, exist_ok=True)
+        library = frameworks / "libextism.dylib"
+        helper = helpers / "MoojiPluginWorker"
+        shutil.copy2(runtime / "libextism.dylib", library)
+        self.run("/usr/bin/install_name_tool", "-id", "@rpath/libextism.dylib", library)
+        self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
+                 "-I", runtime, ROOT / "native/tools/plugin-worker.m", library, "-framework", "Foundation",
+                 "-Wl,-rpath,@executable_path/../Frameworks", "-o", helper)
+        self.binary_platform(helper)
+        self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", library)
+        # Match the app's existing non-hardened signing policy. Wasmtime 49's
+        # allocator does not use MAP_JIT: allow-jit alone is insufficient under
+        # Hardened Runtime. Notarization needs a separately verified helper-only
+        # executable-memory exception; never relax the UI process or library
+        # validation here. Ad-hoc signatures also have no matching Team ID.
+        # https://github.com/bytecodealliance/wasmtime/issues/11989
+        self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", helper)
+        for binary in (library, helper):
+            self.run("/usr/bin/codesign", "--verify", "--strict", binary)
+        shutil.copy2(runtime / "extism-1.41.0-LICENSE", resources / "Extism-LICENSE.txt")
+        shutil.copy2(runtime / "wasmtime-49.0.0-LICENSE", resources / "Wasmtime-LICENSE.txt")
+        return helper
+
     def build(self):
         sparkle = install_sparkle()
         directory = ARTIFACTS / "native-app"
@@ -178,6 +207,7 @@ class NativeBuild:
             resources.mkdir()
             frameworks = contents / "Frameworks"
             frameworks.mkdir()
+            self.build_plugin_worker(contents)
             embedded_sparkle = frameworks / "Sparkle.framework"
             shutil.copytree(sparkle / "Sparkle.framework", embedded_sparkle, symlinks=True)
             shutil.copy2(sparkle / "LICENSE", resources / "Sparkle-LICENSE.txt")
@@ -185,7 +215,7 @@ class NativeBuild:
             shutil.copy2(ROOT / "assets/icons/lucide/LICENSE", resources / "Lucide-LICENSE.txt")
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
                      "-I", self.include, "-I", ROOT, "-I", native, "-F", sparkle, *sources, archive,
-                     "-framework", "Sparkle", "-Wl,-rpath,@executable_path/../Frameworks",
+                     "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath,@executable_path/../Frameworks",
                      *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                      "-o", executable)
             arch, minimum_macos = self.binary_platform(executable)
@@ -226,7 +256,8 @@ class NativeBuild:
                         "compilerVersion": self.compiler, "clangVersion": self.clang,
                         "arch": arch, "minimumMacOSVersion": minimum_macos,
                         "frameworks": FRAMEWORKS,
-                        "sparkleVersion": SPARKLE_VERSION,
+                        "sparkleVersion": SPARKLE_VERSION, "extismVersion": EXTISM_VERSION,
+                        "pluginWorkerHardenedRuntime": False,
                         "signing": "ad-hoc" if self.signing_identity == "-" else "certificate", "notarized": False}
             (resources / "build.json").write_text(json.dumps(metadata, indent=2) + "\n")
             # Sign nested code inside out; do not weaken the host's requirements.
@@ -273,7 +304,8 @@ class NativeBuild:
                     "Resources/MoojiCut.icns", "Resources/MoojiCutStatusTemplate.png",
                     "Resources/MoojiCutStatusTemplate@2x.png", "_CodeSignature/CodeResources",
                     "Resources/LICENSE.txt", "Resources/Sparkle-LICENSE.txt", "Resources/Lucide-LICENSE.txt",
-                    "Frameworks/Sparkle.framework/Versions/B/Sparkle")}
+                    "Frameworks/Sparkle.framework/Versions/B/Sparkle", "Frameworks/libextism.dylib",
+                    "Helpers/MoojiPluginWorker", "Resources/Extism-LICENSE.txt", "Resources/Wasmtime-LICENSE.txt")}
                 missing = required - set(packaged.namelist())
                 if missing:
                     raise RuntimeError("Release ZIP is missing files: {}.".format(sorted(missing)))
@@ -308,6 +340,7 @@ class NativeBuild:
         shortcuts = ARTIFACTS / "native-shortcuts"
         shortcuts.mkdir(parents=True, exist_ok=True)
         preferences = ROOT / "native/macos/preferences"
+        user_plugins = native_sources("macos", "system.user_plugins")
         executable = shortcuts / "shortcut-settings"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", preferences,
                  ROOT / "test/native/shortcut-settings.m", preferences / "MCShortcutStore.m",
@@ -319,8 +352,9 @@ class NativeBuild:
                  ROOT / "test/native/pin-shortcuts.m", preferences / "MCPinShortcutStore.m",
                  preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
                  preferences / "MCPreferencesController.m", preferences / "MCToolRegistryStore.m",
-                 preferences / "MCPluginManagementController.m", archive,
-                 "-framework", "AppKit", "-framework", "Carbon", "-o", pin_shortcuts)
+                 preferences / "MCPluginManagementController.m", *user_plugins, archive,
+                 "-framework", "AppKit", "-framework", "Carbon", "-framework", "UniformTypeIdentifiers",
+                 "-larchive", "-lz", "-o", pin_shortcuts)
         self.run(pin_shortcuts)
         pinned_image = shortcuts / "pinned-image"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
@@ -368,8 +402,33 @@ class NativeBuild:
                  preferences / "MCToolRegistryStore.m", preferences / "MCPluginManagementController.m",
                  preferences / "MCPreferencesController.m", preferences / "MCPinShortcutStore.m",
                  preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
-                 archive, "-framework", "AppKit", "-framework", "Carbon", "-o", tool_settings)
+                 *user_plugins, archive, "-framework", "AppKit", "-framework", "Carbon",
+                 "-framework", "UniformTypeIdentifiers", "-larchive", "-lz", "-o", tool_settings)
         self.run(tool_settings)
+        plugin_directory = ARTIFACTS / "native-plugins"
+        plugin_worker = self.build_plugin_worker(plugin_directory / "Contents")
+        worker_test = plugin_directory / "plugin-worker"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/plugin-worker.m", ROOT / "native/macos/plugins/MCPluginWorker.m",
+                 "-framework", "Foundation", "-o", worker_test)
+        self.run(worker_test, plugin_worker)
+        package_test = plugin_directory / "plugin-package"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/plugin-package.m", ROOT / "native/macos/plugins/MCPluginPackageStore.m",
+                 "-framework", "Foundation", "-larchive", "-lz", "-o", package_test)
+        self.run(package_test)
+        sample = ROOT / "plugins/examples/capture-info"
+        sample_zip = plugin_directory / "capture-info.zip"
+        # Reuse resolved dependencies locally; a fresh checkout resolves the
+        # example's pinned PDK before compiling the real Wasm integration input.
+        offline = ("--offline",) if (sample / ".mooncakes/.moon-lock").is_file() else ()
+        self.run(sys.executable, ROOT / "scripts/package_plugin.py", sample, "--output", sample_zip, *offline)
+        manager_test = plugin_directory / "plugin-manager"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
+                 ROOT / "test/native/plugin-manager.m", *user_plugins, preferences / "MCToolRegistryStore.m", archive,
+                 "-framework", "AppKit", "-framework", "UniformTypeIdentifiers", "-framework", "Carbon",
+                 "-larchive", "-lz", "-o", manager_test)
+        self.run(manager_test, plugin_worker, sample_zip)
         sparkle = install_sparkle()
         updater = shortcuts / "updater-smoke"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,

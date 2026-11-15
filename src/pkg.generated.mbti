@@ -108,6 +108,12 @@ pub fn native_video_trim(Int32, Int32, Int32) -> Int32
 
 pub fn native_video_undo(Int32) -> Int32
 
+pub fn plugin_manifest_validate(String) -> String
+
+pub fn plugin_output_validate(String) -> String
+
+pub fn plugin_request_prepare(String) -> String
+
 pub fn preview_core_check() -> Int32
 
 pub fn recording_transition(String, String) -> String
@@ -127,6 +133,8 @@ pub fn selection_transform(Double, Double, Double, Double, Double, Double, Doubl
 pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
 pub fn tool_registry_normalize(String) -> String
+
+pub fn tool_registry_resolve(String) -> String
 
 pub fn tool_registry_update(String) -> String
 
