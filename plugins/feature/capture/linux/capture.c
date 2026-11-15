@@ -273,15 +273,14 @@ static void draw_shape(cairo_t *cr, int kind, const double *r, const char *text)
   } else if (kind == ARROW) {
     double len = hypot(w, h);
     if (len > .5) {
-      double head = fmin(len * .45, 14 + stroke);
       cairo_move_to(cr, x, y);
       cairo_line_to(cr, x + w, y + h);
       cairo_stroke(cr);
-      cairo_move_to(cr, x + w - head * w / len + head * .45 * h / len,
-                    y + h - head * h / len - head * .45 * w / len);
+      cairo_move_to(cr, image_arrowhead_value(x, y, x + w, y + h, stroke, 0),
+                    image_arrowhead_value(x, y, x + w, y + h, stroke, 1));
       cairo_line_to(cr, x + w, y + h);
-      cairo_line_to(cr, x + w - head * w / len - head * .45 * h / len,
-                    y + h - head * h / len + head * .45 * w / len);
+      cairo_line_to(cr, image_arrowhead_value(x, y, x + w, y + h, stroke, 2),
+                    image_arrowhead_value(x, y, x + w, y + h, stroke, 3));
       cairo_stroke(cr);
     }
   } else if (kind == TEXT && text) {
@@ -602,13 +601,17 @@ static int handle_at(double x, double y, const double *r) {
   return mc_selection_handle_at(selection_rect(r), (MCSelectionPoint){x, y}, capture.zoom);
 }
 static int hit_test(double x, double y) {
-  for (int i = image_session_count(capture.session) - 1; i >= 0; i--) {
+  int hit = image_session_hit(capture.session, x, y, 5 / capture.zoom, 0);
+  // Keep dragging a selected outlined rectangle from its interior, after
+  // visible objects have had priority. contains already delegates to MoonBit.
+  int i = capture.selected;
+  if (hit < 0 && i >= 0 && (int)image_session_value(capture.session, i, 0) == RECTANGLE) {
     double r[8];
     read_annotation(i, r);
     if (inside(x, y, r))
       return i;
   }
-  return -1;
+  return hit;
 }
 static void event_position(double ex, double ey, double *x, double *y) {
   MCSelectionViewport viewport = {capture.offset_x, capture.offset_y, capture.zoom,
@@ -1619,6 +1622,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   image_session_undo(capture.session);
   sync_style();
   ok = image_session_add(capture.session, REDACT, 50, 60, 80, 60, 0, 4) == 1 && ok;
+  ok = hit_test(70, 80) == image_session_count(capture.session) - 1 && ok;
   GdkPixbuf *image = flatten();
   ok = image && gdk_pixbuf_get_width(image) == 320 && gdk_pixbuf_get_height(image) == 200 && ok;
   if (image) {

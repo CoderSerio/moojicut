@@ -10,7 +10,7 @@
 
 ## 接线
 
-宿主持有一个 `MCTextToolsController`，从编辑器的 `onOCR` / `onTranslate` 调用：
+工具栏只展示一个「文字」入口，调用 `onOCR` 打开统一窗口；原文/译文切换、翻译和复制均在窗口内完成。`onTranslate` 接口为既有调用方保留，不再展示单独图标。宿主持有一个 `MCTextToolsController`：
 
 ```objc
 // Export through the host's capturePNGData path first (including pending edits).

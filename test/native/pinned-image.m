@@ -3,6 +3,7 @@
 #import "native/macos/preferences/MCPinShortcutStore.h"
 #include <math.h>
 #include "moonbit.h"
+#include "native/shared/pin_policy.h"
 #import "native/macos/preferences/MCToolRegistryStore.h"
 #import <Carbon/Carbon.h>
 #include <stdlib.h>
@@ -117,6 +118,18 @@ int main(void) {
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
         MCPinnedImageController *controller = [[MCPinnedImageController alloc] initWithDefaults:defaults];
         BOOL passed = YES;
+        CHECK(near(pin_scale(MC_PIN_MACOS, 8, 1000, 500, 1000, 600), .95) &&
+              near(pin_scale(MC_PIN_WINDOWS, 8, 1000, 500, 1000, 600), 1) &&
+              near(pin_scale(MC_PIN_LINUX, 8, 1000, 500, 1000, 600), 1),
+              "scalar core ABI preserves platform work-area margins");
+        CHECK(near(pin_opacity(MC_PIN_WINDOWS, 137, -1), 111) &&
+              near(pin_opacity(MC_PIN_LINUX, .3, -1), .2) &&
+              pin_scale(MC_PIN_MACOS, NAN, 100, 100, 1000, 1000) == 0,
+              "byte alpha, unit alpha and invalid doubles cross the ABI safely");
+        CHECK(pin_visibility_action(MC_PIN_MACOS, 1, 1, 0, 1, 0) == MC_PIN_SHOW_SELECTED &&
+              pin_visibility_action(MC_PIN_WINDOWS, 1, 1, 0, 1, 0) == MC_PIN_RECOVERY_UNAVAILABLE &&
+              pin_hidden_after(MC_PIN_LINUX, MC_PIN_RESTORE_HIDDEN, 1, 1, 0) == 0,
+              "visibility reducer retains recovery and pass-through platform semantics");
         NSError *error = nil;
         CHECK(![controller createPinPNGData:[NSData data] display:NO error:&error] && error != nil && controller.count == 0,
             "invalid input does not create a window");

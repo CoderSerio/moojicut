@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "native/macos/shortcuts/MCGlobalShortcutManager.h"
 #import "native/macos/preferences/MCShortcutStore.h"
+#include "moonbit.h"
 
 static BOOL sendHotKey(UInt32 signature, UInt32 action) {
   EventRef event = NULL;
@@ -24,6 +25,7 @@ static EventHotKeyRef reserve(UInt32 code, UInt32 identifier) {
   return reference;
 }
 int main(void) {
+    moonbit_init();
   @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];

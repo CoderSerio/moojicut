@@ -321,6 +321,8 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     BOOL passed = YES;
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
     [editor prepareOverlayInFrame:NSMakeRect(-1200, -300, 800*scale, 500*scale)];
+    CHECK(editor.onScrollCapture == nil && editor.scrollCaptureButton.hidden && !editor.scrollCaptureButton.enabled,
+          "the default overlay keeps experimental scrolling hidden and disabled until a host explicitly supplies capability");
     MCImageCanvas *canvas = editor.canvas;
     NSArray *cursors = canvasCursors(canvas);
     CHECK(hasCursor(cursors, NSMakePoint(20,20), NSCursor.crosshairCursor), "initial region selection uses a canvas crosshair");
@@ -368,25 +370,26 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     [editor.tools scrollRectToVisible:NSMakeRect(NSMaxX(editor.tools.bounds)-30,0,30,28)];
     CHECK(NSMaxX(toolsScroll.documentVisibleRect) >= NSMaxX(editor.tools.bounds)-1, "last plugin is reachable through the bounded tool scroller");
     [editor applyToolConfiguration:overlayConfiguration([NSSet setWithArray:@[@2,@100]],0)];
-    selectTool(editor,4); CGFloat cover = NSWidth(editor.floatingToolbar.frame);
-    selectTool(editor,1); CGFloat shape = NSWidth(editor.floatingToolbar.frame);
-    selectTool(editor,3); CGFloat text = NSWidth(editor.floatingToolbar.frame);
-    CHECK(cover < shape && cover < text, "hidden stroke/font groups do not keep the simpler property row artificially wide");
+    selectTool(editor,4); CGFloat cover = NSWidth(editor.floatingToolbar.frame), coverProperties = editor.properties.fittingSize.width;
+    selectTool(editor,1); CGFloat shape = NSWidth(editor.floatingToolbar.frame), shapeProperties = editor.properties.fittingSize.width;
+    selectTool(editor,3); CGFloat text = NSWidth(editor.floatingToolbar.frame), textProperties = editor.properties.fittingSize.width;
+    CHECK(coverProperties < shapeProperties && coverProperties < textProperties && cover <= shape && cover <= text,
+          "hidden stroke/font groups shrink the property row even when the icon row determines the panel width");
     CHECK(NSWidth(editor.fontSize.frame) >= 44 && NSWidth(editor.lineWidth.frame) >= 44, "contextual numeric fields keep their natural width");
     __block NSUInteger contentActions = 0;
     editor.onOCR = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onTranslate = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onScrollCapture = ^(__unused MCImageEditorController *source) { contentActions++; };
-    CHECK(!editor.ocrButton.hidden && !editor.translateButton.hidden && editor.ocrButton.enabled && editor.translateButton.enabled,
-          "attaching content capabilities restores their real buttons");
+    CHECK(!editor.ocrButton.hidden && editor.ocrButton.enabled && editor.translateButton.hidden && !editor.translateButton.enabled,
+          "OCR and translation share one visible text entry even when both callbacks are attached");
     CHECK(!editor.scrollCaptureButton.hidden && editor.scrollCaptureButton.enabled, "scroll capture appears only when the host supplies the capability");
     [editor.ocrButton performClick:nil]; [editor.translateButton performClick:nil]; [editor.scrollCaptureButton performClick:nil];
-    CHECK(contentActions == 3, "content actions use the attached host callbacks");
+    CHECK(contentActions == 2, "text entry uses OCR and the hidden translation entry cannot dispatch a second action");
     [editor applyToolConfiguration:overlayConfiguration([NSSet set],0)];
     CGFloat withContentActions = NSWidth(editor.floatingToolbar.frame);
     // Tiny synthetic display: preserve action/field hit targets and scroll them
     // instead of letting fixed-width rows escape the screen or compress input.
-    [editor.window setFrame:NSMakeRect(-1000,80,250,200) display:NO]; [editor positionFloatingToolbar];
+    [editor.window setFrame:NSMakeRect(-1000,80,160,200) display:NO]; [editor positionFloatingToolbar];
     CHECK(NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame), "small/offset screens contain the entire floating panel");
     CHECK(NSWidth(editor.fontSize.frame) >= 44, "small screen layout never squeezes the font editor");
     CHECK(editor.properties.enclosingScrollView.documentVisibleRect.size.width < editor.properties.frame.size.width,

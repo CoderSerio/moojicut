@@ -4,6 +4,8 @@
 #include "native/shared/editor_style.h"
 #include "native/shared/update_release.h"
 #include "native/shared/plugin_protocol.h"
+#include "native/shared/image_session.h"
+#include <math.h>
 
 // Signatures observed in native foreign_library output from moonc 0.10.20.
 // This test deliberately checks the real boundary instead of a mocked core.
@@ -80,6 +82,30 @@ static void CheckEditorStyles(void) {
             editor_style_get(second, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE) == 6.5, @"Disposal leaves the other editor usable");
   editor_style_dispose(second);
 }
+static void CheckImageHitBoundary(void) {
+  int32_t session = image_session_create_viewport(640, 480, 10, 20, 400, 300);
+  NSCAssert(session > 0, @"Image hit session");
+  NSCAssert(image_session_add(session, 4, 50, 50, 80, 60, 0, 4) == 1 &&
+            image_session_add(session, 3, 60, 60, 100, 60, 0, 4) == 1, @"Overlapping native annotations");
+  NSCAssert(image_session_hit(session, 70, 70, 0, 0) == 0 &&
+            image_session_hit(session, 70, 70, 0, 1) == 1, @"C ABI cover order and text-only semantics");
+  NSCAssert(image_session_hit(session, 159.5, 119.5, 0, 1) == 1 &&
+            image_session_hit(session, 160.5, 120.5, 0, 1) == -1, @"Fractional pixel-center queries survive the ABI");
+  NSCAssert(image_session_add(session, 2, 400, 300, -200, 0, 0, 20) == 1, @"Reversed native arrow");
+  for (int32_t wing = 0; wing < 4; wing += 2) {
+    double x = image_arrowhead_value(400, 300, 200, 300, 20, wing);
+    double y = image_arrowhead_value(400, 300, 200, 300, 20, wing + 1);
+    NSCAssert(x > 260 && x < 262 && fabs(y - 300) > 33 && fabs(y - 300) < 34,
+              @"Arrowhead geometry crosses the scalar double ABI");
+    NSCAssert(image_session_hit(session, x, y, 0, 0) == 2, @"Visible wing endpoints are selectable");
+  }
+  NSCAssert(image_session_hit(session, NAN, 300, 4, 0) == -1 &&
+            image_session_hit(session, 300, 300, INFINITY, 0) == -1, @"Invalid double input is rejected");
+  NSCAssert(image_session_undo(session) == 1 && image_session_count(session) == 2 &&
+            image_session_hit(session, 300, 300, 4, 0) == -1, @"Hit queries do not consume undo");
+  image_session_dispose(session);
+  NSCAssert(image_session_hit(session, 70, 70, 4, 0) == -1, @"Disposed hit session is rejected");
+}
 static void CheckPluginUTF16Boundary(void) {
   moonbit_string_t (*functions[])(moonbit_string_t) = {
     plugin_manifest_validate, plugin_request_prepare, plugin_output_validate, tool_registry_resolve,
@@ -128,6 +154,7 @@ int main(void) {
   @autoreleasepool {
     moonbit_init(); // Once per process, before allocations or exported calls.
     CheckEditorStyles();
+    CheckImageHitBoundary();
     CheckPluginUTF16Boundary();
     moonbit_string_t unicode = MoonString(@"中文🦊");
     assert(Moonbit_array_length(unicode) == 4);

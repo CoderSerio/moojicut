@@ -1,1 +1,8 @@
-// Platform-neutral shortcut rules.
+import {
+  "moojicut/core/internal/protocol",
+  "moonbitlang/core/json",
+}
+
+import {
+  "moojicut/core/internal/test_support",
+} for "wbtest"

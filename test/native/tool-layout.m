@@ -20,8 +20,12 @@
 @property (readonly) MCStylePropertiesView *properties;
 @property (readonly) NSStackView *toolbar;
 @property (readonly) NSButton *pinButton;
+@property (readonly) NSButton *ocrButton;
+@property (readonly) NSButton *undoButton;
+@property (readonly) NSView *floatingToolbar;
 - (void)prepareWindow;
 - (void)chooseTool:(id)sender;
+- (BOOL)setCaptureRegion:(NSRect)rect;
 @end
 @interface MCCaptureController (MCToolLayoutTest)
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error;
@@ -60,6 +64,15 @@ static NSInteger segment(MCImageEditorController *editor, NSInteger kind) {
 static void choose(MCImageEditorController *editor, NSInteger kind) {
     editor.tools.selectedSegment = segment(editor, kind);
     [editor.tools sendAction:editor.tools.action to:editor.tools.target];
+}
+static void clickSegment(NSSegmentedControl *control, NSInteger segment, CGFloat offset) {
+    NSPoint point = [control convertPoint:NSMakePoint(segment * 30 + offset, 14) toView:nil];
+    NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:point modifierFlags:0
+        timestamp:0 windowNumber:control.window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+    NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:point modifierFlags:0
+        timestamp:.1 windowNumber:control.window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:0];
+    [NSApp postEvent:up atStart:YES];
+    [control mouseDown:down];
 }
 static NSEvent *mouse(MCImageCanvas *canvas, NSEventType type, NSPoint point) {
     NSRect frame = canvas.imageFrame;
@@ -329,6 +342,15 @@ static BOOL userActions(void) {
     [e.tools scrollRectToVisible:NSMakeRect(NSMaxX(e.tools.bounds)-30,0,30,28)];
     CHECK(NSMaxX(scroll.documentVisibleRect) >= NSMaxX(e.tools.bounds)-1,
           "the last user tool remains reachable through horizontal scrolling");
+    // Use AppKit's actual segment tracking rather than assigning selectedSegment:
+    // an OS bezel's extra per-segment spacing must not accumulate into wrong IDs.
+    for (NSNumber *offset in @[@3,@15,@27]) {
+        NSUInteger priorCalls = calls;
+        clickSegment(e.tools, e.tools.segmentCount-1, offset.doubleValue);
+        CHECK(calls == priorCalls+1 && [calledID isEqual:@"user.com.example.capture/extra-14"] && e.activeTool == 2,
+              "the last visible 30pt slot dispatches the correct plugin at both edges and center without staying selected");
+    }
+    calls = 1;
     choose(e,3);
     [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(50,220))];
     [e.canvas.textView setMarkedText:@"zhongwen" selectedRange:NSMakeRange(8,0) replacementRange:NSMakeRange(NSNotFound,0)];
@@ -350,12 +372,149 @@ static BOOL userActions(void) {
           "closing the editor invalidates metadata and notifies its plugin invocation owner");
     return passed;
 }
+static BOOL objectSelection(CGFloat scale) {
+    BOOL passed = YES;
+    MCImageEditorController *e = editor();
+    [e prepareOverlayInFrame:NSMakeRect(-800,50,800*scale,500*scale)];
+    [e setCaptureRegion:NSMakeRect(10,10,780,480)];
+    NSArray *objects = @[
+        @{@"id":@"box",@"type":@"rect",@"x":@40,@"y":@50,@"width":@120,@"height":@80},
+        @{@"id":@"arrow",@"type":@"arrow",@"x":@420,@"y":@160,@"x2":@300,@"y2":@60,@"width":@120,@"height":@100},
+        @{@"id":@"text",@"type":@"text",@"x":@60,@"y":@250,@"width":@200,@"height":@70,@"text":@"选择与移动"},
+        @{@"id":@"cover",@"type":@"redact",@"x":@450,@"y":@260,@"width":@160,@"height":@90}];
+    for (NSDictionary *object in objects) CHECK([e applyAnnotation:object], "selection fixture annotations are accepted");
+    NSArray *points = @[[NSValue valueWithPoint:NSMakePoint(40,90)], [NSValue valueWithPoint:NSMakePoint(360,110)],
+        [NSValue valueWithPoint:NSMakePoint(150,280)], [NSValue valueWithPoint:NSMakePoint(530,300)]];
+    NSDictionary *crop = e.document[@"viewport"];
+    for (NSUInteger index = 0; index < objects.count; index++) {
+        choose(e,0);
+        NSDictionary *original = e.document[@"annotations"][index];
+        NSPoint start = [points[index] pointValue], end = NSMakePoint(start.x+20,start.y+15);
+        if (index == 0) {
+            [e.canvas mouseDown:mouse(e.canvas,NSEventTypeLeftMouseDown,start)];
+            [e.canvas mouseUp:mouse(e.canvas,NSEventTypeLeftMouseUp,start)];
+            start = NSMakePoint(100,90); end = NSMakePoint(120,105);
+        }
+        NSUInteger undo = [e.document[@"undo"] count];
+        [e.canvas mouseDown:mouse(e.canvas,NSEventTypeLeftMouseDown,start)];
+        CHECK([e.canvas.selectedID isEqual:original[@"id"]], "selection tool hits each visible annotation kind");
+        [e.canvas mouseDragged:mouse(e.canvas,NSEventTypeLeftMouseDragged,end)];
+        CHECK([e.document[@"undo"] count] == undo, "object drag previews do not create history");
+        [e.canvas mouseUp:mouse(e.canvas,NSEventTypeLeftMouseUp,end)];
+        NSDictionary *moved = e.document[@"annotations"][index];
+        CHECK(fabs([moved[@"x"] doubleValue]-[original[@"x"] doubleValue]-20)<.001 &&
+              fabs([moved[@"y"] doubleValue]-[original[@"y"] doubleValue]-15)<.001 &&
+              [e.document[@"undo"] count] == undo+1 && [e.document[@"viewport"] isEqual:crop],
+              "moving an annotation at either zoom commits once without moving the screenshot crop");
+        if (index == 1) CHECK([moved[@"x2"] doubleValue] == 320 && [moved[@"y2"] doubleValue] == 75,
+                              "moving a reversed arrow preserves both directed endpoints");
+        NSEvent *delete = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+            windowNumber:e.window.windowNumber context:nil characters:@"\177" charactersIgnoringModifiers:@"\177" isARepeat:NO keyCode:51];
+        [e.canvas keyDown:delete];
+        CHECK([e.document[@"annotations"] count] == 3, "Delete removes the selected annotation of every kind");
+        [e undo:nil];
+        CHECK([e.document[@"annotations"][index] isEqual:moved], "undo restores the deleted object's complete state");
+        [e undo:nil];
+        CHECK([e.document[@"annotations"][index] isEqual:original], "undo restores the original object geometry");
+    }
+    // Rectangular objects use corner/side handles; arrows use their endpoints,
+    // including a reversed arrow whose bounding rectangle starts elsewhere.
+    for (NSNumber *index in @[@0,@1,@3]) {
+        choose(e,0);
+        NSPoint point = [points[index.unsignedIntegerValue] pointValue];
+        [e.canvas mouseDown:mouse(e.canvas,NSEventTypeLeftMouseDown,point)];
+        [e.canvas mouseUp:mouse(e.canvas,NSEventTypeLeftMouseUp,point)];
+        NSDictionary *original = e.document[@"annotations"][index.unsignedIntegerValue];
+        NSPoint handle = index.intValue == 1 ? NSMakePoint(300,60) :
+            NSMakePoint([original[@"x"] doubleValue]+[original[@"width"] doubleValue],
+                        [original[@"y"] doubleValue]+[original[@"height"] doubleValue]);
+        NSPoint target = NSMakePoint(handle.x+30,handle.y+20);
+        NSUInteger undo = [e.document[@"undo"] count];
+        [e.canvas mouseDown:mouse(e.canvas,NSEventTypeLeftMouseDown,handle)];
+        [e.canvas mouseDragged:mouse(e.canvas,NSEventTypeLeftMouseDragged,target)];
+        [e.canvas mouseUp:mouse(e.canvas,NSEventTypeLeftMouseUp,target)];
+        NSDictionary *resized = e.document[@"annotations"][index.unsignedIntegerValue];
+        CHECK([e.document[@"undo"] count] == undo+1 && [e.document[@"viewport"] isEqual:crop],
+              "object resize handles create one edit and cannot resize the screenshot region");
+        if (index.intValue == 1) CHECK([resized[@"x"] doubleValue] == 420 && [resized[@"y"] doubleValue] == 160 &&
+            [resized[@"x2"] doubleValue] == 330 && [resized[@"y2"] doubleValue] == 80,
+            "arrow endpoint drag keeps the other endpoint anchored");
+        else CHECK([resized[@"width"] doubleValue] == [original[@"width"] doubleValue]+30 &&
+                   [resized[@"height"] doubleValue] == [original[@"height"] doubleValue]+20 && !resized[@"fontSize"],
+                   "shape resize changes dimensions without adding text properties");
+        [e undo:nil];
+    }
+    [e cancel:nil];
+    return passed;
+}
+static NSBitmapImageRep *toolbarPixels(MCImageEditorController *editor) {
+    [editor.window.contentView layoutSubtreeIfNeeded];
+    NSView *view = editor.floatingToolbar ?: editor.toolbar;
+    __block NSBitmapImageRep *bitmap;
+    [editor.window.effectiveAppearance performAsCurrentDrawingAppearance:^{
+        view.wantsLayer = YES;
+        view.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
+        bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+        [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+    }];
+    return bitmap;
+}
+static BOOL toolbarAppearance(void) {
+    BOOL passed = YES;
+    MCImageEditorController *e = [[MCImageEditorController alloc] initWithPNGData:pixels() error:NULL];
+    [e prepareOverlayInFrame:NSMakeRect(0,0,800,500)];
+    [e setCaptureRegion:NSMakeRect(20,20,760,460)];
+    e.onOCR = ^(__unused MCImageEditorController *source) {};
+    choose(e, 1);
+    for (NSString *mode in @[@"light", @"dark"]) {
+        e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        NSPoint hoverPoint = [e.tools convertPoint:NSMakePoint(2*30+15,14) toView:nil];
+        NSEvent *hover = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:hoverPoint modifierFlags:0
+            timestamp:0 windowNumber:e.window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
+        NSBitmapImageRep *normal = toolbarPixels(e);
+        NSData *normalPNG = [normal representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        [e.undoButton mouseEntered:hover];
+        CHECK([normalPNG isEqual:[toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
+              "disabled actions do not acquire an enabled hover background in either appearance");
+        [e.undoButton mouseExited:hover];
+        [e.ocrButton mouseEntered:hover];
+        [e.tools mouseMoved:hover];
+        NSBitmapImageRep *hovered = toolbarPixels(e);
+        CHECK(![normalPNG isEqual:[hovered representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
+              "enabled native buttons and tool segments show their individual hover state");
+        [e.ocrButton highlight:YES]; [e.tools setValue:@2 forKey:@"pressedSegment"];
+        NSBitmapImageRep *pressed = toolbarPixels(e);
+        CHECK(![[hovered representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+                isEqual:[pressed representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
+              "pressed feedback is distinct from hover without selecting a momentary action");
+        [e.ocrButton highlight:NO]; [e.tools setValue:@(-1) forKey:@"pressedSegment"];
+        [e.ocrButton mouseExited:hover]; [e.tools mouseExited:hover];
+        CHECK(e.activeTool == 1 && e.tools.selectedSegment == segment(e, 1) && e.ocrButton.state == NSControlStateValueOff,
+              "rendering hover/pressed states preserves the single selected annotation tool");
+        CHECK(e.ocrButton.accessibilityLabel.length > 0 && e.tools.accessibilityLabel.length > 0 && [e.tools imageForSegment:1].accessibilityDescription.length > 0,
+              "native action labels and per-tool accessibility descriptions remain intact");
+        NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];
+        if (directory.length) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL];
+            NSArray *images = @[normal, hovered, pressed]; NSArray *states = @[@"normal",@"hover",@"pressed"];
+            for (NSUInteger index = 0; index < images.count; index++) {
+                NSString *name = [NSString stringWithFormat:@"toolbar-%@-%@.png", mode, states[index]];
+                [[images[index] representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+                    writeToFile:[directory stringByAppendingPathComponent:name] atomically:YES];
+            }
+        }
+    }
+    [e cancel:nil]; return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         moonbit_init();
         BOOL passed = interactions(); passed = validationAndFanout() && passed; passed = pinAction() && passed;
         passed = userActions() && passed;
+        passed = objectSelection(.5) && passed;
+        passed = objectSelection(1.5) && passed;
+        passed = toolbarAppearance() && passed;
         puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME, pin/user actions, overflow and capture fanout" : "FAIL tool layout");
         return passed ? 0 : 1;
     }

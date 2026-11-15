@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^onClose)(void);
 @property (nonatomic, copy, nullable) void (^onShortcutRecordingChanged)(BOOL recording);
 @property (nonatomic, copy, nullable) void (^onPinningEnabledChanged)(BOOL enabled);
+@property (nonatomic, copy, nullable) void (^onStartRecording)(void);
 @property (nonatomic, readonly) BOOL pinningEnabled;
 - (void)setPinningEnabled:(BOOL)enabled;
 @property (nonatomic, copy, nullable) NSString *shortcutRegistrationError;

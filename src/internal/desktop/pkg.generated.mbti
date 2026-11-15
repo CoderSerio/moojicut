@@ -2,6 +2,10 @@
 package "moojicut/core/internal/desktop"
 
 // Values
+pub fn shortcut_bindings_resolve(String) -> String
+
+pub fn shortcut_modifiers_allowed(Int32, Int32) -> Int32
+
 pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
 // Errors

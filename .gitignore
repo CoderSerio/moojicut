@@ -12,5 +12,6 @@ work/
 output/
 /docs/*
 !/docs/guide.zh-CN.md
+!/docs/interaction-design.zh-CN.md
 /native/README.md
 /assets/brand/README.md

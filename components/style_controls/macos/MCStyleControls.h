@@ -15,8 +15,10 @@ NS_ASSUME_NONNULL_BEGIN
 @interface MCColorControl : NSStackView
 @property (nonatomic, readonly) NSColorWell *well;
 @property (nonatomic, readonly) MCNumberControl *opacityControl;
+@property (nonatomic, readonly) NSPopover *popover;
 @property (nonatomic) NSColor *color;
 @property (nonatomic, copy, nullable) void (^onChange)(id sender);
 - (void)syncFromSender:(id)sender;
+- (void)closePopover;
 @end
 NS_ASSUME_NONNULL_END

@@ -10,6 +10,7 @@ FOUNDATION_EXPORT NSNotificationName const MCPinShortcutsDidChangeNotification;
 - (nullable NSDictionary *)shortcutForAction:(NSString *)action;
 - (BOOL)setShortcut:(nullable NSDictionary *)shortcut forAction:(NSString *)action error:(NSString * _Nullable * _Nullable)error;
 - (void)restoreDefaults;
+- (BOOL)restoreDefaultsWithError:(NSString * _Nullable * _Nullable)error;
 - (nullable NSString *)actionForEvent:(NSEvent *)event;
 - (nullable NSString *)actionForKeyCode:(unsigned short)keyCode modifiers:(NSEventModifierFlags)modifiers;
 + (nullable NSDictionary *)shortcutWithKeyCode:(unsigned short)keyCode modifiers:(NSEventModifierFlags)modifiers;

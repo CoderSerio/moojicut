@@ -20,6 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSSet<NSNumber *> *(^includedWindowNumbers)(void);
 - (void)capture;
 - (void)cancelCapture;
+// Present a nonmodal notice in existing editors without discarding the capture.
+- (void)showEditingNotice:(NSString *)message;
 // Keep the frozen selection and edits while the source application scrolls.
 - (BOOL)suspendCaptureForEditor:(MCImageEditorController *)editor error:(NSError **)error;
 - (void)resumeSuspendedCapture;

@@ -78,8 +78,10 @@ static void Check(BOOL condition, NSString *message) {
 @property NSTextField *status;
 @property NSPopUpButton *targetLanguage;
 @property NSButton *translateButton;
-@property NSButton *resultCopyButton;
-@property NSButton *sourceCopyButton;
+@property NSButton *currentCopyButton;
+@property NSSegmentedControl *contentSelector;
+@property NSTabView *contentPages;
+@property NSButton *cancelButton;
 @property NSTimer *leaseTimer;
 @property NSUInteger generation;
 @property BOOL closed;
@@ -93,7 +95,25 @@ static void Check(BOOL condition, NSString *message) {
 - (void)cancelTask:(id)sender;
 - (BOOL)copyText:(NSString *)text toPasteboard:(NSPasteboard *)pasteboard;
 - (BOOL)validateLease;
+- (void)selectContent:(id)sender;
 @end
+
+static void Preview(MCTextResultWindowController *controller, NSString *name) {
+    NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_TEXT_PREVIEW_DIRECTORY"];
+    if (!directory.length) return;
+    [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL];
+    for (NSString *appearance in @[@"light",@"dark"]) {
+        controller.window.appearance = [NSAppearance appearanceNamed:[appearance isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        [controller.window.appearance performAsCurrentDrawingAppearance:^{
+            NSView *view = controller.window.contentView;
+            [view layoutSubtreeIfNeeded];
+            NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+            [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+            NSString *path = [directory stringByAppendingPathComponent:[NSString stringWithFormat:@"text-%@-%@.png",name,appearance]];
+            Check([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES], @"save native text-tool preview");
+        }];
+    }
+}
 
 static void Deliver(void) {
     __block BOOL done = NO;
@@ -123,6 +143,7 @@ int main(void) {
         MCControlledRecognizer *recognizer = nil;
         MCTextResultWindowController *controller = Controller(^BOOL { return current; }, &recognizer);
         MCTranslationBridge *bridge = controller.translator;
+        Check(controller.contentSelector.selectedSegment == 0 && ![controller.contentSelector isEnabledForSegment:1], @"one text entry opens the original page before translation");
 
         [controller recognizeAndTranslate:NO]; MCControlledRecognition *oldOCR = recognizer.requests.lastObject;
         Check(controller.recognizing && !controller.sourceText.editable, @"OCR temporarily prevents source edits");
@@ -132,6 +153,8 @@ int main(void) {
         Check(controller.recognizing && controller.sourceText.string.length == 0, @"superseded OCR cannot finish or write the newer request");
         [newOCR reply:@"Fresh source text" error:nil]; Deliver();
         Check(!controller.recognizing && controller.sourceText.editable && [controller.sourceText.string isEqual:@"Fresh source text"], @"current OCR populates editable source");
+        Check(controller.currentCopyButton.enabled && [controller.currentCopyButton.title isEqual:@"复制原文"] && controller.cancelButton.hidden, @"finished OCR presents one original-copy action without an idle cancel button");
+        Preview(controller, @"original");
 
         [controller translate:nil]; MCControlledTranslation *edited = bridge.requests.lastObject;
         Check([edited.text isEqual:@"Fresh source text"] && edited.source == nil && [edited.target isEqual:@"zh-Hans"], @"translation receives the current text and explicit target");
@@ -147,8 +170,13 @@ int main(void) {
         [controller translate:nil]; MCControlledTranslation *newTarget = bridge.requests.lastObject;
         Check([newTarget.target isEqual:@"en"], @"new translation uses changed target");
         [newTarget reply:@"Current translation"]; Deliver();
-        Check([controller.resultText.string isEqual:@"Current translation"] && controller.resultText.editable && controller.resultCopyButton.enabled,
+        Check([controller.resultText.string isEqual:@"Current translation"] && controller.resultText.editable && controller.currentCopyButton.enabled &&
+              controller.contentSelector.selectedSegment == 1 && [controller.currentCopyButton.title isEqual:@"复制译文"],
               @"current translation can be edited and copied");
+        Preview(controller, @"translation");
+        controller.contentSelector.selectedSegment = 0; [controller selectContent:nil];
+        Check([controller.currentCopyButton.title isEqual:@"复制原文"] && [controller.contentPages.selectedTabViewItem.identifier isEqual:@"source"], @"switching to original also switches the single copy action");
+        controller.contentSelector.selectedSegment = 1; [controller selectContent:nil];
         Edit(controller, controller.resultText, @"Manually edited translation 中文");
         NSPasteboard *pasteboard = [NSPasteboard pasteboardWithUniqueName];
         Check([controller copyText:controller.resultText.string toPasteboard:pasteboard] &&
@@ -162,6 +190,7 @@ int main(void) {
         [recognizer.requests.lastObject reply:nil error:[NSError errorWithDomain:MCTextRecognitionErrorDomain code:MCTextRecognitionInvalidImage userInfo:@{NSLocalizedDescriptionKey:@"fixture invalid image"}]];
         Deliver();
         Check(bridge.requests.count == translations && [controller.status.stringValue containsString:@"fixture invalid image"], @"OCR failure does not start translation");
+        Preview(controller, @"error");
         [controller recognizeAndTranslate:YES]; [recognizer.requests.lastObject reply:@"Automatic translation source" error:nil]; Deliver();
         Check(bridge.requests.count == translations + 1 && controller.translating, @"translate action chains only successful nonempty OCR");
         [bridge.requests.lastObject reply:@"自动翻译结果"]; Deliver();
@@ -171,6 +200,17 @@ int main(void) {
         [controller cancelTask:nil]; Edit(controller, controller.sourceText, @"Input after cancellation");
         [cancelled reply:@"late cancelled OCR" error:nil]; Deliver();
         Check(cancelled.cancellations == 1 && [controller.sourceText.string isEqual:@"Input after cancellation"], @"cancelled OCR cannot overwrite later user input");
+        [controller recognizeAndTranslate:NO]; MCControlledRecognition *failedRetry = recognizer.requests.lastObject;
+        Check([controller.sourceText.string isEqual:@"Input after cancellation"] && !controller.sourceText.editable && !controller.resultText.editable,
+              @"retry preserves existing text and blocks edits that its completion would overwrite");
+        [failedRetry reply:nil error:[NSError errorWithDomain:MCTextRecognitionErrorDomain code:MCTextRecognitionInvalidImage userInfo:nil]];
+        Deliver();
+        Check([controller.sourceText.string isEqual:@"Input after cancellation"] && controller.currentCopyButton.enabled,
+              @"a failed retry preserves the editable original and its copy action");
+        [controller.window setContentSize:NSMakeSize(540,470)];
+        [controller.window.contentView layoutSubtreeIfNeeded];
+        for (NSView *view in @[controller.contentPages, controller.contentSelector, controller.translateButton, controller.currentCopyButton])
+            Check(NSContainsRect(controller.window.contentView.bounds, view.frame), @"compact text window keeps its content and actions inside the window");
 
         [controller translate:nil]; MCControlledTranslation *closing = bridge.requests.lastObject;
         __block NSUInteger closes = 0; controller.onClose = ^{ closes++; };

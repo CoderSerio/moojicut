@@ -7,6 +7,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "pinning.h"
 #include "native/shared/feature_runtime.h"
+#include "native/shared/pin_policy.h"
 #include <commctrl.h>
 #include <math.h>
 #include <stdlib.h>
@@ -240,27 +241,21 @@ void mc_pin_suspend_shortcuts(BOOL suspended) {
 static void toggle_hidden(void) {
   if (!global_registered[0])
     refresh_pin_hotkeys();
-  if (!global_registered[0])
-    return;
   Pin *selected = selected_pin();
-  if (selected && selected->passthrough)
-    return;
-  if (selected) {
-    selected->hidden = !selected->hidden;
+  BOOL any_hidden = FALSE;
+  for (Pin *pin = pins; pin; pin = pin->next)
+    any_hidden = any_hidden || pin->hidden;
+  int action = pin_visibility_action(MC_PIN_WINDOWS, selected != NULL, selected && selected->hidden,
+                                     selected && selected->passthrough, any_hidden, global_registered[0]);
+  if (action == MC_PIN_VISIBILITY_NONE || action == MC_PIN_RECOVERY_UNAVAILABLE) return;
+  if (action == MC_PIN_SHOW_SELECTED || action == MC_PIN_HIDE_SELECTED) {
+    selected->hidden = pin_hidden_after(MC_PIN_WINDOWS, action, selected->hidden, selected->passthrough, 1);
     selected->selected = FALSE;
     show_pin(selected);
     return;
   }
-  BOOL restore = FALSE;
-  for (Pin *pin = pins; pin; pin = pin->next)
-    if (pin->hidden)
-      restore = TRUE;
   for (Pin *pin = pins; pin; pin = pin->next) {
-    if (restore) {
-      if (pin->hidden)
-        pin->hidden = FALSE;
-    } else
-      pin->hidden = TRUE;
+    pin->hidden = pin_hidden_after(MC_PIN_WINDOWS, action, pin->hidden, pin->passthrough, 0);
     show_pin(pin);
   }
 }
@@ -289,9 +284,10 @@ static void resize_pin(Pin *pin, double zoom) {
   MONITORINFO monitor = {sizeof(monitor)};
   GetWindowRect(pin->window, &rect);
   GetMonitorInfoW(MonitorFromWindow(pin->window, MONITOR_DEFAULTTONEAREST), &monitor);
-  double maximum = fmin(8.0, fmin((double)(monitor.rcWork.right - monitor.rcWork.left) / pin->width,
-                                  (double)(monitor.rcWork.bottom - monitor.rcWork.top) / pin->height));
-  pin->zoom = fmax(fmin(.1, maximum), fmin(maximum, zoom));
+  double resolved = pin_scale(MC_PIN_WINDOWS, zoom, pin->width, pin->height,
+      monitor.rcWork.right - monitor.rcWork.left, monitor.rcWork.bottom - monitor.rcWork.top);
+  if (resolved <= 0) return;
+  pin->zoom = resolved;
   int w = (int)fmax(1, round(pin->width * pin->zoom)), h = (int)fmax(1, round(pin->height * pin->zoom));
   int x = (rect.left + rect.right - w) / 2, y = (rect.top + rect.bottom - h) / 2;
   x = (int)fmax(monitor.rcWork.left, fmin(monitor.rcWork.right - w, x));
@@ -301,10 +297,9 @@ static void resize_pin(Pin *pin, double zoom) {
 }
 static void pin_action(Pin *pin, int action) {
   if (action < 2)
-    resize_pin(pin, pin->zoom * (action == 0 ? 1.1 : 1 / 1.1));
+    resize_pin(pin, pin_zoom_step(pin->zoom, action == 0 ? 1 : -1));
   else {
-    int alpha = pin->opacity + (action == 2 ? 26 : -26);
-    pin->opacity = (BYTE)(alpha < 26 ? 26 : alpha > 255 ? 255 : alpha);
+    pin->opacity = (BYTE)pin_opacity(MC_PIN_WINDOWS, pin->opacity, action == 2 ? 1 : -1);
     SetLayeredWindowAttributes(pin->window, 0, pin->opacity, LWA_ALPHA);
   }
 }
@@ -585,11 +580,13 @@ BOOL mc_pin_set_enabled(BOOL enabled) {
   return TRUE;
 }
 void mc_pins_restore_hidden(void) {
-  for (Pin *pin = pins; pin; pin = pin->next)
-    if (!pin->passthrough && pin->hidden) {
-      pin->hidden = FALSE;
+  for (Pin *pin = pins; pin; pin = pin->next) {
+    BOOL hidden = pin_hidden_after(MC_PIN_WINDOWS, MC_PIN_RESTORE_HIDDEN, pin->hidden, pin->passthrough, 0);
+    if (hidden != pin->hidden) {
+      pin->hidden = hidden;
       show_pin(pin);
     }
+  }
 }
 void mc_pins_exit_passthrough(void) {
   for (Pin *pin = pins; pin; pin = pin->next)

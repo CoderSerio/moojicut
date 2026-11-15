@@ -182,3 +182,62 @@ test "native RGBA rejects nonfinite and out of range alpha without history chang
   image_session_dispose(id)
   assert_eq(image_session_value(id, 0, 8), 0)
 }
+
+///|
+test "typed and JSON hit queries share geometry, paint order and read-only history" {
+  let id = image_session_create_viewport(640, 480, 10, 10, 300, 240)
+  assert_eq(image_session_add(id, 1, 20, 20, 120, 100, 0, 4), 1)
+  assert_eq(image_session_add(id, 4, 50, 50, 40, 40, 0, 4), 1)
+  assert_eq(image_session_set_text(id, "label"), 1)
+  assert_eq(image_session_add(id, 3, 60, 60, 50, 40, 0, 4), 1)
+  assert_eq(image_session_add(id, 2, 280, 220, -80, -80, 0, 20), 1)
+  let before = Json::object(native_image_sessions[id].document).stringify()
+  assert_eq(image_session_hit(id, 21, 60, 4, 0), 0)
+  assert_eq(image_session_hit(id, 35, 40, 4, 0), -1)
+  assert_eq(image_session_hit(id, 70, 70, 4, 0), 1)
+  assert_eq(image_session_hit(id, 70, 70, 4, 1), 2)
+  assert_eq(image_session_hit(id, 110, 100, 0, 1), 2)
+  assert_eq(image_session_hit(id, 110.5, 100.5, 0, 1), -1)
+  assert_eq(image_session_hit(id, 240, 180, 4, 0), 3)
+  assert_eq(image_session_hit(id, 205, 215, 4, 0), -1)
+  let annotations = native_image_annotations(id)
+  // Compare the actual public APIs across overlaps, blank interiors and arrows.
+  for x in [21.0, 35.0, 70.0, 100.0, 205.0, 240.0, 280.0] {
+    for y in [40.0, 60.0, 70.0, 100.0, 180.0, 215.0, 220.0] {
+      for text_only in [0, 1] {
+        let hit = image_session_hit(id, x, y, 4, text_only)
+        let expected = if hit < 0 { Json::null() } else { native_image_annotation(id, hit).unwrap()["id"] }
+        let result = @test_support.model_test_result(image_selection(Json::object({
+          "action": Json("hit"), "annotations": Json::array(annotations), "x": Json(x), "y": Json(y),
+          "tolerance": Json(4), "textOnly": Json(text_only == 1),
+        }).stringify()))
+        assert_eq(@test_support.model_test_field(@test_support.model_test_field(result, "document"), "id"), expected)
+      }
+    }
+  }
+  assert_eq(Json::object(native_image_sessions[id].document).stringify(), before)
+  assert_eq(image_session_undo(id), 1)
+  assert_eq(image_session_count(id), 3)
+  assert_eq(image_session_hit(id, 240, 180, 4, 0), -1)
+  assert_eq(image_session_redo(id), 1)
+  assert_eq(image_session_hit(id, 240, 180, 4, 0), 3)
+  image_session_dispose(id)
+  assert_eq(image_session_hit(id, 240, 180, 4, 0), -1)
+}
+
+///|
+test "native hit rejects invalid inputs without consuming undo" {
+  let id = image_session_create(640, 480)
+  assert_eq(image_session_add(id, 4, 10, 10, 100, 80, 0, 4), 1)
+  for value in [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0, 65537.0] {
+    assert_eq(image_session_hit(id, value, 20, 4, 0), -1)
+    assert_eq(image_session_hit(id, 20, value, 4, 0), -1)
+    assert_eq(image_session_hit(id, 20, 20, value, 0), -1)
+  }
+  assert_eq(image_session_hit(id, 20, 20, -1, 0), -1)
+  assert_eq(image_session_hit(id, 20, 20, 4, 2), -1)
+  assert_eq(image_session_hit(-1, 20, 20, 4, 0), -1)
+  assert_eq(image_session_undo(id), 1)
+  assert_eq(image_session_count(id), 0)
+  image_session_dispose(id)
+}

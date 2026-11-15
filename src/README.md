@@ -12,6 +12,7 @@ src/
 ├── api_editor_style.mbt       # 编辑样式兼容入口
 ├── api_image.mbt              # 图像与图像会话兼容入口
 ├── api_selection.mbt         # 三平台共享选区几何 C ABI
+├── api_pin.mbt               # 三平台贴图数值和可见性规则 C ABI
 ├── api_updates.mbt           # GitHub 发布版本与平台资产选择 C ABI
 ├── api_feature_runtime.mbt   # 内置功能启停规则 C ABI
 ├── api_tool_registry.mbt     # 内置工具目录、显示开关与排序 C ABI
@@ -21,6 +22,7 @@ src/
 ├── pkg.generated.mbti        # 保持兼容的根包公开接口
 └── internal/
     ├── desktop/              # 平台无关的快捷键规则
+    ├── pin/                  # 三平台贴图缩放、透明度和显隐恢复规则
     ├── editor_style/         # 属性范围、默认值、每个编辑器的样式状态
     ├── image/                # 图像文档、标注、裁剪、历史与会话
     ├── selection/            # 选区/标注的数值几何，保留 macOS 基准
@@ -36,15 +38,18 @@ src/
 MoonBit 以目录为包边界；`internal` 下的包仅供本模块使用，跨包依赖仍须显式导入。
 
 根包保留现有 `#export_name` 名称和参数类型，`api_*.mbt` 只做转发。
-业务规则和会话状态只保留在内部包中，原生宿主仍链接同一个根包静态库。
+业务规则和会话状态保留在内部包中，原生宿主链接同一个根包静态库。
+
+本轮进一步共享了三平台标注命中和箭头翼几何、贴图数值与恢复规则、平台录屏配置，以及 macOS 快捷键偏好规则和录屏生命周期。相关宿主实际调用新增 C ABI，原生层保留窗口、键盘布局、系统权限、媒体资源和文件操作。完整交互与边界见[截图编辑与录屏体验](../docs/interaction-design.zh-CN.md)。
 
 依赖方向如下：
 
 ```text
 根包兼容入口 / 启动自检
     ├── desktop
+    ├── pin
     ├── editor_style
-    ├── image ──→ editor_style、protocol
+    ├── image ──→ editor_style、protocol、selection
     ├── video ──→ protocol
     ├── selection
     ├── updates
@@ -56,6 +61,9 @@ image / video 的白盒测试 ──→ test_support（仅测试导入）
 
 图像文档与样式控件使用同一份样式规则。图像、视频会话的原生参数转换留在各自业务包，
 可以直接调用包内私有实现；不为适配或测试额外公开内部状态。
+
+每个原生进程在分配 MoonBit 对象或调用导出函数前执行一次 `moonbit_init()`。宿主在主线程调用业务核心，
+媒体工作线程只接收复制后的纯数值计划；不得把 MoonBit 管理的对象或状态句柄交给后台线程并发修改。
 
 ## 新代码放在哪里
 
@@ -87,7 +95,7 @@ moon build --target native --release --deny-warn
 
 已发布的 alpha.9 固定读取 `https://raw.githubusercontent.com/CoderSerio/moojicut/main/updates/macos.xml`，没有新的 GitHub 发现逻辑。给 Release 添加 `macos.xml` 附件不会改变旧包的地址。后续正式升级时，必须为更高版本生成签名源并同步旧固定路径，同时把同份源附到对应 Release；也可以明确要求一次手动换装。当前仓库中的签名源仍指向 alpha.9，不能当作升级到候选版的验收证据。
 
-验收分别记录：核心与原生回归、更新源/包签名校验、旧版实际替换并重启且保留设置、新版 GitHub 发现。最后两项不能由“未发现新版”或模拟 transport 测试代替。真实安装应在隔离账户或虚拟机进行；`MOOJICUT_NATIVE_DEFAULTS_DOMAIN` 只隔离应用设置，不隔离 Sparkle 偏好和录屏草稿。
+验收分别记录：核心与原生回归、更新源/包签名校验、旧版实际替换并重启且保留设置、新版 GitHub 发现。最后两项不能由“未发现新版”或模拟 transport 测试代替。开发界面验收使用构建脚本的隔离测试 profile；非生产 defaults domain 的设置、插件和录屏草稿分别隔离。环境变量 `MOOJICUT_NATIVE_DEFAULTS_DOMAIN` 本身不会改变应用签名身份或隔离 Sparkle 偏好，不能替代隔离账户或虚拟机中的真实更新验收。
 
 ## 工具与用户插件管理
 

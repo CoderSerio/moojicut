@@ -128,16 +128,14 @@ static void draw_annotation(HDC dc, int kind, double x, double y, double width, 
   if (kind == TOOL_RECT)
     Rectangle(dc, left, top, right, bottom);
   else if (kind == TOOL_ARROW) {
-    double dx = (double)right - left, dy = (double)bottom - top, length = sqrt(dx * dx + dy * dy);
-    if (length > 0.5) {
-      double head = minimum(rounded(length * 0.45), maximum(8, rounded(14 * scale + thickness)));
+    if (hypot(width, height) > 0.5) {
       POINT wings[3];
-      wings[0].x = rounded(right - head * dx / length + head * 0.45 * dy / length);
-      wings[0].y = rounded(bottom - head * dy / length - head * 0.45 * dx / length);
+      wings[0].x = offset_x + rounded(image_arrowhead_value(x, y, x + width, y + height, stroke, 0) * scale);
+      wings[0].y = offset_y + rounded(image_arrowhead_value(x, y, x + width, y + height, stroke, 1) * scale);
       wings[1].x = right;
       wings[1].y = bottom;
-      wings[2].x = rounded(right - head * dx / length - head * 0.45 * dy / length);
-      wings[2].y = rounded(bottom - head * dy / length + head * 0.45 * dx / length);
+      wings[2].x = offset_x + rounded(image_arrowhead_value(x, y, x + width, y + height, stroke, 2) * scale);
+      wings[2].y = offset_y + rounded(image_arrowhead_value(x, y, x + width, y + height, stroke, 3) * scale);
       MoveToEx(dc, left, top, NULL);
       LineTo(dc, right, bottom);
       Polyline(dc, wings, 3);
@@ -586,13 +584,8 @@ static void begin_text(POINT point, int index) {
   changed();
 }
 static int hit_text(POINT p) {
-  for (int i = image_session_count(capture.session) - 1; i >= 0; i--)
-    if ((int)image_session_value(capture.session, i, 0) == TOOL_TEXT) {
-      RECT r = annotation_rect(i);
-      if (PtInRect(&r, p))
-        return i;
-    }
-  return -1;
+  // Pixel centers preserve Win32's right/bottom-exclusive integer rectangle.
+  return image_session_hit(capture.session, p.x + 0.5, p.y + 0.5, 0, 1);
 }
 static int hit_handle(RECT rect, POINT point) {
   int radius = dpi_px(capture.editor ? capture.editor : capture.overlay, 6);
@@ -1619,6 +1612,9 @@ int mc_capture_smoke(HINSTANCE instance) {
   preserve_text(index);
   if (image_session_update(capture.session, index, 150, 100, 150, 70, 0xF26769, 4, 32) != 1 ||
       image_session_value(capture.session, index, 7) != 32)
+    goto cleanup;
+  if (hit_text((POINT){150, 100}) != index || hit_text((POINT){299, 169}) != index ||
+      hit_text((POINT){300, 170}) != -1)
     goto cleanup;
   if (image_session_undo(capture.session) != 1 || image_session_value(capture.session, index, 1) != 50 ||
       image_session_redo(capture.session) != 1)

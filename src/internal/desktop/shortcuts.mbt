@@ -25,3 +25,13 @@ pub fn shortcut_validate(
   }
   0
 }
+
+///|
+// Global recovery actions must remain usable after focus moves to another app.
+pub fn shortcut_modifiers_allowed(modifiers : Int, global : Int) -> Int {
+  if modifiers < 0 || modifiers > 15 || (global != 0 && (modifiers & 11) == 0) {
+    0
+  } else {
+    1
+  }
+}

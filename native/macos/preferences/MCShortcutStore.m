@@ -1,5 +1,8 @@
 #import "MCShortcutStore.h"
+#import "MCPinShortcutStore.h"
 #import "MCSystemShortcutCheck.h"
+#import "MCShortcutPolicy.h"
+#include <math.h>
 
 NSNotificationName const MCShortcutsDidChangeNotification = @"MCShortcutsDidChangeNotification";
 static NSString *const MCShortcutsKey = @"shortcuts.v1";
@@ -31,17 +34,18 @@ static NSDictionary *MCDefaultShortcuts(void) {
 }
 static NSDictionary *MCNormalizeShortcut(NSDictionary *value) {
     if (![value isKindOfClass:NSDictionary.class] || ![value[@"keyCode"] isKindOfClass:NSNumber.class] || ![value[@"modifiers"] isKindOfClass:NSNumber.class]) return nil;
-    NSInteger code = [value[@"keyCode"] integerValue];
-    if (code < 0 || code > 126) return nil;
+    double rawCode = [value[@"keyCode"] doubleValue], rawFlags = [value[@"modifiers"] doubleValue];
+    if (!isfinite(rawCode) || rawCode < 0 || rawCode > 126 || floor(rawCode) != rawCode ||
+        !isfinite(rawFlags) || rawFlags < 0 || rawFlags > UINT32_MAX || floor(rawFlags) != rawFlags ||
+        CFGetTypeID((__bridge CFTypeRef)value[@"keyCode"]) == CFBooleanGetTypeID() ||
+        CFGetTypeID((__bridge CFTypeRef)value[@"modifiers"]) == CFBooleanGetTypeID()) return nil;
+    NSInteger code = (NSInteger)rawCode;
     NSDictionary *base = [MCShortcutStore shortcutWithKeyCode:(unsigned short)code modifiers:[value[@"modifiers"] unsignedIntegerValue]];
     if (!base) return nil;
     NSMutableDictionary *normalized = [base mutableCopy];
     NSString *label = value[@"keyLabel"];
     if ([label isKindOfClass:NSString.class] && label.length > 0 && label.length <= 16 && [label rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound) normalized[@"keyLabel"] = [label copy];
     return [normalized copy];
-}
-static BOOL MCEqualShortcut(NSDictionary *left, NSDictionary *right) {
-    return left && right && [left[@"keyCode"] isEqual:right[@"keyCode"]] && [left[@"modifiers"] isEqual:right[@"modifiers"]];
 }
 
 @interface MCShortcutStore ()
@@ -53,27 +57,25 @@ static BOOL MCEqualShortcut(NSDictionary *left, NSDictionary *right) {
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults {
     if ((self = [super init])) {
         _defaults = defaults;
-        _shortcuts = [MCDefaultShortcuts() mutableCopy];
+        NSDictionary *platformDefaults = MCDefaultShortcuts();
+        NSMutableDictionary *normalized = [NSMutableDictionary dictionary];
         NSDictionary *saved = [defaults dictionaryForKey:MCShortcutsKey];
-        for (NSString *action in @[@"capture", @"record", @"stop"]) {
-            id value = saved[action];
-            if ([value isKindOfClass:NSDictionary.class] && [value count] == 0) _shortcuts[action] = @{};
-            else if (MCNormalizeShortcut(value)) _shortcuts[action] = MCNormalizeShortcut(value);
+        NSArray *actions = @[@"capture", @"record", @"stop"];
+        for (NSString *action in actions) {
+            id raw = saved[action];
+            if ([raw isKindOfClass:NSDictionary.class] && [raw count] == 0) normalized[action] = @{};
+            else { NSDictionary *value = MCNormalizeShortcut(raw); if (value) normalized[action] = value; }
         }
-        // Corrupt/older preferences must not activate the same combination twice.
-        NSMutableArray *seen = [NSMutableArray array];
-        for (NSString *action in @[@"capture", @"record", @"stop"]) {
-            NSDictionary *shortcut = [self shortcutForAction:action];
-            for (NSDictionary *prior in seen) if (MCEqualShortcut(prior, shortcut)) { _shortcuts[action] = @{}; shortcut = nil; break; }
-            if (shortcut) [seen addObject:shortcut];
-        }
+        _shortcuts = [MCShortcutResolve(actions, actions, platformDefaults, normalized, nil, nil, nil, NULL) mutableCopy];
+        NSAssert(_shortcuts, @"The shared shortcut policy must accept platform defaults");
+        if (!_shortcuts) _shortcuts = [NSMutableDictionary dictionary];
     }
     return self;
 }
 + (NSDictionary *)shortcutWithKeyCode:(unsigned short)keyCode modifiers:(NSEventModifierFlags)modifiers {
     NSString *label = MCKeyLabel(keyCode);
     NSEventModifierFlags flags = modifiers & MCShortcutModifiers;
-    if (!label || !(flags & (NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagControl))) return nil;
+    if (!label || !shortcut_modifiers_allowed(MCShortcutCoreFlags(flags), 1)) return nil;
     return @{@"keyCode":@(keyCode), @"modifiers":@(flags), @"keyLabel":label};
 }
 - (NSDictionary *)shortcutForAction:(NSString *)action {
@@ -82,21 +84,29 @@ static BOOL MCEqualShortcut(NSDictionary *left, NSDictionary *right) {
 }
 - (BOOL)setShortcut:(NSDictionary *)shortcut forAction:(NSString *)action error:(NSString **)error {
     if (error) *error = nil;
-    if (![@[@"capture", @"record", @"stop"] containsObject:action]) { if (error) *error = @"无法识别这个快捷键操作。"; return NO; }
     NSDictionary *normalized = shortcut ? MCNormalizeShortcut(shortcut) : nil;
     if (shortcut && !normalized) { if (error) *error = @"请使用 ⌘、⌥ 或 ⌃ 加一个按键，可同时按住 ⇧。"; return NO; }
+    NSArray *actions = @[@"capture", @"record", @"stop"];
+    MCPinShortcutStore *pins = [[MCPinShortcutStore alloc] initWithDefaults:self.defaults];
+    NSMutableDictionary *external = [NSMutableDictionary dictionary];
+    for (NSString *other in @[@"visibilityToggle", @"clickThroughToggle"]) {
+        NSDictionary *binding = [pins shortcutForAction:other]; if (binding) external[other] = binding;
+    }
+    NSDictionary *detail = nil;
+    NSDictionary *resolved = MCShortcutResolve(actions, actions, MCDefaultShortcuts(), self.shortcuts,
+        action, normalized, external, &detail);
+    if (!resolved) {
+        NSDictionary *names = @{@"capture":@"截图", @"record":@"开始录屏", @"stop":@"停止录屏"};
+        if (error) *error = [detail[@"code"] isEqual:@"duplicate"] ?
+            [NSString stringWithFormat:@"这个组合已用于“%@”，请选择其他按键。", names[detail[@"message"]] ?: detail[@"message"]] :
+            [detail[@"code"] isEqual:@"external_duplicate"] ? @"这个组合已用于贴图隐藏或鼠标穿透，请选择其他按键。" : @"无法保存这个快捷键操作。";
+        return NO;
+    }
     if (normalized) {
-        for (NSString *other in @[@"capture", @"record", @"stop"]) {
-            if (![other isEqual:action] && MCEqualShortcut(normalized, [self shortcutForAction:other])) {
-                NSDictionary *names = @{@"capture":@"截图", @"record":@"开始录屏", @"stop":@"停止录屏"};
-                if (error) *error = [NSString stringWithFormat:@"这个组合已用于“%@”，请选择其他按键。", names[other]];
-                return NO;
-            }
-        }
         NSString *conflict = MCSystemShortcutConflict([normalized[@"keyCode"] unsignedShortValue], [normalized[@"modifiers"] unsignedIntegerValue]);
         if (conflict) { if (error) *error = conflict; return NO; }
     }
-    self.shortcuts[action] = normalized ?: @{};
+    self.shortcuts = [resolved mutableCopy];
     [self.defaults setObject:[self.shortcuts copy] forKey:MCShortcutsKey];
     [NSNotificationCenter.defaultCenter postNotificationName:MCShortcutsDidChangeNotification object:self.defaults];
     return YES;
@@ -107,7 +117,17 @@ static BOOL MCEqualShortcut(NSDictionary *left, NSDictionary *right) {
 - (BOOL)restoreDefaultsWithError:(NSString **)error {
     if (error) *error = nil;
     NSDictionary *defaults = MCDefaultShortcuts();
-    for (NSDictionary *shortcut in defaults.allValues) {
+    NSArray *actions = @[@"capture", @"record", @"stop"];
+    MCPinShortcutStore *pins = [[MCPinShortcutStore alloc] initWithDefaults:self.defaults];
+    NSMutableDictionary *external = [NSMutableDictionary dictionary];
+    for (NSString *other in @[@"visibilityToggle", @"clickThroughToggle"]) {
+        NSDictionary *value = [pins shortcutForAction:other]; if (value) external[other] = value;
+    }
+    for (NSString *action in actions) {
+        NSDictionary *shortcut = defaults[action];
+        if (!MCShortcutResolve(actions, actions, defaults, defaults, action, shortcut, external, NULL)) {
+            if (error) *error = @"默认组合与贴图快捷键冲突，原设置已保留。"; return NO;
+        }
         NSString *conflict = MCSystemShortcutConflict([shortcut[@"keyCode"] unsignedShortValue], [shortcut[@"modifiers"] unsignedIntegerValue]);
         if (conflict) { if (error) *error = [@"默认快捷键与系统设置冲突。" stringByAppendingString:conflict]; return NO; }
     }

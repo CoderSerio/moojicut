@@ -4,14 +4,102 @@
 #import "components/style_controls/macos/MCStylePropertiesView.h"
 #import "plugins/feature/select/macos/MCSelection.h"
 #include "moonbit.h"
+#include "native/shared/image_session.h"
 #include <math.h>
 
 extern moonbit_string_t image_create(moonbit_string_t);
 extern moonbit_string_t image_apply(moonbit_string_t);
 extern moonbit_string_t image_finalize(moonbit_string_t);
+extern moonbit_string_t image_selection(moonbit_string_t);
 
 static const CGFloat MCEditorToolWidth = 30;
 static const CGFloat MCEditorToolHeight = 28;
+
+// Draw only a single button's state, never a segmented group's bezel. Both
+// kinds of native control keep their AppKit image, tracking and accessibility.
+static void MCDrawToolBackground(NSRect frame, BOOL enabled, BOOL selected, BOOL hovered, BOOL pressed) {
+    if (!enabled || !(selected || hovered || pressed)) return;
+    NSColor *color = selected ? NSColor.controlAccentColor : NSColor.labelColor;
+    CGFloat alpha = selected ? (pressed ? .28 : .18) : (pressed ? .16 : .08);
+    [[color colorWithAlphaComponent:alpha] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(frame, 2, 2) xRadius:5 yRadius:5] fill];
+}
+@interface MCEditorToolButton : NSButton
+@property BOOL toolHovered;
+@property NSTrackingArea *toolTrackingArea;
+@end
+@implementation MCEditorToolButton
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.toolTrackingArea) [self removeTrackingArea:self.toolTrackingArea];
+    self.toolTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil];
+    [self addTrackingArea:self.toolTrackingArea];
+}
+- (void)mouseEntered:(__unused NSEvent *)event { self.toolHovered = YES; self.needsDisplay = YES; }
+- (void)mouseExited:(__unused NSEvent *)event { self.toolHovered = NO; self.needsDisplay = YES; }
+- (void)drawRect:(NSRect)dirtyRect {
+    MCDrawToolBackground(self.bounds, self.enabled, NO, self.toolHovered, self.cell.highlighted);
+    [super drawRect:dirtyRect];
+}
+@end
+
+@interface MCEditorToolControl : NSSegmentedControl
+@property NSInteger hoveredSegment;
+@property NSInteger pressedSegment;
+@property NSTrackingArea *toolTrackingArea;
+@end
+@interface MCEditorToolCell : NSSegmentedCell
+@end
+@implementation MCEditorToolCell
+- (void)drawWithFrame:(NSRect)frame inView:(NSView *)view {
+    MCEditorToolControl *control = (MCEditorToolControl *)view;
+    for (NSInteger index = 0; index < self.segmentCount; index++) {
+        NSRect slot = NSMakeRect(NSMinX(frame) + index * MCEditorToolWidth, NSMinY(frame), MCEditorToolWidth, NSHeight(frame));
+        MCDrawToolBackground(slot, self.enabled && [self isEnabledForSegment:index], [self isSelectedForSegment:index],
+                            control.hoveredSegment == index, control.pressedSegment == index);
+        // This AppKit hook draws only the content, including template tint,
+        // selected/disabled appearance and custom plugin images.
+        NSRect content = NSMakeRect(NSMinX(slot), NSMidY(slot) - 9, NSWidth(slot), 18);
+        [self drawSegment:index inFrame:content withView:view];
+    }
+}
+@end
+@implementation MCEditorToolControl
++ (Class)cellClass { return MCEditorToolCell.class; }
+- (instancetype)initWithFrame:(NSRect)frame {
+    if ((self = [super initWithFrame:frame])) { _hoveredSegment = -1; _pressedSegment = -1; }
+    return self;
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.toolTrackingArea) [self removeTrackingArea:self.toolTrackingArea];
+    self.toolTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:self.toolTrackingArea];
+}
+- (void)mouseMoved:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger index = (NSInteger)floor(point.x / MCEditorToolWidth);
+    self.hoveredSegment = NSPointInRect(point, self.bounds) && index >= 0 && index < self.segmentCount ? index : -1;
+    self.needsDisplay = YES;
+}
+- (void)mouseEntered:(NSEvent *)event { [self mouseMoved:event]; }
+- (void)mouseExited:(__unused NSEvent *)event { self.hoveredSegment = -1; self.needsDisplay = YES; }
+- (void)mouseDown:(NSEvent *)event {
+    [self mouseMoved:event]; self.pressedSegment = self.hoveredSegment; self.needsDisplay = YES;
+    [super mouseDown:event];
+    self.pressedSegment = -1; self.needsDisplay = YES;
+}
+- (NSRect)focusRingMaskBounds { return self.bounds; }
+- (void)drawFocusRingMask {
+    NSInteger index = self.selectedSegment;
+    if (index < 0) return;
+    NSRect slot = NSMakeRect(index * MCEditorToolWidth, 0, MCEditorToolWidth, NSHeight(self.bounds));
+    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(slot, 2, 2) xRadius:5 yRadius:5] fill];
+}
+@end
 
 static NSError *MCEditorError(NSString *message) {
     return [NSError errorWithDomain:@"dev.moojicut.image-editor" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
@@ -44,6 +132,12 @@ static NSColor *MCAnnotationColor(NSDictionary *annotation) {
 static NSRect MCAnnotationRect(NSDictionary *annotation) {
     return NSMakeRect([annotation[@"x"] doubleValue], [annotation[@"y"] doubleValue],
                       [annotation[@"width"] doubleValue], [annotation[@"height"] doubleValue]);
+}
+static NSRect MCAnnotationSelectionRect(NSDictionary *annotation) {
+    if (![annotation[@"type"] isEqual:@"arrow"]) return MCAnnotationRect(annotation);
+    CGFloat x = [annotation[@"x"] doubleValue], y = [annotation[@"y"] doubleValue];
+    CGFloat x2 = [annotation[@"x2"] doubleValue], y2 = [annotation[@"y2"] doubleValue];
+    return NSMakeRect(MIN(x,x2), MIN(y,y2), fabs(x2-x), fabs(y2-y));
 }
 static NSDictionary *MCTextAttributes(NSDictionary *annotation) {
     NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
@@ -86,16 +180,16 @@ static void MCDrawAnnotation(NSDictionary *annotation) {
         [path stroke];
     } else if ([kind isEqualToString:@"arrow"]) {
         NSPoint start = rect.origin, end = NSMakePoint([annotation[@"x2"] doubleValue], [annotation[@"y2"] doubleValue]);
-        CGFloat angle = atan2(end.y - start.y, end.x - start.x);
-        CGFloat head = MIN(hypot(end.x - start.x, end.y - start.y) * 0.45, MAX(14, stroke * 3.5));
         NSBezierPath *path = [NSBezierPath bezierPath];
         path.lineWidth = stroke;
         path.lineCapStyle = NSLineCapStyleRound;
         path.lineJoinStyle = NSLineJoinStyleRound;
         [path moveToPoint:start]; [path lineToPoint:end];
-        [path moveToPoint:NSMakePoint(end.x - head * cos(angle - 0.5), end.y - head * sin(angle - 0.5))];
+        [path moveToPoint:NSMakePoint(image_arrowhead_value(start.x, start.y, end.x, end.y, stroke, 0),
+                                     image_arrowhead_value(start.x, start.y, end.x, end.y, stroke, 1))];
         [path lineToPoint:end];
-        [path lineToPoint:NSMakePoint(end.x - head * cos(angle + 0.5), end.y - head * sin(angle + 0.5))];
+        [path lineToPoint:NSMakePoint(image_arrowhead_value(start.x, start.y, end.x, end.y, stroke, 2),
+                                     image_arrowhead_value(start.x, start.y, end.x, end.y, stroke, 3))];
         [color setStroke]; [path stroke];
     } else if ([kind isEqualToString:@"text"]) {
         NSTextStorage *storage;
@@ -363,7 +457,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (NSRect)selectionFrame {
     NSDictionary *annotation = [self selectedAnnotation];
     if (!annotation) return NSZeroRect;
-    NSRect image = [self imageFrame], rect = MCAnnotationRect(annotation);
+    NSRect image = [self imageFrame], rect = MCAnnotationSelectionRect(annotation);
     CGFloat scale = image.size.width / [self.editor.document[@"width"] doubleValue];
     return NSMakeRect(image.origin.x + rect.origin.x * scale, image.origin.y + rect.origin.y * scale,
                       rect.size.width * scale, rect.size.height * scale);
@@ -372,12 +466,31 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     return MCSelectionHandlePoint(handle, rect);
 }
 - (NSInteger)handleAtPoint:(NSPoint)point {
-    if (![self selectedAnnotation]) return -1;
+    NSDictionary *annotation = [self selectedAnnotation];
+    if (!annotation) return -1;
+    if ([annotation[@"type"] isEqual:@"arrow"]) {
+        for (NSNumber *handle in @[@0,@4]) {
+            NSPoint center = [self selectionHandlePoint:handle.integerValue];
+            if (MCSelectionHandleAtPoint(point, NSMakeRect(center.x,center.y,0,0), 6) >= 0) return handle.integerValue;
+        }
+        return -1;
+    }
     return MCSelectionHandleAtPoint(point, [self selectionFrame], 6);
+}
+- (NSArray<NSNumber *> *)selectionHandles {
+    return [[[self selectedAnnotation] objectForKey:@"type"] isEqual:@"arrow"] ? @[@0,@4] : @[@0,@1,@2,@3,@4,@5,@6,@7];
+}
+- (NSPoint)selectionHandlePoint:(NSInteger)handle {
+    NSDictionary *annotation = [self selectedAnnotation];
+    if (![annotation[@"type"] isEqual:@"arrow"]) return [self handlePoint:handle inRect:[self selectionFrame]];
+    CGFloat x = [annotation[handle == 0 ? @"x" : @"x2"] doubleValue];
+    CGFloat y = [annotation[handle == 0 ? @"y" : @"y2"] doubleValue];
+    return [self viewRectForImageRect:NSMakeRect(x,y,0,0)].origin;
 }
 - (BOOL)selectionBorderAtPoint:(NSPoint)point {
     NSRect frame = [self selectionFrame];
-    return [self selectedAnnotation] && MCSelectionBorderContains(point, frame, 5);
+    return [self selectedAnnotation] && ![[[self selectedAnnotation] objectForKey:@"type"] isEqual:@"arrow"] &&
+        MCSelectionBorderContains(point, frame, 5);
 }
 - (NSView *)hitTest:(NSPoint)point {
     NSPoint local = [self convertPoint:point fromView:self.superview];
@@ -399,10 +512,12 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     }
     if (![self selectedAnnotation]) return;
     NSRect frame = [self selectionFrame];
-    [self addCanvasCursorRect:NSInsetRect(frame, -4, -4) cursor:NSCursor.openHandCursor];
+    if (![[[self selectedAnnotation] objectForKey:@"type"] isEqual:@"arrow"])
+        [self addCanvasCursorRect:NSInsetRect(frame, -4, -4) cursor:NSCursor.openHandCursor];
     if (self.textView) [self addCanvasCursorRect:NSInsetRect(frame, 6, 6) cursor:NSCursor.IBeamCursor];
-    for (NSInteger handle = 0; handle < 8; handle++) {
-        NSPoint center = [self handlePoint:handle inRect:frame];
+    for (NSNumber *number in [self selectionHandles]) {
+        NSInteger handle = number.integerValue;
+        NSPoint center = [self selectionHandlePoint:handle];
         NSCursor *cursor = (handle == 1 || handle == 5) ? NSCursor.resizeUpDownCursor :
             (handle == 3 || handle == 7) ? NSCursor.resizeLeftRightCursor : NSCursor.crosshairCursor;
         [self addCanvasCursorRect:NSMakeRect(center.x - 6, center.y - 6, 12, 12) cursor:cursor];
@@ -583,14 +698,15 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     }
     if ([self selectedAnnotation]) {
         NSRect selection = [self selectionFrame];
-        NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(selection, -1, -1)];
-        [MCSelectionContrastColor() setStroke]; outline.lineWidth = 3; [outline stroke];
-        [MCSelectionColor() setStroke]; outline.lineWidth = 1; [outline stroke];
-        for (NSInteger handle = 0; handle < 8; handle++) {
-            NSPoint point = [self handlePoint:handle inRect:selection];
+        if (![[[self selectedAnnotation] objectForKey:@"type"] isEqual:@"arrow"]) {
+            NSBezierPath *outline = [NSBezierPath bezierPathWithRect:NSInsetRect(selection, -1, -1)];
+            [NSColor.controlAccentColor setStroke]; outline.lineWidth = 1; [outline stroke];
+        }
+        for (NSNumber *number in [self selectionHandles]) {
+            NSPoint point = [self selectionHandlePoint:number.integerValue];
             NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(point.x - 3, point.y - 3, 6, 6) xRadius:1 yRadius:1];
             [MCSelectionHandleColor() setFill]; [box fill];
-            [MCSelectionContrastColor() setStroke]; [box stroke];
+            [NSColor.controlAccentColor setStroke]; [box stroke];
         }
     }
 }
@@ -598,7 +714,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSPoint local = [self convertPoint:event.locationInWindow fromView:nil];
     NSInteger handle = [self handleAtPoint:local];
     BOOL border = [self selectionBorderAtPoint:local];
-    if (handle >= 0 || border) {
+    if (handle >= 0 || (border && self.textView)) {
         if (![self finishTextEditing:YES]) return;
         self.transformOriginal = [self selectedAnnotation];
         self.resizeHandle = handle;
@@ -612,6 +728,23 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if (!NSPointInRect(local, [self imageFrame])) { self.selectedID = nil; [self.editor refresh]; return; }
     self.start = [self imagePoint:event];
     NSRect region = [self captureRect];
+    if ((self.editor.activeTool == MCSelectTool || self.editor.activeTool == MCTextTool) &&
+        (!self.editor.overlayMode || NSPointInRect(self.start, region))) {
+        CGFloat scale = [self imageFrame].size.width / [self.editor.document[@"width"] doubleValue];
+        NSDictionary *hit = MCCallImage(image_selection, @{@"action":@"hit", @"annotations":self.editor.document[@"annotations"],
+            @"x":@(self.start.x), @"y":@(self.start.y), @"tolerance":@(5 / scale),
+            @"selectedID":self.selectedID ?: @"",
+            @"textOnly":@(self.editor.activeTool == MCTextTool)}, NULL);
+        for (NSDictionary *annotation in self.editor.document[@"annotations"]) {
+            if (![annotation[@"id"] isEqual:hit[@"id"]]) continue;
+            self.selectedID = annotation[@"id"];
+            [self.editor syncTextControls];
+            if (event.clickCount >= 2 && [annotation[@"type"] isEqual:@"text"]) [self beginEditingText:annotation];
+            else { self.transformOriginal = annotation; self.resizeHandle = -1; self.dragging = YES; }
+            [self updateTextFrame];
+            return;
+        }
+    }
     NSInteger operation = self.editor.overlayMode ? MCSelectionHitTest(self.editor.hasCaptureRegion,
         region, [self viewRectForImageRect:region], self.start, local) : MCSelectionNone;
     if (operation != MCSelectionNone) {
@@ -624,18 +757,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         }
         return;
     }
-    if (self.editor.activeTool == MCSelectTool || self.editor.activeTool == MCTextTool) {
-        for (NSDictionary *annotation in [self.editor.document[@"annotations"] reverseObjectEnumerator]) {
-            if ([annotation[@"type"] isEqual:@"text"] && NSPointInRect(self.start, MCAnnotationRect(annotation))) {
-                self.selectedID = annotation[@"id"];
-                [self.editor syncTextControls];
-                if (event.clickCount >= 2) [self beginEditingText:annotation];
-                else { self.transformOriginal = annotation; self.resizeHandle = -1; self.dragging = YES; }
-                [self updateTextFrame];
-                return;
-            }
-        }
-    }
     self.selectedID = nil;
     [self.editor syncTextControls];
     if (self.editor.activeTool == MCTextTool) { [self.editor addTextAtPoint:self.start]; return; }
@@ -643,15 +764,18 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.dragging = YES;
 }
 - (NSDictionary *)transformedAnnotationAt:(NSPoint)point {
+    if (self.resizeHandle < 0 || ![self.transformOriginal[@"type"] isEqual:@"text"]) {
+        return MCCallImage(image_selection, @{@"action":@"transform", @"annotation":self.transformOriginal,
+            @"anchorX":@(self.start.x), @"anchorY":@(self.start.y), @"x":@(point.x), @"y":@(point.y),
+            @"handle":@(self.resizeHandle), @"sourceWidth":self.editor.document[@"width"],
+            @"sourceHeight":self.editor.document[@"height"]}, NULL) ?: self.transformOriginal;
+    }
     NSMutableDictionary *result = [self.transformOriginal mutableCopy];
     NSRect original = MCAnnotationRect(result), rect = original;
     CGFloat width = [self.editor.document[@"width"] doubleValue], height = [self.editor.document[@"height"] doubleValue];
     CGFloat dx = point.x - self.start.x, dy = point.y - self.start.y;
     NSInteger handle = self.resizeHandle;
-    if (handle < 0) {
-        rect.origin.x = MAX(0, MIN(width - rect.size.width, rect.origin.x + dx));
-        rect.origin.y = MAX(0, MIN(height - rect.size.height, rect.origin.y + dy));
-    } else if (handle % 2 == 0) {
+    if (handle % 2 == 0) {
         // Corners scale both the box and type; side handles reflow the text.
         BOOL left = handle == 0 || handle == 6, top = handle == 0 || handle == 2;
         CGFloat sx = left ? -1 : 1, sy = top ? -1 : 1;
@@ -799,7 +923,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         [self.tools setImage:icon forSegment:index];
         [self.tools setLabel:icon ? @"" : title forSegment:index];
         [self.tools setImageScaling:NSImageScaleProportionallyDown forSegment:index];
-        [self.tools setWidth:MCEditorToolWidth forSegment:index];
+        // AppKit adds a one-point segment separator to the tracking geometry.
+        // Reserve it inside the 30pt slot so the last plugin is not clipped and
+        // hit targets cannot drift progressively from our borderless drawing.
+        [self.tools setWidth:MCEditorToolWidth - 1 forSegment:index];
     }
     [self selectActiveToolSegment];
     [self syncPinAction];
@@ -947,7 +1074,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (NSTextField *)lineWidth { return self.properties.strokeControl.field; }
 - (NSStepper *)strokeStepper { return self.properties.strokeControl.stepper; }
 - (NSButton *)button:(NSString *)title action:(SEL)action key:(NSString *)key {
-    NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
+    NSButton *button = [MCEditorToolButton buttonWithTitle:title target:self action:action];
     button.bezelStyle = NSBezelStyleRounded;
     if (key) button.keyEquivalent = key;
     return button;
@@ -959,6 +1086,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     button.image = image;
     button.imagePosition = NSImageOnly;
     button.bordered = NO;
+    ((NSButtonCell *)button.cell).highlightsBy = NSNoCellMask;
+    ((NSButtonCell *)button.cell).showsStateBy = NSNoCellMask;
     // Let native borderless controls share the same enabled/disabled template
     // tint as the tool segments; a forced tint makes the two groups disagree.
     button.contentTintColor = nil;
@@ -1002,9 +1131,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.canvas.editor = self;
         self.canvas.accessibilityLabel = @"截图标注画布";
         [root addSubview:self.canvas];
-        self.tools = [NSSegmentedControl segmentedControlWithLabels:@[@"选择"] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(chooseTool:)];
-        // Borderless TexturedSquare retains AppKit's per-selection accent,
-        // tracking, focus and accessibility without a persistent group bezel.
+        self.tools = [MCEditorToolControl segmentedControlWithLabels:@[@"选择"] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(chooseTool:)];
+        // The cell draws native segment interiors without the OS group bezel.
+        // TexturedSquare supplies the per-selection accent for template icons.
         self.tools.segmentStyle = NSSegmentStyleTexturedSquare;
         self.tools.cell.bordered = NO;
         self.tools.cell.bezeled = NO;
@@ -1029,7 +1158,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.confirmButton = [self button:@"确认并复制" action:@selector(confirm:) key:@"\r"];
         [self configureIconButton:self.confirmButton icon:MC_ICON_CHECK label:@"确认并复制" shortcut:@"Return"];
         self.confirmButton.keyEquivalentModifierMask = 0;
-        self.ocrButton = [self unavailableButton:MC_ICON_OCR label:@"文字识别（OCR）"];
+        self.ocrButton = [self unavailableButton:MC_ICON_OCR label:@"文字识别与翻译"];
         self.translateButton = [self unavailableButton:MC_ICON_TRANSLATE label:@"翻译"];
         self.scrollCaptureButton = [self unavailableButton:MC_ICON_CHEVRON_DOWN label:@"滚动截图"];
         NSView *spacer = [NSView new];
@@ -1218,9 +1347,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     _onScrollCapture = [handler copy]; [self syncContentActions];
 }
 - (void)syncContentActions {
-    self.ocrButton.enabled = self.onOCR != nil; self.translateButton.enabled = self.onTranslate != nil;
+    self.ocrButton.enabled = self.onOCR != nil; self.translateButton.enabled = NO;
     self.ocrButton.hidden = self.overlayMode && !self.onOCR;
-    self.translateButton.hidden = self.overlayMode && !self.onTranslate;
+    self.translateButton.hidden = YES; // Translation is a page in the same text window.
     self.scrollCaptureButton.enabled = self.onScrollCapture != nil;
     self.scrollCaptureButton.hidden = !self.overlayMode || !self.onScrollCapture;
     self.contentActionDivider.hidden = self.ocrButton.hidden && self.translateButton.hidden && self.scrollCaptureButton.hidden;
@@ -1229,7 +1358,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.scrollCaptureButton.target = self; self.scrollCaptureButton.action = @selector(runScrollCapture:);
     self.scrollCaptureButton.toolTip = @"滚动截图";
     self.scrollCaptureButton.accessibilityHelp = nil;
-    self.ocrButton.toolTip = self.onOCR ? @"文字识别（OCR）" : @"文字识别（OCR） · 尚未开放";
+    self.ocrButton.toolTip = self.onOCR ? @"文字识别与翻译" : @"文字识别与翻译 · 尚未开放";
     self.translateButton.toolTip = self.onTranslate ? @"翻译" : @"翻译 · 尚未开放";
     self.ocrButton.accessibilityHelp = self.onOCR ? nil : @"尚未开放";
     self.translateButton.accessibilityHelp = self.onTranslate ? nil : @"尚未开放";
@@ -1487,6 +1616,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.window.contentView = nil;
     self.window = nil;
     self.canvas = nil;
+    [self.colorControl closePopover];
     [self.color deactivate];
     [NSColorPanel.sharedColorPanel orderOut:nil];
     NSColorPanel.sharedColorPanel.level = NSFloatingWindowLevel;

@@ -1,5 +1,6 @@
 #include "pinning.h"
 #include "native/shared/feature_runtime.h"
+#include "native/shared/pin_policy.h"
 #include <dlfcn.h>
 #include <gdk/gdkx.h>
 #include <glib/gstdio.h>
@@ -133,31 +134,31 @@ static gboolean set_passthrough(Pin *pin, gboolean active) {
 }
 static void visibility_action(void) {
   Pin *selected = selected_pin();
-  if (selected) {
-    if (selected->passthrough)
-      return;
-    selected->hidden = !selected->hidden;
+  gboolean hidden = FALSE;
+  for (GSList *n = pins; n; n = n->next)
+    hidden = hidden || ((Pin *)n->data)->hidden;
+  int action = pin_visibility_action(MC_PIN_LINUX, selected != NULL, selected && selected->hidden,
+      selected && selected->passthrough, hidden, global_ready[0]);
+  if (action == MC_PIN_VISIBILITY_NONE || action == MC_PIN_RECOVERY_UNAVAILABLE) return;
+  if (action == MC_PIN_SHOW_SELECTED || action == MC_PIN_HIDE_SELECTED) {
+    selected->hidden = pin_hidden_after(MC_PIN_LINUX, action, selected->hidden, selected->passthrough, 1);
     if (selected->hidden)
       selected->selected = FALSE;
     show_pin(selected);
     return;
   }
-  gboolean hidden = FALSE;
-  for (GSList *n = pins; n; n = n->next)
-    if (((Pin *)n->data)->hidden)
-      hidden = TRUE;
   for (GSList *n = pins; n; n = n->next) {
     Pin *p = n->data;
     if (p->passthrough)
       continue;
-    p->hidden = !hidden;
+    p->hidden = pin_hidden_after(MC_PIN_LINUX, action, p->hidden, p->passthrough, 0);
     show_pin(p);
   }
 }
 void mc_linux_pins_restore(void) {
   for (GSList *n = pins; n; n = n->next) {
     Pin *p = n->data;
-    p->hidden = FALSE;
+    p->hidden = pin_hidden_after(MC_PIN_LINUX, MC_PIN_RESTORE_HIDDEN, p->hidden, p->passthrough, 0);
     show_pin(p);
   }
 }
@@ -307,9 +308,9 @@ static void resize_pin(Pin *pin, double scale) {
   GdkRectangle area = {0, 0, 1920, 1080};
   if (monitor)
     gdk_monitor_get_workarea(monitor, &area);
-  double fit = fmin((double)area.width / gdk_pixbuf_get_width(pin->image),
-                    (double)area.height / gdk_pixbuf_get_height(pin->image));
-  pin->scale = CLAMP(scale, fmin(0.1, fit), fmin(8.0, fit));
+  double resolved = pin_scale(MC_PIN_LINUX, scale, gdk_pixbuf_get_width(pin->image), gdk_pixbuf_get_height(pin->image), area.width, area.height);
+  if (resolved <= 0) return;
+  pin->scale = resolved;
   int w = MAX(1, (int)round(gdk_pixbuf_get_width(pin->image) * pin->scale)),
       h = MAX(1, (int)round(gdk_pixbuf_get_height(pin->image) * pin->scale));
   gtk_widget_set_size_request(pin->canvas, w, h);
@@ -369,9 +370,9 @@ static void apply(Pin *pin, int action) {
   if (pin->passthrough)
     return;
   if (action < 2)
-    resize_pin(pin, pin->scale * (action == 0 ? 1.1 : 1 / 1.1));
+    resize_pin(pin, pin_zoom_step(pin->scale, action == 0 ? 1 : -1));
   else {
-    pin->opacity = CLAMP(pin->opacity + (action == 2 ? .1 : -.1), .1, 1);
+    pin->opacity = pin_opacity(MC_PIN_LINUX, pin->opacity, action == 2 ? 1 : -1);
     gtk_widget_set_opacity(pin->window, pin->opacity);
   }
 }

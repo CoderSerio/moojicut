@@ -62,9 +62,12 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 @property NSButton *checkUpdatesButton;
 @property NSButton *cancelUpdatesButton;
 @property NSButton *releasePageButton;
+@property NSButton *startRecordingButton;
+@property NSProgressIndicator *updateProgress;
+@property NSLayoutConstraint *updateStatusHeight;
 @property NSButton *pinningCheckbox;
 @property NSTextField *pinningDescription;
-@property NSTextField *updateStatus;
+@property NSTextView *updateStatus;
 @property MCPluginManagementController *pluginManagement;
 @end
 
@@ -158,6 +161,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)pinningChanged:(NSButton *)sender { [self setPinningEnabled:sender.state == NSControlStateValueOn]; }
 - (void)setShortcutFeedback:(NSString *)message error:(BOOL)error {
     self.shortcutFeedback.stringValue = message;
+    self.shortcutFeedback.hidden = !error && ![message hasPrefix:@"按下"];
     self.shortcutFeedback.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
     if (error) NSAccessibilityPostNotification(self.shortcutFeedback, NSAccessibilityValueChangedNotification);
 }
@@ -170,13 +174,9 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     [self updateShortcutAvailability];
 }
 - (void)updateShortcutAvailability {
-    NSMutableArray<NSString *> *states = [NSMutableArray array];
-    NSDictionary *names = @{@"capture":@"截图", @"record":@"开始录屏", @"stop":@"停止录屏"};
-    for (NSString *action in @[@"capture", @"record", @"stop"])
-        [states addObject:[NSString stringWithFormat:@"%@%@", names[action], [self.shortcutStore shortcutForAction:action] ? @"已启用" : @"未设置"]];
-    NSString *availability = self.shortcutRegistrationError ?: [states componentsJoinedByString:@" · "];
-    self.shortcutAvailability.stringValue = [availability stringByAppendingString:@"\n录入时暂时停用全部快捷键，结束录入后自动恢复。"];
-    self.shortcutAvailability.textColor = self.shortcutRegistrationError ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+    self.shortcutAvailability.stringValue = self.shortcutRegistrationError ?: @"";
+    self.shortcutAvailability.hidden = !self.shortcutRegistrationError.length;
+    self.shortcutAvailability.textColor = NSColor.systemRedColor;
 }
 - (void)notifyShortcutRecordingState {
     BOOL recording = NO;
@@ -186,7 +186,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 }
 - (NSView *)shortcutsPage {
     NSView *page = [NSView new];
-    NSSegmentedControl *groups = [NSSegmentedControl segmentedControlWithLabels:@[@"全局快捷键", @"贴图内快捷键"]
+    NSSegmentedControl *groups = [NSSegmentedControl segmentedControlWithLabels:@[@"截图与录屏", @"贴图"]
         trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(selectShortcutGroup:)];
     groups.selectedSegment = 0; groups.translatesAutoresizingMaskIntoConstraints = NO;
     groups.accessibilityLabel = @"快捷键范围";
@@ -211,6 +211,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)selectShortcutGroup:(NSSegmentedControl *)sender {
     [self cancelShortcutRecording];
     [self.shortcutGroups selectTabViewItemAtIndex:sender.selectedSegment];
+    [self resizeSelectedPage];
 }
 - (NSView *)globalShortcutsPage {
     NSView *page = [NSView new];
@@ -218,14 +219,14 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.shortcutClearButtons = [NSMutableDictionary dictionary];
     NSMutableArray *rows = [NSMutableArray array];
     NSArray *actions = @[@"capture", @"record", @"stop"];
-    NSArray *names = @[@"截图", @"开始录屏", @"停止录屏"];
+    NSArray *names = @[@"开始截图", @"开始录屏", @"停止录屏"];
     __weak MCPreferencesController *weakSelf = self;
     for (NSUInteger index = 0; index < actions.count; index++) {
         NSString *action = actions[index]; NSString *name = names[index];
         MCShortcutRecorder *recorder = [[MCShortcutRecorder alloc] initWithFrame:NSZeroRect];
         recorder.shortcut = [self.shortcutStore shortcutForAction:action];
         recorder.accessibilityLabel = [name stringByAppendingString:@"快捷键"];
-        [recorder.widthAnchor constraintEqualToConstant:320].active = YES;
+        [recorder.widthAnchor constraintEqualToConstant:392].active = YES;
         [recorder.heightAnchor constraintEqualToConstant:28].active = YES;
         recorder.onChange = ^BOOL(NSDictionary *shortcut) {
             MCPreferencesController *controller = weakSelf; if (!controller) return NO;
@@ -258,11 +259,25 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
         clear.enabled = recorder.shortcut != nil;
         [clear.widthAnchor constraintEqualToConstant:24].active = YES;
         self.shortcutRecorders[action] = recorder; self.shortcutClearButtons[action] = clear;
-        [rows addObject:@[MCLabel(name, 13, NO), recorder, clear]];
+        NSTextField *label = MCLabel(name, 13, NO);
+        [label.widthAnchor constraintEqualToConstant:72].active = YES;
+        NSStackView *row = MCStack(@[label, recorder, clear], NSUserInterfaceLayoutOrientationHorizontal, 12);
+        [row.widthAnchor constraintEqualToConstant:512].active = YES;
+        [rows addObject:row];
     }
-    NSGridView *grid = MCGrid(rows); grid.rowSpacing = 8;
+    NSView *captureGrid = rows[0];
+    NSStackView *recordingGrid = MCStack(@[rows[1], rows[2]], NSUserInterfaceLayoutOrientationVertical, 10);
+    self.startRecordingButton = [NSButton buttonWithTitle:@"开始录屏…" target:self action:@selector(startRecording:)];
+    self.startRecordingButton.image = [NSImage imageWithSystemSymbolName:@"record.circle" accessibilityDescription:nil];
+    self.startRecordingButton.imagePosition = NSImageLeading;
+    self.startRecordingButton.bezelStyle = NSBezelStyleRounded;
+    self.startRecordingButton.enabled = self.onStartRecording != nil;
+    self.startRecordingButton.toolTip = @"选择一个显示器或窗口；系统声音可选，不录麦克风";
+    NSView *recordingSpacer = [NSView new];
+    [recordingSpacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *recordingHeading = MCStack(@[MCHeading(@"录屏"), recordingSpacer, self.startRecordingButton], NSUserInterfaceLayoutOrientationHorizontal, 8);
     NSTextField *feedback = MCLabel(@"Esc 取消录入，Delete 清除。设置会自动保存。", 12, YES);
-    [feedback.heightAnchor constraintGreaterThanOrEqualToConstant:30].active = YES; self.shortcutFeedback = feedback;
+    self.shortcutFeedback = feedback; feedback.hidden = YES;
     NSButton *reset = [NSButton buttonWithTitle:@"恢复默认" target:self action:@selector(resetShortcuts:)];
     reset.bezelStyle = NSBezelStyleRounded; reset.accessibilityLabel = @"恢复全局快捷键为默认值";
     NSView *spacer = [NSView new];
@@ -271,11 +286,22 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     [reset setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSTextField *availability = MCLabel(@"", 11, YES); self.shortcutAvailability = availability;
     [self updateShortcutAvailability];
-    NSStackView *stack = MCStack(@[MCHeading(@"全局快捷键"), MCLabel(@"点按按键框，然后按下你想使用的组合键。", 12, YES), grid, feedback, resetRow, availability], NSUserInterfaceLayoutOrientationVertical, 12);
+    NSStackView *stack = MCStack(@[MCLabel(@"在任意应用中使用；点按按键框可修改组合键。", 12, YES),
+        MCHeading(@"截图"), captureGrid, recordingHeading, recordingGrid, feedback, resetRow, availability], NSUserInterfaceLayoutOrientationVertical, 12);
+    stack.detachesHiddenViews = YES;
+    [stack setCustomSpacing:20 afterView:captureGrid];
+    [recordingHeading.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [resetRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [feedback.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [availability.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     MCPin(stack, page); return page;
+}
+- (void)setOnStartRecording:(void (^)(void))handler {
+    _onStartRecording = [handler copy]; self.startRecordingButton.enabled = handler != nil;
+}
+- (void)startRecording:(__unused id)sender {
+    [self cancelShortcutRecording];
+    if (self.onStartRecording) self.onStartRecording();
 }
 - (void)setPinShortcutFeedback:(NSString *)message error:(BOOL)error {
     self.pinShortcutFeedback.stringValue = message;
@@ -360,7 +386,11 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     }
 }
 - (void)resetPinShortcuts:(__unused id)sender {
-    [self cancelShortcutRecording]; [self.pinShortcutStore restoreDefaults];
+    [self cancelShortcutRecording];
+    NSString *error = nil;
+    if (![self.pinShortcutStore restoreDefaultsWithError:&error]) {
+        [self setPinShortcutFeedback:error ?: @"无法恢复默认贴图快捷键。" error:YES]; return;
+    }
     for (NSString *action in self.pinShortcutRecorders) {
         self.pinShortcutRecorders[action].shortcut = [self.pinShortcutStore shortcutForAction:action];
         self.pinShortcutClearButtons[action].enabled = YES;
@@ -435,7 +465,16 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.checkUpdatesButton.enabled = self.updateController.canCheckForUpdates;
     self.cancelUpdatesButton.hidden = !self.updateController.checkingSource;
     self.releasePageButton.hidden = self.updateController.releasePageURL == nil;
-    self.updateStatus.stringValue = self.updateController.statusText ?: @"更新服务尚未初始化。";
+    NSString *status = self.updateController.statusText ?: @"正在准备更新服务。";
+    self.updateStatus.string = status;
+    self.checkUpdatesButton.title = self.updateController.checkingSource ? @"正在检查…" : @"检查更新";
+    self.updateProgress.hidden = !self.updateController.checkingSource;
+    if (self.updateController.checkingSource) [self.updateProgress startAnimation:nil];
+    else [self.updateProgress stopAnimation:nil];
+    NSRect text = [status boundingRectWithSize:NSMakeSize(472, CGFLOAT_MAX)
+        options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13]}];
+    self.updateStatusHeight.constant = MIN(100, MAX(34, ceil(NSHeight(text)) + 12));
+    if ([self.pages.selectedTabViewItem.identifier isEqual:@"updates"]) [self resizeSelectedPage];
 }
 - (void)automaticUpdatesChanged:(NSButton *)sender {
     self.updateController.automaticallyChecksForUpdates = sender.state == NSControlStateValueOn;
@@ -448,18 +487,46 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSView *page = [NSView new];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoojiCutReleaseVersion"] ?: [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版本";
     self.automaticUpdatesCheckbox = [NSButton checkboxWithTitle:@"自动检查更新" target:self action:@selector(automaticUpdatesChanged:)];
-    self.checkUpdatesButton = [NSButton buttonWithTitle:@"检查更新…" target:self action:@selector(checkUpdates:)];
+    self.checkUpdatesButton = [NSButton buttonWithTitle:@"检查更新" target:self action:@selector(checkUpdates:)];
     self.checkUpdatesButton.bezelStyle = NSBezelStyleRounded;
+    self.checkUpdatesButton.controlSize = NSControlSizeLarge;
     self.cancelUpdatesButton = [NSButton buttonWithTitle:@"取消检查" target:self action:@selector(cancelUpdates:)];
     self.releasePageButton = [NSButton buttonWithTitle:@"打开发布页面" target:self action:@selector(openUpdateRelease:)];
-    NSStackView *actions = MCStack(@[self.checkUpdatesButton, self.cancelUpdatesButton, self.releasePageButton],
-        NSUserInterfaceLayoutOrientationHorizontal, 10);
+    self.updateProgress = [NSProgressIndicator new]; self.updateProgress.style = NSProgressIndicatorStyleSpinning;
+    self.updateProgress.controlSize = NSControlSizeSmall; self.updateProgress.displayedWhenStopped = NO;
+    [self.updateProgress.widthAnchor constraintEqualToConstant:16].active = YES;
+    [self.updateProgress.heightAnchor constraintEqualToConstant:16].active = YES;
+    NSStackView *actions = MCStack(@[self.checkUpdatesButton, self.updateProgress, self.cancelUpdatesButton, self.releasePageButton], NSUserInterfaceLayoutOrientationHorizontal, 10);
     actions.detachesHiddenViews = YES;
-    self.updateStatus = MCLabel(@"", 12, YES);
-    NSStackView *stack = MCStack(@[MCHeading(@"软件更新"), MCLabel([@"当前版本 " stringByAppendingString:version], 13, NO), self.automaticUpdatesCheckbox,
-        MCLabel(@"发现新版本时提醒你，由你确认下载与安装。", 12, YES), actions, self.updateStatus], NSUserInterfaceLayoutOrientationVertical, 14);
-    [self.updateStatus.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    NSTextField *heading = MCLabel(@"软件更新", 21, NO); heading.font = [NSFont systemFontOfSize:21 weight:NSFontWeightSemibold];
+    NSStackView *versionText = MCStack(@[heading, MCLabel([@"当前版本  " stringByAppendingString:version], 12, YES)], NSUserInterfaceLayoutOrientationVertical, 5);
+    NSImageView *symbol = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:@"arrow.triangle.2.circlepath.circle.fill" accessibilityDescription:@"软件更新"]];
+    symbol.contentTintColor = NSColor.controlAccentColor;
+    symbol.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:44 weight:NSFontWeightRegular];
+    [symbol.widthAnchor constraintEqualToConstant:48].active = YES; [symbol.heightAnchor constraintEqualToConstant:48].active = YES;
+    NSStackView *identity = MCStack(@[symbol, versionText], NSUserInterfaceLayoutOrientationHorizontal, 14);
+    NSScrollView *statusScroll = [NSScrollView new];
+    statusScroll.hasVerticalScroller = YES; statusScroll.autohidesScrollers = YES;
+    statusScroll.borderType = NSNoBorder; statusScroll.drawsBackground = NO;
+    self.updateStatus = [[NSTextView alloc] initWithFrame:NSMakeRect(0,0,500,34)];
+    self.updateStatus.editable = NO; self.updateStatus.selectable = YES; self.updateStatus.richText = NO;
+    self.updateStatus.drawsBackground = NO; self.updateStatus.textColor = NSColor.secondaryLabelColor;
+    self.updateStatus.font = [NSFont systemFontOfSize:13]; self.updateStatus.textContainerInset = NSMakeSize(0,4);
+    self.updateStatus.verticallyResizable = YES; self.updateStatus.horizontallyResizable = NO;
+    self.updateStatus.autoresizingMask = NSViewWidthSizable; self.updateStatus.textContainer.widthTracksTextView = YES;
+    self.updateStatus.accessibilityLabel = @"更新状态";
+    statusScroll.documentView = self.updateStatus;
+    self.updateStatusHeight = [statusScroll.heightAnchor constraintEqualToConstant:34]; self.updateStatusHeight.active = YES;
+    NSBox *separator = [NSBox new]; separator.boxType = NSBoxSeparator;
+    NSTextField *explanation = MCLabel(@"自动检查不会中断当前截图或录屏；安装前会由你确认。", 12, YES);
+    NSStackView *state = MCStack(@[statusScroll, actions], NSUserInterfaceLayoutOrientationVertical, 8);
+    [statusScroll.widthAnchor constraintEqualToAnchor:state.widthAnchor].active = YES;
+    NSStackView *stack = MCStack(@[identity, state, separator, self.automaticUpdatesCheckbox, explanation], NSUserInterfaceLayoutOrientationVertical, 14);
+    [stack setCustomSpacing:18 afterView:identity];
+    [stack setCustomSpacing:20 afterView:state];
     [stack setCustomSpacing:6 afterView:self.automaticUpdatesCheckbox];
+    [state.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    for (NSView *view in @[separator, explanation]) [view.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     MCPin(stack, page); [self refreshUpdatePage]; return page;
 }
 - (void)setAppearanceChoice:(NSString *)choice {
@@ -501,8 +568,14 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     [self cancelShortcutRecording];
     if (self.onShortcutRecordingChanged) self.onShortcutRecordingChanged(NO);
     [self.pages selectTabViewItemWithIdentifier:identifier]; self.window.toolbar.selectedItemIdentifier = identifier;
+    [self resizeSelectedPage];
+}
+- (void)resizeSelectedPage {
+    NSString *identifier = self.pages.selectedTabViewItem.identifier;
     NSRect frame = self.window.frame;
-    CGFloat height = ([identifier isEqualToString:@"shortcuts"] || [identifier isEqualToString:@"plugins"]) ? 500 : 340;
+    BOOL pin = [self.shortcutGroups.selectedTabViewItem.identifier isEqual:@"pin"];
+    CGFloat height = [identifier isEqual:@"shortcuts"] ? (pin ? 500 : 420) :
+        [identifier isEqual:@"plugins"] ? 500 : [identifier isEqual:@"updates"] ? 258 + self.updateStatusHeight.constant : 340;
     CGFloat difference = height - self.window.contentView.bounds.size.height;
     frame.size.height += difference; frame.origin.y -= difference;
     [self.window setFrame:frame display:YES];
@@ -538,6 +611,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.shortcutRecorders = nil; self.shortcutClearButtons = nil; self.shortcutFeedback = nil; self.shortcutAvailability = nil;
     self.pinShortcutRecorders = nil; self.pinShortcutClearButtons = nil; self.pinShortcutFeedback = nil; self.shortcutGroups = nil;
     self.automaticUpdatesCheckbox = nil; self.checkUpdatesButton = nil; self.cancelUpdatesButton = nil;
+    self.startRecordingButton = nil; self.updateProgress = nil; self.updateStatusHeight = nil;
     self.releasePageButton = nil; self.pinningCheckbox = nil; self.pinningDescription = nil; self.updateStatus = nil;
     if (self.onClose) self.onClose();
 }

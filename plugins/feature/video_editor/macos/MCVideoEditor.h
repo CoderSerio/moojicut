@@ -3,6 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 @interface MCVideoEditor : NSObject <NSWindowDelegate>
 @property (nonatomic, copy, nullable) void (^onClose)(void);
+@property (nonatomic, copy, nullable) void (^onStateChange)(void);
 @property (nonatomic, readonly) BOOL exporting;
 - (nullable instancetype)initWithDraftDirectory:(NSURL *)directory error:(NSError **)error;
 - (void)show;

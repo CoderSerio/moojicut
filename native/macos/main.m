@@ -95,6 +95,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         self.preferences.userPluginManager = self.userPlugins;
         __weak MCNativeHost *weakSelf = self;
         self.preferences.onClose = ^{ [weakSelf.globalShortcuts resume]; [weakSelf.pinnedImages setShortcutsSuspended:NO]; weakSelf.preferences = nil; };
+        self.preferences.onStartRecording = ^{ [weakSelf startRecording:nil]; };
         self.preferences.onShortcutRecordingChanged = ^(BOOL recording) {
             if (recording) [weakSelf.globalShortcuts suspend]; else [weakSelf.globalShortcuts resume];
             [weakSelf.pinnedImages setShortcutsSuspended:recording];
@@ -143,6 +144,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 - (void)openImage:(__unused id)sender {
     if (self.updateController.installationPending || self.scrollCapture.busy) return;
     self.choosingImage = YES;
+    [self updateRecordingState];
     [self.updateController operationStateDidChange];
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.allowedContentTypes = @[UTTypeImage]; panel.allowsMultipleSelection = NO;
@@ -154,18 +156,32 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         if (![self.captureController showEditorForPNGURL:panel.URL error:&error]) [[NSAlert alertWithError:error] runModal];
     }
     self.choosingImage = NO;
+    [self updateRecordingState];
     [self.updateController operationStateDidChange];
 }
-- (void)startRecording:(__unused id)sender { if (!self.updateController.installationPending) [self.recordingController startRecording]; }
+- (BOOL)canOpenRecording {
+    if (self.updateController.installationPending || self.choosingImage) return NO;
+    if (self.captureController.busy) {
+        [self.captureController showEditingNotice:@"请先完成或取消当前截图，再打开录屏。"];
+        return NO;
+    }
+    return YES;
+}
+- (void)startRecording:(__unused id)sender { if ([self canOpenRecording]) [self.recordingController startRecording]; }
 - (void)stopRecording:(__unused id)sender { [self.recordingController stopRecording]; }
-- (void)resumeRecordingDraft:(__unused id)sender { if (!self.updateController.installationPending) [self.recordingController resumeLastDraft]; }
+- (void)resumeRecordingDraft:(__unused id)sender { if ([self canOpenRecording]) [self.recordingController resumeLastDraft]; }
 - (void)updateRecordingState {
-    self.recordMenuItem.enabled = !self.recordingController.busy && !self.updateController.installationPending;
-    self.stopMenuItem.enabled = self.recordingController.recording;
-    self.statusItem.button.toolTip = self.recordingController.recording ? @"Mooji Cut · 录制中，点击停止录屏" : @"Mooji Cut";
-    self.statusItem.button.title = self.recordingController.recording ? @" ●" : @"";
+    BOOL canOpenRecording = !self.captureController.busy && !self.choosingImage && !self.updateController.installationPending;
+    self.recordMenuItem.enabled = !self.recordingController.busy && canOpenRecording;
+    self.stopMenuItem.enabled = self.recordingController.canStop;
+    self.stopMenuItem.title = self.recordingController.stopActionTitle;
+    self.statusItem.button.toolTip = self.recordingController.statusText;
+    self.statusItem.button.title = self.recordingController.statusItemTitle;
+    self.recordMenuItem.title = self.recordingController.captureInProgress ? self.recordingController.statusText : @"开始录屏…";
     for (NSMenuItem *item in self.statusItem.menu.itemArray)
-        if (item.action == @selector(capture:) || item.action == @selector(openImage:) || item.action == @selector(resumeRecordingDraft:))
+        if (item.action == @selector(resumeRecordingDraft:))
+            item.enabled = !self.recordingController.captureInProgress && canOpenRecording;
+        else if (item.action == @selector(capture:) || item.action == @selector(openImage:))
             item.enabled = !self.updateController.installationPending;
 }
 - (void)updateStateChanged:(__unused NSNotification *)notification { [self updateRecordingState]; }
@@ -307,6 +323,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.pinnedImages.onShortcutStatus = ^(NSString *error) { weakSelf.preferences.pinShortcutRegistrationError = error; };
     self.captureController.includedWindowNumbers = ^{ return weakSelf.pinnedImages.visibleWindowNumbers ?: [NSSet set]; };
     self.captureController.onStateChange = ^{
+        [weakSelf updateRecordingState];
         if (!weakSelf.captureController.busy) [weakSelf.scrollCapture cancel];
         [weakSelf.pinnedImages setCaptureActive:weakSelf.captureController.busy];
         [weakSelf.updateController operationStateDidChange];
@@ -374,6 +391,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         }
     }
     else if ([NSProcessInfo.processInfo.arguments containsObject:@"--capture"]) [self capture:nil];
+    else if ([NSProcessInfo.processInfo.arguments containsObject:@"--resume-recording"]) [self resumeRecordingDraft:nil];
     else if ([NSProcessInfo.processInfo.arguments containsObject:@"--preferences"]) [self showPreferences:nil];
 }
 - (void)closeForSmoke {

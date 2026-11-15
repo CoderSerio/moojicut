@@ -29,6 +29,66 @@ static void Check(BOOL condition, NSString *message) {
     _Exit(1);
 }
 
+@interface MCHostCaptureFixture : MCCaptureController
+@property BOOL fixtureBusy;
+@property NSString *lastNotice;
+@end
+@implementation MCHostCaptureFixture
+- (BOOL)busy { return self.fixtureBusy; }
+- (void)showEditingNotice:(NSString *)message { self.lastNotice = message; }
+@end
+
+@interface MCHostRecordingFixture : MCMacRecordingController
+@property NSUInteger starts, resumes, stops;
+@property BOOL fixtureBusy, fixtureCaptureInProgress;
+@end
+@implementation MCHostRecordingFixture
+- (BOOL)busy { return self.fixtureBusy; }
+- (BOOL)captureInProgress { return self.fixtureCaptureInProgress; }
+- (void)startRecording { self.starts++; }
+- (void)resumeLastDraft { self.resumes++; }
+- (void)stopRecording { self.stops++; }
+@end
+
+@interface MCHostStatusItemFixture : NSObject
+@property NSMenu *menu;
+@property NSStatusBarButton *button;
+@end
+@implementation MCHostStatusItemFixture
+@end
+
+static void CheckRecordingEntryRouting(void) {
+    MCNativeHost *host = [MCNativeHost new];
+    MCHostCaptureFixture *capture = [MCHostCaptureFixture new];
+    MCHostRecordingFixture *recording = [MCHostRecordingFixture new];
+    host.captureController = capture; host.recordingController = recording;
+    host.recordMenuItem = [[NSMenuItem alloc] initWithTitle:@"录屏" action:NULL keyEquivalent:@""];
+    MCHostStatusItemFixture *status = [MCHostStatusItemFixture new];
+    status.menu = [NSMenu new]; status.menu.autoenablesItems = NO;
+    NSMenuItem *resume = [[NSMenuItem alloc] initWithTitle:@"恢复草稿" action:@selector(resumeRecordingDraft:) keyEquivalent:@""];
+    [status.menu addItem:resume]; host.statusItem = (NSStatusItem *)status;
+    capture.fixtureBusy = YES;
+    [host startRecording:nil]; [host resumeRecordingDraft:nil]; [host updateRecordingState];
+    Check(!recording.starts && !recording.resumes && capture.lastNotice.length && !host.recordMenuItem.enabled,
+          @"unfinished screenshot must block recording entries, show a notice, and disable the menu");
+    [host stopRecording:nil];
+    Check(recording.stops == 1, @"stop remains available when a screenshot is open");
+    capture.fixtureBusy = NO; host.choosingImage = YES;
+    [host startRecording:nil]; [host resumeRecordingDraft:nil];
+    Check(!recording.starts && !recording.resumes, @"file picker must not stack recording UI");
+    host.choosingImage = NO;
+    [host startRecording:nil]; [host resumeRecordingDraft:nil]; [host updateRecordingState];
+    Check(recording.starts == 1 && recording.resumes == 1 && host.recordMenuItem.enabled,
+          @"recording entries become available after the screenshot finishes");
+    recording.fixtureBusy = YES;
+    [host updateRecordingState];
+    Check(resume.enabled && !host.recordMenuItem.enabled,
+          @"a hidden video editor remains reachable through resume after screenshot editing");
+    recording.fixtureCaptureInProgress = YES;
+    [host updateRecordingState];
+    Check(!resume.enabled, @"draft recovery stays disabled during active recording");
+}
+
 @interface MCTerminationApplication : NSApplication
 @property NSUInteger replyCount;
 @end
@@ -184,6 +244,7 @@ int main(int argc,const char **argv) {
         moonbit_init();
         MCTerminationApplication *application=[MCTerminationApplication sharedApplication];
         [application setActivationPolicy:NSApplicationActivationPolicyProhibited];
+        CheckRecordingEntryRouting();
         MCTerminationHost *host=[MCTerminationHost new];
         NSUserDefaults *defaults=[[NSUserDefaults alloc] initWithSuiteName:DefaultsSuite];
         MCToolRegistryStore *registry=[[MCToolRegistryStore alloc] initWithDefaults:defaults];

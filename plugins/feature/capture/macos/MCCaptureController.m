@@ -36,6 +36,9 @@ static NSError *MCCaptureError(NSString *message) {
     if (self.editor) [editors addObject:self.editor];
     return editors.array;
 }
+- (void)showEditingNotice:(NSString *)message {
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [editor showPluginMessage:message];
+}
 - (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error {
     NSAssert(NSThread.isMainThread, @"Tool configuration must be applied on the main thread");
     for (MCImageEditorController *editor in [self toolConfigurationEditors])

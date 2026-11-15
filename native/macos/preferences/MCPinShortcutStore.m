@@ -1,6 +1,7 @@
 #import "MCPinShortcutStore.h"
 #import "MCShortcutStore.h"
 #import "MCSystemShortcutCheck.h"
+#import "MCShortcutPolicy.h"
 #include <math.h>
 
 NSNotificationName const MCPinShortcutsDidChangeNotification = @"MCPinShortcutsDidChangeNotification";
@@ -22,7 +23,9 @@ static NSDictionary *MCPinNormalize(id value) {
         ![value[@"modifiers"] isKindOfClass:NSNumber.class]) return nil;
     double code = [value[@"keyCode"] doubleValue], flags = [value[@"modifiers"] doubleValue];
     if (!isfinite(code) || code < 0 || code > 126 || floor(code) != code ||
-        !isfinite(flags) || flags < 0 || flags > UINT32_MAX || floor(flags) != flags) return nil;
+        !isfinite(flags) || flags < 0 || flags > UINT32_MAX || floor(flags) != flags ||
+        CFGetTypeID((__bridge CFTypeRef)value[@"keyCode"]) == CFBooleanGetTypeID() ||
+        CFGetTypeID((__bridge CFTypeRef)value[@"modifiers"]) == CFBooleanGetTypeID()) return nil;
     NSDictionary *base = [MCPinShortcutStore shortcutWithKeyCode:(unsigned short)code modifiers:(NSUInteger)flags];
     if (!base) return nil;
     NSMutableDictionary *result = [base mutableCopy];
@@ -58,18 +61,15 @@ static BOOL MCPinEqual(NSDictionary *a, NSDictionary *b) {
         @"keyLabel":keyCode == 24 ? @"+" : keyCode == 27 ? @"−" : key[@"keyLabel"]};
 }
 - (NSDictionary *)currentShortcuts {
-    NSMutableDictionary *values = [MCPinDefaults() mutableCopy];
+    NSMutableDictionary *normalized = [NSMutableDictionary dictionary];
     NSDictionary *saved = [self.defaults dictionaryForKey:MCPinShortcutsKey];
-    NSMutableArray *seen = [NSMutableArray array];
     for (NSString *action in MCPinActions()) {
         id raw = saved[action];
-        if ([raw isKindOfClass:NSDictionary.class] && [raw count] == 0) values[action] = @{};
-        else if (MCPinNormalize(raw)) values[action] = MCPinNormalize(raw);
-        NSDictionary *value = [values[action] count] ? values[action] : nil;
-        for (NSDictionary *prior in seen) if (MCPinEqual(prior, value)) { values[action] = @{}; value = nil; break; }
-        if (value) [seen addObject:value];
+        if ([raw isKindOfClass:NSDictionary.class] && [raw count] == 0) normalized[action] = @{};
+        else { NSDictionary *value = MCPinNormalize(raw); if (value) normalized[action] = value; }
     }
-    return values;
+    return MCShortcutResolve(MCPinActions(), @[@"visibilityToggle", @"clickThroughToggle"], MCPinDefaults(),
+        normalized, nil, nil, nil, NULL) ?: @{};
 }
 - (NSDictionary *)shortcutForAction:(NSString *)action {
     NSDictionary *value = [self currentShortcuts][action];
@@ -77,39 +77,56 @@ static BOOL MCPinEqual(NSDictionary *a, NSDictionary *b) {
 }
 - (BOOL)setShortcut:(NSDictionary *)shortcut forAction:(NSString *)action error:(NSString **)error {
     if (error) *error = nil;
-    if (![MCPinActions() containsObject:action]) { if (error) *error = @"无法识别这个贴图操作。"; return NO; }
     NSDictionary *value = shortcut ? MCPinNormalize(shortcut) : nil;
     if (shortcut && !value) { if (error) *error = @"请按一个普通按键，可同时按住 ⌘、⌃、⌥ 或 ⇧。"; return NO; }
+    MCShortcutStore *global = [[MCShortcutStore alloc] initWithDefaults:self.defaults];
+    NSMutableDictionary *external = [NSMutableDictionary dictionary];
+    for (NSString *other in @[@"capture", @"record", @"stop"]) {
+        NSDictionary *binding = [global shortcutForAction:other]; if (binding) external[other] = binding;
+    }
+    NSDictionary *detail = nil;
+    NSDictionary *values = MCShortcutResolve(MCPinActions(), @[@"visibilityToggle", @"clickThroughToggle"],
+        MCPinDefaults(), [self currentShortcuts], action, value, external, &detail);
+    if (!values) {
+        NSString *code = detail[@"code"];
+        NSDictionary *names = @{@"zoomIn":@"放大", @"zoomOut":@"缩小", @"opacityUp":@"提高不透明度", @"opacityDown":@"降低不透明度", @"visibilityToggle":@"隐藏/恢复", @"clickThroughToggle":@"鼠标穿透"};
+        if (error) *error = [code isEqual:@"duplicate"] ?
+            [NSString stringWithFormat:@"此按键已用于“%@”，请选择其他按键。", names[detail[@"message"]] ?: detail[@"message"]] :
+            [code isEqual:@"external_duplicate"] ? @"此组合键已用于截图或录屏。" :
+            [code isEqual:@"invalid_shortcut"] ? @"隐藏和鼠标穿透需要组合键，以便切换应用后恢复贴图。" : @"无法识别这个贴图操作。";
+        return NO;
+    }
     if (value && ([action isEqual:@"visibilityToggle"] || [action isEqual:@"clickThroughToggle"])) {
-        NSEventModifierFlags flags = [value[@"modifiers"] unsignedIntegerValue];
-        if (!(flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption))) {
-            if (error) *error = @"隐藏和鼠标穿透需要组合键，以便切换应用后恢复贴图。";
-            return NO;
-        }
-        NSString *conflict = MCSystemShortcutConflict([value[@"keyCode"] unsignedShortValue], flags);
+        NSString *conflict = MCSystemShortcutConflict([value[@"keyCode"] unsignedShortValue], [value[@"modifiers"] unsignedIntegerValue]);
         if (conflict) { if (error) *error = conflict; return NO; }
-        MCShortcutStore *global = [[MCShortcutStore alloc] initWithDefaults:self.defaults];
-        for (NSString *other in @[@"capture", @"record", @"stop"]) if (MCPinEqual(value, [global shortcutForAction:other])) {
-            if (error) *error = @"此组合键已用于截图或录屏。";
-            return NO;
-        }
     }
-    NSMutableDictionary *values = [[self currentShortcuts] mutableCopy];
-    if (value) for (NSString *other in MCPinActions()) {
-        if (![other isEqual:action] && MCPinEqual(values[other], value)) {
-            NSDictionary *names = @{@"zoomIn":@"放大", @"zoomOut":@"缩小", @"opacityUp":@"提高不透明度", @"opacityDown":@"降低不透明度", @"visibilityToggle":@"隐藏/恢复", @"clickThroughToggle":@"鼠标穿透"};
-            if (error) *error = [NSString stringWithFormat:@"此按键已用于“%@”，请选择其他按键。", names[other]];
-            return NO;
-        }
-    }
-    values[action] = value ?: @{};
     [self.defaults setObject:values forKey:MCPinShortcutsKey];
     [NSNotificationCenter.defaultCenter postNotificationName:MCPinShortcutsDidChangeNotification object:self.defaults];
     return YES;
 }
 - (void)restoreDefaults {
-    [self.defaults setObject:MCPinDefaults() forKey:MCPinShortcutsKey];
+    [self restoreDefaultsWithError:NULL];
+}
+- (BOOL)restoreDefaultsWithError:(NSString **)error {
+    if (error) *error = nil;
+    NSDictionary *defaults = MCPinDefaults();
+    MCShortcutStore *global = [[MCShortcutStore alloc] initWithDefaults:self.defaults];
+    NSMutableDictionary *external = [NSMutableDictionary dictionary];
+    for (NSString *action in @[@"capture", @"record", @"stop"]) {
+        NSDictionary *value = [global shortcutForAction:action]; if (value) external[action] = value;
+    }
+    NSArray *globalActions = @[@"visibilityToggle", @"clickThroughToggle"];
+    for (NSString *action in globalActions) {
+        NSDictionary *value = defaults[action];
+        if (!MCShortcutResolve(MCPinActions(), globalActions, defaults, defaults, action, value, external, NULL)) {
+            if (error) *error = @"默认贴图组合与截图或录屏快捷键冲突，原设置已保留。"; return NO;
+        }
+        NSString *conflict = MCSystemShortcutConflict([value[@"keyCode"] unsignedShortValue], [value[@"modifiers"] unsignedIntegerValue]);
+        if (conflict) { if (error) *error = conflict; return NO; }
+    }
+    [self.defaults setObject:defaults forKey:MCPinShortcutsKey];
     [NSNotificationCenter.defaultCenter postNotificationName:MCPinShortcutsDidChangeNotification object:self.defaults];
+    return YES;
 }
 - (NSString *)actionForKeyCode:(unsigned short)keyCode modifiers:(NSEventModifierFlags)modifiers {
     NSDictionary *key = [MCPinShortcutStore shortcutWithKeyCode:keyCode modifiers:modifiers];

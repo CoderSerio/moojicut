@@ -32,9 +32,13 @@ pub fn feature_transition(Int32, Int32) -> Int32
 
 pub fn image_apply(String) -> String
 
+pub fn image_arrowhead_value(Double, Double, Double, Double, Double, Int32) -> Double
+
 pub fn image_create(String) -> String
 
 pub fn image_finalize(String) -> String
+
+pub fn image_selection(String) -> String
 
 pub fn image_session_add(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
@@ -51,6 +55,8 @@ pub fn image_session_create_viewport(Int32, Int32, Int32, Int32, Int32, Int32) -
 pub fn image_session_crop(Int32, Int32, Int32, Int32, Int32) -> Int32
 
 pub fn image_session_dispose(Int32) -> Unit
+
+pub fn image_session_hit(Int32, Double, Double, Double, Int32) -> Int32
 
 pub fn image_session_redo(Int32) -> Int32
 
@@ -69,6 +75,8 @@ pub fn image_session_update_rgba(Int32, Int32, Int32, Int32, Int32, Int32, Int32
 pub fn image_session_value(Int32, Int32, Int32) -> Double
 
 pub fn image_session_viewport_value(Int32, Int32) -> Double
+
+pub fn native_recording_plan(Int32, Int32, Int32, Int32) -> FixedArray[Int32]
 
 pub fn native_video_clear_cuts(Int32) -> Int32
 
@@ -108,6 +116,18 @@ pub fn native_video_trim(Int32, Int32, Int32) -> Int32
 
 pub fn native_video_undo(Int32) -> Int32
 
+pub fn pin_hidden_after(Int32, Int32, Int32, Int32, Int32) -> Int32
+
+pub fn pin_initial_scale(Double, Double, Double, Double) -> Double
+
+pub fn pin_opacity(Int32, Double, Int32) -> Double
+
+pub fn pin_scale(Int32, Double, Double, Double, Double, Double) -> Double
+
+pub fn pin_visibility_action(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
+
+pub fn pin_zoom_step(Double, Int32) -> Double
+
 pub fn plugin_manifest_validate(String) -> String
 
 pub fn plugin_output_validate(String) -> String
@@ -115,6 +135,10 @@ pub fn plugin_output_validate(String) -> String
 pub fn plugin_request_prepare(String) -> String
 
 pub fn preview_core_check() -> Int32
+
+pub fn recording_plan(String) -> String
+
+pub fn recording_status(String) -> String
 
 pub fn recording_transition(String, String) -> String
 
@@ -129,6 +153,10 @@ pub fn selection_hit_handle(Double, Double, Double, Double, Double, Double, Doub
 pub fn selection_region(Double, Double, Double, Double) -> FixedArray[Double]
 
 pub fn selection_transform(Double, Double, Double, Double, Double, Double, Double, Double, Int32, Double, Double, Double, Double, Double, Int32) -> FixedArray[Double]
+
+pub fn shortcut_bindings_resolve(String) -> String
+
+pub fn shortcut_modifiers_allowed(Int32, Int32) -> Int32
 
 pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 

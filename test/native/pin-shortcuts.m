@@ -14,6 +14,19 @@ NSNotificationName const MCUpdateStateDidChangeNotification = @"MCUpdateStateDid
 - (void)resetPinShortcuts:(id)sender;
 @end
 
+// A local update-state source exercises settings layout without starting an
+// updater, network request or installation.
+@interface MCPreferencesUpdateStub : NSObject
+@property BOOL available;
+@property BOOL canCheckForUpdates;
+@property BOOL checkingSource;
+@property BOOL automaticallyChecksForUpdates;
+@property NSURL *releasePageURL;
+@property NSString *statusText;
+@end
+@implementation MCPreferencesUpdateStub
+@end
+
 // Tests use an isolated defaults domain and a hidden recorder window. No
 // global hotkeys are registered and no event is posted to another application.
 static NSEvent *key(unsigned short code, NSEventModifierFlags flags) {
@@ -135,6 +148,37 @@ int main(void) {
             __block BOOL recordingSettings = NO;
             preferences.onShortcutRecordingChanged = ^(BOOL active) { recordingSettings = active; };
             [preferences buildWindow]; [preferences selectPage:@"shortcuts"];
+            [preferences.window.contentView layoutSubtreeIfNeeded];
+            NSDictionary *visibleRecorders = [preferences valueForKey:@"shortcutRecorders"];
+            for (NSString *action in @[@"capture", @"record", @"stop"]) {
+                NSView *recorder = visibleRecorders[action];
+                NSRect rect = [recorder convertRect:recorder.bounds toView:preferences.window.contentView];
+                CHECK(recorder && !recorder.hiddenOrHasHiddenAncestor && NSContainsRect(preferences.window.contentView.bounds, rect),
+                      "capture/start/stop shortcut rows are visible together on the default settings page");
+            }
+            __block NSUInteger starts = 0;
+            preferences.onStartRecording = ^{ starts++; };
+            NSButton *recordButton = [preferences valueForKey:@"startRecordingButton"];
+            [recordButton performClick:nil];
+            CHECK(recordButton.enabled && starts == 1, "the recording entry dispatches one host callback");
+            MCPreferencesUpdateStub *updates = [MCPreferencesUpdateStub new];
+            updates.available = YES; updates.canCheckForUpdates = YES;
+            NSMutableString *longStatus = [NSMutableString string];
+            for (NSUInteger line=0; line<25; line++) [longStatus appendString:@"暂时无法检查更新，当前版本仍可使用。请稍后重试。\n"];
+            updates.statusText = longStatus; preferences.updateController = (id)updates;
+            [preferences selectPage:@"updates"]; [preferences.window.contentView layoutSubtreeIfNeeded];
+            NSTextView *updateStatus = [preferences valueForKey:@"updateStatus"];
+            NSScrollView *statusScroll = updateStatus.enclosingScrollView;
+            NSButton *checkUpdates = [preferences valueForKey:@"checkUpdatesButton"];
+            CHECK([updateStatus.string isEqual:longStatus] && NSHeight(statusScroll.frame) <= 140 &&
+                  NSHeight(updateStatus.frame) > NSHeight(statusScroll.contentView.bounds) &&
+                  NSContainsRect(preferences.window.contentView.bounds,[checkUpdates convertRect:checkUpdates.bounds toView:preferences.window.contentView]),
+                  "long update failures remain complete and scrollable without pushing the primary action outside the page");
+            updates.checkingSource = YES; updates.canCheckForUpdates = NO;
+            [NSNotificationCenter.defaultCenter postNotificationName:MCUpdateStateDidChangeNotification object:updates];
+            CHECK(!checkUpdates.enabled && ![[preferences valueForKey:@"cancelUpdatesButton"] isHidden],
+                  "checking updates exposes cancellation and prevents a duplicate check");
+            [preferences selectPage:@"shortcuts"];
             NSSegmentedControl *groupSelector = [NSSegmentedControl segmentedControlWithLabels:@[@"global", @"pin"]
                 trackingMode:NSSegmentSwitchTrackingSelectOne target:nil action:NULL];
             groupSelector.selectedSegment = 1; [preferences selectShortcutGroup:groupSelector];

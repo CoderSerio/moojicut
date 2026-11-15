@@ -6,6 +6,8 @@ pub fn edit_plan(String) -> String
 
 pub fn export_profile(String) -> String
 
+pub fn native_recording_plan(Int32, Int32, Int32, Int32) -> FixedArray[Int32]
+
 pub fn native_video_clear_cuts(Int32) -> Int32
 
 pub fn native_video_close(Int32) -> Unit
@@ -43,6 +45,10 @@ pub fn native_video_snapshot(Int32) -> String
 pub fn native_video_trim(Int32, Int32, Int32) -> Int32
 
 pub fn native_video_undo(Int32) -> Int32
+
+pub fn recording_plan(String) -> String
+
+pub fn recording_status(String) -> String
 
 pub fn recording_transition(String, String) -> String
 

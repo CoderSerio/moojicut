@@ -57,6 +57,7 @@
 - (void)setPropertyMask:(int32_t)mask {
     _propertyMask = mask;
     self.colorControl.hidden = !(mask & (1 << MC_STYLE_COLOR));
+    if (self.colorControl.hidden) [self.colorControl closePopover];
     self.fontControl.hidden = !(mask & (1 << MC_STYLE_FONT));
     self.strokeControl.hidden = !(mask & (1 << MC_STYLE_STROKE));
     self.colorControl.well.enabled = !self.colorControl.hidden;

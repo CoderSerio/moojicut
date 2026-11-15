@@ -6,6 +6,7 @@
 #import "native/macos/preferences/MCShortcutStore.h"
 #import "native/macos/preferences/MCSystemShortcutCheck.h"
 #include "native/shared/feature_runtime.h"
+#include "native/shared/pin_policy.h"
 
 @class MCPinnedImage;
 @interface MCPinnedPanel : NSPanel
@@ -65,7 +66,6 @@
 - (void)copyImage:(nullable id)sender;
 - (BOOL)copyToPasteboard:(NSPasteboard *)pasteboard;
 - (BOOL)handleKeyEvent:(NSEvent *)event;
-- (void)zoomBy:(CGFloat)factor;
 - (void)constrainPosition;
 @end
 
@@ -172,23 +172,22 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     self.view.needsDisplay = YES;
 }
 - (void)setOpacity:(CGFloat)opacity {
-    _opacity = MAX(0.1, MIN(1, opacity));
+    _opacity = pin_opacity(MC_PIN_MACOS, opacity, 0);
     self.panel.alphaValue = self.userHidden ? 0 : _opacity;
     [self updateTooltip];
 }
 - (void)setScaleAroundCenter:(CGFloat)scale {
     NSRect old = self.panel.frame, screen = MCPinVisibleFrame(old);
     // Keep the complete image reachable even after a move to a smaller screen.
-    CGFloat maximum = MIN(8, MIN(screen.size.width * 0.95 / self.sourceSize.width,
-                                 screen.size.height * 0.95 / self.sourceSize.height));
-    CGFloat minimum = MIN(0.1, maximum);
-    _scale = MAX(minimum, MIN(maximum, scale));
+    CGFloat resolved = pin_scale(MC_PIN_MACOS, scale, self.sourceSize.width, self.sourceSize.height,
+                                 screen.size.width, screen.size.height);
+    if (resolved <= 0) return;
+    _scale = resolved;
     NSSize size = NSMakeSize(self.sourceSize.width * _scale, self.sourceSize.height * _scale);
     NSRect frame = NSMakeRect(NSMidX(old) - size.width / 2, NSMidY(old) - size.height / 2, size.width, size.height);
     [self.panel setFrame:MCPinConstrainFrame(frame, screen) display:YES];
     [self updateTooltip];
 }
-- (void)zoomBy:(CGFloat)factor { [self setScaleAroundCenter:self.scale * factor]; }
 - (void)constrainPosition {
     [self setScaleAroundCenter:self.scale];
 }
@@ -197,10 +196,10 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     if (self.clickThrough) return;
     if ([action isEqual:@"visibilityToggle"]) { [self.owner toggleVisibility]; return; }
     if (self.userHidden) return;
-    if ([action isEqual:@"zoomIn"]) [self zoomBy:1.1];
-    else if ([action isEqual:@"zoomOut"]) [self zoomBy:1 / 1.1];
-    else if ([action isEqual:@"opacityUp"]) self.opacity += 0.1;
-    else if ([action isEqual:@"opacityDown"]) self.opacity -= 0.1;
+    if ([action isEqual:@"zoomIn"]) [self setScaleAroundCenter:pin_zoom_step(self.scale, 1)];
+    else if ([action isEqual:@"zoomOut"]) [self setScaleAroundCenter:pin_zoom_step(self.scale, -1)];
+    else if ([action isEqual:@"opacityUp"]) self.opacity = pin_opacity(MC_PIN_MACOS, self.opacity, 1);
+    else if ([action isEqual:@"opacityDown"]) self.opacity = pin_opacity(MC_PIN_MACOS, self.opacity, -1);
 }
 - (BOOL)handleKeyEvent:(NSEvent *)event {
     if (!self.selected || self.owner.captureActive || event.type != NSEventTypeKeyDown) return NO;
@@ -356,7 +355,7 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     CGFloat backing = screen ? MAX(1, screen.backingScaleFactor) : 1;
     pin.sourceSize = NSMakeSize(bitmap.pixelsWide / backing, bitmap.pixelsHigh / backing);
     NSRect visible = screen ? screen.visibleFrame : NSMakeRect(0, 0, 1280, 800);
-    CGFloat initial = MIN(1, MIN(visible.size.width * 0.75 / pin.sourceSize.width, visible.size.height * 0.75 / pin.sourceSize.height));
+    CGFloat initial = pin_initial_scale(pin.sourceSize.width, pin.sourceSize.height, visible.size.width, visible.size.height);
     CGFloat width = pin.sourceSize.width * initial, height = pin.sourceSize.height * initial;
     CGFloat offset = (self.pins.count % 8) * 20;
     NSRect frame = MCPinConstrainFrame(NSMakeRect(NSMidX(visible) - width / 2 + offset,
@@ -439,8 +438,9 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     else if (pin.displayed) [pin.panel orderFront:nil];
 }
 - (void)restoreHiddenPins {
-    for (MCPinnedImage *pin in self.pins) if (pin.userHidden && !pin.clickThrough) {
-        pin.userHidden = NO; [self applyVisibility:pin];
+    for (MCPinnedImage *pin in self.pins) {
+        BOOL hidden = pin_hidden_after(MC_PIN_MACOS, MC_PIN_RESTORE_HIDDEN, pin.userHidden, pin.clickThrough, 0);
+        if (hidden != pin.userHidden) { pin.userHidden = hidden; [self applyVisibility:pin]; }
     }
 }
 - (void)disableClickThrough {
@@ -453,14 +453,18 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     MCPinnedImage *selected = nil;
     BOOL hidden = NO;
     for (MCPinnedImage *pin in self.pins) { if (pin.selected) selected = pin; hidden = hidden || pin.userHidden; }
-    if (selected.clickThrough) return;
-    if (selected && selected.userHidden) {
-        selected.userHidden = NO; [self applyVisibility:selected]; [self selectPin:selected focus:YES]; return;
+    int32_t action = pin_visibility_action(MC_PIN_MACOS, selected != nil, selected.userHidden, selected.clickThrough,
+                                           hidden, [self recoveryShortcutAvailable:@"visibilityToggle"]);
+    if (action == MC_PIN_VISIBILITY_NONE) return;
+    if (action == MC_PIN_RECOVERY_UNAVAILABLE) { NSBeep(); return; }
+    if (action == MC_PIN_SHOW_SELECTED) {
+        selected.userHidden = pin_hidden_after(MC_PIN_MACOS, action, selected.userHidden, selected.clickThrough, 1);
+        [self applyVisibility:selected]; [self selectPin:selected focus:YES]; return;
     }
-    if (!selected && hidden) { [self restoreHiddenPins]; return; }
-    if (![self recoveryShortcutAvailable:@"visibilityToggle"]) { NSBeep(); return; }
-    for (MCPinnedImage *pin in self.pins) if ((!selected || pin == selected) && !pin.clickThrough) {
-        pin.userHidden = YES; [self applyVisibility:pin];
+    if (action == MC_PIN_SHOW_HIDDEN) { [self restoreHiddenPins]; return; }
+    for (MCPinnedImage *pin in self.pins) {
+        BOOL next = pin_hidden_after(MC_PIN_MACOS, action, pin.userHidden, pin.clickThrough, pin == selected);
+        if (next != pin.userHidden) { pin.userHidden = next; [self applyVisibility:pin]; }
     }
 }
 - (void)toggleClickThrough {

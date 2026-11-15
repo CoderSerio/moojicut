@@ -61,7 +61,7 @@ class NativeBuild:
         manifest = (ROOT / "moon.mod").read_text()
         self.name = self.manifest_value(manifest, "name")
         self.version = self.manifest_value(manifest, "version")
-        self.release_version = release_version or self.version + "-alpha.14"
+        self.release_version = release_version or self.version + "-alpha.15"
         version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
                                self.release_version)
         if not version:
@@ -392,9 +392,10 @@ class NativeBuild:
         preferences = ROOT / "native/macos/preferences"
         user_plugins = native_sources("macos", "system.user_plugins")
         executable = shortcuts / "shortcut-settings"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", preferences,
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", preferences, "-I", self.include,
                  ROOT / "test/native/shortcut-settings.m", preferences / "MCShortcutStore.m",
-                 preferences / "MCSystemShortcutCheck.m", "-framework", "AppKit", "-framework", "Carbon",
+                 preferences / "MCPinShortcutStore.m",
+                 preferences / "MCSystemShortcutCheck.m", archive, "-framework", "AppKit", "-framework", "Carbon",
                  "-o", executable)
         self.run(executable)
         pin_shortcuts = shortcuts / "pin-shortcuts"
@@ -413,9 +414,10 @@ class NativeBuild:
                  "-I", self.include, preferences / "MCToolRegistryStore.m", archive, "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
         self.run(pinned_image)
         global_shortcuts = shortcuts / "global-shortcuts"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos", "-I", self.include,
                  ROOT / "test/native/global-shortcuts.m", preferences / "MCShortcutStore.m",
-                 preferences / "MCSystemShortcutCheck.m", ROOT / "native/macos/shortcuts/MCGlobalShortcutManager.m",
+                 preferences / "MCPinShortcutStore.m",
+                 preferences / "MCSystemShortcutCheck.m", ROOT / "native/macos/shortcuts/MCGlobalShortcutManager.m", archive,
                  "-framework", "AppKit", "-framework", "Carbon", "-o", global_shortcuts)
         self.run(global_shortcuts)
         capture_permission = shortcuts / "capture-permission"
@@ -446,6 +448,15 @@ class NativeBuild:
                  *native_sources("macos", "feature.capture"), archive,
                  "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", tool_layout)
         self.run(tool_layout)
+        recording_experience = shortcuts / "recording-experience"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
+                 "-I", self.include, "-I", ROOT, ROOT / "test/native/recording-experience.m",
+                 *native_sources("macos", "feature.recording"), archive,
+                 "-framework", "AppKit", "-framework", "ScreenCaptureKit", "-framework", "AVKit",
+                 "-framework", "AVFoundation", "-framework", "UniformTypeIdentifiers",
+                 "-framework", "CoreMedia", "-framework", "CoreVideo", "-o", recording_experience)
+        with tempfile.TemporaryDirectory(prefix="moojicut-recording-test-") as media_directory:
+            self.run(recording_experience, media_directory)
         scroll_capture = shortcuts / "scroll-capture"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
                  ROOT / "test/native/scroll-capture.m", *native_sources("macos", "feature.scroll_capture"),
@@ -612,7 +623,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "test-text", "smoke", "release", "archive-test"))
     parser.add_argument("--release-version", metavar="VERSION",
-                        help="Release label (default: <moon.mod version>-alpha.14).")
+                        help="Release label (default: <moon.mod version>-alpha.15).")
     parser.add_argument("--profile", choices=("development", "smoke", "production"),
                         help="Default: isolated development; release uses production, smoke uses smoke.")
     parser.add_argument("--test-id", help="Stable lowercase identifier for an isolated test profile.")
