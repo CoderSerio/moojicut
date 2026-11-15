@@ -17,6 +17,7 @@ do {
     }
     let key = try Curve25519.Signing.PublicKey(rawRepresentation: rawKey)
     let feed = try Data(contentsOf: URL(fileURLWithPath: args[2]))
+    try require(feed.count <= 4 * 1024 * 1024, "Feed exceeds the application download limit")
     guard let start = feed.range(of: Data("<!-- sparkle-signatures:\n".utf8), options: .backwards),
           let footer = String(data: feed[start.lowerBound...], encoding: .utf8) else {
         throw InvalidUpdate(message: "Missing feed signature")
@@ -32,7 +33,9 @@ do {
     let xml = try XMLDocument(data: feed.prefix(length), options: [.nodeLoadExternalEntitiesNever])
     let archiveURL = URL(fileURLWithPath: args[3])
     let enclosures = try xml.nodes(forXPath: "/rss/channel/item/enclosure").compactMap { $0 as? XMLElement }
-    guard let item = enclosures.first(where: { URL(string: $0.attribute(forName: "url")?.stringValue ?? "")?.lastPathComponent == archiveURL.lastPathComponent }),
+    let matches = enclosures.filter { URL(string: $0.attribute(forName: "url")?.stringValue ?? "")?.lastPathComponent == archiveURL.lastPathComponent }
+    try require(matches.count == 1, "Archive must appear exactly once in the signed feed")
+    guard let item = matches.first,
           let archiveSignature = Data(base64Encoded: item.attribute(forLocalName: "edSignature", uri: "http://www.andymatuschak.org/xml-namespaces/sparkle")?.stringValue ?? ""),
           let archiveLength = Int(item.attribute(forName: "length")?.stringValue ?? "") else {
         throw InvalidUpdate(message: "Archive is missing from the signed feed")

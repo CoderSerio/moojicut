@@ -17,25 +17,28 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from install_sparkle import install as install_sparkle, VERSION as SPARKLE_VERSION
 from install_extism import install as install_extism, VERSION as EXTISM_VERSION
 from native_modules import native_sources
+from native_profile import native_profile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-APP_NAME = "Mooji Cut"
 EXECUTABLE_NAME = "MoojiCut"
-APP = ROOT / "dist/native-app.noindex" / (APP_NAME + ".app")
 ARTIFACTS = ROOT / ".artifacts"
 FRAMEWORKS = ["AppKit", "Foundation", "Carbon", "ScreenCaptureKit", "AVKit",
               "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "UniformTypeIdentifiers"]
 
 
 class NativeBuild:
-    def __init__(self, release_version=None):
+    def __init__(self, release_version=None, profile="development", app_output=None, test_id=None, release_output=None):
         if sys.platform != "darwin":
             raise RuntimeError("The AppKit host requires macOS and Xcode Command Line Tools.")
+        self.profile = native_profile(ROOT, profile, app_output, test_id)
+        self.app = self.profile.app
+        self.release_directory = Path(release_output).expanduser().absolute() if release_output else ROOT / "dist/releases"
         local = ROOT / ".tools/moon"
         if (local / "bin/moon").is_file():
             home = local.resolve()
@@ -199,7 +202,7 @@ class NativeBuild:
         brand = ROOT / "assets/brand/mooji-cut"
         with tempfile.TemporaryDirectory(prefix="staging-", dir=directory) as staging_name:
             staging = Path(staging_name)
-            staged_app = staging / APP.name
+            staged_app = staging / self.app.name
             contents = staged_app / "Contents"
             resources = contents / "Resources"
             executable = contents / "MacOS" / EXECUTABLE_NAME
@@ -228,8 +231,9 @@ class NativeBuild:
             shutil.copy2(brand / "menubar-18.png", resources / "MoojiCutStatusTemplate.png")
             shutil.copy2(brand / "menubar-18@2x.png", resources / "MoojiCutStatusTemplate@2x.png")
             info = {
-                "CFBundleDevelopmentRegion": "zh_CN", "CFBundleName": APP_NAME,
-                "CFBundleDisplayName": APP_NAME, "CFBundleIdentifier": "dev.moojicut.native",
+                "CFBundleDevelopmentRegion": "zh_CN", "CFBundleName": self.profile.app_name,
+                "CFBundleDisplayName": self.profile.app_name, "CFBundleIdentifier": self.profile.bundle_id,
+                "MoojiCutBuildProfile": self.profile.name, "MoojiCutDefaultsDomain": self.profile.defaults_domain,
                 "CFBundleExecutable": EXECUTABLE_NAME, "CFBundleIconFile": "MoojiCut.icns",
                 "CFBundlePackageType": "APPL", "CFBundleShortVersionString": self.short_version,
                 "CFBundleVersion": self.bundle_version, "MoonBitCoreVersion": self.version,
@@ -242,7 +246,7 @@ class NativeBuild:
                 "SURequireSignedFeed": True,
             }
             update_config = native / "updates/feed.json"
-            if update_config.is_file():
+            if self.profile.production and update_config.is_file():
                 feed = json.loads(update_config.read_text())
                 info["SUFeedURL"] = feed["feedURL"]
                 info["SUPublicEDKey"] = feed["publicKey"]
@@ -252,6 +256,7 @@ class NativeBuild:
             if re.search(r"Electron|Chromium|WebKit|libnode", dependencies, re.I):
                 raise RuntimeError("Unexpected browser or Node runtime in the native application.")
             metadata = {"version": self.release_version, "bundleVersion": self.bundle_version,
+                        "buildProfile": self.profile.name, "bundleIdentifier": self.profile.bundle_id,
                         "coreVersion": self.version, **self.source_revision(),
                         "compilerVersion": self.compiler, "clangVersion": self.clang,
                         "arch": arch, "minimumMacOSVersion": minimum_macos,
@@ -269,37 +274,51 @@ class NativeBuild:
                          "--timestamp=none", "--preserve-metadata=entitlements", component)
             self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", staged_app)
             self.run("/usr/bin/codesign", "--verify", "--deep", "--strict", staged_app)
-            APP.parent.mkdir(parents=True, exist_ok=True)
+            self.app.parent.mkdir(parents=True, exist_ok=True)
             # A failed compilation or bundle check must not remove the last good app.
             previous = staging / "previous.app"
-            if APP.exists():
-                APP.rename(previous)
+            if self.app.exists():
+                self.app.rename(previous)
             try:
-                staged_app.rename(APP)
+                staged_app.rename(self.app)
             except OSError:
                 if previous.exists():
-                    previous.rename(APP)
+                    previous.rename(self.app)
                 raise
-        print("Native app:", APP, flush=True)
+        print("Native app:", self.app, flush=True)
         print("Executable: {:.0f} KiB; {} Objective-C files + MoonBit static core; {} signed."
-              .format((APP / "Contents/MacOS" / EXECUTABLE_NAME).stat().st_size / 1024, len(sources),
+              .format((self.app / "Contents/MacOS" / EXECUTABLE_NAME).stat().st_size / 1024, len(sources),
                       "ad-hoc" if self.signing_identity == "-" else "certificate"), flush=True)
 
     def release(self):
+        if not self.profile.production:
+            raise RuntimeError("A release requires the production profile.")
+        # Only the archive survives. Never leave another launchable production
+        # bundle in a worktree for Spotlight/LaunchServices to discover.
+        ARTIFACTS.mkdir(exist_ok=True)
+        original = self.app
+        with tempfile.TemporaryDirectory(prefix="release.noindex-", dir=ARTIFACTS) as directory:
+            self.app = Path(directory) / "Mooji Cut.app"
+            try:
+                self.package_release()
+            finally:
+                self.app = original
+
+    def package_release(self):
         self.build()
-        metadata = json.loads((APP / "Contents/Resources/build.json").read_text())
+        metadata = json.loads((self.app / "Contents/Resources/build.json").read_text())
         filename = "moojicut-{}-macos-{}.zip".format(self.release_version, metadata["arch"])
-        directory = ROOT / "dist/releases"
+        directory = self.release_directory
         directory.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".staging-", dir=directory) as staging_name:
             staging = Path(staging_name)
             archive = staging / filename
-            self.run("/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", APP, archive)
+            self.run("/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", self.app, archive)
             with zipfile.ZipFile(archive) as packaged:
                 corrupt = packaged.testzip()
                 if corrupt:
                     raise RuntimeError("Corrupt file in release ZIP: {}.".format(corrupt))
-                required = {str(Path(APP.name) / "Contents" / relative) for relative in (
+                required = {str(Path(self.app.name) / "Contents" / relative) for relative in (
                     "Info.plist", "MacOS/" + EXECUTABLE_NAME, "Resources/build.json",
                     "Resources/MoojiCut.icns", "Resources/MoojiCutStatusTemplate.png",
                     "Resources/MoojiCutStatusTemplate@2x.png", "_CodeSignature/CodeResources",
@@ -311,7 +330,7 @@ class NativeBuild:
                     raise RuntimeError("Release ZIP is missing files: {}.".format(sorted(missing)))
             extracted = staging / "unpacked"
             self.run("/usr/bin/ditto", "-x", "-k", archive, extracted)
-            self.run("/usr/bin/codesign", "--verify", "--deep", "--strict", extracted / APP.name)
+            self.run("/usr/bin/codesign", "--verify", "--deep", "--strict", extracted / self.app.name)
             digest = hashlib.sha256()
             with archive.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -459,34 +478,75 @@ class NativeBuild:
             self.run(termination, mode)
 
     def smoke(self):
+        if self.profile.production:
+            raise RuntimeError("Smoke tests require an isolated test profile, never the production bundle ID.")
         self.build()
         output = ARTIFACTS / "native-app/smoke"
         output.mkdir(parents=True, exist_ok=True)
         report = output / "report.json"
         if report.exists():
             report.unlink()
-        env = dict(self.env, MOOJICUT_NATIVE_OUTPUT=str(output),
-                   MOOJICUT_NATIVE_DEFAULTS_DOMAIN="dev.moojicut.native.smoke")
-        self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--smoke", env=env)
-        if not report.is_file() or not json.loads(report.read_text()).get("smokePassed"):
-            raise RuntimeError("Native UI smoke did not produce a passing report.")
-        self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--capture-smoke", env=env)
-        self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--recording-smoke", env=env)
+        env = dict(self.env, MOOJICUT_NATIVE_OUTPUT=str(output))
+        env.pop("MOOJICUT_NATIVE_DEFAULTS_DOMAIN", None)
+        env.pop("MOOJICUT_PLUGIN_DIRECTORY", None)
+        try:
+            self.run(self.app / "Contents/MacOS" / EXECUTABLE_NAME, "--smoke", env=env)
+            if not report.is_file() or not json.loads(report.read_text()).get("smokePassed"):
+                raise RuntimeError("Native UI smoke did not produce a passing report.")
+            if json.loads(report.read_text()).get("defaultsDomain") != self.profile.defaults_domain:
+                raise RuntimeError("Test application did not use its embedded isolated profile.")
+            self.run(self.app / "Contents/MacOS" / EXECUTABLE_NAME, "--capture-smoke", env=env)
+            self.run(self.app / "Contents/MacOS" / EXECUTABLE_NAME, "--recording-smoke", env=env)
+        finally:
+            self.archive_test()
         print("Smoke report:", report, flush=True)
+
+    def archive_test(self):
+        if self.profile.production:
+            raise RuntimeError("Only isolated test apps can be archived by this command.")
+        info = plistlib.loads((self.app / "Contents/Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") != self.profile.bundle_id:
+            raise RuntimeError("Refusing to remove an application with a different identity.")
+        processes = self.run("/bin/ps", "-axo", "comm=", quiet=True).splitlines()
+        executable = (self.app / "Contents/MacOS" / EXECUTABLE_NAME).resolve()
+        if any(Path(line.strip()).resolve() == executable for line in processes if line.strip().startswith("/")):
+            raise RuntimeError("Quit the test application before archiving it.")
+        directory = ARTIFACTS / "test-app-archives"
+        directory.mkdir(parents=True, exist_ok=True)
+        archive = directory / (self.app.stem + "-" + str(time.time_ns()) + ".zip")
+        self.run("/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", self.app, archive)
+        with zipfile.ZipFile(archive) as packaged:
+            if packaged.testzip():
+                raise RuntimeError("Test archive failed verification; the test app was retained.")
+        self.run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-u", self.app)
+        shutil.rmtree(self.app)
+        print("Archived isolated test app:", archive, flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
+    parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release", "archive-test"))
     parser.add_argument("--release-version", metavar="VERSION",
                         help="Release label (default: <moon.mod version>-alpha.12).")
+    parser.add_argument("--profile", choices=("development", "smoke", "production"),
+                        help="Default: isolated development; release uses production, smoke uses smoke.")
+    parser.add_argument("--test-id", help="Stable lowercase identifier for an isolated test profile.")
+    parser.add_argument("--app-output", type=Path, help="Explicit .app path outside installed Applications directories.")
+    parser.add_argument("--release-output", type=Path, help="Directory for release ZIPs and sidecars.")
     args = parser.parse_args()
-    native = NativeBuild(args.release_version)
+    profile = args.profile or {"release": "production", "smoke": "smoke"}.get(args.command, "development")
+    if args.command in ("dev", "smoke", "archive-test") and profile == "production":
+        parser.error("This command requires an isolated test profile.")
+    if args.command == "build" and profile == "production":
+        parser.error("Use release for production: it retains only the ZIP, not another launchable app.")
+    if args.command == "release" and args.app_output:
+        parser.error("Release builds use a temporary app; use --release-output for the ZIP destination.")
+    native = NativeBuild(args.release_version, profile, args.app_output, args.test_id, args.release_output)
     if args.command == "dev":
         native.build()
-        native.run("/usr/bin/open", APP, "--args", "--preferences")
+        native.run("/usr/bin/open", native.app, "--args", "--preferences")
     else:
-        getattr(native, args.command)()
+        getattr(native, args.command.replace("-", "_"))()
 
 
 if __name__ == "__main__":

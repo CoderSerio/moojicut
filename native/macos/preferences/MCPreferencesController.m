@@ -87,7 +87,8 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)buildWindow {
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 340)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
-    window.title = @"Mooji Cut 设置"; window.releasedWhenClosed = NO; window.delegate = self;
+    NSString *appName = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"Mooji Cut";
+    window.title = [appName stringByAppendingString:@" 设置"]; window.releasedWhenClosed = NO; window.delegate = self;
     window.restorable = NO; window.tabbingMode = NSWindowTabbingModeDisallowed;
     window.toolbarStyle = NSWindowToolbarStylePreference;
     NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"MoojiCutPreferences"];

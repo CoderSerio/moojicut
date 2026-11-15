@@ -2,10 +2,10 @@
 #import "plugins/feature/video_editor/macos/MCVideoEditor.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import "native/macos/runtime/MCRuntimeProfile.h"
 
 static NSURL *MCDraftsDirectory(void) {
-    NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
-    return [support URLByAppendingPathComponent:@"MoojiCut/Drafts" isDirectory:YES];
+    return [MCRuntimeSupportDirectory(@"MoojiCut") URLByAppendingPathComponent:@"Drafts" isDirectory:YES];
 }
 static void MCRecordingAlert(NSString *title, NSError *error) {
     NSAlert *alert = [NSAlert new]; alert.messageText = title;

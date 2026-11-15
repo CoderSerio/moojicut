@@ -12,6 +12,7 @@
 #import "plugins/feature/recording/macos/MCMacRecordingController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "native/macos/updates/MCUpdateController.h"
+#import "native/macos/runtime/MCRuntimeProfile.h"
 #include "moonbit.h"
 #include <stdlib.h>
 
@@ -208,7 +209,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     self.smoke = [NSProcessInfo.processInfo.arguments containsObject:@"--smoke"];
     // Keep the existing user preferences domain across the product rename.
-    NSString *domain = NSProcessInfo.processInfo.environment[@"MOOJICUT_NATIVE_DEFAULTS_DOMAIN"] ?: (self.smoke ? @"dev.moojicut.native.smoke" : @"dev.mooncap.native.preferences");
+    NSString *domain = MCRuntimeDefaultsDomain();
     self.defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
     self.pinnedImages = [[MCPinnedImageController alloc] initWithDefaults:self.defaults];
     self.captureController = [MCCaptureController new];
@@ -220,17 +221,9 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateStateChanged:)
         name:MCUpdateStateDidChangeNotification object:self.updateController];
     __weak MCNativeHost *weakSelf = self;
-    NSString *pluginDirectory = NSProcessInfo.processInfo.environment[@"MOOJICUT_PLUGIN_DIRECTORY"];
+    NSString *pluginDirectory = MCRuntimeIsTestProfile() ? nil : NSProcessInfo.processInfo.environment[@"MOOJICUT_PLUGIN_DIRECTORY"];
     if (!pluginDirectory.length) {
-        NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
-        NSURL *root = [support URLByAppendingPathComponent:@"Mooji Cut" isDirectory:YES];
-        // Test defaults never resolve to the user's production plugin catalog.
-        if (![domain isEqual:@"dev.mooncap.native.preferences"]) {
-            NSString *profile = [[domain dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
-            profile = [[profile stringByReplacingOccurrencesOfString:@"/" withString:@"_"] stringByReplacingOccurrencesOfString:@"+" withString:@"-"];
-            root = [[root URLByAppendingPathComponent:@"Test Profiles" isDirectory:YES]
-                URLByAppendingPathComponent:profile isDirectory:YES];
-        }
+        NSURL *root = MCRuntimeSupportDirectory(@"Mooji Cut");
         pluginDirectory = [root URLByAppendingPathComponent:@"Plugins" isDirectory:YES].path;
     }
     MCPluginPackageStore *packages = [[MCPluginPackageStore alloc] initWithRootURL:[NSURL fileURLWithPath:pluginDirectory isDirectory:YES]];
@@ -441,6 +434,12 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 
 int main(__unused int argc, __unused const char *argv[]) {
     @autoreleasepool {
+        NSArray *arguments = NSProcessInfo.processInfo.arguments;
+        BOOL smoke = [arguments containsObject:@"--smoke"] || [arguments containsObject:@"--capture-smoke"] || [arguments containsObject:@"--recording-smoke"];
+        if (smoke && [NSBundle.mainBundle.bundleIdentifier isEqual:@"dev.moojicut.native"]) {
+            fputs("Smoke tests require a separately identified test build. Use scripts/native.py smoke.\n", stderr);
+            return 2;
+        }
         moonbit_init();
         NSApplication *application = NSApplication.sharedApplication;
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--recording-smoke"]) {

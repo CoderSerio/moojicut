@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from install_sparkle import ROOT, install
+from prepare_update import validate_info, validate_feed
 
 
 def generate(archive, output, previous=None, signing_input=None):
@@ -27,9 +28,9 @@ def generate(archive, output, previous=None, signing_input=None):
     public_key = config["publicKey"]
     with zipfile.ZipFile(archive) as package:
         info = plistlib.loads(package.read("Mooji Cut.app/Contents/Info.plist"))
-    if info.get("CFBundleIdentifier") != "dev.moojicut.native" or info.get("SUPublicEDKey") != public_key:
-        raise RuntimeError("The archive has an unexpected app identity or update key.")
-    version = info["MoojiCutReleaseVersion"]
+    version, _ = validate_info(info, public_key)
+    if archive.name != "moojicut-" + version + "-macos-arm64.zip":
+        raise RuntimeError("Unexpected release asset filename.")
     prefix = "https://github.com/CoderSerio/moojicut/releases/download/v" + urllib.parse.quote(version, safe="") + "/"
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="appcast-", dir=output.parent) as directory:
@@ -47,16 +48,24 @@ def generate(archive, output, previous=None, signing_input=None):
         namespace = "http://www.andymatuschak.org/xml-namespaces/sparkle"
         ET.register_namespace("sparkle", namespace)
         tree = ET.parse(feed)
+        channel = tree.find("channel")
+        if channel is None:
+            raise RuntimeError("Generated appcast is missing its channel.")
         for item in tree.findall("./channel/item"):
             if item.findtext("{" + namespace + "}version") == info["CFBundleVersion"]:
                 item.find("title").text = "Mooji Cut " + version
                 item.find("{" + namespace + "}shortVersionString").text = version
+            else:
+                # Each immutable Release attachment describes that release only.
+                channel.remove(item)
         tree.write(feed, encoding="utf-8", xml_declaration=True)
+        validate_feed(feed, archive, info)
         signer = [str(sparkle / "bin/sign_update"), *signing_options]
         subprocess.run([*signer, str(feed)], input=signing_input, check=True)
         subprocess.run(["xcrun", "swift", str(ROOT / "scripts/verify_update.swift"),
                         str(ROOT / "native/macos/updates/feed.json"), str(feed), str(archive)], check=True)
-        shutil.copy2(feed, output)
+        # Publish the local result only after all verification passes, atomically.
+        feed.replace(output)
     print("Signed update feed:", output)
 
 
