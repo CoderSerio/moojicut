@@ -6,10 +6,15 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL recording;
 @property (nonatomic, readonly) BOOL captureInProgress;
 @property (nonatomic, readonly) BOOL exporting;
+@property (nonatomic, readonly) BOOL canStop;
+@property (nonatomic, readonly) NSString *statusText;
+@property (nonatomic, readonly) NSString *statusItemTitle;
+@property (nonatomic, readonly) NSString *stopActionTitle;
 @property (nonatomic, copy, nullable) void (^onStateChange)(void);
 - (void)startRecording;
 - (void)stopRecording;
 - (void)resumeLastDraft;
+- (BOOL)prepareForTermination:(NSError **)error;
 + (BOOL)runSmokeInDirectory:(NSURL *)directory error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

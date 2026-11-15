@@ -143,3 +143,34 @@ pub fn image_session_dispose(id : Int) -> Unit {
 pub fn crop_rect(request : String) -> String {
   @image.crop_rect(request)
 }
+
+///|
+#export_name("image_selection")
+pub fn image_selection(request : String) -> String {
+  @image.image_selection(request)
+}
+
+///|
+#export_name("image_session_hit")
+pub fn image_session_hit(
+  id : Int,
+  x : Double,
+  y : Double,
+  tolerance : Double,
+  text_only : Int,
+) -> Int {
+  @image.image_session_hit(id, x, y, tolerance, text_only)
+}
+
+///|
+#export_name("image_arrowhead_value")
+pub fn image_arrowhead_value(
+  x : Double,
+  y : Double,
+  x2 : Double,
+  y2 : Double,
+  stroke : Double,
+  field : Int,
+) -> Double {
+  @image.image_arrowhead_value(x, y, x2, y2, stroke, field)
+}

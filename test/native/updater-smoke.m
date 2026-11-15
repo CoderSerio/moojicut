@@ -3,6 +3,10 @@
 #import <Sparkle/Sparkle.h>
 #import "native/macos/updates/MCUpdateController.h"
 
+@interface MCUpdateController (InstallationFixture)
++ (NSString *)installationErrorForBundleURL:(NSURL *)url profile:(id)profile identifier:(NSString *)identifier;
+@end
+
 static BOOL require(BOOL condition, NSString *message) {
     if (!condition) fprintf(stderr, "FAIL updater: %s\n", message.UTF8String);
     return condition;
@@ -56,6 +60,40 @@ static NSBundle *bundleFixture(NSURL *directory, NSDictionary *configuration) {
     [info addEntriesFromDictionary:configuration];
     if (![info writeToURL:[contents URLByAppendingPathComponent:@"Info.plist"] error:NULL]) return nil;
     return [NSBundle bundleWithURL:url];
+}
+
+static BOOL installationLocation(NSURL *directory) {
+    NSURL *production = [NSURL fileURLWithPath:@"/Applications/Mooji Cut.app"];
+    NSString *identifier = @"dev.moojicut.native";
+    // No bundle is created or launched at the production location. The policy
+    // can also validate an absent path on a clean CI machine.
+    BOOL canonicalIsSymlink = ![production.URLByResolvingSymlinksInPath.path.stringByStandardizingPath
+        isEqualToString:production.path];
+    for (id profile in @[@"production", NSNull.null]) {
+        NSString *error = [MCUpdateController installationErrorForBundleURL:production
+            profile:profile == NSNull.null ? nil : profile identifier:identifier];
+        if (!require((error != nil) == canonicalIsSymlink,
+            @"production and legacy profiles require the real canonical installation, never an Applications symlink")) return NO;
+    }
+    for (id profile in @[@"development", @"smoke", @"", @1]) {
+        if (!require([MCUpdateController installationErrorForBundleURL:production profile:profile identifier:identifier] != nil,
+            @"non-production profiles cannot start production updates even at the canonical location")) return NO;
+    }
+    if (!require([MCUpdateController installationErrorForBundleURL:production profile:@"production"
+        identifier:@"dev.moojicut.smoke"] != nil, @"an isolated bundle ID cannot use production updates")) return NO;
+    for (NSString *path in @[@"/Users/fixture/Downloads/Mooji Cut.app", @"/tmp/dist/Mooji Cut.app",
+                            @"/Applications/Mooji Cut Preview.app"]) {
+        NSString *error = [MCUpdateController installationErrorForBundleURL:[NSURL fileURLWithPath:path]
+            profile:@"production" identifier:identifier];
+        if (!require([error containsString:@"/Applications/Mooji Cut.app"],
+            @"misplaced production copies explain the fixed installation location")) return NO;
+    }
+    NSURL *alias = [directory URLByAppendingPathComponent:@"Mooji Cut.app"];
+    NSError *error = nil;
+    if (!require([NSFileManager.defaultManager createSymbolicLinkAtURL:alias withDestinationURL:production error:&error],
+        @"create a temporary alias without touching the installed app")) return NO;
+    return require([MCUpdateController installationErrorForBundleURL:alias profile:@"production" identifier:identifier] != nil,
+        @"a symlink elsewhere pointing to the canonical installation cannot start updates");
 }
 
 static BOOL configurationAndBusyState(NSURL *directory) {
@@ -182,10 +220,10 @@ int main(int argc, const char *argv[]) {
             [@"moojicut-updater-test-" stringByAppendingString:NSUUID.UUID.UUIDString]] isDirectory:YES];
         if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:NO
             attributes:@{NSFilePosixPermissions:@0700} error:NULL]) return 1;
-        BOOL passed = versionOrdering() && configurationAndBusyState(directory) &&
+        BOOL passed = versionOrdering() && installationLocation(directory) && configurationAndBusyState(directory) &&
             signedFixtures([NSURL fileURLWithPath:@(argv[1])], directory);
         [NSFileManager.defaultManager removeItemAtURL:directory error:NULL];
-        puts(passed ? "PASS updater: Sparkle versions, configuration gates, busy/cancelled installation, signed archives/appcasts and tampering rejection" : "FAIL updater smoke");
+        puts(passed ? "PASS updater: Sparkle versions, profile/location/configuration gates, busy/cancelled installation, signed archives/appcasts and tampering rejection" : "FAIL updater smoke");
         return passed ? 0 : 1;
     }
 }

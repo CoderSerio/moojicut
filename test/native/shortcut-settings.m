@@ -1,10 +1,13 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #import "native/macos/preferences/MCShortcutStore.h"
+#import "native/macos/preferences/MCPinShortcutStore.h"
 #import "native/macos/preferences/MCSystemShortcutCheck.h"
+#include "moonbit.h"
 
 int main(void) {
     @autoreleasepool {
+        moonbit_init();
         NSString *domain = [@"dev.moojicut.shortcuts.test." stringByAppendingString:NSUUID.UUID.UUIDString];
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
         @try {
@@ -71,6 +74,34 @@ int main(void) {
             NSCAssert([[reopened shortcutForAction:@"capture"] isEqual:originalCapture] &&
                 [[reopened shortcutForAction:@"record"] isEqual:originalRecord] &&
                 [[reopened shortcutForAction:@"stop"] isEqual:originalStop], @"Restore all defaults");
+            MCPinShortcutStore *pins = [[MCPinShortcutStore alloc] initWithDefaults:defaults];
+            NSCAssert([pins setShortcut:custom forAction:@"visibilityToggle" error:&error], @"Set a free global pin recovery chord");
+            NSCAssert(![store setShortcut:custom forAction:@"capture" error:&error] && [error containsString:@"贴图"],
+                @"Global capture cannot take an existing pin recovery chord");
+            NSCAssert([store setShortcut:nil forAction:@"capture" error:&error], @"Free a default chord before assigning it to a pin");
+            NSCAssert([pins setShortcut:originalCapture forAction:@"visibilityToggle" error:&error], @"Pin can use a deliberately freed chord");
+            NSDictionary *beforeReset = [defaults dictionaryForKey:@"shortcuts.v1"];
+            NSCAssert(![store restoreDefaultsWithError:&error] && [[defaults dictionaryForKey:@"shortcuts.v1"] isEqual:beforeReset],
+                @"Restoring globals cannot override pin recovery; failed reset is atomic");
+            [pins restoreDefaults];
+            NSDictionary *pinDefault = [pins shortcutForAction:@"visibilityToggle"];
+            NSCAssert([pins setShortcut:nil forAction:@"visibilityToggle" error:&error], @"Free default pin recovery chord");
+            NSCAssert([store setShortcut:pinDefault forAction:@"capture" error:&error], @"Capture can use a deliberately freed pin chord");
+            NSDictionary *beforePinReset = [defaults dictionaryForKey:@"pinShortcuts.v1"];
+            NSCAssert(![pins restoreDefaultsWithError:&error] && [[defaults dictionaryForKey:@"pinShortcuts.v1"] isEqual:beforePinReset],
+                @"Restoring pins cannot override capture; failed reset is atomic");
+            NSDictionary *badPin = @{@"zoomIn":@{@"keyCode":@YES, @"modifiers":@0}};
+            [defaults setObject:badPin forKey:@"pinShortcuts.v1"];
+            NSCAssert([[pins shortcutForAction:@"zoomIn"][@"keyCode"] isEqual:@24], @"Boolean physical keys fall back instead of becoming key 1");
+            NSCAssert([[defaults dictionaryForKey:@"pinShortcuts.v1"] isEqual:badPin], @"Pin recovery is read-only");
+            NSDictionary *corrupt = @{@"capture":custom, @"record":custom,
+                @"stop":@{@"keyCode":@7.5, @"modifiers":@(NSEventModifierFlagCommand), @"keyLabel":@"X"}};
+            [defaults setObject:corrupt forKey:@"shortcuts.v1"];
+            reopened = [[MCShortcutStore alloc] initWithDefaults:defaults];
+            NSCAssert([[reopened shortcutForAction:@"capture"] isEqual:custom] && ![reopened shortcutForAction:@"record"],
+                @"MoonBit recovery keeps the first binding and disables only the duplicate");
+            NSCAssert([[reopened shortcutForAction:@"stop"] isEqual:originalStop], @"Fractional physical key IDs cannot silently become another key");
+            NSCAssert([[defaults dictionaryForKey:@"shortcuts.v1"] isEqual:corrupt], @"Read-only recovery does not overwrite saved preferences");
             puts("PASS shortcut settings: persistence, duplicates, typing protection, clear and restore");
         } @finally {
             [defaults removePersistentDomainForName:domain];

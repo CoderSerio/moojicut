@@ -17,24 +17,31 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from install_sparkle import install as install_sparkle, VERSION as SPARKLE_VERSION
+from install_extism import install as install_extism, VERSION as EXTISM_VERSION
 from native_modules import native_sources
+from native_profile import native_profile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-APP_NAME = "Mooji Cut"
 EXECUTABLE_NAME = "MoojiCut"
-APP = ROOT / "dist/native-app.noindex" / (APP_NAME + ".app")
 ARTIFACTS = ROOT / ".artifacts"
 FRAMEWORKS = ["AppKit", "Foundation", "Carbon", "ScreenCaptureKit", "AVKit",
-              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "UniformTypeIdentifiers"]
+              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "QuartzCore", "UniformTypeIdentifiers",
+              "Vision", "ImageIO", "SwiftUI", "Translation"]
+TEXT_FRAMEWORKS = ("AppKit", "Foundation", "CoreGraphics", "Vision", "ImageIO", "SwiftUI", "Translation")
+SWIFT_MINIMUM_MACOS = "26.0"
 
 
 class NativeBuild:
-    def __init__(self, release_version=None):
+    def __init__(self, release_version=None, profile="development", app_output=None, test_id=None, release_output=None):
         if sys.platform != "darwin":
             raise RuntimeError("The AppKit host requires macOS and Xcode Command Line Tools.")
+        self.profile = native_profile(ROOT, profile, app_output, test_id)
+        self.app = self.profile.app
+        self.release_directory = Path(release_output).expanduser().absolute() if release_output else ROOT / "dist/releases"
         local = ROOT / ".tools/moon"
         if (local / "bin/moon").is_file():
             home = local.resolve()
@@ -54,7 +61,7 @@ class NativeBuild:
         manifest = (ROOT / "moon.mod").read_text()
         self.name = self.manifest_value(manifest, "name")
         self.version = self.manifest_value(manifest, "version")
-        self.release_version = release_version or self.version + "-alpha.9"
+        self.release_version = release_version or self.version + "-alpha.16"
         version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
                                self.release_version)
         if not version:
@@ -113,6 +120,33 @@ class NativeBuild:
     def moon_command(self, directory, *args, quiet=False):
         return self.run(self.moon, "-C", ROOT, "--target-dir", directory / "moon", *args, quiet=quiet)
 
+    def native_link_inputs(self, directory, sources):
+        """Compile Swift separately; never pass a .swift source to clang.
+
+        The bridge exposes a checked-in Objective-C header. The generated header
+        is kept with the object only for ABI inspection, not imported alongside
+        the manual declaration. Swift's autolink metadata resolves its system
+        libraries using the active toolchain/SDK; no toolchain dylib is bundled.
+        """
+        sources = [Path(source) for source in sources]
+        swift = [source for source in sources if source.suffix == ".swift"]
+        if not swift:
+            return sources
+        directory = Path(directory) / "swift"
+        directory.mkdir(parents=True, exist_ok=True)
+        sdk = Path(self.run("xcrun", "--sdk", "macosx", "--show-sdk-path", quiet=True).strip())
+        target = platform.machine() + "-apple-macosx" + SWIFT_MINIMUM_MACOS
+        info = json.loads(self.run("xcrun", "swiftc", "-print-target-info", "-target", target, quiet=True))
+        output = directory / "MoojiCaptureText.o"
+        self.run("xcrun", "swiftc", "-swift-version", "6", "-parse-as-library", "-whole-module-optimization", "-emit-object",
+                 "-O", "-warnings-as-errors", "-target", target, "-sdk", sdk,
+                 "-module-name", "MoojiCaptureText", "-emit-objc-header",
+                 "-emit-objc-header-path", directory / "MoojiCaptureText-Swift.h", *swift, "-o", output)
+        runtime_paths = dict.fromkeys([str(sdk / "usr/lib/swift"), *info["paths"]["runtimeLibraryPaths"]])
+        return ([source for source in sources if source.suffix != ".swift"] + [output,
+                "-mmacosx-version-min=" + SWIFT_MINIMUM_MACOS,
+                *("-L" + path for path in runtime_paths), "-Wl,-rpath,/usr/lib/swift"])
+
     def archive(self, directory):
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check", quiet=True)
         directory.mkdir(parents=True, exist_ok=True)
@@ -161,16 +195,45 @@ class NativeBuild:
                 return arch, minimum.group(1)
         raise RuntimeError("Cannot determine the built executable's minimum macOS version.")
 
+    def build_plugin_worker(self, contents):
+        """Keep the Wasm engine in a separate, bounded helper process."""
+        runtime = install_extism(platform.machine())
+        frameworks, helpers, resources = (contents / name for name in ("Frameworks", "Helpers", "Resources"))
+        for directory in (frameworks, helpers, resources):
+            directory.mkdir(parents=True, exist_ok=True)
+        library = frameworks / "libextism.dylib"
+        helper = helpers / "MoojiPluginWorker"
+        shutil.copy2(runtime / "libextism.dylib", library)
+        self.run("/usr/bin/install_name_tool", "-id", "@rpath/libextism.dylib", library)
+        self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
+                 "-I", runtime, ROOT / "native/tools/plugin-worker.m", library, "-framework", "Foundation",
+                 "-Wl,-rpath,@executable_path/../Frameworks", "-o", helper)
+        self.binary_platform(helper)
+        self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", library)
+        # Match the app's existing non-hardened signing policy. Wasmtime 49's
+        # allocator does not use MAP_JIT: allow-jit alone is insufficient under
+        # Hardened Runtime. Notarization needs a separately verified helper-only
+        # executable-memory exception; never relax the UI process or library
+        # validation here. Ad-hoc signatures also have no matching Team ID.
+        # https://github.com/bytecodealliance/wasmtime/issues/11989
+        self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", helper)
+        for binary in (library, helper):
+            self.run("/usr/bin/codesign", "--verify", "--strict", binary)
+        shutil.copy2(runtime / "extism-1.41.0-LICENSE", resources / "Extism-LICENSE.txt")
+        shutil.copy2(runtime / "wasmtime-49.0.0-LICENSE", resources / "Wasmtime-LICENSE.txt")
+        return helper
+
     def build(self):
         sparkle = install_sparkle()
         directory = ARTIFACTS / "native-app"
         archive = self.archive(directory)
         native = ROOT / "native/macos"
         sources = native_sources("macos")
+        link_inputs = self.native_link_inputs(directory, sources)
         brand = ROOT / "assets/brand/mooji-cut"
         with tempfile.TemporaryDirectory(prefix="staging-", dir=directory) as staging_name:
             staging = Path(staging_name)
-            staged_app = staging / APP.name
+            staged_app = staging / self.app.name
             contents = staged_app / "Contents"
             resources = contents / "Resources"
             executable = contents / "MacOS" / EXECUTABLE_NAME
@@ -178,14 +241,15 @@ class NativeBuild:
             resources.mkdir()
             frameworks = contents / "Frameworks"
             frameworks.mkdir()
+            self.build_plugin_worker(contents)
             embedded_sparkle = frameworks / "Sparkle.framework"
             shutil.copytree(sparkle / "Sparkle.framework", embedded_sparkle, symlinks=True)
             shutil.copy2(sparkle / "LICENSE", resources / "Sparkle-LICENSE.txt")
             shutil.copy2(ROOT / "LICENSE", resources / "LICENSE.txt")
             shutil.copy2(ROOT / "assets/icons/lucide/LICENSE", resources / "Lucide-LICENSE.txt")
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
-                     "-I", self.include, "-I", ROOT, "-I", native, "-F", sparkle, *sources, archive,
-                     "-framework", "Sparkle", "-Wl,-rpath,@executable_path/../Frameworks",
+                     "-I", self.include, "-I", ROOT, "-I", native, "-F", sparkle, *link_inputs, archive,
+                     "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath,@executable_path/../Frameworks",
                      *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                      "-o", executable)
             arch, minimum_macos = self.binary_platform(executable)
@@ -198,8 +262,9 @@ class NativeBuild:
             shutil.copy2(brand / "menubar-18.png", resources / "MoojiCutStatusTemplate.png")
             shutil.copy2(brand / "menubar-18@2x.png", resources / "MoojiCutStatusTemplate@2x.png")
             info = {
-                "CFBundleDevelopmentRegion": "zh_CN", "CFBundleName": APP_NAME,
-                "CFBundleDisplayName": APP_NAME, "CFBundleIdentifier": "dev.moojicut.native",
+                "CFBundleDevelopmentRegion": "zh_CN", "CFBundleName": self.profile.app_name,
+                "CFBundleDisplayName": self.profile.app_name, "CFBundleIdentifier": self.profile.bundle_id,
+                "MoojiCutBuildProfile": self.profile.name, "MoojiCutDefaultsDomain": self.profile.defaults_domain,
                 "CFBundleExecutable": EXECUTABLE_NAME, "CFBundleIconFile": "MoojiCut.icns",
                 "CFBundlePackageType": "APPL", "CFBundleShortVersionString": self.short_version,
                 "CFBundleVersion": self.bundle_version, "MoonBitCoreVersion": self.version,
@@ -212,7 +277,7 @@ class NativeBuild:
                 "SURequireSignedFeed": True,
             }
             update_config = native / "updates/feed.json"
-            if update_config.is_file():
+            if self.profile.production and update_config.is_file():
                 feed = json.loads(update_config.read_text())
                 info["SUFeedURL"] = feed["feedURL"]
                 info["SUPublicEDKey"] = feed["publicKey"]
@@ -222,11 +287,13 @@ class NativeBuild:
             if re.search(r"Electron|Chromium|WebKit|libnode", dependencies, re.I):
                 raise RuntimeError("Unexpected browser or Node runtime in the native application.")
             metadata = {"version": self.release_version, "bundleVersion": self.bundle_version,
+                        "buildProfile": self.profile.name, "bundleIdentifier": self.profile.bundle_id,
                         "coreVersion": self.version, **self.source_revision(),
                         "compilerVersion": self.compiler, "clangVersion": self.clang,
                         "arch": arch, "minimumMacOSVersion": minimum_macos,
                         "frameworks": FRAMEWORKS,
-                        "sparkleVersion": SPARKLE_VERSION,
+                        "sparkleVersion": SPARKLE_VERSION, "extismVersion": EXTISM_VERSION,
+                        "pluginWorkerHardenedRuntime": False,
                         "signing": "ad-hoc" if self.signing_identity == "-" else "certificate", "notarized": False}
             (resources / "build.json").write_text(json.dumps(metadata, indent=2) + "\n")
             # Sign nested code inside out; do not weaken the host's requirements.
@@ -238,48 +305,63 @@ class NativeBuild:
                          "--timestamp=none", "--preserve-metadata=entitlements", component)
             self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", staged_app)
             self.run("/usr/bin/codesign", "--verify", "--deep", "--strict", staged_app)
-            APP.parent.mkdir(parents=True, exist_ok=True)
+            self.app.parent.mkdir(parents=True, exist_ok=True)
             # A failed compilation or bundle check must not remove the last good app.
             previous = staging / "previous.app"
-            if APP.exists():
-                APP.rename(previous)
+            if self.app.exists():
+                self.app.rename(previous)
             try:
-                staged_app.rename(APP)
+                staged_app.rename(self.app)
             except OSError:
                 if previous.exists():
-                    previous.rename(APP)
+                    previous.rename(self.app)
                 raise
-        print("Native app:", APP, flush=True)
+        print("Native app:", self.app, flush=True)
         print("Executable: {:.0f} KiB; {} Objective-C files + MoonBit static core; {} signed."
-              .format((APP / "Contents/MacOS" / EXECUTABLE_NAME).stat().st_size / 1024, len(sources),
+              .format((self.app / "Contents/MacOS" / EXECUTABLE_NAME).stat().st_size / 1024, len(sources),
                       "ad-hoc" if self.signing_identity == "-" else "certificate"), flush=True)
 
     def release(self):
+        if not self.profile.production:
+            raise RuntimeError("A release requires the production profile.")
+        # Only the archive survives. Never leave another launchable production
+        # bundle in a worktree for Spotlight/LaunchServices to discover.
+        ARTIFACTS.mkdir(exist_ok=True)
+        original = self.app
+        with tempfile.TemporaryDirectory(prefix="release.noindex-", dir=ARTIFACTS) as directory:
+            self.app = Path(directory) / "Mooji Cut.app"
+            try:
+                self.package_release()
+            finally:
+                self.app = original
+
+    def package_release(self):
         self.build()
-        metadata = json.loads((APP / "Contents/Resources/build.json").read_text())
+        metadata = json.loads((self.app / "Contents/Resources/build.json").read_text())
         filename = "moojicut-{}-macos-{}.zip".format(self.release_version, metadata["arch"])
-        directory = ROOT / "dist/releases"
+        directory = self.release_directory
         directory.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".staging-", dir=directory) as staging_name:
             staging = Path(staging_name)
             archive = staging / filename
-            self.run("/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", APP, archive)
+            self.run("/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", self.app, archive)
             with zipfile.ZipFile(archive) as packaged:
                 corrupt = packaged.testzip()
                 if corrupt:
                     raise RuntimeError("Corrupt file in release ZIP: {}.".format(corrupt))
-                required = {str(Path(APP.name) / "Contents" / relative) for relative in (
+                required = {str(Path(self.app.name) / "Contents" / relative) for relative in (
                     "Info.plist", "MacOS/" + EXECUTABLE_NAME, "Resources/build.json",
                     "Resources/MoojiCut.icns", "Resources/MoojiCutStatusTemplate.png",
                     "Resources/MoojiCutStatusTemplate@2x.png", "_CodeSignature/CodeResources",
                     "Resources/LICENSE.txt", "Resources/Sparkle-LICENSE.txt", "Resources/Lucide-LICENSE.txt",
-                    "Frameworks/Sparkle.framework/Versions/B/Sparkle")}
+                    "Frameworks/Sparkle.framework/Versions/B/Sparkle", "Frameworks/libextism.dylib",
+                    "Helpers/MoojiPluginWorker", "Resources/Extism-LICENSE.txt", "Resources/Wasmtime-LICENSE.txt")}
                 missing = required - set(packaged.namelist())
                 if missing:
                     raise RuntimeError("Release ZIP is missing files: {}.".format(sorted(missing)))
             extracted = staging / "unpacked"
             self.run("/usr/bin/ditto", "-x", "-k", archive, extracted)
-            self.run("/usr/bin/codesign", "--verify", "--deep", "--strict", extracted / APP.name)
+            self.run("/usr/bin/codesign", "--verify", "--deep", "--strict", extracted / self.app.name)
             digest = hashlib.sha256()
             with archive.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -303,34 +385,39 @@ class NativeBuild:
         archive = self.archive(directory)
         executable = directory / "core-embedding"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
-                 ROOT / "test/native/core-embedding.m", archive, "-framework", "Foundation", "-o", executable)
+                 "-I", ROOT, ROOT / "test/native/core-embedding.m", archive, "-framework", "Foundation", "-o", executable)
         self.run(executable)
         shortcuts = ARTIFACTS / "native-shortcuts"
         shortcuts.mkdir(parents=True, exist_ok=True)
         preferences = ROOT / "native/macos/preferences"
+        user_plugins = native_sources("macos", "system.user_plugins")
         executable = shortcuts / "shortcut-settings"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", preferences,
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", preferences, "-I", self.include,
                  ROOT / "test/native/shortcut-settings.m", preferences / "MCShortcutStore.m",
-                 preferences / "MCSystemShortcutCheck.m", "-framework", "AppKit", "-framework", "Carbon",
+                 preferences / "MCPinShortcutStore.m",
+                 preferences / "MCSystemShortcutCheck.m", archive, "-framework", "AppKit", "-framework", "Carbon",
                  "-o", executable)
         self.run(executable)
         pin_shortcuts = shortcuts / "pin-shortcuts"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos", "-I", self.include,
                  ROOT / "test/native/pin-shortcuts.m", preferences / "MCPinShortcutStore.m",
                  preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
-                 preferences / "MCPreferencesController.m",
-                 "-framework", "AppKit", "-framework", "Carbon", "-o", pin_shortcuts)
+                 preferences / "MCPreferencesController.m", preferences / "MCToolRegistryStore.m",
+                 preferences / "MCPluginManagementController.m", *user_plugins, archive,
+                 "-framework", "AppKit", "-framework", "Carbon", "-framework", "UniformTypeIdentifiers",
+                 "-larchive", "-lz", "-o", pin_shortcuts)
         self.run(pin_shortcuts)
         pinned_image = shortcuts / "pinned-image"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
                  "-DRegisterEventHotKey=MCTestRegisterPinHotKey", "-DUnregisterEventHotKey=MCTestUnregisterPinHotKey",
                  ROOT / "test/native/pinned-image.m", *native_sources("macos", "feature.pin"),
-                 "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
+                 "-I", self.include, preferences / "MCToolRegistryStore.m", archive, "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
         self.run(pinned_image)
         global_shortcuts = shortcuts / "global-shortcuts"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos", "-I", self.include,
                  ROOT / "test/native/global-shortcuts.m", preferences / "MCShortcutStore.m",
-                 preferences / "MCSystemShortcutCheck.m", ROOT / "native/macos/shortcuts/MCGlobalShortcutManager.m",
+                 preferences / "MCPinShortcutStore.m",
+                 preferences / "MCSystemShortcutCheck.m", ROOT / "native/macos/shortcuts/MCGlobalShortcutManager.m", archive,
                  "-framework", "AppKit", "-framework", "Carbon", "-o", global_shortcuts)
         self.run(global_shortcuts)
         capture_permission = shortcuts / "capture-permission"
@@ -355,44 +442,214 @@ class NativeBuild:
                  "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/capture-overlay.m",
                  *native_sources("macos", "feature.image_editor"), archive, "-framework", "AppKit", "-o", capture_overlay)
         self.run(capture_overlay)
+        tool_layout = shortcuts / "tool-layout"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
+                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/tool-layout.m",
+                 *native_sources("macos", "feature.capture"), archive,
+                 "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", tool_layout)
+        self.run(tool_layout)
+        recording_experience = shortcuts / "recording-experience"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
+                 "-I", self.include, "-I", ROOT, ROOT / "test/native/recording-experience.m",
+                 *native_sources("macos", "feature.recording"), archive,
+                 "-framework", "AppKit", "-framework", "ScreenCaptureKit", "-framework", "AVKit",
+                 "-framework", "AVFoundation", "-framework", "UniformTypeIdentifiers",
+                 "-framework", "CoreMedia", "-framework", "CoreVideo", "-framework", "CoreGraphics",
+                 "-framework", "QuartzCore", "-o", recording_experience)
+        with tempfile.TemporaryDirectory(prefix="moojicut-recording-test-") as media_directory:
+            self.run(recording_experience, media_directory)
+        scroll_capture = shortcuts / "scroll-capture"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/scroll-capture.m", *native_sources("macos", "feature.scroll_capture"),
+                 "-framework", "AppKit", "-framework", "ScreenCaptureKit", "-framework", "ImageIO",
+                 "-framework", "CoreGraphics", "-o", scroll_capture)
+        self.run(scroll_capture)
+        tool_settings = shortcuts / "tool-registry-settings"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
+                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/tool-registry-settings.m",
+                 preferences / "MCToolRegistryStore.m", preferences / "MCPluginManagementController.m",
+                 preferences / "MCPreferencesController.m", preferences / "MCPinShortcutStore.m",
+                 preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
+                 *user_plugins, archive, "-framework", "AppKit", "-framework", "Carbon",
+                 "-framework", "UniformTypeIdentifiers", "-larchive", "-lz", "-o", tool_settings)
+        self.run(tool_settings)
+        plugin_directory = ARTIFACTS / "native-plugins"
+        plugin_worker = self.build_plugin_worker(plugin_directory / "Contents")
+        worker_test = plugin_directory / "plugin-worker"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/plugin-worker.m", ROOT / "native/macos/plugins/MCPluginWorker.m",
+                 "-framework", "Foundation", "-o", worker_test)
+        self.run(worker_test, plugin_worker)
+        package_test = plugin_directory / "plugin-package"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/plugin-package.m", ROOT / "native/macos/plugins/MCPluginPackageStore.m",
+                 "-framework", "Foundation", "-larchive", "-lz", "-o", package_test)
+        self.run(package_test)
+        sample = ROOT / "plugins/examples/capture-info"
+        sample_zip = plugin_directory / "capture-info.zip"
+        # Reuse resolved dependencies locally; a fresh checkout resolves the
+        # example's pinned PDK before compiling the real Wasm integration input.
+        offline = ("--offline",) if (sample / ".mooncakes/.moon-lock").is_file() else ()
+        self.run(sys.executable, ROOT / "scripts/package_plugin.py", sample, "--output", sample_zip, *offline)
+        manager_test = plugin_directory / "plugin-manager"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
+                 ROOT / "test/native/plugin-manager.m", *user_plugins, preferences / "MCToolRegistryStore.m", archive,
+                 "-framework", "AppKit", "-framework", "UniformTypeIdentifiers", "-framework", "Carbon",
+                 "-larchive", "-lz", "-o", manager_test)
+        self.run(manager_test, plugin_worker, sample_zip)
         sparkle = install_sparkle()
         updater = shortcuts / "updater-smoke"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
-                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/updater-smoke.m",
+                 "-I", ROOT, "-I", self.include, "-I", ROOT / "native/macos", ROOT / "test/native/updater-smoke.m",
                  ROOT / "native/macos/updates/MCUpdateController.m",
+                 ROOT / "native/macos/updates/MCReleaseSource.m", archive,
                  "-framework", "AppKit", "-framework", "Security", "-framework", "Sparkle",
                  "-Wl,-rpath," + str(sparkle), "-o", updater)
         self.run(updater, sparkle / "bin/sign_update")
+        update_source = shortcuts / "update-source"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
+                 "-I", ROOT, "-I", self.include, ROOT / "test/native/update-source.m",
+                 ROOT / "native/macos/updates/MCUpdateController.m",
+                 ROOT / "native/macos/updates/MCReleaseSource.m", archive,
+                 "-framework", "AppKit", "-framework", "Sparkle",
+                 "-Wl,-rpath," + str(sparkle), "-o", update_source)
+        self.run(update_source)
+        termination = shortcuts / "app-termination"
+        host_sources = [source for source in native_sources("macos")
+                        if source != ROOT / "native/macos/main.m"]
+        host_inputs = self.native_link_inputs(shortcuts, host_sources)
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
+                 "-I", ROOT, "-I", self.include, "-I", ROOT / "native/macos",
+                 ROOT / "test/native/app-termination.m", *host_inputs, archive,
+                 "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath," + str(sparkle),
+                 *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
+                 "-o", termination)
+        for mode in ("idle-gcd", "async-event", "worker-event"):
+            self.run(termination, mode)
+        self.text_tests()
+
+    def text_tests(self, translation=False):
+        """CLI/hidden-window fixtures only; does not build or register an app."""
+        directory = ARTIFACTS / "native-text"
+        directory.mkdir(parents=True, exist_ok=True)
+        feature = ROOT / "plugins/feature/capture_text/macos"
+        recognition = directory / "text-recognition"
+        recognition_object = directory / "MCTextRecognitionService-test.o"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 "-DCGImageSourceCreateImageAtIndex=MCTestCreateImageAtIndex",
+                 "-c", feature / "MCTextRecognitionService.m", "-o", recognition_object)
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/text-recognition.m", recognition_object,
+                 "-framework", "Foundation", "-framework", "AppKit", "-framework", "CoreText",
+                 "-framework", "Vision", "-framework", "ImageIO", "-framework", "CoreGraphics",
+                 "-lz", "-o", recognition)
+        self.run(recognition, directory / "recognition-evidence")
+        controller = directory / "text-tools"
+        # The UI fixture implements a controlled MCTranslationBridge test double.
+        # Linking the real Swift class here would duplicate its Objective-C name
+        # and trigger system language discovery during deterministic state tests.
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 "-mmacosx-version-min=" + SWIFT_MINIMUM_MACOS,
+                 ROOT / "test/native/text-tools.m", feature / "MCTextToolsController.m", feature / "MCTextRecognitionService.m",
+                 "-framework", "Foundation", "-framework", "AppKit", "-framework", "Vision",
+                 "-framework", "ImageIO", "-framework", "CoreGraphics",
+                 "-o", controller)
+        self.run(controller)
+        # Compile and link the real bridge even when optional language resources
+        # are absent. Default tests do not execute the Translation CLI.
+        inputs = self.native_link_inputs(directory, native_sources("macos", "feature.capture_text"))
+        bridge = directory / "translation-bridge"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/translation-bridge.m", *inputs,
+                 *(argument for framework in TEXT_FRAMEWORKS for argument in ("-framework", framework)),
+                 "-o", bridge)
+        self.run(bridge)
+        objects = [item for item in inputs if isinstance(item, Path) and item.suffix == ".o"]
+        executable = directory / "translation-service"
+        self.run("xcrun", "swiftc", "-swift-version", "6", "-parse-as-library", "-warnings-as-errors",
+                 "-target", platform.machine() + "-apple-macosx" + SWIFT_MINIMUM_MACOS,
+                 ROOT / "test/native/translation-service.swift", *objects, "-o", executable)
+        if translation:
+            # Installed language resources only. The fixture reports SKIP when
+            # resources are absent; automated tests must not download models.
+            self.run(executable)
 
     def smoke(self):
+        if self.profile.production:
+            raise RuntimeError("Smoke tests require an isolated test profile, never the production bundle ID.")
         self.build()
         output = ARTIFACTS / "native-app/smoke"
         output.mkdir(parents=True, exist_ok=True)
         report = output / "report.json"
         if report.exists():
             report.unlink()
-        env = dict(self.env, MOOJICUT_NATIVE_OUTPUT=str(output),
-                   MOOJICUT_NATIVE_DEFAULTS_DOMAIN="dev.moojicut.native.smoke")
-        self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--smoke", env=env)
-        if not report.is_file() or not json.loads(report.read_text()).get("smokePassed"):
-            raise RuntimeError("Native UI smoke did not produce a passing report.")
-        self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--capture-smoke", env=env)
-        self.run(APP / "Contents/MacOS" / EXECUTABLE_NAME, "--recording-smoke", env=env)
+        env = dict(self.env, MOOJICUT_NATIVE_OUTPUT=str(output))
+        env.pop("MOOJICUT_NATIVE_DEFAULTS_DOMAIN", None)
+        env.pop("MOOJICUT_PLUGIN_DIRECTORY", None)
+        try:
+            self.run(self.app / "Contents/MacOS" / EXECUTABLE_NAME, "--smoke", env=env)
+            if not report.is_file() or not json.loads(report.read_text()).get("smokePassed"):
+                raise RuntimeError("Native UI smoke did not produce a passing report.")
+            if json.loads(report.read_text()).get("defaultsDomain") != self.profile.defaults_domain:
+                raise RuntimeError("Test application did not use its embedded isolated profile.")
+            self.run(self.app / "Contents/MacOS" / EXECUTABLE_NAME, "--capture-smoke", env=env)
+            self.run(self.app / "Contents/MacOS" / EXECUTABLE_NAME, "--recording-smoke", env=env)
+        finally:
+            self.archive_test()
         print("Smoke report:", report, flush=True)
+
+    def archive_test(self):
+        if self.profile.production:
+            raise RuntimeError("Only isolated test apps can be archived by this command.")
+        info = plistlib.loads((self.app / "Contents/Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") != self.profile.bundle_id:
+            raise RuntimeError("Refusing to remove an application with a different identity.")
+        processes = self.run("/bin/ps", "-axo", "comm=", quiet=True).splitlines()
+        executable = (self.app / "Contents/MacOS" / EXECUTABLE_NAME).resolve()
+        if any(Path(line.strip()).resolve() == executable for line in processes if line.strip().startswith("/")):
+            raise RuntimeError("Quit the test application before archiving it.")
+        directory = ARTIFACTS / "test-app-archives"
+        directory.mkdir(parents=True, exist_ok=True)
+        archive = directory / (self.app.stem + "-" + str(time.time_ns()) + ".zip")
+        self.run("/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", self.app, archive)
+        with zipfile.ZipFile(archive) as packaged:
+            if packaged.testzip():
+                raise RuntimeError("Test archive failed verification; the test app was retained.")
+        self.run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-u", self.app)
+        shutil.rmtree(self.app)
+        print("Archived isolated test app:", archive, flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
+    parser.add_argument("command", choices=("build", "dev", "test", "test-text", "smoke", "release", "archive-test"))
     parser.add_argument("--release-version", metavar="VERSION",
-                        help="Release label (default: <moon.mod version>-alpha.9).")
+                        help="Release label (default: <moon.mod version>-alpha.16).")
+    parser.add_argument("--profile", choices=("development", "smoke", "production"),
+                        help="Default: isolated development; release uses production, smoke uses smoke.")
+    parser.add_argument("--test-id", help="Stable lowercase identifier for an isolated test profile.")
+    parser.add_argument("--app-output", type=Path, help="Explicit .app path outside installed Applications directories.")
+    parser.add_argument("--release-output", type=Path, help="Directory for release ZIPs and sidecars.")
+    parser.add_argument("--translation", action="store_true",
+                        help="With test-text, run installed-only Translation (never downloads languages).")
     args = parser.parse_args()
-    native = NativeBuild(args.release_version)
-    if args.command == "dev":
+    if args.translation and args.command != "test-text":
+        parser.error("--translation is only supported with test-text")
+    profile = args.profile or {"release": "production", "smoke": "smoke"}.get(args.command, "development")
+    if args.command in ("dev", "smoke", "archive-test") and profile == "production":
+        parser.error("This command requires an isolated test profile.")
+    if args.command == "build" and profile == "production":
+        parser.error("Use release for production: it retains only the ZIP, not another launchable app.")
+    if args.command == "release" and args.app_output:
+        parser.error("Release builds use a temporary app; use --release-output for the ZIP destination.")
+    native = NativeBuild(args.release_version, profile, args.app_output, args.test_id, args.release_output)
+    if args.command == "test-text":
+        native.text_tests(translation=args.translation)
+    elif args.command == "dev":
         native.build()
-        native.run("/usr/bin/open", APP, "--args", "--preferences")
+        native.run("/usr/bin/open", native.app, "--args", "--preferences")
     else:
-        getattr(native, args.command)()
+        getattr(native, args.command.replace("-", "_"))()
 
 
 if __name__ == "__main__":

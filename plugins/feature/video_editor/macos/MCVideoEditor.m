@@ -1,15 +1,17 @@
 #import "MCVideoEditor.h"
-#import <AVKit/AVKit.h>
-#import <AVFoundation/AVFoundation.h>
-#include "moonbit.h"
+#import "MCVideoMedia.h"
+#import "components/shared_canvas/macos/MCSharedCanvas.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include "native/shared/video_project.h"
+#include "native/shared/video_ui.h"
+#include <sys/stat.h>
+#include <errno.h>
 #include <math.h>
 
+// v1 is used only to generate a legacy recovery fixture in runSmoke.
 extern moonbit_string_t video_open(moonbit_string_t, moonbit_string_t);
 extern moonbit_string_t video_command(int32_t, moonbit_string_t);
-extern moonbit_string_t video_snapshot(int32_t);
-extern moonbit_string_t video_seek(int32_t, double);
 extern void video_dispose(int32_t);
-
 static NSError *MCVideoError(NSString *message) {
     return [NSError errorWithDomain:@"MoojiCut.Video" code:1 userInfo:@{NSLocalizedDescriptionKey:message ?: @"视频处理失败。"}];
 }
@@ -21,21 +23,36 @@ static NSString *MCVideoJSON(id object) {
     return [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object options:0 error:NULL] encoding:NSUTF8StringEncoding];
 }
 static NSDictionary *MCVideoDecode(moonbit_string_t value) {
-    NSString *string = [[NSString alloc] initWithCharacters:value length:Moonbit_array_length(value)];
-    moonbit_decref(value);
-    return [NSJSONSerialization JSONObjectWithData:[string dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    NSString *string = [[NSString alloc] initWithCharacters:value length:Moonbit_array_length(value)]; moonbit_decref(value);
+    id decoded = [NSJSONSerialization JSONObjectWithData:[string dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    return [decoded isKindOfClass:NSDictionary.class] ? decoded : @{@"ok":@NO,@"error":@{@"message":@"共享编辑器返回了无效数据。"}};
 }
 static NSArray<AVAssetTrack *> *MCVideoTracks(AVAsset *asset, AVMediaType type) {
     NSMutableArray *tracks = [NSMutableArray array];
     for (AVAssetTrack *track in asset.tracks) if ([track.mediaType isEqual:type]) [tracks addObject:track];
     return tracks;
 }
-static CGRect MCVideoBounds(AVAssetTrack *track) {
-    return CGRectApplyAffineTransform(CGRectMake(0, 0, track.naturalSize.width, track.naturalSize.height), track.preferredTransform);
-}
-static NSURL *MCExportDirectory(void) {
-    NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
-    return [support URLByAppendingPathComponent:@"MoojiCut/Exports" isDirectory:YES];
+// lstat distinguishes a missing file from an unreadable or dangling saved draft.
+// Only absence permits migration; malformed/empty v2 never falls back to v1.
+static NSString *MCReadDraft(NSURL *url, NSInteger schema, BOOL *exists, NSError **error) {
+    struct stat info;
+    if (lstat(url.fileSystemRepresentation, &info) != 0) {
+        if (errno == ENOENT) { *exists = NO; return @""; }
+        *exists = YES;
+        if (error) *error = MCVideoError(@"无法检查编辑草稿。原片和编辑文件已保留。");
+        return nil;
+    }
+    *exists = YES;
+    NSData *data = [NSData dataWithContentsOfURL:url options:0 error:error];
+    NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+    id object = text.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+    id version = [object isKindOfClass:NSDictionary.class] ? object[@"schemaVersion"] : nil;
+    if (![version isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)version) == CFBooleanGetTypeID() ||
+        [version doubleValue] != schema) {
+        if (error) *error = MCVideoError([NSString stringWithFormat:@"%@ 无法读取或格式损坏，未回退或覆盖。原片和编辑文件已保留。", url.lastPathComponent]);
+        return nil;
+    }
+    return text; // MoonBit validates the original text, including duplicate keys.
 }
 static BOOL MCWaitUntil(BOOL (^done)(void), NSTimeInterval timeout) {
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
@@ -54,303 +71,306 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
     return YES;
 }
 
-@interface MCVideoEditor () <NSTextFieldDelegate>
+
+@interface MCVideoEditor ()
 @property NSURL *directory;
-@property AVURLAsset *asset;
-@property AVAssetTrack *videoTrack;
 @property NSDictionary *state;
-@property int32_t session;
-@property BOOL sessionOpen;
+@property MCVideoMedia *media;
+@property MCSharedCanvasView *canvas;
 @property NSWindow *window;
-@property AVPlayerView *playerView;
-@property NSTextField *trimStart, *trimEnd, *cutStart, *cutEnd, *cropX, *cropY, *cropWidth, *cropHeight, *seekTime;
-@property NSTextField *status, *cutsLabel;
-@property NSButton *mute, *confirm, *undoButton, *redoButton;
-@property NSMutableArray<NSControl *> *editingControls;
-@property AVAssetExportSession *exporter;
-@property NSTimer *progressTimer;
+@property NSTimer *timer;
+@property int32_t session, ui;
+@property BOOL closed, draftDirty, mediaPrepared, mediaSynchronized;
+@property BOOL choosingExport, exportActive, pendingSeek, clockDelivered, lastClockPlaying;
 @property BOOL closeAfterExportCancellation;
-@property BOOL pendingTrim, pendingCrop, pendingCut;
+@property NSUInteger nextRequest, exportGeneration, seekGeneration;
+@property NSInteger lastExportPercent;
+@property double lastClockOutput;
+@property NSError *lastError, *draftError, *reportedPreviewError;
+- (void)sendUIEvent:(NSDictionary *)event;
+- (void)render;
+- (void)tick;
+- (void)buildWindow;
+- (BOOL)saveDraft:(NSError **)error;
 - (BOOL)applyCommand:(NSDictionary *)command error:(NSError **)error;
-- (BOOL)buildComposition:(AVMutableComposition * _Nullable * _Nonnull)composition videoComposition:(AVMutableVideoComposition * _Nullable * _Nonnull)videoComposition error:(NSError **)error;
+- (BOOL)applyMediaPlan:(NSDictionary *)plan error:(NSError **)error;
+- (void)exportToURL:(NSURL *)url copyToPasteboard:(BOOL)copy completion:(void (^)(NSURL *, NSError *))completion;
+- (void)cancelExportKeepingDraft;
+- (BOOL)confirmCancelExport;
 @end
 
 @implementation MCVideoEditor
-- (BOOL)exporting { return self.exporter != nil; }
+- (BOOL)exporting { return self.choosingExport || self.exportActive; }
 - (instancetype)initWithDraftDirectory:(NSURL *)directory error:(NSError **)error {
-    if ((self = [super init])) {
-        _directory = directory;
-        NSURL *source = [directory URLByAppendingPathComponent:@"source.mp4"];
-        _asset = [AVURLAsset URLAssetWithURL:source options:@{AVURLAssetPreferPreciseDurationAndTimingKey:@YES}];
-        _videoTrack = MCVideoTracks(_asset, AVMediaTypeVideo).firstObject;
-        if (!_videoTrack) { if (error) *error = MCVideoError(@"录屏没有可读取的画面，原始文件已保留。"); return nil; }
-        // Audio can outlast the last recorded video frame. Keep the source
-        // timeline inside the video track, with no rounding past its end.
-        double duration = CMTimeGetSeconds(CMTimeRangeGetEnd(_videoTrack.timeRange));
-        if (!isfinite(duration) || duration <= 0) {
-            if (error) *error = MCVideoError(@"录屏没有可读取的画面。原始文件已保留在草稿目录。"); return nil;
-        }
-        CGRect bounds = MCVideoBounds(_videoTrack);
-        NSDictionary *metadata = @{ @"durationMs":@(floor(duration * 1000)), @"width":@(llround(fabs(bounds.size.width))),
-            @"height":@(llround(fabs(bounds.size.height))), @"hasAudio":MCVideoTracks(_asset, AVMediaTypeAudio).count > 0 ? @YES : @NO };
-        NSString *draft = [NSString stringWithContentsOfURL:[directory URLByAppendingPathComponent:@"edit.json"] encoding:NSUTF8StringEncoding error:NULL] ?: @"";
-        moonbit_string_t input = MCVideoString(MCVideoJSON(metadata)), saved = MCVideoString(draft);
-        _state = MCVideoDecode(video_open(input, saved)); moonbit_decref(input); moonbit_decref(saved);
-        if (![_state[@"ok"] boolValue]) { if (error) *error = MCVideoError(_state[@"error"][@"message"] ?: @"无法恢复视频编辑草稿。"); return nil; }
-        _session = [_state[@"session"] intValue]; _sessionOpen = YES;
-        _editingControls = [NSMutableArray array];
+    if (!(self = [super init])) return nil;
+    _session = -1; _ui = -1; _lastExportPercent = -1; _directory = directory;
+    _media = [[MCVideoMedia alloc] initWithURL:[directory URLByAppendingPathComponent:@"source.mp4"] error:error];
+    if (!_media) return nil;
+    BOOL exists = NO;
+    NSString *draft = MCReadDraft([directory URLByAppendingPathComponent:@"edit-v2.json"], 2, &exists, error);
+    if (!draft) return nil;
+    _draftDirty = !exists;
+    if (!exists) {
+        draft = MCReadDraft([directory URLByAppendingPathComponent:@"edit.json"], 1, &exists, error);
+        if (!draft) return nil;
     }
+    moonbit_string_t input = MCVideoString(MCVideoJSON(_media.metadata)), saved = MCVideoString(draft);
+    _state = MCVideoDecode(video_project_open(input, saved)); moonbit_decref(input); moonbit_decref(saved);
+    if (![_state[@"ok"] boolValue]) {
+        if (error) *error = MCVideoError([NSString stringWithFormat:@"%@ 原片和编辑草稿已保留。", _state[@"error"][@"message"] ?: @"无法恢复编辑。"]);
+        return nil;
+    }
+    _session = [_state[@"session"] intValue];
+    moonbit_string_t initial = MCVideoString(MCVideoJSON(_state));
+    _ui = video_ui_open(initial); moonbit_decref(initial);
+    if (_ui < 0) { if (error) *error = MCVideoError(@"无法初始化共享编辑界面，草稿已保留。"); return nil; }
+    // Recovery scanning stops here: no window, timer, write or migration on disk.
     return self;
 }
+- (void)changed { if (self.onStateChange) self.onStateChange(); }
+- (void)reportError:(NSError *)error {
+    self.lastError = error;
+    [self sendUIEvent:@{@"type":@"error", @"message":error.localizedDescription ?: @"操作失败，请重试。"}];
+}
 - (BOOL)saveDraft:(NSError **)error {
-    NSData *data = [NSJSONSerialization dataWithJSONObject:self.state[@"document"] options:NSJSONWritingPrettyPrinted error:error];
-    return data && [data writeToURL:[self.directory URLByAppendingPathComponent:@"edit.json"] options:NSDataWritingAtomic error:error];
+    if (self.closed) { if (error) *error = MCVideoError(@"编辑器已关闭。"); return NO; }
+    NSError *failure = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:self.state[@"document"] options:NSJSONWritingPrettyPrinted error:&failure];
+    BOOL saved = data && [data writeToURL:[self.directory URLByAppendingPathComponent:@"edit-v2.json"] options:NSDataWritingAtomic error:&failure];
+    self.draftDirty = !saved;
+    self.draftError = saved ? nil : MCVideoError([NSString stringWithFormat:@"草稿保存失败，编辑仍保留在内存中。%@", failure.localizedDescription ?: @""]);
+    if (!saved && error) *error = self.draftError;
+    return saved;
+}
+- (BOOL)applyMediaPlan:(NSDictionary *)plan error:(NSError **)error { return [self.media applyPlan:plan error:error]; }
+- (BOOL)synchronizeMedia:(NSError **)error {
+    self.mediaPrepared = YES; self.seekGeneration++; self.pendingSeek = NO; self.clockDelivered = NO;
+    self.mediaSynchronized = [self applyMediaPlan:self.state[@"plan"] error:error];
+    [self.canvas setVideoPlayer:self.mediaSynchronized ? self.media.player : nil];
+    if (!self.mediaSynchronized) [self.media pause];
+    [self sendUIEvent:@{@"type":@"mediaStatus", @"ready":self.mediaSynchronized ? @YES : @NO,
+        @"message":self.mediaSynchronized ? @"" : @"预览无法同步，已停止播放和导出。可以撤销后重试。"}];
+    return self.mediaSynchronized;
 }
 - (BOOL)applyCommand:(NSDictionary *)command error:(NSError **)error {
-    moonbit_string_t input = MCVideoString(MCVideoJSON(command));
-    NSDictionary *next = MCVideoDecode(video_command(self.session, input)); moonbit_decref(input);
-    if (![next[@"ok"] boolValue]) { if (error) *error = MCVideoError(next[@"error"][@"message"] ?: @"无法应用这项编辑。"); return NO; }
-    self.state = next;
-    return [self saveDraft:error];
-}
-- (BOOL)buildComposition:(AVMutableComposition **)result videoComposition:(AVMutableVideoComposition **)videoResult error:(NSError **)error {
-    NSDictionary *plan = self.state[@"plan"];
-    AVMutableComposition *composition = [AVMutableComposition composition];
-    AVMutableCompositionTrack *video = [composition addMutableTrackWithMediaType:AVMediaTypeVideo preferredTrackID:kCMPersistentTrackID_Invalid];
-    NSArray<AVAssetTrack *> *audioSources = [plan[@"muted"] boolValue] ? @[] : MCVideoTracks(self.asset, AVMediaTypeAudio);
-    NSMutableArray<AVMutableCompositionTrack *> *audioOutputs = [NSMutableArray array];
-    for (__unused AVAssetTrack *source in audioSources)
-        [audioOutputs addObject:[composition addMutableTrackWithMediaType:AVMediaTypeAudio preferredTrackID:kCMPersistentTrackID_Invalid]];
-    for (NSDictionary *segment in plan[@"segments"]) {
-        CMTime begin = CMTimeMake([segment[@"sourceStartMs"] longLongValue], 1000);
-        CMTime end = CMTimeMake([segment[@"sourceEndMs"] longLongValue], 1000);
-        CMTime output = CMTimeMake([segment[@"outputStartMs"] longLongValue], 1000);
-        CMTimeRange range = CMTimeRangeFromTimeToTime(begin, end);
-        if (![video insertTimeRange:range ofTrack:self.videoTrack atTime:output error:error]) return NO;
-        for (NSUInteger i = 0; i < audioSources.count; i++) {
-            CMTimeRange available = CMTimeRangeGetIntersection(range, audioSources[i].timeRange);
-            if (CMTIMERANGE_IS_VALID(available) && CMTimeCompare(available.duration, kCMTimeZero) > 0) {
-                CMTime position = CMTimeAdd(output, CMTimeSubtract(available.start, range.start));
-                if (![audioOutputs[i] insertTimeRange:available ofTrack:audioSources[i] atTime:position error:error]) return NO;
-            }
-        }
+    if (self.closed || self.exporting) { if (error) *error = MCVideoError(@"请等待当前保存完成。"); return NO; }
+    double position = self.media.currentOutputMilliseconds;
+    BOOL playing = self.media.playbackRequested;
+    NSMutableDictionary *request = [command mutableCopy];
+    request[@"expectedRevision"] = self.state[@"revision"];
+    request[@"requestId"] = [NSString stringWithFormat:@"editor-%lu", (unsigned long)++self.nextRequest];
+    moonbit_string_t input = MCVideoString(MCVideoJSON(request));
+    NSDictionary *next = MCVideoDecode(video_project_command(self.session, input)); moonbit_decref(input);
+    if (![next[@"ok"] boolValue]) {
+        NSError *failure = MCVideoError(next[@"error"][@"message"] ?: @"编辑未应用。");
+        [self reportError:failure]; [self sendUIEvent:@{@"type":@"snapshot", @"snapshot":self.state}];
+        if (error) *error = failure; return NO;
     }
-    NSDictionary *crop = [plan[@"crop"] isKindOfClass:NSDictionary.class] ? plan[@"crop"] : nil;
-    CGRect bounds = MCVideoBounds(self.videoTrack);
-    CGFloat x = [crop[@"x"] doubleValue], y = [crop[@"y"] doubleValue];
-    CGFloat width = crop ? [crop[@"width"] doubleValue] : fabs(bounds.size.width);
-    CGFloat height = crop ? [crop[@"height"] doubleValue] : fabs(bounds.size.height);
-    AVMutableVideoComposition *videoComposition = [AVMutableVideoComposition videoComposition];
-    videoComposition.renderSize = CGSizeMake(width, height); videoComposition.frameDuration = CMTimeMake(1, 30);
-    AVMutableVideoCompositionLayerInstruction *layer = [AVMutableVideoCompositionLayerInstruction videoCompositionLayerInstructionWithAssetTrack:video];
-    CGAffineTransform transform = CGAffineTransformConcat(self.videoTrack.preferredTransform, CGAffineTransformMakeTranslation(-bounds.origin.x - x, -bounds.origin.y - y));
-    [layer setTransform:transform atTime:kCMTimeZero];
-    AVMutableVideoCompositionInstruction *instruction = [AVMutableVideoCompositionInstruction videoCompositionInstruction];
-    instruction.timeRange = CMTimeRangeMake(kCMTimeZero, CMTimeMake([plan[@"outputDurationMs"] longLongValue], 1000));
-    instruction.layerInstructions = @[layer]; videoComposition.instructions = @[instruction];
-    *result = composition; *videoResult = videoComposition; return YES;
-}
-- (NSButton *)button:(NSString *)title action:(SEL)action {
-    NSButton *button = [NSButton buttonWithTitle:title target:self action:action]; button.bezelStyle = NSBezelStyleRounded;
-    [self.editingControls addObject:button]; return button;
-}
-- (NSTextField *)field:(NSString *)label width:(CGFloat)width {
-    NSTextField *field = [NSTextField textFieldWithString:@"0"];
-    field.delegate = self;
-    field.accessibilityLabel = label; field.alignment = NSTextAlignmentRight;
-    [field.widthAnchor constraintEqualToConstant:width].active = YES;
-    [self.editingControls addObject:field]; return field;
-}
-- (NSStackView *)row:(NSArray<NSView *> *)views {
-    NSStackView *row = [NSStackView stackViewWithViews:views]; row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    row.spacing = 10; row.alignment = NSLayoutAttributeCenterY; return row;
+    self.state = next; self.draftDirty = YES;
+    [self sendUIEvent:@{@"type":@"snapshot", @"snapshot":next}];
+    NSError *mediaError = nil, *saveError = nil;
+    BOOL synchronized = [self synchronizeMedia:&mediaError];
+    BOOL saved = [self saveDraft:&saveError];
+    if (synchronized) { [self seekOutput:position]; if (playing) [self.media play]; }
+    if (!synchronized || !saved) {
+        NSString *message = !synchronized ? @"预览无法同步，已停止播放和导出；可以撤销后重试。" : @"";
+        if (!saved) message = [message stringByAppendingFormat:@"编辑仍保留在内存，但草稿保存失败。请检查文件权限后重试保存或关闭。%@", saveError.localizedDescription ?: @""];
+        NSError *failure = MCVideoError(message);
+        [self reportError:failure]; if (error) *error = failure; return NO;
+    }
+    self.lastError = nil; return YES;
 }
 - (void)buildWindow {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 980, 710)
-        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+    if (self.closed || self.window) return;
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1040, 720)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
+        backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"编辑录屏 · Mooji Cut"; self.window.releasedWhenClosed = NO; self.window.delegate = self;
-    self.window.minSize = NSMakeSize(950, 720);
-    self.playerView = [AVPlayerView new]; self.playerView.controlsStyle = AVPlayerViewControlsStyleDefault;
-    [self.playerView.heightAnchor constraintGreaterThanOrEqualToConstant:240].active = YES;
-    self.trimStart = [self field:@"保留片段起点，秒" width:84]; self.trimEnd = [self field:@"保留片段终点，秒" width:84];
-    self.cutStart = [self field:@"删除片段起点，秒" width:84]; self.cutEnd = [self field:@"删除片段终点，秒" width:84];
-    self.cropX = [self field:@"画面左侧像素" width:62]; self.cropY = [self field:@"画面顶部像素" width:62];
-    self.cropWidth = [self field:@"画面宽度像素" width:72]; self.cropHeight = [self field:@"画面高度像素" width:72];
-    self.seekTime = [self field:@"原片预览位置，秒" width:84];
-    self.mute = [NSButton checkboxWithTitle:@"静音" target:self action:@selector(muteChanged:)]; [self.editingControls addObject:self.mute];
-    self.cutsLabel = [NSTextField wrappingLabelWithString:@""]; self.cutsLabel.font = [NSFont systemFontOfSize:11]; self.cutsLabel.textColor = NSColor.secondaryLabelColor;
-    self.status = [NSTextField wrappingLabelWithString:@""]; self.status.font = [NSFont systemFontOfSize:12];
-    self.undoButton = [self button:@"撤销" action:@selector(undo:)]; self.redoButton = [self button:@"重做" action:@selector(redo:)];
-    self.confirm = [self button:@"确认并复制视频" action:@selector(confirm:)]; self.confirm.keyEquivalent = @"\r";
-    NSTextField *(^label)(NSString *) = ^NSTextField *(NSString *text) { return [NSTextField labelWithString:text]; };
-    NSStackView *trim = [self row:@[label(@"保留范围（原片秒数）"), self.trimStart, label(@"到"), self.trimEnd, [self button:@"应用裁剪" action:@selector(trim:)]]];
-    NSStackView *cuts = [self row:@[label(@"删除片段（原片秒数）"), self.cutStart, label(@"到"), self.cutEnd, [self button:@"添加删除区间" action:@selector(cut:)], [self button:@"清除删除区间" action:@selector(clearCuts:)]]];
-    NSStackView *crop = [self row:@[label(@"裁画面（像素） X"), self.cropX, label(@"Y"), self.cropY, label(@"宽"), self.cropWidth, label(@"高"), self.cropHeight, [self button:@"应用画面" action:@selector(crop:)], [self button:@"完整画面" action:@selector(resetCrop:)]]];
-    NSStackView *preview = [self row:@[label(@"预览原片位置（秒）"), self.seekTime, [self button:@"跳到保留画面" action:@selector(seek:)], self.mute, self.undoButton, self.redoButton, [self button:@"重置编辑" action:@selector(reset:)]]];
-    NSView *spacer = [NSView new]; [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSButton *cancel = [NSButton buttonWithTitle:@"保留草稿并关闭" target:self action:@selector(cancel:)]; cancel.bezelStyle = NSBezelStyleRounded;
-    NSStackView *footer = [self row:@[cancel, spacer, self.confirm]];
-    NSStackView *stack = [NSStackView stackViewWithViews:@[self.playerView, trim, cuts, self.cutsLabel, crop, preview, self.status, footer]];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical; stack.spacing = 12; stack.alignment = NSLayoutAttributeLeading; stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.window.contentView addSubview:stack];
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.leadingAnchor constraintEqualToAnchor:self.window.contentView.leadingAnchor constant:20],
-        [stack.trailingAnchor constraintEqualToAnchor:self.window.contentView.trailingAnchor constant:-20],
-        [stack.topAnchor constraintEqualToAnchor:self.window.contentView.topAnchor constant:20],
-        [stack.bottomAnchor constraintEqualToAnchor:self.window.contentView.bottomAnchor constant:-20],
-        [self.playerView.widthAnchor constraintEqualToAnchor:stack.widthAnchor], [footer.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
-        [self.status.widthAnchor constraintEqualToAnchor:stack.widthAnchor], [self.cutsLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor]
-    ]];
-    [self.playerView setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
-    [self.window center]; [self refresh];
-}
-- (void)show { if (!self.window) [self buildWindow]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
-- (void)feedback:(NSError *)error { self.status.stringValue = error.localizedDescription ?: @"编辑已保存。"; self.status.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor; }
-- (void)refresh {
-    NSDictionary *document = self.state[@"document"], *source = document[@"source"], *trim = document[@"trim"];
-    self.trimStart.stringValue = [NSString stringWithFormat:@"%.3f", [trim[@"startMs"] doubleValue] / 1000];
-    self.trimEnd.stringValue = [NSString stringWithFormat:@"%.3f", [trim[@"endMs"] doubleValue] / 1000];
-    NSDictionary *crop = [document[@"crop"] isKindOfClass:NSDictionary.class] ? document[@"crop"] : nil;
-    self.cropX.integerValue = [crop[@"x"] integerValue]; self.cropY.integerValue = [crop[@"y"] integerValue];
-    self.cropWidth.integerValue = [crop ? crop[@"width"] : source[@"width"] integerValue];
-    self.cropHeight.integerValue = [crop ? crop[@"height"] : source[@"height"] integerValue];
-    self.pendingTrim = NO; self.pendingCrop = NO;
-    self.mute.state = [document[@"muted"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-    self.mute.enabled = [source[@"hasAudio"] boolValue];
-    self.undoButton.enabled = [self.state[@"canUndo"] boolValue]; self.redoButton.enabled = [self.state[@"canRedo"] boolValue];
-    NSMutableArray *ranges = [NSMutableArray array];
-    for (NSDictionary *cut in document[@"cuts"]) [ranges addObject:[NSString stringWithFormat:@"%.3f–%.3f 秒", [cut[@"startMs"] doubleValue]/1000, [cut[@"endMs"] doubleValue]/1000]];
-    self.cutsLabel.stringValue = ranges.count ? [@"已删除：" stringByAppendingString:[ranges componentsJoinedByString:@"；"]] : @"尚未删除片段。所有编辑保留原片，可撤销。";
-    AVMutableComposition *composition = nil; AVMutableVideoComposition *videoComposition = nil; NSError *error = nil;
-    if (![self buildComposition:&composition videoComposition:&videoComposition error:&error]) { [self feedback:error]; return; }
-    AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:composition]; item.videoComposition = videoComposition;
-    [self.playerView.player pause]; self.playerView.player = [AVPlayer playerWithPlayerItem:item];
-    self.status.textColor = NSColor.secondaryLabelColor;
-    self.status.stringValue = [NSString stringWithFormat:@"成片 %.3f 秒 · %.0f × %.0f · 确认后复制视频文件", [self.state[@"plan"][@"outputDurationMs"] doubleValue]/1000, videoComposition.renderSize.width, videoComposition.renderSize.height];
-}
-- (BOOL)number:(NSTextField *)field value:(double *)value integer:(BOOL)integer {
-    NSScanner *scanner = [NSScanner scannerWithString:field.stringValue]; double number = 0;
-    if (![scanner scanDouble:&number] || !scanner.isAtEnd || !isfinite(number) || (integer && floor(number) != number)) {
-        [self feedback:MCVideoError(integer ? @"像素值需要填写整数。" : @"时间需要填写有效秒数，例如 1.250。")]; return NO;
-    }
-    *value = number; return YES;
-}
-- (void)controlTextDidChange:(NSNotification *)notification {
-    id field = notification.object;
-    if (field == self.trimStart || field == self.trimEnd) self.pendingTrim = YES;
-    if (field == self.cropX || field == self.cropY || field == self.cropWidth || field == self.cropHeight) self.pendingCrop = YES;
-    if (field == self.cutStart || field == self.cutEnd) self.pendingCut = YES;
-}
-- (BOOL)command:(NSDictionary *)command {
-    if (self.exporter) return NO;
+    self.window.contentMinSize = NSMakeSize(720, 480);
+    self.canvas = [[MCSharedCanvasView alloc] initWithFrame:NSMakeRect(0, 0, 1040, 720)];
+    self.window.contentView = self.canvas;
+    __weak MCVideoEditor *weak = self;
+    self.canvas.onEvent = ^(NSDictionary *event) { [weak sendUIEvent:event]; };
+    self.canvas.onFrameNeeded = ^(__unused CGSize size) { [weak render]; };
+    NSAppearanceName appearance = [self.canvas.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua,NSAppearanceNameDarkAqua]];
+    [self sendUIEvent:@{@"type":@"appearance", @"mode":[appearance isEqual:NSAppearanceNameDarkAqua] ? @"dark" : @"light"}];
     NSError *error = nil;
-    if (![self applyCommand:command error:&error]) { [self feedback:error]; return NO; }
-    [self refresh];
+    if (!self.mediaPrepared && ![self synchronizeMedia:&error]) [self reportError:error];
+    else [self.canvas setVideoPlayer:self.mediaSynchronized ? self.media.player : nil];
+    [self render]; [self.window center];
+    self.timer = [NSTimer timerWithTimeInterval:1.0/30 repeats:YES block:^(__unused NSTimer *timer) { [weak tick]; }];
+    [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
+}
+- (void)show {
+    if (self.closed) return;
+    [self buildWindow]; [self.window makeKeyAndOrderFront:nil]; [self.window makeFirstResponder:self.canvas];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+- (void)render {
+    if (self.closed || !self.canvas || self.ui < 0) return;
+    CGSize size = self.canvas.bounds.size;
+    NSDictionary *frame = MCVideoDecode(video_ui_frame(self.ui, size.width, size.height));
+    if ([frame[@"ok"] boolValue]) self.canvas.frameDescription = frame;
+    else self.lastError = MCVideoError(frame[@"error"][@"message"]);
+}
+- (void)seekOutput:(double)milliseconds {
+    if (self.closed || !self.mediaSynchronized) return;
+    self.pendingSeek = YES; self.clockDelivered = NO; NSUInteger request = ++self.seekGeneration;
+    __weak MCVideoEditor *weak = self;
+    [self.media seekOutputMilliseconds:MAX(0, MIN(milliseconds,self.media.outputDurationMilliseconds-1)) completion:^(__unused BOOL finished) {
+        MCVideoEditor *self = weak; if (!self || self.closed || self.seekGeneration != request) return;
+        self.pendingSeek = NO;
+    }];
+}
+- (void)sendUIEvent:(NSDictionary *)event {
+    if (self.closed || self.ui < 0) return;
+    moonbit_string_t input = MCVideoString(MCVideoJSON(event));
+    NSDictionary *result = MCVideoDecode(video_ui_event(self.ui, input)); moonbit_decref(input);
+    if (![result[@"ok"] boolValue]) { self.lastError = MCVideoError(result[@"error"][@"message"]); return; }
+    for (NSDictionary *effect in result[@"effects"]) {
+        NSString *type = effect[@"type"];
+        if ([type isEqual:@"command"]) { NSError *error = nil; [self applyCommand:effect[@"command"] error:&error]; }
+        else if ([type isEqual:@"seekOutput"]) [self seekOutput:[effect[@"outputMs"] doubleValue]];
+        else if ([type isEqual:@"play"]) {
+            if (self.mediaSynchronized && [effect[@"playing"] boolValue]) [self.media play]; else [self.media pause];
+            self.clockDelivered = NO;
+        } else if ([type isEqual:@"previewRate"]) {
+            NSError *error = nil;
+            BOOL accepted = self.mediaSynchronized && [self.media setPreviewRate:[effect[@"rate"] doubleValue] error:&error];
+            NSError *statusError = accepted ? self.draftError : error ?: MCVideoError(@"预览尚未同步。");
+            [self sendUIEvent:@{@"type":@"previewRateStatus", @"rate":@(self.media.previewRate),
+                @"message":statusError.localizedDescription ?: @"", @"error":statusError ? @YES : @NO}];
+        } else if ([type isEqual:@"export"]) [self saveAs:nil];
+        else [self reportError:MCVideoError(@"共享界面请求了当前版本尚不支持的操作。")];
+        if (self.closed) return;
+    }
+    [self render];
+}
+- (void)tick {
+    if (self.closed) return;
+    if (self.exportActive) {
+        NSInteger percent = (NSInteger)floor(self.media.exportProgress * 100);
+        if (percent != self.lastExportPercent) {
+            self.lastExportPercent = percent;
+            [self sendUIEvent:@{@"type":@"exportStatus", @"busy":@YES,
+                @"message":[NSString stringWithFormat:@"正在保存视频 %ld%%…", (long)percent], @"error":@NO}];
+        }
+    }
+    if (!self.mediaSynchronized) return;
+    NSError *failure = self.media.previewPlaybackError;
+    if (failure != self.reportedPreviewError) {
+        self.reportedPreviewError = failure;
+        NSError *statusError = failure ?: self.draftError;
+        [self sendUIEvent:@{@"type":@"previewRateStatus", @"rate":@(self.media.previewRate),
+            @"message":statusError.localizedDescription ?: @"", @"error":statusError ? @YES : @NO}];
+    }
+    if (self.pendingSeek) return;
+    double output = self.media.currentOutputMilliseconds; BOOL playing = self.media.playbackRequested;
+    if (self.clockDelivered && self.lastClockPlaying == playing && fabs(self.lastClockOutput-output)<0.5) return;
+    self.clockDelivered = YES; self.lastClockPlaying = playing; self.lastClockOutput = output;
+    [self sendUIEvent:@{@"type":@"playback", @"outputMs":@(MAX(0,output)), @"playing":playing ? @YES : @NO}];
+}
+- (void)exportStatus:(BOOL)busy error:(NSError *)error message:(NSString *)message {
+    NSError *statusError = error ?: (busy ? nil : self.draftError);
+    self.lastError = statusError;
+    [self sendUIEvent:@{@"type":@"exportStatus", @"busy":busy ? @YES : @NO,
+        @"message":statusError.localizedDescription ?: message ?: @"", @"error":statusError ? @YES : @NO}];
+}
+- (NSURL *)chooseExportDestination {
+    NSSavePanel *panel = NSSavePanel.savePanel;
+    panel.allowedContentTypes = @[UTTypeMPEG4Movie]; panel.canCreateDirectories = YES;
+    panel.nameFieldStringValue = @"MoojiCut.mp4"; panel.prompt = @"保存视频";
+    return [panel runModal] == NSModalResponseOK ? panel.URL : nil;
+}
+- (void)saveAs:(__unused id)sender {
+    if (self.closed || self.exporting) return;
+    self.choosingExport = YES; [self changed];
+    NSURL *destination = [self chooseExportDestination];
+    self.choosingExport = NO;
+    if (destination && !self.closed) {
+        // The next method raises exportActive before notifying the host; there
+        // is no false idle notification between the panel and the encoder.
+        [self exportToURL:destination copyToPasteboard:NO completion:nil];
+    } else { [self exportStatus:NO error:nil message:@""]; [self changed]; }
+}
+- (void)exportToURL:(NSURL *)url copyToPasteboard:(BOOL)copy completion:(void (^)(NSURL *, NSError *))completion {
+    if (self.closed || self.exporting) { if (completion) completion(nil,MCVideoError(@"编辑器已关闭或已有保存正在进行。")); return; }
+    NSError *error = nil;
+    if (!self.mediaPrepared) [self synchronizeMedia:&error];
+    if (!self.mediaSynchronized) error = error ?: MCVideoError(@"预览尚未同步，无法导出旧计划。请撤销后重试。");
+    if (!error && ![self saveDraft:&error]) error = error ?: MCVideoError(@"草稿保存失败，编辑仍保留在内存中。请重试。");
+    if (error) {
+        [self exportStatus:NO error:error message:nil]; [self changed]; if (completion) completion(nil,error); return;
+    }
+    self.exportActive = YES; self.lastExportPercent = -1; self.closeAfterExportCancellation = NO;
+    NSUInteger generation = ++self.exportGeneration;
+    [self exportStatus:YES error:nil message:@"正在保存视频…"]; [self changed];
+    __weak MCVideoEditor *weak = self;
+    [self.media exportToURL:url completion:^(NSURL *saved, NSError *failure) {
+        MCVideoEditor *self = weak; if (!self || self.closed || generation != self.exportGeneration) return;
+        self.exportActive = NO;
+        BOOL closeAfter = self.closeAfterExportCancellation; self.closeAfterExportCancellation = NO;
+        if (!failure && copy) {
+            NSPasteboard *pasteboard = NSPasteboard.generalPasteboard; [pasteboard clearContents];
+            if (![pasteboard writeObjects:@[saved]]) failure = MCVideoError(@"视频已保存，但复制文件失败。请从保存位置打开。");
+        }
+        [self exportStatus:NO error:failure message:saved ? [NSString stringWithFormat:@"已保存：%@", saved.path] : @""];
+        [self changed]; if (completion) completion(failure ? nil : saved,failure);
+        if (closeAfter && !self.closed && generation == self.exportGeneration && !self.exporting) [self.window performClose:nil];
+    }];
+}
+- (void)cancelExportKeepingDraft { [self.media cancelExport]; }
+- (BOOL)confirmCancelExport {
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"正在保存视频"; alert.informativeText = @"停止保存会保留原片与编辑草稿。";
+    [alert addButtonWithTitle:@"继续保存"]; [alert addButtonWithTitle:@"停止保存并关闭"];
+    return [alert runModal] == NSAlertSecondButtonReturn;
+}
+- (BOOL)windowShouldClose:(__unused NSWindow *)sender {
+    if (self.closed) return YES;
+    if (self.choosingExport) return NO;
+    if (self.exportActive) {
+        NSUInteger pending = self.exportGeneration; BOOL cancel = [self confirmCancelExport];
+        // A modal confirmation can deliver completion or start a newer export.
+        // Never attach the close request to that finished/newer task.
+        if (self.exportActive && self.exportGeneration == pending) {
+            if (cancel) { self.closeAfterExportCancellation = YES; [self cancelExportKeepingDraft]; }
+            return NO;
+        }
+        if (!cancel || self.exporting || self.exportGeneration != pending) return NO;
+    }
+    NSError *error = nil;
+    if (![self saveDraft:&error]) { [self reportError:MCVideoError([NSString stringWithFormat:@"草稿保存失败，窗口保持打开，编辑仍在内存。%@",error.localizedDescription ?: @""])]; return NO; }
     return YES;
 }
-- (void)trim:(__unused id)sender {
-    double start, end; if (![self number:self.trimStart value:&start integer:NO] || ![self number:self.trimEnd value:&end integer:NO]) return;
-    [self command:@{@"type":@"trim", @"trim":@{@"startMs":@(round(start*1000)), @"endMs":@(round(end*1000))}}];
-}
-- (void)cut:(__unused id)sender {
-    double start, end; if (![self number:self.cutStart value:&start integer:NO] || ![self number:self.cutEnd value:&end integer:NO]) return;
-    if ([self command:@{@"type":@"cut", @"cut":@{@"startMs":@(round(start*1000)), @"endMs":@(round(end*1000))}}]) {
-        self.pendingCut = NO;
-        self.cutStart.stringValue = @"0"; self.cutEnd.stringValue = @"0";
+- (BOOL)prepareForTermination:(NSError **)error {
+    if (self.closed) return YES;
+    if (self.exporting) { if (error) *error = MCVideoError(@"视频仍在保存，请等待完成或取消后退出。"); return NO; }
+    [self sendUIEvent:@{@"type":@"cancel"}];
+    NSError *failure = nil;
+    if (![self saveDraft:&failure]) {
+        failure = MCVideoError([NSString stringWithFormat:@"编辑草稿保存失败，已取消退出，编辑仍保留在内存中。%@", failure.localizedDescription ?: @""]);
+        [self reportError:failure]; if (error) *error = failure; return NO;
     }
-}
-- (void)clearCuts:(__unused id)sender { [self command:@{@"type":@"clearCuts"}]; }
-- (void)crop:(__unused id)sender {
-    double x,y,w,h; if (![self number:self.cropX value:&x integer:YES] || ![self number:self.cropY value:&y integer:YES] || ![self number:self.cropWidth value:&w integer:YES] || ![self number:self.cropHeight value:&h integer:YES]) return;
-    [self command:@{@"type":@"crop", @"crop":@{@"x":@(x), @"y":@(y), @"width":@(w), @"height":@(h)}}];
-}
-- (void)resetCrop:(__unused id)sender { [self command:@{@"type":@"crop", @"crop":NSNull.null}]; }
-- (void)muteChanged:(__unused id)sender { [self command:@{@"type":@"mute", @"muted":self.mute.state == NSControlStateValueOn ? @YES : @NO}]; }
-- (void)undo:(__unused id)sender { [self command:@{@"type":@"undo"}]; }
-- (void)redo:(__unused id)sender { [self command:@{@"type":@"redo"}]; }
-- (void)reset:(__unused id)sender { [self command:@{@"type":@"reset"}]; }
-- (void)seek:(__unused id)sender {
-    double seconds; if (![self number:self.seekTime value:&seconds integer:NO]) return;
-    NSDictionary *seek = MCVideoDecode(video_seek(self.session, seconds*1000));
-    if (![seek[@"ok"] boolValue]) { [self feedback:MCVideoError(seek[@"error"][@"message"])]; return; }
-    [self.playerView.player seekToTime:CMTimeMake([seek[@"outputMs"] longLongValue], 1000) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
-}
-- (void)confirm:(__unused id)sender {
-    if (self.exporter) return;
-    [self.window makeFirstResponder:nil];
-    if (self.pendingTrim || self.pendingCrop || self.pendingCut) {
-        NSAlert *alert = [NSAlert new];
-        alert.messageText = @"还有未应用的编辑";
-        alert.informativeText = @"输入框里有尚未应用的裁剪、裁画面或删除区间。请返回并点击对应的应用按钮；也可以只导出当前预览中的结果。";
-        [alert addButtonWithTitle:@"返回编辑"];
-        [alert addButtonWithTitle:@"导出当前预览"];
-        if ([alert runModal] != NSAlertSecondButtonReturn) return;
-    }
-    NSError *error = nil; AVMutableComposition *composition = nil; AVMutableVideoComposition *videoComposition = nil;
-    if (![self saveDraft:&error] || ![self buildComposition:&composition videoComposition:&videoComposition error:&error]) { [self feedback:error]; return; }
-    NSURL *directory = MCExportDirectory();
-    if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:&error]) { [self feedback:error]; return; }
-    NSURL *url = [directory URLByAppendingPathComponent:[NSString stringWithFormat:@"MoojiCut-%@.mp4", NSUUID.UUID.UUIDString]];
-    AVAssetExportSession *exporter = [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetHighestQuality];
-    if (!exporter) { [self feedback:MCVideoError(@"无法创建导出任务。")]; return; }
-    exporter.videoComposition = videoComposition; exporter.outputURL = url; exporter.outputFileType = AVFileTypeMPEG4; exporter.shouldOptimizeForNetworkUse = YES;
-    self.exporter = exporter; [self.playerView.player pause];
-    for (NSControl *control in self.editingControls) control.enabled = NO;
-    __weak MCVideoEditor *weakSelf = self;
-    self.progressTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(__unused NSTimer *timer) {
-        weakSelf.status.stringValue = [NSString stringWithFormat:@"正在导出 %.0f%%…", weakSelf.exporter.progress * 100];
-    }];
-    [exporter exportAsynchronouslyWithCompletionHandler:^{ dispatch_async(dispatch_get_main_queue(), ^{
-        [self.progressTimer invalidate]; self.progressTimer = nil; self.exporter = nil;
-        for (NSControl *control in self.editingControls) control.enabled = YES;
-        // A close/cancel may race the encoder's final completion callback. Honor
-        // it before publishing anything or deleting the recoverable source.
-        if (self.closeAfterExportCancellation) {
-            self.closeAfterExportCancellation = NO;
-            [NSFileManager.defaultManager removeItemAtURL:url error:NULL];
-            [self.window performClose:nil];
-            return;
-        }
-        if (exporter.status != AVAssetExportSessionStatusCompleted) {
-            [NSFileManager.defaultManager removeItemAtURL:url error:NULL];
-            [self refresh]; [self feedback:exporter.status == AVAssetExportSessionStatusCancelled ? MCVideoError(@"导出已取消，草稿仍然保留。") : exporter.error];
-            return;
-        }
-        NSPasteboard *pasteboard = NSPasteboard.generalPasteboard; [pasteboard clearContents];
-        if (![pasteboard writeObjects:@[url]]) {
-            [self feedback:MCVideoError([@"文件已保存，但复制失败：" stringByAppendingString:url.path])];
-            [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[url]]; return;
-        }
-        [self.playerView.player pause]; [self.playerView.player replaceCurrentItemWithPlayerItem:nil];
-        [NSFileManager.defaultManager removeItemAtURL:self.directory error:NULL];
-        [self.window close];
-    }); }];
-}
-- (void)cancel:(__unused id)sender { [self.window performClose:nil]; }
-- (BOOL)windowShouldClose:(__unused NSWindow *)sender {
-    if (self.exporter) {
-        NSAlert *alert = [NSAlert new]; alert.messageText = @"正在导出视频"; alert.informativeText = @"停止导出会保留原片与编辑草稿。";
-        [alert addButtonWithTitle:@"继续导出"]; [alert addButtonWithTitle:@"停止导出并关闭"];
-        if ([alert runModal] == NSAlertSecondButtonReturn) { self.closeAfterExportCancellation = YES; [self.exporter cancelExport]; }
-        return NO;
-    }
-    NSError *error = nil; if (![self saveDraft:&error]) { [self feedback:error]; return NO; } return YES;
+    return YES;
 }
 - (void)windowWillClose:(__unused NSNotification *)notification {
-    void (^closed)(void) = self.onClose;
-    self.onClose = nil;
-    [self.playerView.player pause]; self.playerView.player = nil;
-    self.window.delegate = nil; self.window.contentView = nil; self.window.toolbar = nil;
-    self.window = nil; self.playerView = nil;
-    [self.editingControls removeAllObjects];
+    if (self.closed) return;
+    [self sendUIEvent:@{@"type":@"cancel"}]; self.closed = YES; self.seekGeneration++; self.exportGeneration++;
+    self.exportActive = NO; self.choosingExport = NO; self.closeAfterExportCancellation = NO;
+    [self.timer invalidate]; self.timer = nil;
+    self.canvas.onEvent = nil; self.canvas.onFrameNeeded = nil; [self.canvas setVideoPlayer:nil]; [self.media close];
+    if (self.ui >= 0) { video_ui_close(self.ui); self.ui = -1; }
+    if (self.session >= 0) { video_project_close(self.session); self.session = -1; }
+    self.window.delegate = nil; self.window.contentView = nil; self.window = nil; self.canvas = nil;
+    void (^closed)(void) = self.onClose; self.onClose = nil; self.onStateChange = nil;
     if (closed) closed();
 }
 - (void)dealloc {
-    [self.progressTimer invalidate]; [self.exporter cancelExport];
-    if (_sessionOpen) video_dispose(_session);
+    [_timer invalidate]; _canvas.onEvent = nil; _canvas.onFrameNeeded = nil;
+    [_media close];
+    if (_ui >= 0) video_ui_close(_ui);
+    if (_session >= 0) video_project_close(_session);
 }
-
-// Deterministic local media only: no desktop permission or general clipboard.
 + (BOOL)makeSyntheticVideo:(NSURL *)url error:(NSError **)error {
     AVAssetWriter *writer = [[AVAssetWriter alloc] initWithURL:url fileType:AVFileTypeMPEG4 error:error];
     if (!writer) return NO;
@@ -375,15 +395,18 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
     if (!MCWaitUntil(^BOOL { return done; }, 30) || writer.status != AVAssetWriterStatusCompleted) { [writer cancelWriting]; if (error) *error = writer.error ?: MCVideoError(@"合成视频未完成。"); return NO; }
     return YES;
 }
+
 + (BOOL)runSmokeInDirectory:(NSURL *)directory error:(NSError **)error {
-    if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:error]) return NO;
+    NSFileManager *files = NSFileManager.defaultManager;
+    if (![files createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:error]) return NO;
     NSURL *raw = [directory URLByAppendingPathComponent:@"raw.mp4"], *audioURL = [directory URLByAppendingPathComponent:@"tone.caf"];
     if (![self makeSyntheticVideo:raw error:error]) return NO;
     AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:1];
     AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:192000]; buffer.frameLength = 192000;
     for (AVAudioFrameCount i=0; i<buffer.frameLength; i++) buffer.floatChannelData[0][i] = (float)(0.04*sin(2*M_PI*440*i/48000));
     AVAudioFile *audioFile = [[AVAudioFile alloc] initForWriting:audioURL settings:format.settings error:error];
-    if (!audioFile || ![audioFile writeFromBuffer:buffer error:error]) return NO; audioFile = nil;
+    if (!audioFile || ![audioFile writeFromBuffer:buffer error:error]) return NO;
+    audioFile = nil;
     AVURLAsset *video = [AVURLAsset URLAssetWithURL:raw options:nil], *audio = [AVURLAsset URLAssetWithURL:audioURL options:nil];
     AVMutableComposition *source = [AVMutableComposition composition];
     AVMutableCompositionTrack *v = [source addMutableTrackWithMediaType:AVMediaTypeVideo preferredTrackID:kCMPersistentTrackID_Invalid];
@@ -392,54 +415,78 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
     if (![v insertTimeRange:full ofTrack:MCVideoTracks(video, AVMediaTypeVideo).firstObject atTime:kCMTimeZero error:error] ||
         ![a insertTimeRange:full ofTrack:MCVideoTracks(audio, AVMediaTypeAudio).firstObject atTime:kCMTimeZero error:error]) return NO;
     NSURL *sourceURL = [directory URLByAppendingPathComponent:@"source.mp4"];
-    if (!MCExportSync(source, nil, sourceURL, error)) return NO;
-    MCVideoEditor *editor = [[self alloc] initWithDraftDirectory:directory error:error]; if (!editor) return NO;
-    NSArray *commands = @[
-        @{@"type":@"trim", @"trim":@{@"startMs":@500, @"endMs":@3500}},
-        @{@"type":@"cut", @"cut":@{@"startMs":@1000, @"endMs":@1500}},
-        @{@"type":@"cut", @"cut":@{@"startMs":@2000, @"endMs":@2500}},
-        @{@"type":@"crop", @"crop":@{@"x":@20, @"y":@30, @"width":@160, @"height":@100}}
-    ];
-    for (NSDictionary *command in commands) if (![editor applyCommand:command error:error]) return NO;
-    NSDictionary *seek = MCVideoDecode(video_seek(editor.session, 1200));
-    if ([seek[@"sourceMs"] integerValue] != 1500 || [seek[@"outputMs"] integerValue] != 500) { if (error) *error = MCVideoError(@"MoonBit seek检查失败。"); return NO; }
-    for (NSUInteger iteration=0; iteration<2; iteration++) {
-        if (iteration && ![editor applyCommand:@{@"type":@"mute", @"muted":@YES} error:error]) return NO;
-        AVMutableComposition *composition = nil; AVMutableVideoComposition *videoComposition = nil;
-        if (![editor buildComposition:&composition videoComposition:&videoComposition error:error]) return NO;
-        NSURL *output = [directory URLByAppendingPathComponent:iteration ? @"muted.mp4" : @"audible.mp4"];
-        if (!MCExportSync(composition, videoComposition, output, error)) return NO;
-        AVURLAsset *result = [AVURLAsset URLAssetWithURL:output options:@{AVURLAssetPreferPreciseDurationAndTimingKey:@YES}];
-        AVAssetTrack *track = MCVideoTracks(result, AVMediaTypeVideo).firstObject;
-        if (!track || fabs(CMTimeGetSeconds(result.duration)-2.0)>0.08 || track.naturalSize.width !=160 || track.naturalSize.height!=100 ||
-            MCVideoTracks(result, AVMediaTypeAudio).count != (iteration ? 0u : 1u)) {
-            if (error) *error = MCVideoError(@"导出时长、画面尺寸或音轨检查失败。"); return NO;
-        }
-        // The synthetic source encodes its X/Y coordinates into green/blue.
-        // Checking the decoded crop center catches a translated/wrong-origin crop.
-        AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:result error:error];
-        AVAssetReaderTrackOutput *frames = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:@{(NSString *)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_32BGRA)}];
-        if (!reader || ![reader canAddOutput:frames]) return NO;
-        [reader addOutput:frames]; if (![reader startReading]) { if (error) *error = reader.error; return NO; }
-        CMSampleBufferRef sample = [frames copyNextSampleBuffer];
-        CVPixelBufferRef pixels = sample ? CMSampleBufferGetImageBuffer(sample) : NULL;
-        BOOL cropCorrect = NO;
-        if (pixels) {
-            CVPixelBufferLockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
-            uint8_t *center = (uint8_t *)CVPixelBufferGetBaseAddress(pixels) + 50*CVPixelBufferGetBytesPerRow(pixels) + 80*4;
-            cropCorrect = abs(center[0]-80) < 18 && abs(center[1]-100) < 18;
-            CVPixelBufferUnlockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
-        }
-        if (sample) CFRelease(sample); [reader cancelReading];
-        if (!cropCorrect) { if (error) *error = MCVideoError(@"导出画面裁剪位置不正确。"); return NO; }
-        NSPasteboard *pasteboard = [NSPasteboard pasteboardWithUniqueName];
-        BOOL copied = [pasteboard writeObjects:@[output]] && [[pasteboard readObjectsForClasses:@[NSURL.class] options:@{}].firstObject isEqual:output];
-        [pasteboard releaseGlobally];
-        if (!copied) { if (error) *error = MCVideoError(@"隔离剪贴板文件复制检查失败。"); return NO; }
+    if (!MCExportSync(source,nil,sourceURL,error)) return NO;
+    NSData *sourceBytes = [NSData dataWithContentsOfURL:sourceURL];
+    // Prepare a genuine v1 draft. Production initialization must migrate only
+    // in memory, preserving both the original movie and the old edit file.
+    MCVideoMedia *metadata = [[MCVideoMedia alloc] initWithURL:sourceURL error:error];
+    if (!metadata) return NO;
+    moonbit_string_t src = MCVideoString(MCVideoJSON(metadata.metadata)), empty = MCVideoString(@"");
+    NSDictionary *legacy = MCVideoDecode(video_open(src,empty)); moonbit_decref(src); moonbit_decref(empty); [metadata close];
+    int32_t oldSession = [legacy[@"session"] intValue];
+    for (NSDictionary *op in @[
+        @{@"type":@"trim",@"trim":@{@"startMs":@500,@"endMs":@3500}},
+        @{@"type":@"cut",@"cut":@{@"startMs":@1000,@"endMs":@1500}},
+        @{@"type":@"cut",@"cut":@{@"startMs":@2000,@"endMs":@2500}},
+        @{@"type":@"crop",@"crop":@{@"x":@20,@"y":@30,@"width":@160,@"height":@100}}
+    ]) {
+        moonbit_string_t input = MCVideoString(MCVideoJSON(op)); legacy = MCVideoDecode(video_command(oldSession,input)); moonbit_decref(input);
+        if (![legacy[@"ok"] boolValue]) { video_dispose(oldSession); if (error) *error=MCVideoError(@"无法准备旧草稿测试数据。"); return NO; }
     }
-    MCVideoEditor *reopened = [[self alloc] initWithDraftDirectory:directory error:error];
-    if (!reopened || [reopened.state[@"plan"][@"outputDurationMs"] integerValue] != 2000 || ![reopened.state[@"document"][@"muted"] boolValue]) { if (error && !*error) *error = MCVideoError(@"草稿恢复检查失败。"); return NO; }
-    if (![editor applyCommand:@{@"type":@"undo"} error:error] || [editor.state[@"document"][@"muted"] boolValue] || ![editor applyCommand:@{@"type":@"redo"} error:error] || ![editor.state[@"document"][@"muted"] boolValue]) return NO;
+    video_dispose(oldSession);
+    NSData *legacyBytes = [NSJSONSerialization dataWithJSONObject:legacy[@"document"] options:0 error:error];
+    NSURL *oldURL = [directory URLByAppendingPathComponent:@"edit.json"], *newURL = [directory URLByAppendingPathComponent:@"edit-v2.json"];
+    if (![legacyBytes writeToURL:oldURL options:NSDataWritingAtomic error:error]) return NO;
+    MCVideoEditor *editor = [[self alloc] initWithDraftDirectory:directory error:error];
+    if (!editor || editor.window || [files fileExistsAtPath:newURL.path] || [editor.state[@"document"][@"schemaVersion"] intValue]!=2) return NO;
+    [editor buildWindow];
+    BOOL (^click)(NSString *) = ^BOOL(NSString *identifier) {
+        [editor render];
+        for (NSDictionary *item in editor.canvas.frameDescription[@"semantics"]) if ([item[@"id"] isEqual:identifier]) {
+            if (![item[@"enabled"] boolValue]) return NO;
+            double x=[item[@"x"] doubleValue]+[item[@"width"] doubleValue]/2;
+            double y=[item[@"y"] doubleValue]+[item[@"height"] doubleValue]/2;
+            editor.canvas.onEvent(@{@"type":@"pointerDown",@"x":@(x),@"y":@(y)});
+            editor.canvas.onEvent(@{@"type":@"pointerUp",@"x":@(x),@"y":@(y)});
+            return YES;
+        }
+        return NO;
+    };
+    NSDictionary *before = editor.state[@"plan"];
+    [editor sendUIEvent:@{@"type":@"playback",@"outputMs":@250,@"playing":@NO}];
+    if (!click(@"project-split") || [editor.state[@"plan"][@"video"] count]!=4 || !click(@"undo") ||
+        ![editor.state[@"plan"] isEqual:before] || editor.draftDirty || editor.window.visible) {
+        if (error) *error=editor.lastError ?: MCVideoError(@"正式共享编辑器输入、撤销或草稿写入检查失败。"); return NO;
+    }
+    for (NSUInteger pass=0; pass<2; pass++) {
+        if (pass && (!click(@"project-mute") || ![editor.state[@"document"][@"muted"] boolValue])) return NO;
+        NSURL *output=[directory URLByAppendingPathComponent:pass ? @"muted.mp4" : @"audible.mp4"];
+        __block BOOL done=NO; __block NSError *failure=nil;
+        [editor exportToURL:output copyToPasteboard:NO completion:^(__unused NSURL *saved,NSError *problem){failure=problem;done=YES;}];
+        if (!MCWaitUntil(^BOOL{return done;},60) || failure) { if(error)*error=failure ?: MCVideoError(@"正式适配器导出超时。"); return NO; }
+        AVURLAsset *result=[AVURLAsset URLAssetWithURL:output options:@{AVURLAssetPreferPreciseDurationAndTimingKey:@YES}];
+        AVAssetTrack *track=MCVideoTracks(result,AVMediaTypeVideo).firstObject;
+        if (!track || fabs(CMTimeGetSeconds(result.duration)-2)>0.12 || track.naturalSize.width!=160 || track.naturalSize.height!=100 ||
+            MCVideoTracks(result,AVMediaTypeAudio).count!=(pass ? 0u:1u)) { if(error)*error=MCVideoError(@"正式导出时长、裁画面或音轨不一致。"); return NO; }
+        AVAssetReader *reader=[[AVAssetReader alloc] initWithAsset:result error:error];
+        AVAssetReaderTrackOutput *frames=[[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:@{(NSString *)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_32BGRA)}];
+        if (!reader || ![reader canAddOutput:frames]) return NO;
+        [reader addOutput:frames]; if(![reader startReading]) { if(error)*error=reader.error;return NO; }
+        CMSampleBufferRef sample=[frames copyNextSampleBuffer]; CVPixelBufferRef pixels=sample ? CMSampleBufferGetImageBuffer(sample):NULL;
+        BOOL correct=NO;
+        if(pixels) { CVPixelBufferLockBaseAddress(pixels,kCVPixelBufferLock_ReadOnly);
+            uint8_t *center=(uint8_t *)CVPixelBufferGetBaseAddress(pixels)+50*CVPixelBufferGetBytesPerRow(pixels)+80*4;
+            correct=abs(center[0]-80)<18 && abs(center[1]-100)<18;
+            CVPixelBufferUnlockBaseAddress(pixels,kCVPixelBufferLock_ReadOnly); }
+        if(sample)CFRelease(sample); [reader cancelReading];
+        if(!correct){if(error)*error=MCVideoError(@"正式导出裁剪原点不正确。");return NO;}
+    }
+    MCVideoEditor *reopened=[[self alloc] initWithDraftDirectory:directory error:error];
+    if(!reopened || ![reopened.state[@"plan"] isEqual:editor.state[@"plan"]] ||
+        ![[NSData dataWithContentsOfURL:sourceURL] isEqual:sourceBytes] || ![[NSData dataWithContentsOfURL:oldURL] isEqual:legacyBytes]) {
+        if(error && !*error)*error=MCVideoError(@"v2草稿恢复或原片保护检查失败。");return NO;
+    }
+    [editor.window close];
     return YES;
 }
 @end

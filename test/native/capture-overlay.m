@@ -3,6 +3,7 @@
 #import "components/style_controls/macos/MCStylePropertiesView.h"
 #include "moonbit.h"
 #include <math.h>
+#import <objc/runtime.h>
 
 // Synthetic images and events only. The window is never shown and the test
 // does not ask for screen permission or write the general clipboard.
@@ -11,6 +12,8 @@
 @property NSTextView *textView;
 - (NSRect)imageFrame;
 - (BOOL)finishTextEditing:(BOOL)commit;
+- (NSRect)viewRectForImageRect:(NSRect)rect;
+- (NSRect)selectionFrame;
 @end
 @interface MCImageEditorController (MCOverlayTest)
 @property (readonly) MCImageCanvas *canvas;
@@ -29,15 +32,28 @@
 @property (readonly) NSStepper *fontStepper;
 @property (readonly) NSButton *ocrButton;
 @property (readonly) NSButton *translateButton;
+@property (readonly) NSButton *scrollCaptureButton;
 - (void)chooseTool:(id)sender;
 - (void)styleChanged:(id)sender;
 - (void)refresh;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)pinImage:(id)sender;
 - (void)prepareWindow;
+- (BOOL)setCaptureRegion:(NSRect)rect;
+- (void)positionFloatingToolbar;
 @end
 
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL capture overlay: %s\n", message); passed = NO; } } while (0)
+
+static void selectTool(MCImageEditorController *editor, NSInteger kind) {
+    for (NSInteger index = 0; index < editor.tools.segmentCount; index++) {
+        if ([editor.tools tagForSegment:index] == kind) {
+            editor.tools.selectedSegment = index;
+            [editor chooseTool:editor.tools];
+            return;
+        }
+    }
+}
 
 static NSEvent *mouse(MCImageCanvas *canvas, NSEventType type, NSPoint point) {
     NSRect frame = canvas.imageFrame;
@@ -79,14 +95,13 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.document[@"undo"] count] == 0, "initial selection establishes the editing baseline");
     CHECK(NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame),
           "floating toolbar stays within its screen");
-    NSRect toolbarFrame = editor.floatingToolbar.frame;
     CHECK(editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
           "select without a text object shows no irrelevant properties");
     CHECK(editor.ocrButton.superview == editor.toolbar && editor.translateButton.superview == editor.toolbar &&
-          !editor.ocrButton.enabled && !editor.translateButton.enabled &&
+          editor.ocrButton.hidden && editor.translateButton.hidden && !editor.ocrButton.enabled && !editor.translateButton.enabled &&
           !editor.ocrButton.isAccessibilityEnabled && !editor.translateButton.isAccessibilityEnabled &&
           [editor.ocrButton.toolTip containsString:@"尚未开放"] && [editor.translateButton.toolTip containsString:@"尚未开放"],
-          "OCR and translation remain unavailable first-row actions with honest tooltips");
+          "unavailable OCR/translation do not occupy screenshot toolbar space");
     NSNumber *revision = editor.document[@"revision"];
     [editor.ocrButton performClick:nil];
     [editor.translateButton performClick:nil];
@@ -94,8 +109,7 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.color isDescendantOf:editor.properties] && [editor.fontSize isDescendantOf:editor.properties] &&
           ![editor.color isDescendantOf:editor.toolbar] && ![editor.fontSize isDescendantOf:editor.toolbar],
           "color and font controls live only in the contextual second row");
-    editor.tools.selectedSegment = 1;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 1);
     CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && !editor.strokeGroup.hidden,
           "rectangle exposes color and labelled line width only");
     editor.strokeStepper.doubleValue = 8;
@@ -106,25 +120,24 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.document[@"annotations"][0][@"stroke"] intValue] == 8,
           "contextual line width controls the real MoonBit shape annotation");
     [editor undo:nil];
-    editor.tools.selectedSegment = 2;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 2);
     CHECK(!editor.strokeGroup.hidden && editor.fontGroup.hidden, "arrow exposes the same meaningful shape properties");
-    editor.tools.selectedSegment = 4;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 4);
     CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
           "filled cover exposes color/opacity without unrelated stroke or font properties");
-    editor.tools.selectedSegment = 3;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 3);
     CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden &&
-          NSEqualRects(toolbarFrame, editor.floatingToolbar.frame),
-          "changing tools swaps properties without relocating the floating HUD");
+          NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame),
+          "changing tools fits the current properties within the screen");
+    NSRect toolbarFrame = editor.floatingToolbar.frame;
     [editor addTextAtPoint:NSMakePoint(120, 80)];
     CHECK(canvas.textView != nil && editor.window.attachedSheet == nil, "selection can immediately host inline text");
     [canvas.textView setMarkedText:@"yueliang" selectedRange:NSMakeRange(8, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
     NSResponder *textResponder = editor.window.firstResponder;
-    editor.tools.selectedSegment = 4;
-    [editor chooseTool:editor.tools];
-    CHECK(canvas.textView.hasMarkedText && editor.tools.selectedSegment == 3 &&
+    CHECK([editor capturePNGData:&error] == nil && canvas.textView.hasMarkedText && editor.window.firstResponder == textResponder,
+          "content actions reject unfinished IME without accepting or discarding composition");
+    selectTool(editor, 4);
+    CHECK(canvas.textView.hasMarkedText && [editor.tools tagForSegment:editor.tools.selectedSegment] == 3 &&
           editor.window.firstResponder == textResponder && NSEqualRects(toolbarFrame, editor.floatingToolbar.frame),
           "tool switching preserves ongoing IME composition and HUD placement");
     [canvas.textView insertText:@"原地编辑 🌙\n第二行" replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -132,6 +145,10 @@ static BOOL exercise(CGFloat scale) {
     [editor.fontStepper sendAction:editor.fontStepper.action to:editor.fontStepper.target];
     CHECK(editor.fontSize.doubleValue == 32 && [editor.document[@"annotations"] count] == 0,
           "native font stepper updates the text draft without premature document history");
+    NSBitmapImageRep *snapshot = [NSBitmapImageRep imageRepWithData:[editor capturePNGData:&error]];
+    CHECK(snapshot.pixelsWide == 400 && snapshot.pixelsHigh == 300 && canvas.textView != nil &&
+          [editor.document[@"annotations"] count] == 0,
+          "content snapshot includes the current crop without ending the pending text transaction");
     NSString *previewPath = NSProcessInfo.processInfo.environment[@"MOOJICUT_OVERLAY_PREVIEW"];
     if (previewPath.length && scale == 1.5) {
         NSView *content = editor.window.contentView;
@@ -148,7 +165,9 @@ static BOOL exercise(CGFloat scale) {
           "export commits live text and uses the selected pixel dimensions");
     CHECK([editor.document[@"annotations"][0][@"fontSize"] intValue] == 32,
           "second-row font size is committed into the shared text document");
-    editor.tools.selectedSegment = 0;
+    NSString *textID = canvas.selectedID;
+    selectTool(editor, 0);
+    canvas.selectedID = textID;
     [editor refresh];
     CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden,
           "selecting an existing text object retains text properties in the select tool");
@@ -171,8 +190,19 @@ static BOOL exercise(CGFloat scale) {
     __block NSData *pinned = nil;
     NSRect expectedPinFrame = [editor.window convertRectToScreen:[canvas convertRect:
         NSMakeRect(100 * scale, 60 * scale, 400 * scale, 300 * scale) toView:nil]];
+    CHECK(NSEqualRects(editor.captureScreenFrame,expectedPinFrame), "capture consumers share the real scaled screen selection coordinates");
     __block NSRect pinnedFrame = NSZeroRect;
     __weak MCImageEditorController *weakEditor = editor;
+    editor.onPinPNGData = ^BOOL(NSData *data) { (void)data; return NO; };
+    [editor pinImage:nil];
+    CHECK(editor.window != nil && [editor.document[@"viewport"] isEqual:viewport],
+          "a pin rejected by the feature gate keeps the crop and editor alive");
+    editor.onPinPNGData = nil;
+    NSInteger pinSegment = -1;
+    for (NSInteger index = 0; index < editor.tools.segmentCount; index++)
+        if ([editor.tools tagForSegment:index] == 100) pinSegment = index;
+    CHECK(pinSegment >= 0 && ![editor.tools isEnabledForSegment:pinSegment],
+          "removing pin capability disables the real action segment");
     editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; pinnedFrame = weakEditor.pinScreenFrame; return YES; };
     [editor pinImage:nil];
     CHECK(pinned.length > 0 && editor.window == nil, "pin receives the final crop and finishes the capture");
@@ -189,8 +219,7 @@ static BOOL independentToolStyles(void) {
     MCStylePropertiesView *properties = (MCStylePropertiesView *)editor.properties;
     const int colors[] = {0, 0xff0000, 0x00ff00, 0x0000ff, 0x883399};
     for (NSInteger tool = 1; tool <= 4; tool++) {
-        editor.tools.selectedSegment = tool;
-        [editor chooseTool:editor.tools];
+        selectTool(editor, tool);
         MCStyleValues values = properties.values;
         values.rgb = colors[tool]; values.opacity = tool * .2;
         properties.values = values;
@@ -202,8 +231,7 @@ static BOOL independentToolStyles(void) {
     }
     CHECK([editor.document[@"undo"] count] == 0, "changing creation defaults never creates document undo entries");
     for (NSInteger tool = 4; tool >= 1; tool--) {
-        editor.tools.selectedSegment = tool;
-        [editor chooseTool:editor.tools];
+        selectTool(editor, tool);
         MCStyleValues values = properties.values;
         CHECK(values.rgb == colors[tool] && fabs(values.opacity - tool * .2) < .001,
               "each tool restores its own RGBA values after visiting every other tool");
@@ -213,8 +241,7 @@ static BOOL independentToolStyles(void) {
     [other prepareWindow];
     CHECK(((MCStylePropertiesView *)other.properties).values.rgb == (int32_t)editor_style_default(MC_STYLE_COLOR),
           "another editor instance retains its own defaults");
-    editor.tools.selectedSegment = 3;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 3);
     [editor addTextAtPoint:NSMakePoint(30, 30)];
     [editor.canvas.textView insertText:@"第一段" replacementRange:NSMakeRange(NSNotFound, 0)];
     CHECK([editor.canvas finishTextEditing:YES], "new styled text commits through the normal inline editor");
@@ -256,6 +283,219 @@ static BOOL independentToolStyles(void) {
           "native numeric callbacks stay within their own component instance");
     return passed;
 }
+static NSView *cursorCanvas;
+static NSMutableArray<NSDictionary *> *cursorRecords;
+static void (*originalAddCursor)(id, SEL, NSRect, NSCursor *);
+static void recordCursor(id view, SEL selector, NSRect rect, NSCursor *cursor) {
+    if (view == cursorCanvas) [cursorRecords addObject:@{@"rect":[NSValue valueWithRect:rect], @"cursor":cursor}];
+    originalAddCursor(view, selector, rect, cursor);
+}
+static NSArray<NSDictionary *> *canvasCursors(MCImageCanvas *canvas) {
+    cursorCanvas = canvas; cursorRecords = [NSMutableArray array];
+    Method method = class_getInstanceMethod(NSView.class, @selector(addCursorRect:cursor:));
+    originalAddCursor = (void (*)(id, SEL, NSRect, NSCursor *))method_setImplementation(method, (IMP)recordCursor);
+    [canvas discardCursorRects]; [canvas resetCursorRects];
+    method_setImplementation(method, (IMP)originalAddCursor);
+    NSArray *result = [cursorRecords copy]; cursorCanvas = nil; cursorRecords = nil;
+    return result;
+}
+static BOOL hasCursor(NSArray<NSDictionary *> *records, NSPoint point, NSCursor *cursor) {
+    for (NSDictionary *record in records)
+        if (NSPointInRect(point, [record[@"rect"] rectValue]) && (!cursor || record[@"cursor"] == cursor)) return YES;
+    return NO;
+}
+static NSDictionary *overlayConfiguration(NSSet<NSNumber *> *disabled, NSUInteger pluginCount) {
+    NSArray *ids = @[@"builtin.image.rectangle", @"builtin.image.arrow", @"builtin.image.text", @"builtin.image.cover"];
+    NSMutableArray *entries = [NSMutableArray array];
+    for (NSUInteger index = 0; index < ids.count; index++)
+        [entries addObject:@{@"id":ids[index], @"title":@"标注", @"type":@"annotation", @"kind":@(index+1), @"enabled":@(![disabled containsObject:@(index+1)])}];
+    [entries addObject:@{@"id":@"builtin.image.pin", @"title":@"贴图", @"type":@"action", @"action":@"pin", @"pluginId":@"builtin.pin", @"enabled":@(![disabled containsObject:@100])}];
+    for (NSUInteger index = 0; index < pluginCount; index++) {
+        NSString *tool = [NSString stringWithFormat:@"tool-%lu", (unsigned long)index];
+        [entries addObject:@{@"id":[@"user.com.example.capture/" stringByAppendingString:tool], @"pluginId":@"com.example.capture",
+            @"toolId":tool, @"title":@"截图信息", @"type":@"action", @"action":@"run", @"target":@"screenshot", @"enabled":@YES}];
+    }
+    return @{@"ok":@YES, @"layout":@{}, @"groups":@{@"screenshot":entries, @"recording":@[], @"videoEditing":@[]}};
+}
+static BOOL adaptiveOverlay(CGFloat scale) {
+    BOOL passed = YES;
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
+    [editor prepareOverlayInFrame:NSMakeRect(-1200, -300, 800*scale, 500*scale)];
+    CHECK(editor.onScrollCapture == nil && editor.scrollCaptureButton.hidden && !editor.scrollCaptureButton.enabled,
+          "the default overlay keeps experimental scrolling hidden and disabled until a host explicitly supplies capability");
+    MCImageCanvas *canvas = editor.canvas;
+    NSArray *cursors = canvasCursors(canvas);
+    CHECK(hasCursor(cursors, NSMakePoint(20,20), NSCursor.crosshairCursor), "initial region selection uses a canvas crosshair");
+    // A nearly full-screen crop forces the toolbar over the selection, exactly
+    // where sibling cursor rectangles used to leak through native controls.
+    CHECK([editor setCaptureRegion:NSMakeRect(10,10,780,480)], "large crop establishes overlay layout");
+    CGFloat defaultWidth = NSWidth(editor.floatingToolbar.frame);
+    CHECK(defaultWidth < 450, "default screenshot toolbar fits its actual controls instead of a fixed 500-point shell");
+    selectTool(editor,1);
+    cursors = canvasCursors(canvas);
+    NSRect hud = [canvas convertRect:editor.floatingToolbar.bounds fromView:editor.floatingToolbar];
+    for (NSDictionary *record in cursors)
+        CHECK(NSIsEmptyRect(NSIntersectionRect([record[@"rect"] rectValue], hud)), "no canvas cursor registration covers the floating native controls");
+    NSPoint inside = NSMakePoint(650*scale,350*scale);
+    CHECK(hasCursor(cursors, inside, NSCursor.crosshairCursor), "drawing crosshair tracks the scaled crop");
+    CHECK(!hasCursor(cursors, NSMakePoint(1,1), nil), "outside the selected crop retains the normal arrow");
+    selectTool(editor,0);
+    CHECK(!hasCursor(canvasCursors(canvas), inside, nil), "the selection tool does not register a drawing cursor inside the crop");
+    selectTool(editor,3);
+    CHECK(hasCursor(canvasCursors(canvas), inside, NSCursor.IBeamCursor), "text mode uses an I-beam only inside the crop");
+    [editor addTextAtPoint:NSMakePoint(350,250)];
+    [canvas.textView insertText:@"文字缩放" replacementRange:NSMakeRange(NSNotFound,0)];
+    NSRect textFrame = canvas.selectionFrame;
+    CHECK(hasCursor(canvasCursors(canvas), NSMakePoint(NSMaxX(textFrame),NSMidY(textFrame)), NSCursor.resizeLeftRightCursor),
+          "text resize handles retain their cursor at each display scale");
+    NSResponder *responder = editor.window.firstResponder;
+    NSRect fieldFrame = editor.fontSize.frame;
+    [editor positionFloatingToolbar];
+    CHECK(editor.window.firstResponder == responder && NSEqualRects(editor.fontSize.frame,fieldFrame),
+          "relayout preserves native text focus and numeric field width");
+    CHECK([canvas finishTextEditing:YES], "layout leaves inline text committable");
+    selectTool(editor,0);
+    [editor applyToolConfiguration:overlayConfiguration([NSSet setWithArray:@[@2,@3,@4,@100]],0)];
+    CGFloat reduced = NSWidth(editor.floatingToolbar.frame);
+    CHECK(reduced < defaultWidth - 50, "disabling tools removes their actual width from the floating panel");
+    [editor applyToolConfiguration:overlayConfiguration([NSSet set],2)];
+    CGFloat twoPlugins = NSWidth(editor.floatingToolbar.frame);
+    CHECK(twoPlugins > defaultWidth && twoPlugins <= NSWidth(editor.window.contentView.bounds)-24,
+          "adding two plugin actions expands only to their measured content");
+    [editor applyToolConfiguration:overlayConfiguration([NSSet set],16)];
+    CGFloat manyPlugins = NSWidth(editor.floatingToolbar.frame);
+    NSScrollView *toolsScroll = editor.tools.enclosingScrollView;
+    CHECK(manyPlugins <= twoPlugins + 1 && toolsScroll.documentVisibleRect.size.width < editor.tools.frame.size.width,
+          "extra plugins use bounded horizontal overflow instead of widening the panel indefinitely");
+    [editor.tools scrollRectToVisible:NSMakeRect(NSMaxX(editor.tools.bounds)-30,0,30,28)];
+    CHECK(NSMaxX(toolsScroll.documentVisibleRect) >= NSMaxX(editor.tools.bounds)-1, "last plugin is reachable through the bounded tool scroller");
+    [editor applyToolConfiguration:overlayConfiguration([NSSet setWithArray:@[@2,@100]],0)];
+    selectTool(editor,4); CGFloat cover = NSWidth(editor.floatingToolbar.frame), coverProperties = editor.properties.fittingSize.width;
+    selectTool(editor,1); CGFloat shape = NSWidth(editor.floatingToolbar.frame), shapeProperties = editor.properties.fittingSize.width;
+    selectTool(editor,3); CGFloat text = NSWidth(editor.floatingToolbar.frame), textProperties = editor.properties.fittingSize.width;
+    CHECK(coverProperties < shapeProperties && coverProperties < textProperties && cover <= shape && cover <= text,
+          "hidden stroke/font groups shrink the property row even when the icon row determines the panel width");
+    CHECK(NSWidth(editor.fontSize.frame) >= 44 && NSWidth(editor.lineWidth.frame) >= 44, "contextual numeric fields keep their natural width");
+    __block NSUInteger contentActions = 0;
+    editor.onOCR = ^(__unused MCImageEditorController *source) { contentActions++; };
+    editor.onTranslate = ^(__unused MCImageEditorController *source) { contentActions++; };
+    editor.onScrollCapture = ^(__unused MCImageEditorController *source) { contentActions++; };
+    CHECK(!editor.ocrButton.hidden && editor.ocrButton.enabled && editor.translateButton.hidden && !editor.translateButton.enabled,
+          "OCR and translation share one visible text entry even when both callbacks are attached");
+    CHECK(!editor.scrollCaptureButton.hidden && editor.scrollCaptureButton.enabled, "scroll capture appears only when the host supplies the capability");
+    [editor.ocrButton performClick:nil]; [editor.translateButton performClick:nil]; [editor.scrollCaptureButton performClick:nil];
+    CHECK(contentActions == 2, "text entry uses OCR and the hidden translation entry cannot dispatch a second action");
+    [editor applyToolConfiguration:overlayConfiguration([NSSet set],0)];
+    CGFloat withContentActions = NSWidth(editor.floatingToolbar.frame);
+    // Tiny synthetic display: preserve action/field hit targets and scroll them
+    // instead of letting fixed-width rows escape the screen or compress input.
+    [editor.window setFrame:NSMakeRect(-1000,80,160,200) display:NO]; [editor positionFloatingToolbar];
+    CHECK(NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame), "small/offset screens contain the entire floating panel");
+    CHECK(NSWidth(editor.fontSize.frame) >= 44, "small screen layout never squeezes the font editor");
+    CHECK(editor.properties.enclosingScrollView.documentVisibleRect.size.width < editor.properties.frame.size.width,
+          "properties remain reachable through scrolling on exceptionally small screens");
+    cursors = canvasCursors(canvas); hud = [canvas convertRect:editor.floatingToolbar.bounds fromView:editor.floatingToolbar];
+    for (NSDictionary *record in cursors)
+        CHECK(NSIsEmptyRect(NSIntersectionRect([record[@"rect"] rectValue],hud)), "resizing the overlay recalculates cursor exclusion");
+    printf("overlay %.1fx widths: default=%.0f reduced=%.0f twoPlugins=%.0f manyPlugins=%.0f cover=%.0f shape=%.0f text=%.0f contentActions=%.0f\n",
+           scale,defaultWidth,reduced,twoPlugins,manyPlugins,cover,shape,text,withContentActions);
+    [editor cancel:nil]; return passed;
+}
+static BOOL contentSnapshots(void) {
+    BOOL passed = YES;
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
+    [editor prepareOverlayInFrame:NSMakeRect(-900,120,800,500)];
+    CHECK(editor.captureContentSnapshot == nil, "unselected overlays have no usable capture content identity");
+    [editor setCaptureRegion:NSMakeRect(20,20,700,440)];
+    NSDictionary *unannotated = editor.captureContentSnapshot;
+    selectTool(editor,1);
+    editor.strokeStepper.doubleValue = 12;
+    [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
+    selectTool(editor,2);
+    CHECK([unannotated isEqual:editor.captureContentSnapshot],
+          "tool switching and unused creation defaults do not invalidate OCR content");
+    selectTool(editor,3); [editor addTextAtPoint:NSMakePoint(80,80)];
+    [editor.canvas.textView insertText:@"原稿" replacementRange:NSMakeRange(NSNotFound,0)];
+    NSNumber *revision = editor.document[@"revision"];
+    NSDictionary *original = editor.captureContentSnapshot;
+    CHECK([editor capturePNGData:NULL] != nil && [original isEqual:editor.captureContentSnapshot],
+          "taking a PNG snapshot does not change its lightweight content identity");
+    [editor.canvas.textView insertText:@"追加" replacementRange:NSMakeRange(NSNotFound,0)];
+    CHECK([editor.document[@"revision"] isEqual:revision] && ![original isEqual:editor.captureContentSnapshot],
+          "uncommitted text invalidates asynchronous results even while the document revision is unchanged");
+    CHECK([original[@"annotations"][0][@"text"] isEqual:@"原稿"], "saved snapshot strings do not alias the live text storage");
+    NSDictionary *beforeStyle = editor.captureContentSnapshot;
+    editor.fontStepper.doubleValue = 40;
+    [editor.fontStepper sendAction:editor.fontStepper.action to:editor.fontStepper.target];
+    CHECK([editor.document[@"revision"] isEqual:revision] && ![beforeStyle isEqual:editor.captureContentSnapshot] &&
+          [beforeStyle[@"annotations"][0][@"fontSize"] intValue] != 40,
+          "uncommitted annotation styling changes identity without mutating the older draft snapshot");
+    [editor.window makeFirstResponder:editor.fontSize];
+    NSText *input = editor.fontSize.currentEditor;
+    CHECK(input != nil, "the snapshot regression exercises a real native numeric field editor");
+    NSDictionary *beforeField = editor.captureContentSnapshot;
+    input.string = @"48";
+    CHECK([editor.document[@"revision"] isEqual:revision] && ![beforeField isEqual:editor.captureContentSnapshot],
+          "pending numeric field text invalidates results before its control value or document is committed");
+    NSTextView *numericInput = (NSTextView *)input;
+    NSDictionary *pendingNumber = editor.captureContentSnapshot;
+    NSData *pendingPixels = [editor capturePNGData:NULL];
+    [editor.window makeFirstResponder:editor.canvas.textView];
+    CHECK([pendingNumber isEqual:editor.captureContentSnapshot] &&
+          [pendingPixels isEqual:[editor capturePNGData:NULL]],
+          "ending a valid numeric field edit preserves actual candidate content and rendered pixels");
+    NSDictionary *pendingText = editor.captureContentSnapshot;
+    NSData *pendingTextPixels = [editor capturePNGData:NULL];
+    CHECK([editor.canvas finishTextEditing:YES] && ![editor.document[@"revision"] isEqual:revision] &&
+          [pendingText isEqual:editor.captureContentSnapshot] &&
+          [pendingTextPixels isEqual:[editor capturePNGData:NULL]],
+          "committing the same pending text keeps the OCR lease despite revision and history changes");
+    selectTool(editor,1);
+    CHECK([pendingText isEqual:editor.captureContentSnapshot],
+          "clearing the selected annotation and choosing another tool preserves rendered content");
+    [editor setCaptureRegion:NSMakeRect(25,20,695,440)];
+    CHECK(![pendingText isEqual:editor.captureContentSnapshot], "crop changes invalidate capture content");
+    selectTool(editor,3); [editor addTextAtPoint:NSMakePoint(300,80)];
+    [editor.canvas.textView insertText:@"待编辑" replacementRange:NSMakeRange(NSNotFound,0)];
+    revision = editor.document[@"revision"];
+    [editor.window makeFirstResponder:editor.fontSize];
+    numericInput = (NSTextView *)editor.fontSize.currentEditor;
+    numericInput.string = @"invalid";
+    CHECK(editor.captureContentSnapshot == nil && [editor capturePNGData:NULL] == nil,
+          "invalid pending numeric text cannot keep a stale OCR lease alive");
+    numericInput.string = @"48";
+    [numericInput setMarkedText:@"49" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0, input.string.length)];
+    NSString *numericComposition = [numericInput.string copy];
+    NSRange numericMarkedRange = numericInput.markedRange;
+    NSError *compositionError = nil;
+    CHECK(numericInput.hasMarkedText && editor.captureContentSnapshot == nil &&
+          [editor capturePNGData:&compositionError] == nil && compositionError != nil,
+          "content actions reject numeric IME even when its unconfirmed text parses as a valid number");
+    CHECK(numericInput.hasMarkedText && [numericComposition isEqual:numericInput.string] &&
+          NSEqualRanges(numericMarkedRange,numericInput.markedRange) &&
+          editor.window.firstResponder == numericInput && [editor.document[@"revision"] isEqual:revision],
+          "rejecting numeric IME preserves its composition, focus, draft and document history");
+    [numericInput insertText:@"48" replacementRange:NSMakeRange(NSNotFound,0)];
+    [editor.window makeFirstResponder:editor.canvas.textView];
+    [editor.canvas.textView setMarkedText:@"zhong" selectedRange:NSMakeRange(5,0) replacementRange:NSMakeRange(NSNotFound,0)];
+    CHECK([editor.document[@"revision"] isEqual:revision] && editor.captureContentSnapshot == nil &&
+          editor.canvas.textView.hasMarkedText,
+          "IME composition invalidates results without forcing a document commit");
+    [editor.canvas.textView insertText:@"中文" replacementRange:NSMakeRange(NSNotFound,0)];
+    selectTool(editor,1);
+    revision = editor.document[@"revision"];
+    NSDictionary *beforeDrawing = editor.captureContentSnapshot;
+    [editor.canvas mouseDown:mouse(editor.canvas,NSEventTypeLeftMouseDown,NSMakePoint(400,250))];
+    [editor.canvas mouseDragged:mouse(editor.canvas,NSEventTypeLeftMouseDragged,NSMakePoint(500,320))];
+    CHECK([editor.document[@"revision"] isEqual:revision] && editor.captureContentSnapshot == nil,
+          "a pending drawing gesture invalidates results before its undoable edit commits");
+    [editor.canvas mouseUp:mouse(editor.canvas,NSEventTypeLeftMouseUp,NSMakePoint(500,320))];
+    CHECK(editor.captureContentSnapshot != nil && ![beforeDrawing isEqual:editor.captureContentSnapshot],
+          "a committed drawing returns a new valid content identity");
+    [editor cancel:nil];
+    CHECK(editor.captureContentSnapshot == nil, "closed editors have no valid content snapshot");
+    return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -264,6 +504,9 @@ int main(void) {
         BOOL passed = exercise(.5);
         passed = exercise(1.5) && passed;
         passed = independentToolStyles() && passed;
+        passed = adaptiveOverlay(1) && passed;
+        passed = adaptiveOverlay(1.5) && passed;
+        passed = contentSnapshots() && passed;
         puts(passed ? "PASS capture overlay: borderless frozen canvas, direct edit, scaled region handles, exact crop and pin output"
                     : "FAIL capture overlay");
         return passed ? 0 : 1;

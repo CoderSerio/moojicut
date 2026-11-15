@@ -9,7 +9,9 @@ typedef struct {
   void *context;
   BOOL (*pin_image)(void *context, HGLOBAL dib, int screen_x, int screen_y);
   void (*set_pins_hidden)(void *context, BOOL hidden);
+  BOOL (*pin_enabled)(void *context);
 } MCCaptureHost;
+void mc_capture_refresh_capabilities(void);
 bool mc_capture_start(HINSTANCE instance, HWND owner, const MCCaptureHost *services);
 bool mc_capture_busy(void);
 void mc_capture_activate(void);

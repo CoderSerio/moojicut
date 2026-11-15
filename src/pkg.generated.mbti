@@ -26,11 +26,19 @@ pub fn editor_style_step(Int32) -> Double
 
 pub fn export_profile(String) -> String
 
+pub fn feature_can_invoke(Int32) -> Int32
+
+pub fn feature_transition(Int32, Int32) -> Int32
+
 pub fn image_apply(String) -> String
+
+pub fn image_arrowhead_value(Double, Double, Double, Double, Double, Int32) -> Double
 
 pub fn image_create(String) -> String
 
 pub fn image_finalize(String) -> String
+
+pub fn image_selection(String) -> String
 
 pub fn image_session_add(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
@@ -47,6 +55,8 @@ pub fn image_session_create_viewport(Int32, Int32, Int32, Int32, Int32, Int32) -
 pub fn image_session_crop(Int32, Int32, Int32, Int32, Int32) -> Int32
 
 pub fn image_session_dispose(Int32) -> Unit
+
+pub fn image_session_hit(Int32, Double, Double, Double, Int32) -> Int32
 
 pub fn image_session_redo(Int32) -> Int32
 
@@ -65,6 +75,8 @@ pub fn image_session_update_rgba(Int32, Int32, Int32, Int32, Int32, Int32, Int32
 pub fn image_session_value(Int32, Int32, Int32) -> Double
 
 pub fn image_session_viewport_value(Int32, Int32) -> Double
+
+pub fn native_recording_plan(Int32, Int32, Int32, Int32) -> FixedArray[Int32]
 
 pub fn native_video_clear_cuts(Int32) -> Int32
 
@@ -104,7 +116,29 @@ pub fn native_video_trim(Int32, Int32, Int32) -> Int32
 
 pub fn native_video_undo(Int32) -> Int32
 
+pub fn pin_hidden_after(Int32, Int32, Int32, Int32, Int32) -> Int32
+
+pub fn pin_initial_scale(Double, Double, Double, Double) -> Double
+
+pub fn pin_opacity(Int32, Double, Int32) -> Double
+
+pub fn pin_scale(Int32, Double, Double, Double, Double, Double) -> Double
+
+pub fn pin_visibility_action(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
+
+pub fn pin_zoom_step(Double, Int32) -> Double
+
+pub fn plugin_manifest_validate(String) -> String
+
+pub fn plugin_output_validate(String) -> String
+
+pub fn plugin_request_prepare(String) -> String
+
 pub fn preview_core_check() -> Int32
+
+pub fn recording_plan(String) -> String
+
+pub fn recording_status(String) -> String
 
 pub fn recording_transition(String, String) -> String
 
@@ -120,7 +154,29 @@ pub fn selection_region(Double, Double, Double, Double) -> FixedArray[Double]
 
 pub fn selection_transform(Double, Double, Double, Double, Double, Double, Double, Double, Int32, Double, Double, Double, Double, Double, Int32) -> FixedArray[Double]
 
+pub fn shortcut_bindings_resolve(String) -> String
+
+pub fn shortcut_modifiers_allowed(Int32, Int32) -> Int32
+
 pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
+
+pub fn tool_registry_normalize(String) -> String
+
+pub fn tool_registry_resolve(String) -> String
+
+pub fn tool_registry_update(String) -> String
+
+pub fn update_release_create(String, Int32, String) -> Int32
+
+pub fn update_release_dispose(Int32) -> Unit
+
+pub fn update_release_size(Int32) -> Int32
+
+pub fn update_release_status(Int32) -> Int32
+
+pub fn update_release_text(Int32, Int32) -> String
+
+pub fn update_version_compare(String, String) -> Int32
 
 pub fn video_command(Int32, String) -> String
 
@@ -128,9 +184,35 @@ pub fn video_dispose(Int32) -> Unit
 
 pub fn video_open(String, String) -> String
 
+pub fn video_project_close(Int32) -> Unit
+
+pub fn video_project_command(Int32, String) -> String
+
+pub fn video_project_open(String, String) -> String
+
+pub fn video_project_snapshot(Int32) -> String
+
 pub fn video_seek(Int32, Double) -> String
 
 pub fn video_snapshot(Int32) -> String
+
+pub fn video_source_time(Int32, Double) -> Double
+
+pub fn video_timeline_tick_step(Double, Double, Double) -> Double
+
+pub fn video_timeline_time_for_x(Double, Double, Double, Double) -> Double
+
+pub fn video_timeline_trim_boundary(Int32, Double, Double, Double, Double, Double) -> Double
+
+pub fn video_timeline_x_for_time(Double, Double, Double, Double) -> Double
+
+pub fn video_ui_close(Int32) -> Unit
+
+pub fn video_ui_event(Int32, String) -> String
+
+pub fn video_ui_frame(Int32, Double, Double) -> String
+
+pub fn video_ui_open(String) -> Int32
 
 // Errors
 

@@ -62,6 +62,26 @@ class NativeModulesTest(unittest.TestCase):
         cpp = capture.with_suffix(".cpp")
         self.assertEqual(len({object_path(self.root, path) for path in (capture, pin, cpp)}), 3)
 
+    def test_swift_is_an_explicit_macos_source_not_an_editor_dependency(self):
+        modules = {
+            "host": {"sources": ["native/macos/main.m"], "requires": ["feature.capture_text", "feature.image_editor"]},
+            "feature.capture_text": {"sources": ["plugins/feature/capture_text/macos/Bridge.swift"], "requires": []},
+            "feature.image_editor": {"sources": ["plugins/feature/image_editor/macos/Editor.m"], "requires": []},
+        }
+        for module in modules.values():
+            for source in module["sources"]:
+                path = self.root / source
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+        manifest = {"schema_version": 1, "platforms": {"macos": modules}}
+        host = resolve_sources(self.root, manifest, "macos")
+        self.assertEqual(sum(path.suffix == ".swift" for path in host), 1)
+        editor = resolve_sources(self.root, manifest, "macos", ("feature.image_editor",))
+        self.assertEqual([path.name for path in editor], ["Editor.m"])
+        modules["feature.image_editor"]["sources"] = ["plugins/feature/capture_text/macos/Bridge.swift"]
+        with self.assertRaises(ValueError):
+            resolve_sources(self.root, manifest, "macos")
+
 
 if __name__ == "__main__":
     unittest.main()

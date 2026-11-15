@@ -37,6 +37,16 @@
     if (!(condition)) { fprintf(stderr, "FAIL inline text: %s\n", message); passed = NO; } \
 } while (0)
 
+static void selectTool(MCImageEditorController *editor, NSInteger kind) {
+    for (NSInteger index = 0; index < editor.tools.segmentCount; index++) {
+        if ([editor.tools tagForSegment:index] == kind) {
+            editor.tools.selectedSegment = index;
+            [editor chooseTool:editor.tools];
+            return;
+        }
+    }
+}
+
 static MCImageEditorController *fixture(CGFloat scale, NSError **error) {
     NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
         initWithBitmapDataPlanes:NULL pixelsWide:800 pixelsHigh:500
@@ -47,8 +57,7 @@ static MCImageEditorController *fixture(CGFloat scale, NSError **error) {
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:png error:error];
     [editor prepareWindow];
     editor.canvas.frame = NSMakeRect(0, 48, 800 * scale + 32, 500 * scale + 32);
-    for (NSInteger i = 0; i < editor.tools.segmentCount; i++)
-        if ([[editor.tools toolTipForSegment:i] isEqualToString:@"文字"]) editor.tools.selectedSegment = i;
+    selectTool(editor, 3);
     return editor;
 }
 
@@ -258,8 +267,7 @@ static BOOL rgbaStyles(void) {
     NSError *error = nil;
     MCImageEditorController *editor = fixture(1, &error);
     MCImageCanvas *canvas = editor.canvas;
-    editor.tools.selectedSegment = 4;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 4);
     editor.colorControl.color = [NSColor colorWithSRGBRed:0 green:1 blue:0 alpha:1];
     [editor.color sendAction:editor.color.action to:editor.color.target];
     editor.colorControl.opacityControl.stepper.doubleValue = 25;
@@ -276,8 +284,7 @@ static BOOL rgbaStyles(void) {
     // Device RGB profiles differ; this range still rejects opaque or twice-blended fills.
     CHECK(pixel.redComponent > .70 && pixel.redComponent < .85 && pixel.greenComponent > .95 && pixel.blueComponent > .70 && pixel.blueComponent < .85,
           "export blends a 25 percent green cover over white instead of forcing black/opaque");
-    editor.tools.selectedSegment = 3;
-    [editor chooseTool:editor.tools];
+    selectTool(editor, 3);
     editor.colorControl.color = [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.5];
     [editor.color sendAction:editor.color.action to:editor.color.target];
     [editor addTextAtPoint:NSMakePoint(30, 30)];
@@ -303,6 +310,59 @@ static BOOL rgbaStyles(void) {
     return passed;
 }
 
+static BOOL colorPopoverInput(void) {
+    BOOL passed = YES;
+    MCImageEditorController *editor = fixture(1, NULL);
+    NSDictionary *annotation = @{@"id":@"color-input",@"type":@"text",@"text":@"颜色弹层",
+        @"x":@80,@"y":@80,@"width":@240,@"height":@60,@"fontSize":@24,@"stroke":@3,@"opacity":@1,@"color":@"#ff0000"};
+    CHECK([editor applyAnnotation:annotation], "color popover fixture stores one text annotation");
+    [editor.canvas beginEditingText:editor.document[@"annotations"][0]];
+    MCColorControl *color = editor.colorControl;
+    CHECK(![color.opacityControl isDescendantOf:color] &&
+          [color.opacityControl isDescendantOf:color.popover.contentViewController.view],
+          "opacity lives inside the color popover rather than the persistent property row");
+    // Mount the actual popover contents in a hidden window to exercise native
+    // field-editor/IME behavior without presenting any popup on the desktop.
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,262,130)
+        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    window.contentView = color.popover.contentViewController.view;
+    [window.contentView layoutSubtreeIfNeeded];
+    [window makeFirstResponder:color.opacityControl.field];
+    NSTextView *input = (NSTextView *)color.opacityControl.field.currentEditor;
+    CHECK(input != nil, "popover percentage uses a real native numeric field editor");
+    NSNumber *revision = editor.document[@"revision"];
+    id<NSPopoverDelegate> delegate = color.popover.delegate;
+    input.string = @"invalid";
+    CHECK(![delegate popoverShouldClose:color.popover] && window.firstResponder == input &&
+          [editor.document[@"revision"] isEqual:revision], "invalid popover input stays editable instead of silently committing zero");
+    NSStackView *swatches = ((NSStackView *)color.popover.contentViewController.view).arrangedSubviews[0];
+    NSColorWell *blue = swatches.arrangedSubviews[4];
+    [NSApp sendAction:blue.pulldownAction to:blue.pulldownTarget from:blue];
+    CHECK([input.string isEqual:@"invalid"] && [editor.canvas.textDraft[@"color"] isEqual:@"#ff0000"],
+          "choosing a palette color cannot discard invalid percentage input");
+    [input setMarkedText:@"25" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0,input.string.length)];
+    CHECK(![delegate popoverShouldClose:color.popover] && input.hasMarkedText && window.firstResponder == input &&
+          [editor.document[@"revision"] isEqual:revision] && editor.captureContentSnapshot == nil,
+          "closing the color popover cannot commit or discard numeric IME composition");
+    [input insertText:@"25" replacementRange:NSMakeRange(NSNotFound,0)];
+    CHECK([delegate popoverShouldClose:color.popover] && editor.canvas.textView != nil &&
+          near([editor.canvas.textDraft[@"opacity"] doubleValue],.25) && [editor.document[@"revision"] isEqual:revision],
+          "valid opacity input updates the pending text style while preserving its document transaction");
+    [NSApp sendAction:blue.pulldownAction to:blue.pulldownTarget from:blue];
+    CHECK([editor.canvas.textDraft[@"color"] isEqual:@"#3b82f6"] &&
+          near([editor.canvas.textDraft[@"opacity"] doubleValue],.25) && [editor.document[@"revision"] isEqual:revision],
+          "palette changes preserve alpha and stay inside the same live text transaction");
+    CHECK([editor.canvas finishTextEditing:YES] && history(editor) == 2 &&
+          near([editor.document[@"annotations"][0][@"opacity"] doubleValue],.25),
+          "finishing text commits its popover alpha as one undoable edit");
+    [editor undo:nil];
+    CHECK(near([editor.document[@"annotations"][0][@"opacity"] doubleValue],1),
+          "undo restores the original alpha after editing through the color popover");
+    window.contentView = nil; [window close]; [editor cancel:nil];
+    return passed;
+}
+
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -313,6 +373,7 @@ int main(void) {
         passed = manipulationAtScale(1.5) && passed;
         passed = emptyAndCancelledInput() && passed;
         passed = rgbaStyles() && passed;
+        passed = colorPopoverInput() && passed;
         puts(passed ? "PASS inline text: hidden AppKit editor, IME/multiline, re-edit/style, scaled drag/resize, undo and PNG clipboard"
                     : "FAIL inline text interaction");
         return passed ? 0 : 1;

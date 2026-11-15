@@ -1,0 +1,13 @@
+{
+  "apiVersion": 1,
+  "pluginId": "com.moojicut.examples.capture-info",
+  "name": "Capture Info",
+  "version": "1.0.0",
+  "entry": "plugin.wasm",
+  "runtime": "extism-1",
+  "capabilities": ["capture.metadata", "result.text"],
+  "tools": [
+    {"toolId": "describe", "title": "截图信息", "target": "screenshot", "action": "run"},
+    {"toolId": "copy-size", "title": "查看尺寸", "target": "screenshot", "action": "run"}
+  ]
+}

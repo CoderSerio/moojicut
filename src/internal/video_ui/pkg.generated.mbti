@@ -1,0 +1,19 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/video_ui"
+
+// Values
+pub fn close(Int32) -> Unit
+
+pub fn event(Int32, String) -> String
+
+pub fn frame(Int32, Double, Double) -> String
+
+pub fn open(String) -> Int32
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

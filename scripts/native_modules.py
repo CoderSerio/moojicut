@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "plugins/system/builtins.json"
-SUFFIXES = {"macos": {".m", ".c"}, "windows": {".c", ".cpp"}, "linux": {".c"}}
+SUFFIXES = {"macos": {".m", ".c", ".swift"}, "windows": {".c", ".cpp"}, "linux": {".c"}}
 
 
 def resolve_sources(root, manifest, platform, modules=("host",)):

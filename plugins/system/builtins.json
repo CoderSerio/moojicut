@@ -6,18 +6,29 @@
         "sources": [
           "native/macos/main.m",
           "native/macos/preferences/MCPreferencesController.m",
+          "native/macos/preferences/MCToolRegistryStore.m",
+          "native/macos/preferences/MCPluginManagementController.m",
           "native/macos/preferences/MCShortcutRecorder.m",
           "native/macos/shortcuts/MCGlobalShortcutManager.m",
-          "native/macos/updates/MCUpdateController.m"
+          "native/macos/updates/MCUpdateController.m",
+          "native/macos/updates/MCReleaseSource.m"
         ],
-        "requires": ["system.shortcut_config", "feature.capture", "feature.pin", "feature.recording"]
+        "requires": ["system.shortcut_config", "system.user_plugins", "feature.capture", "feature.capture_text", "feature.scroll_capture", "feature.pin", "feature.recording"]
       },
       "system.shortcut_config": {
         "sources": ["native/macos/preferences/MCShortcutStore.m", "native/macos/preferences/MCPinShortcutStore.m", "native/macos/preferences/MCSystemShortcutCheck.m"],
         "requires": []
       },
+      "system.user_plugins": {
+        "sources": ["native/macos/plugins/MCPluginPackageStore.m", "native/macos/plugins/MCPluginWorker.m", "native/macos/plugins/MCUserPluginManager.m", "native/macos/plugins/MCPluginResultController.m"],
+        "requires": []
+      },
       "component.style_controls": {
         "sources": ["components/style_controls/macos/MCStyleControls.m", "components/style_controls/macos/MCStylePropertiesView.m"],
+        "requires": []
+      },
+      "component.shared_canvas": {
+        "sources": ["components/shared_canvas/macos/MCSharedCanvas.m"],
         "requires": []
       },
       "feature.select": {
@@ -32,13 +43,21 @@
         "sources": ["plugins/feature/capture/macos/MCCaptureController.m"],
         "requires": ["feature.image_editor"]
       },
+      "feature.capture_text": {
+        "sources": ["plugins/feature/capture_text/macos/MCTextRecognitionService.m", "plugins/feature/capture_text/macos/MCTextToolsController.m", "plugins/feature/capture_text/macos/MCTranslationBridge.swift"],
+        "requires": []
+      },
+      "feature.scroll_capture": {
+        "sources": ["plugins/feature/scroll_capture/macos/MCScrollStitcher.m", "plugins/feature/scroll_capture/macos/MCScrollCaptureController.m"],
+        "requires": []
+      },
       "feature.pin": {
         "sources": ["plugins/feature/pin/macos/MCPinnedImageController.m"],
         "requires": ["system.shortcut_config"]
       },
       "feature.video_editor": {
-        "sources": ["plugins/feature/video_editor/macos/MCVideoEditor.m"],
-        "requires": []
+        "sources": ["plugins/feature/video_editor/macos/MCVideoEditor.m", "plugins/feature/video_editor/macos/MCVideoMedia.m"],
+        "requires": ["component.shared_canvas"]
       },
       "feature.recording": {
         "sources": ["plugins/feature/recording/macos/MCMacRecordingController.m"],
@@ -47,7 +66,7 @@
     },
     "windows": {
       "host": {
-        "sources": ["native/windows/main.c"],
+        "sources": ["native/windows/main.c", "native/windows/updates.c"],
         "requires": ["feature.capture", "feature.pin", "feature.recording"]
       },
       "component.style_controls": {
@@ -77,7 +96,7 @@
     },
     "linux": {
       "host": {
-        "sources": ["native/linux/main.c"],
+        "sources": ["native/linux/main.c", "native/linux/updates.c"],
         "requires": ["feature.capture", "feature.pin"]
       },
       "component.style_controls": {

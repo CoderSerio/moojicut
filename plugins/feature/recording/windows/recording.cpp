@@ -8,6 +8,7 @@
 #define NOMINMAX
 #include "recording.h"
 #include "native/windows/resource.h"
+#include "native/shared/recording_plan.h"
 #include "moonbit.h"
 #include <mfapi.h>
 #include <mfidl.h>
@@ -59,7 +60,6 @@ using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
 namespace {
 constexpr LONGLONG second = 10000000;
-constexpr UINT32 frameRate = 15;
 constexpr DWORD videoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
 constexpr DWORD audioStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
 constexpr DWORD allStreams = static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS);
@@ -72,6 +72,12 @@ enum { TrimStart=9100, TrimEnd, CutStart, CutEnd, CropX, CropY, CropW, CropH,
        PreviewSource, PreviewEdited, Confirm, CloseEditor, OpenDraft };
 struct Failure { HRESULT code; std::wstring stage; };
 void check(HRESULT hr, const wchar_t *stage) { if (FAILED(hr)) throw Failure{hr, stage}; }
+MCCoreRecordingPlan recordingPlan(int32_t width, int32_t height) {
+    MCCoreRecordingPlan plan=mc_core_recording_plan(MC_RECORDING_WINDOWS,width,height,0);
+    if(plan.width<=0 || plan.height<=0 || plan.frames_per_second<=0 || plan.system_audio || plan.microphone || plan.countdown_seconds)
+        throw Failure{E_INVALIDARG,L"无法规划当前显示器的录制参数"};
+    return plan;
+}
 std::wstring description(const Failure &failure) {
     wchar_t value[32]; swprintf_s(value, L" (0x%08lX)", static_cast<unsigned long>(failure.code));
     std::wstring message = failure.stage + std::wstring(value);
@@ -129,7 +135,7 @@ struct Encoder {
     ComPtr<IMFSinkWriter> writer;
     DWORD stream = 0;
     UINT32 width, height;
-    Encoder(const fs::path &path, UINT32 w, UINT32 h) : width(w), height(h) {
+    Encoder(const fs::path &path, UINT32 w, UINT32 h, UINT32 frameRate) : width(w), height(h) {
         ComPtr<IMFAttributes> attributes; check(MFCreateAttributes(&attributes, 2), L"无法配置编码器");
         check(attributes->SetUINT32(MF_SINK_WRITER_DISABLE_THROTTLING, TRUE), L"无法配置编码器");
         check(MFCreateSinkWriterFromURL(path.c_str(), nullptr, attributes.Get(), &writer), L"无法创建 MP4 文件");
@@ -170,6 +176,7 @@ struct Encoder {
 
 struct Decoder {
     ComPtr<IMFSourceReader> reader;
+    UINT32 frameRate;
     // H.264 decoding can expand the backing frame to a macroblock boundary.
     // Editing coordinates always refer to the valid display aperture instead.
     UINT32 width = 0, height = 0;
@@ -206,7 +213,7 @@ struct Decoder {
         width=visibleWidth;height=visibleHeight;bufferWidth=w;bufferHeight=h;
         offsetX=static_cast<UINT32>(area.OffsetX.value);offsetY=static_cast<UINT32>(area.OffsetY.value);stride=newStride;
     }
-    explicit Decoder(const fs::path &path) {
+    Decoder(const fs::path &path, UINT32 fallbackFrameRate) : frameRate(fallbackFrameRate) {
         ComPtr<IMFAttributes> attributes; check(MFCreateAttributes(&attributes, 2), L"无法配置视频解码");
         check(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE), L"无法配置视频解码");
         check(MFCreateSourceReaderFromURL(path.c_str(), attributes.Get(), &reader), L"无法读取录屏文件");
@@ -276,10 +283,10 @@ Plan planFor(int32_t session) {
     if(plan.segments.empty() || plan.duration<=0) throw Failure{E_INVALIDARG,L"视频没有可导出的片段"};
     return plan;
 }
-void exportVideo(const fs::path &source, const fs::path &target, const Plan &plan, std::atomic<bool> &cancel, std::atomic<int> &progress) {
-    Decoder decoder(source);
+void exportVideo(const fs::path &source, const fs::path &target, const Plan &plan, UINT32 frameRate, std::atomic<bool> &cancel, std::atomic<int> &progress) {
+    Decoder decoder(source,frameRate);
     if(plan.x+plan.width>decoder.width || plan.y+plan.height>decoder.height) throw Failure{E_INVALIDARG,L"裁剪范围超出视频画面"};
-    Encoder encoder(target,plan.width,plan.height);
+    Encoder encoder(target,plan.width,plan.height,frameRate);
     std::vector<BYTE> pixels, cropped(static_cast<size_t>(plan.width)*plan.height*4);
     LONGLONG time=0,length=0, written=0; size_t first=0;
     while(decoder.next(pixels,time,length)) {
@@ -319,8 +326,8 @@ struct DesktopSurface {
     void cleanup() { if(old&&memory) SelectObject(memory,old); if(bitmap) DeleteObject(bitmap); if(memory) DeleteDC(memory); if(screen) ReleaseDC(nullptr,screen); }
     ~DesktopSurface() { cleanup(); }
 };
-void recordDesktop(const fs::path &target, RECT bounds, UINT32 width, UINT32 height, std::atomic<bool> &stop) {
-    Encoder encoder(target,width,height); DesktopSurface surface(width,height);
+void recordDesktop(const fs::path &target, RECT bounds, UINT32 width, UINT32 height, UINT32 frameRate, std::atomic<bool> &stop) {
+    Encoder encoder(target,width,height,frameRate); DesktopSurface surface(width,height);
     // Let the start dialog disappear from the compositor before the first frame.
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     std::vector<BYTE> pending(static_cast<size_t>(width)*height*4);
@@ -434,21 +441,23 @@ void complete(JobResult *raw) {
     if(copyFile(state.editor,result->path)){DestroyWindow(state.editor);}
     else { setStatus(L"视频已保存，但剪贴板正被占用；已打开文件所在目录。");ShellExecuteW(state.editor,L"open",result->path.parent_path().c_str(),nullptr,nullptr,SW_SHOWNORMAL); }
 }
-void launchJob(JobKind kind,fs::path target,Plan plan,RECT bounds={},UINT32 width=0,UINT32 height=0) {
+void launchJob(JobKind kind,fs::path target,Plan plan,RECT bounds={},UINT32 width=0,UINT32 height=0,UINT32 frameRate=0) {
+    // Resolve policy on the host/core thread; media workers consume values only.
+    if(!frameRate)frameRate=static_cast<UINT32>(recordingPlan(2,2).frames_per_second);
     state.kind=kind;state.cancel.store(false);state.stop.store(false);state.progress.store(0);state.closeAfter=false;
     fs::path source=state.source;HWND host=state.host;
     for(HWND control:state.controls)EnableWindow(control,FALSE);
     notify();
-    try { state.worker=std::thread([kind,target,plan,bounds,width,height,source,host]{
+    try { state.worker=std::thread([kind,target,plan,bounds,width,height,frameRate,source,host]{
         auto result=std::make_unique<JobResult>();result->kind=kind;result->path=target;
         fs::path partial=target.parent_path()/(L"partial-"+target.filename().wstring());
         try {
             MediaRuntime runtime;
-            if(kind==JobKind::Recording)recordDesktop(partial,bounds,width,height,state.stop);
-            else exportVideo(source,partial,plan,state.cancel,state.progress);
+            if(kind==JobKind::Recording)recordDesktop(partial,bounds,width,height,frameRate,state.stop);
+            else exportVideo(source,partial,plan,frameRate,state.cancel,state.progress);
             if(kind!=JobKind::Recording&&state.cancel.load())throw Failure{HRESULT_FROM_WIN32(ERROR_CANCELLED),L"导出已取消"};
             if(!MoveFileExW(partial.c_str(),target.c_str(),MOVEFILE_WRITE_THROUGH))throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法保存完成的视频"};
-            if(kind==JobKind::Recording){Decoder decoder(target);result->width=decoder.width;result->height=decoder.height;result->duration=static_cast<int32_t>(std::min<LONGLONG>(604800000,decoder.duration/10000));}
+            if(kind==JobKind::Recording){Decoder decoder(target,frameRate);result->width=decoder.width;result->height=decoder.height;result->duration=static_cast<int32_t>(std::min<LONGLONG>(604800000,decoder.duration/10000));}
             result->success=true;
         }catch(const Failure &error){result->cancelled=error.code==HRESULT_FROM_WIN32(ERROR_CANCELLED);result->error=description(error);}
         catch(const std::exception &){result->error=L"视频处理失败，请检查磁盘空间与文件权限。";}
@@ -582,7 +591,7 @@ void restoreDraft(const fs::path &directory,bool visible) {
     fs::path source=directory/L"source.mp4";
     if(!fs::is_regular_file(source))throw Failure{HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND),L"上次录屏的原片 source.mp4 已被移动或删除，无法恢复编辑。\n"+directory.wstring()};
     // A restarted tray process has not initialized Media Foundation yet.
-    MediaRuntime runtime;Decoder decoder(source);
+    MediaRuntime runtime;Decoder decoder(source,static_cast<UINT32>(recordingPlan(2,2).frames_per_second));
     std::vector<BYTE> pixels;LONGLONG time=0,length=0;
     if(!decoder.next(pixels,time,length))throw Failure{E_INVALIDARG,L"录屏文件没有可读取的画面，可能已损坏。\n"+source.wstring()};
     if(decoder.duration<10000||decoder.duration/10000>604800000)throw Failure{E_INVALIDARG,L"录屏时长超出支持范围"};
@@ -600,11 +609,9 @@ extern "C" bool mc_recording_start(HINSTANCE instance,HWND owner) {
     try{
         POINT point={0,0};MONITORINFO monitor={};monitor.cbSize=sizeof(monitor);
         if(!GetMonitorInfoW(MonitorFromPoint(point,MONITOR_DEFAULTTOPRIMARY),&monitor))throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法找到主显示器"};
-        double w=monitor.rcMonitor.right-monitor.rcMonitor.left,h=monitor.rcMonitor.bottom-monitor.rcMonitor.top;
-        double scale=std::min(1.0,std::min(1920.0/w,1080.0/h));
-        UINT32 width=std::max<UINT32>(2,static_cast<UINT32>(w*scale/2)*2),height=std::max<UINT32>(2,static_cast<UINT32>(h*scale/2)*2);
+        MCCoreRecordingPlan plan=recordingPlan(monitor.rcMonitor.right-monitor.rcMonitor.left,monitor.rcMonitor.bottom-monitor.rcMonitor.top);
         state.directory=applicationDirectory()/L"Drafts"/identifier();fs::create_directories(state.directory);state.source=state.directory/L"source.mp4";
-        launchJob(JobKind::Recording,state.source,Plan{},monitor.rcMonitor,width,height);return true;
+        launchJob(JobKind::Recording,state.source,Plan{},monitor.rcMonitor,static_cast<UINT32>(plan.width),static_cast<UINT32>(plan.height),static_cast<UINT32>(plan.frames_per_second));return true;
     }catch(const Failure &error){showFailure(description(error));}catch(const std::exception &){showFailure(L"无法开始录屏，请检查磁盘空间和用户目录权限。");}return false;
 }
 extern "C" bool mc_recording_resume_last(HINSTANCE instance,HWND owner) {
@@ -635,17 +642,26 @@ extern "C" bool mc_recording_handle_message(MSG *message){return state.editor&&I
 extern "C" int mc_recording_smoke(HINSTANCE instance) {
     int32_t session=0;
     try {
+        MCCoreRecordingPlan recording=recordingPlan(320,240),large=recordingPlan(5120,2880),portrait=recordingPlan(1080,1920);
+        if(recording.width!=320 || recording.height!=240 || recording.frames_per_second!=15 ||
+            large.width!=1920 || large.height!=1080 || portrait.width!=606 || portrait.height!=1080)
+            throw Failure{E_FAIL,L"共享录屏参数未保持 Windows 尺寸和帧率"};
+        UINT32 frameRate=static_cast<UINT32>(recording.frames_per_second);
         MediaRuntime runtime;fs::path directory=fs::temp_directory_path()/L"moojicut-recording-smoke"/identifier();fs::create_directories(directory);
         fs::path source=directory/L"source.mp4",output=directory/L"edited.mp4";
-        {Encoder encoder(source,320,240);std::vector<BYTE> pixels(320*240*4);
+        {Encoder encoder(source,320,240,frameRate);std::vector<BYTE> pixels(320*240*4);
             for(UINT32 frame=0;frame<60;frame++){
                 for(UINT32 y=0;y<240;y++)for(UINT32 x=0;x<320;x++){size_t offset=(static_cast<size_t>(y)*320+x)*4;pixels[offset]=static_cast<BYTE>(y);pixels[offset+1]=static_cast<BYTE>(x);pixels[offset+2]=static_cast<BYTE>(frame*4);pixels[offset+3]=255;}
                 LONGLONG now=static_cast<LONGLONG>(frame)*second/frameRate,next=static_cast<LONGLONG>(frame+1)*second/frameRate;encoder.frame(pixels.data(),now,next-now);
             }encoder.finish();}
         session=native_video_open(4000,320,240,0);
         if(!session||!native_video_trim(session,500,3500)||!native_video_cut(session,1000,1500)||!native_video_cut(session,2000,2500)||!native_video_crop(session,20,30,160,100))throw Failure{E_FAIL,L"MoonBit 视频编辑状态测试失败"};
-        Plan plan=planFor(session);std::atomic<bool> cancel{false};std::atomic<int> progress{0};exportVideo(source,output,plan,cancel,progress);
-        Decoder decoder(output);if(decoder.width!=160||decoder.height!=100||std::llabs(decoder.duration-2*second)>second/6||decoder.hasAudio())throw Failure{E_FAIL,L"视频尺寸、时长或无音轨检查失败"};
+        Plan plan=planFor(session);std::atomic<bool> cancel{false};std::atomic<int> progress{0};exportVideo(source,output,plan,frameRate,cancel,progress);
+        Decoder decoder(output,frameRate);if(decoder.width!=160||decoder.height!=100||std::llabs(decoder.duration-2*second)>second/6||decoder.hasAudio())throw Failure{E_FAIL,L"视频尺寸、时长或无音轨检查失败"};
+        ComPtr<IMFMediaType> actual;UINT32 rateNumerator=0,rateDenominator=0;
+        check(decoder.reader->GetCurrentMediaType(videoStream,&actual),L"无法读取成片帧率");
+        check(MFGetAttributeRatio(actual.Get(),MF_MT_FRAME_RATE,&rateNumerator,&rateDenominator),L"成片没有帧率信息");
+        if(!rateDenominator || rateNumerator!=frameRate*rateDenominator)throw Failure{E_FAIL,L"成片帧率与共享录制策略不一致"};
         std::vector<BYTE> pixels;LONGLONG time=0,length=0;if(!decoder.next(pixels,time,length))throw Failure{E_FAIL,L"成片没有画面"};
         const BYTE *center=pixels.data()+(50*160+80)*4;
         if(std::abs(static_cast<int>(center[0])-80)>20||std::abs(static_cast<int>(center[1])-100)>20)throw Failure{E_FAIL,L"裁画面位置或RGB方向不正确"};

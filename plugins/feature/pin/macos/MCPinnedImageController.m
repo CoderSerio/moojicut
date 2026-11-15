@@ -5,6 +5,8 @@
 #import <Carbon/Carbon.h>
 #import "native/macos/preferences/MCShortcutStore.h"
 #import "native/macos/preferences/MCSystemShortcutCheck.h"
+#include "native/shared/feature_runtime.h"
+#include "native/shared/pin_policy.h"
 
 @class MCPinnedImage;
 @interface MCPinnedPanel : NSPanel
@@ -27,6 +29,8 @@
 @property NSMutableArray<MCPinnedImage *> *pins;
 @property MCPinShortcutStore *shortcuts;
 @property NSUserDefaults *defaults;
+@property int32_t featureState;
+@property BOOL observingShortcuts;
 @property EventHandlerRef eventHandler;
 @property (nonatomic) BOOL shortcutsSuspended;
 @property (nonatomic, readwrite) NSString *shortcutRegistrationError;
@@ -34,7 +38,7 @@
 - (void)refreshRecoveryShortcuts;
 - (OSStatus)handleRecoveryEvent:(EventRef)event;
 - (void)applyVisibility:(MCPinnedImage *)pin;
-@property (nonatomic) BOOL captureHidden;
+@property (nonatomic) BOOL captureActive;
 - (nullable MCPinnedImage *)createPinPNGData:(NSData *)data display:(BOOL)display error:(NSError **)error;
 - (nullable MCPinnedImage *)createPinPNGData:(NSData *)data screenFrame:(NSRect)frame display:(BOOL)display error:(NSError **)error;
 - (void)selectPin:(nullable MCPinnedImage *)pin focus:(BOOL)focus;
@@ -51,7 +55,6 @@
 @property CGFloat scale;
 @property (nonatomic) CGFloat opacity;
 @property (nonatomic) BOOL selected;
-@property BOOL restoreVisible;
 @property BOOL pendingSelection;
 @property BOOL userHidden;
 @property BOOL clickThrough;
@@ -63,7 +66,6 @@
 - (void)copyImage:(nullable id)sender;
 - (BOOL)copyToPasteboard:(NSPasteboard *)pasteboard;
 - (BOOL)handleKeyEvent:(NSEvent *)event;
-- (void)zoomBy:(CGFloat)factor;
 - (void)constrainPosition;
 @end
 
@@ -107,7 +109,7 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     }
 }
 - (void)mouseDown:(NSEvent *)event {
-    if (self.pin.clickThrough || self.pin.userHidden) return;
+    if (self.pin.clickThrough || self.pin.userHidden || self.pin.owner.captureActive) return;
     [self.pin.owner selectPin:self.pin focus:YES];
     if (!self.pin.selected) return;
     if (event.clickCount > 1) { [self.pin close:nil]; return; }
@@ -116,14 +118,14 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     self.dragMouse = [self.window convertPointToScreen:event.locationInWindow];
 }
 - (void)mouseDragged:(NSEvent *)event {
-    if (!self.dragging || self.pin.clickThrough || self.pin.userHidden) return;
+    if (!self.dragging || self.pin.clickThrough || self.pin.userHidden || self.pin.owner.captureActive) return;
     NSPoint point = [self.window convertPointToScreen:event.locationInWindow];
     [self.window setFrameOrigin:NSMakePoint(self.dragOrigin.x + point.x - self.dragMouse.x,
                                            self.dragOrigin.y + point.y - self.dragMouse.y)];
 }
 - (void)mouseUp:(NSEvent *)event {
     (void)event;
-    if (self.pin.clickThrough || self.pin.userHidden) return;
+    if (self.pin.clickThrough || self.pin.userHidden || self.pin.owner.captureActive) return;
     self.dragging = NO;
     [self.pin constrainPosition];
 }
@@ -135,7 +137,7 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
 }
 - (NSMenu *)menuForEvent:(NSEvent *)event {
     (void)event;
-    if (self.pin.clickThrough || self.pin.userHidden) return nil;
+    if (self.pin.clickThrough || self.pin.userHidden || self.pin.owner.captureActive) return nil;
     [self.pin.owner selectPin:self.pin focus:YES];
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"贴图"];
     for (NSDictionary *item in @[
@@ -170,23 +172,22 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     self.view.needsDisplay = YES;
 }
 - (void)setOpacity:(CGFloat)opacity {
-    _opacity = MAX(0.1, MIN(1, opacity));
+    _opacity = pin_opacity(MC_PIN_MACOS, opacity, 0);
     self.panel.alphaValue = self.userHidden ? 0 : _opacity;
     [self updateTooltip];
 }
 - (void)setScaleAroundCenter:(CGFloat)scale {
     NSRect old = self.panel.frame, screen = MCPinVisibleFrame(old);
     // Keep the complete image reachable even after a move to a smaller screen.
-    CGFloat maximum = MIN(8, MIN(screen.size.width * 0.95 / self.sourceSize.width,
-                                 screen.size.height * 0.95 / self.sourceSize.height));
-    CGFloat minimum = MIN(0.1, maximum);
-    _scale = MAX(minimum, MIN(maximum, scale));
+    CGFloat resolved = pin_scale(MC_PIN_MACOS, scale, self.sourceSize.width, self.sourceSize.height,
+                                 screen.size.width, screen.size.height);
+    if (resolved <= 0) return;
+    _scale = resolved;
     NSSize size = NSMakeSize(self.sourceSize.width * _scale, self.sourceSize.height * _scale);
     NSRect frame = NSMakeRect(NSMidX(old) - size.width / 2, NSMidY(old) - size.height / 2, size.width, size.height);
     [self.panel setFrame:MCPinConstrainFrame(frame, screen) display:YES];
     [self updateTooltip];
 }
-- (void)zoomBy:(CGFloat)factor { [self setScaleAroundCenter:self.scale * factor]; }
 - (void)constrainPosition {
     [self setScaleAroundCenter:self.scale];
 }
@@ -195,13 +196,13 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     if (self.clickThrough) return;
     if ([action isEqual:@"visibilityToggle"]) { [self.owner toggleVisibility]; return; }
     if (self.userHidden) return;
-    if ([action isEqual:@"zoomIn"]) [self zoomBy:1.1];
-    else if ([action isEqual:@"zoomOut"]) [self zoomBy:1 / 1.1];
-    else if ([action isEqual:@"opacityUp"]) self.opacity += 0.1;
-    else if ([action isEqual:@"opacityDown"]) self.opacity -= 0.1;
+    if ([action isEqual:@"zoomIn"]) [self setScaleAroundCenter:pin_zoom_step(self.scale, 1)];
+    else if ([action isEqual:@"zoomOut"]) [self setScaleAroundCenter:pin_zoom_step(self.scale, -1)];
+    else if ([action isEqual:@"opacityUp"]) self.opacity = pin_opacity(MC_PIN_MACOS, self.opacity, 1);
+    else if ([action isEqual:@"opacityDown"]) self.opacity = pin_opacity(MC_PIN_MACOS, self.opacity, -1);
 }
 - (BOOL)handleKeyEvent:(NSEvent *)event {
-    if (!self.selected || self.owner.captureHidden || event.type != NSEventTypeKeyDown) return NO;
+    if (!self.selected || self.owner.captureActive || event.type != NSEventTypeKeyDown) return NO;
     NSString *action = [self.owner.shortcuts actionForEvent:event];
     if (action) { [self applyAction:action]; return YES; }
     NSEventModifierFlags flags = event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
@@ -241,7 +242,7 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
 }
 - (void)windowDidResignKey:(NSNotification *)notification {
     (void)notification;
-    if (!self.clickThrough && !self.userHidden && !self.owner.captureHidden) self.selected = NO;
+    if (!self.clickThrough && !self.userHidden && !self.owner.captureActive) self.selected = NO;
 }
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
@@ -264,12 +265,40 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
         _pins = [NSMutableArray array];
         _defaults = defaults;
         _shortcuts = [[MCPinShortcutStore alloc] initWithDefaults:defaults];
-        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(shortcutsChanged:)
-            name:MCPinShortcutsDidChangeNotification object:defaults];
-        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(shortcutsChanged:)
-            name:MCShortcutsDidChangeNotification object:defaults];
+        id saved = [defaults objectForKey:MCPinFeatureEnabledDefaultsKey];
+        if (!saved || [saved boolValue]) [self setEnabled:YES];
     }
     return self;
+}
+- (BOOL)isEnabled { return feature_can_invoke(self.featureState) != 0; }
+- (BOOL)disabling { return self.featureState == MC_FEATURE_DISABLING; }
+- (void)setEnabled:(BOOL)enabled {
+    NSAssert(NSThread.isMainThread, @"Feature lifecycle is main-thread only");
+    if (self.disabling || enabled == self.enabled) return;
+    if (enabled) {
+        self.featureState = feature_transition(self.featureState, MC_FEATURE_ENABLE);
+        if (!self.enabled) return;
+        if (!self.observingShortcuts) {
+            for (NSNotificationName name in @[MCPinShortcutsDidChangeNotification, MCShortcutsDidChangeNotification])
+                [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(shortcutsChanged:) name:name object:self.defaults];
+            self.observingShortcuts = YES;
+        }
+    } else {
+        // Close the gate before any AppKit callback can re-enter pin creation.
+        self.featureState = feature_transition(self.featureState, MC_FEATURE_REQUEST_DISABLE);
+        [self closeAll];
+        [self refreshRecoveryShortcuts];
+        if (self.eventHandler) { RemoveEventHandler(self.eventHandler); self.eventHandler = NULL; }
+        if (self.observingShortcuts) {
+            for (NSNotificationName name in @[MCPinShortcutsDidChangeNotification, MCShortcutsDidChangeNotification])
+                [NSNotificationCenter.defaultCenter removeObserver:self name:name object:self.defaults];
+            self.observingShortcuts = NO;
+        }
+        self.shortcutRegistrationError = nil;
+        if (self.onShortcutStatus) self.onShortcutStatus(nil);
+        self.featureState = feature_transition(self.featureState, MC_FEATURE_CLEANUP_FINISHED);
+    }
+    [self.defaults setBool:self.enabled forKey:MCPinFeatureEnabledDefaultsKey];
 }
 - (void)shortcutsChanged:(NSNotification *)notification {
     (void)notification;
@@ -278,15 +307,24 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
         dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf shortcutsChanged:nil]; });
         return;
     }
+    if (!self.enabled) return;
     [self refreshRecoveryShortcuts];
     for (MCPinnedImage *pin in self.pins) [pin updateTooltip];
 }
 - (NSUInteger)count { return self.pins.count; }
+- (NSSet<NSNumber *> *)visibleWindowNumbers {
+    NSMutableSet *numbers = [NSMutableSet set];
+    for (MCPinnedImage *pin in self.pins) {
+        if (pin.panel.visible && !pin.userHidden && pin.panel.windowNumber > 0)
+            [numbers addObject:@(pin.panel.windowNumber)];
+    }
+    return [numbers copy];
+}
 - (void)selectPin:(MCPinnedImage *)pin focus:(BOOL)focus {
-    if (self.captureHidden) return;
+    if (!self.enabled || self.captureActive) return;
     for (MCPinnedImage *candidate in self.pins) if (candidate.clickThrough && candidate != pin) return;
     for (MCPinnedImage *candidate in self.pins) candidate.selected = candidate == pin;
-    if (focus && pin && !self.captureHidden) {
+    if (focus && pin && !self.captureActive) {
         [pin.panel makeKeyWindow];
         [pin.panel makeFirstResponder:pin.view];
     }
@@ -296,6 +334,11 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
 }
 - (MCPinnedImage *)createPinPNGData:(NSData *)data screenFrame:(NSRect)screenFrame display:(BOOL)display error:(NSError **)error {
     NSAssert(NSThread.isMainThread, @"Pinned images are main-thread objects");
+    if (!self.enabled) {
+        if (error) *error = [NSError errorWithDomain:@"dev.moojicut.pinning" code:2
+            userInfo:@{NSLocalizedDescriptionKey:@"贴图已关闭。可在设置的通用页面重新启用。"}];
+        return nil;
+    }
     NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:data];
     if (!bitmap || bitmap.pixelsWide < 1 || bitmap.pixelsHigh < 1 ||
         bitmap.pixelsWide > 32768 || bitmap.pixelsHigh > 32768 || bitmap.pixelsWide * bitmap.pixelsHigh > 80000000) {
@@ -312,7 +355,7 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     CGFloat backing = screen ? MAX(1, screen.backingScaleFactor) : 1;
     pin.sourceSize = NSMakeSize(bitmap.pixelsWide / backing, bitmap.pixelsHigh / backing);
     NSRect visible = screen ? screen.visibleFrame : NSMakeRect(0, 0, 1280, 800);
-    CGFloat initial = MIN(1, MIN(visible.size.width * 0.75 / pin.sourceSize.width, visible.size.height * 0.75 / pin.sourceSize.height));
+    CGFloat initial = pin_initial_scale(pin.sourceSize.width, pin.sourceSize.height, visible.size.width, visible.size.height);
     CGFloat width = pin.sourceSize.width * initial, height = pin.sourceSize.height * initial;
     CGFloat offset = (self.pins.count % 8) * 20;
     NSRect frame = MCPinConstrainFrame(NSMakeRect(NSMidX(visible) - width / 2 + offset,
@@ -350,9 +393,8 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     pin.displayed = display;
     [self refreshRecoveryShortcuts];
     if (display) {
-        pin.restoreVisible = YES;
-        pin.pendingSelection = self.captureHidden;
-        if (!self.captureHidden) {
+        pin.pendingSelection = self.captureActive;
+        if (!self.captureActive) {
             [pin.panel orderFront:nil];
             [self selectPin:pin focus:YES];
         }
@@ -368,35 +410,37 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     [self.pins removeObjectIdenticalTo:pin];
     [self refreshRecoveryShortcuts];
 }
-- (void)setCaptureHidden:(BOOL)hidden {
-    if (self.captureHidden == hidden) return;
-    _captureHidden = hidden;
+- (void)setCaptureActive:(BOOL)active {
+    if (self.captureActive == active) return;
+    _captureActive = active;
     MCPinnedImage *newest = nil;
     for (MCPinnedImage *pin in self.pins) {
-        if (hidden) {
-            pin.restoreVisible = pin.panel.visible;
-            [pin.panel orderOut:nil];
-        } else if (pin.restoreVisible && !pin.userHidden) {
-            // Do not steal focus back from the editor, settings, or another app.
-            [pin.panel orderFront:nil];
-            if (pin.pendingSelection) newest = pin;
+        pin.panel.ignoresMouseEvents = active || pin.clickThrough || pin.userHidden;
+        pin.view.dragging = NO;
+        if (!active && pin.pendingSelection) {
             pin.pendingSelection = NO;
+            if (pin.displayed && !pin.userHidden) {
+                [pin.panel orderFront:nil];
+                newest = pin;
+            }
         }
     }
     // A newly confirmed "pin" is an explicit action. Give just that new panel
-    // keyboard focus; old pins merely reappear without app activation.
+    // keyboard focus; existing pins are never hidden, raised or activated.
     if (newest) [self selectPin:newest focus:YES];
-    [self refreshRecoveryShortcuts];
+    // Keep recovery registrations intact while their handlers are suspended.
+    // Re-registering on every capture could fail and reveal user-hidden pins.
 }
 - (void)applyVisibility:(MCPinnedImage *)pin {
     pin.panel.alphaValue = pin.userHidden ? 0 : pin.opacity;
-    pin.panel.ignoresMouseEvents = pin.clickThrough || pin.userHidden;
-    if (self.captureHidden || pin.userHidden) [pin.panel orderOut:nil];
-    else if (pin.displayed || pin.restoreVisible) [pin.panel orderFront:nil];
+    pin.panel.ignoresMouseEvents = self.captureActive || pin.clickThrough || pin.userHidden;
+    if (pin.userHidden || (self.captureActive && pin.pendingSelection)) [pin.panel orderOut:nil];
+    else if (pin.displayed) [pin.panel orderFront:nil];
 }
 - (void)restoreHiddenPins {
-    for (MCPinnedImage *pin in self.pins) if (pin.userHidden && !pin.clickThrough) {
-        pin.userHidden = NO; [self applyVisibility:pin];
+    for (MCPinnedImage *pin in self.pins) {
+        BOOL hidden = pin_hidden_after(MC_PIN_MACOS, MC_PIN_RESTORE_HIDDEN, pin.userHidden, pin.clickThrough, 0);
+        if (hidden != pin.userHidden) { pin.userHidden = hidden; [self applyVisibility:pin]; }
     }
 }
 - (void)disableClickThrough {
@@ -405,22 +449,26 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     }
 }
 - (void)toggleVisibility {
-    if (self.captureHidden || self.shortcutsSuspended) return;
+    if (!self.enabled || self.captureActive || self.shortcutsSuspended) return;
     MCPinnedImage *selected = nil;
     BOOL hidden = NO;
     for (MCPinnedImage *pin in self.pins) { if (pin.selected) selected = pin; hidden = hidden || pin.userHidden; }
-    if (selected.clickThrough) return;
-    if (selected && selected.userHidden) {
-        selected.userHidden = NO; [self applyVisibility:selected]; [self selectPin:selected focus:YES]; return;
+    int32_t action = pin_visibility_action(MC_PIN_MACOS, selected != nil, selected.userHidden, selected.clickThrough,
+                                           hidden, [self recoveryShortcutAvailable:@"visibilityToggle"]);
+    if (action == MC_PIN_VISIBILITY_NONE) return;
+    if (action == MC_PIN_RECOVERY_UNAVAILABLE) { NSBeep(); return; }
+    if (action == MC_PIN_SHOW_SELECTED) {
+        selected.userHidden = pin_hidden_after(MC_PIN_MACOS, action, selected.userHidden, selected.clickThrough, 1);
+        [self applyVisibility:selected]; [self selectPin:selected focus:YES]; return;
     }
-    if (!selected && hidden) { [self restoreHiddenPins]; return; }
-    if (![self recoveryShortcutAvailable:@"visibilityToggle"]) { NSBeep(); return; }
-    for (MCPinnedImage *pin in self.pins) if ((!selected || pin == selected) && !pin.clickThrough) {
-        pin.userHidden = YES; [self applyVisibility:pin];
+    if (action == MC_PIN_SHOW_HIDDEN) { [self restoreHiddenPins]; return; }
+    for (MCPinnedImage *pin in self.pins) {
+        BOOL next = pin_hidden_after(MC_PIN_MACOS, action, pin.userHidden, pin.clickThrough, pin == selected);
+        if (next != pin.userHidden) { pin.userHidden = next; [self applyVisibility:pin]; }
     }
 }
 - (void)toggleClickThrough {
-    if (self.captureHidden || self.shortcutsSuspended) return;
+    if (!self.enabled || self.captureActive || self.shortcutsSuspended) return;
     for (MCPinnedImage *pin in self.pins) if (pin.clickThrough) {
         pin.clickThrough = NO; [self applyVisibility:pin]; [self selectPin:pin focus:YES]; return;
     }
@@ -450,7 +498,7 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     }
     BOOL active = NO;
     for (MCPinnedImage *pin in self.pins) active = active || pin.displayed;
-    if (!active || self.shortcutsSuspended || self.captureHidden) return;
+    if (!self.enabled || !active || self.shortcutsSuspended) return;
     if (!self.eventHandler) {
         EventTypeSpec spec = {kEventClassKeyboard, kEventHotKeyPressed};
         EventHandlerRef handler = NULL;
@@ -487,6 +535,7 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     if (self.onShortcutStatus) self.onShortcutStatus(self.shortcutRegistrationError);
 }
 - (OSStatus)handleRecoveryEvent:(EventRef)event {
+    if (!self.enabled || self.captureActive) return eventNotHandledErr;
     EventHotKeyID key = {0};
     if (GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, NULL, sizeof(key), NULL, &key) != noErr ||
         key.signature != MCPinHotKeySignature || key.id < 1 || key.id > 2 || !_recoveryKeys[key.id - 1]) return eventNotHandledErr;
@@ -494,7 +543,12 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     return noErr;
 }
 - (void)closeAll {
-    for (MCPinnedImage *pin in [self.pins copy]) [pin close:nil];
+    for (MCPinnedImage *pin in [self.pins copy]) {
+        // Explicit close-all / disable must also release mouse-inert pins.
+        pin.clickThrough = NO;
+        pin.panel.ignoresMouseEvents = NO;
+        [pin close:nil];
+    }
 }
 - (void)dealloc {
     for (NSUInteger index = 0; index < 2; index++) if (_recoveryKeys[index]) UnregisterEventHotKey(_recoveryKeys[index]);

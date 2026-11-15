@@ -16,6 +16,10 @@ static NSError *MCCaptureError(NSString *message) {
 @property BOOL snapshotsPending;
 @property BOOL requestedScreenAccess;
 @property BOOL showingPermissionHelp;
+@property BOOL overlaysSuspended;
+@property (weak) MCImageEditorController *suspendedEditor;
+@property NSSet<NSNumber *> *captureWindowNumbers;
+@property (nonatomic, copy, readwrite) NSDictionary *toolConfiguration;
 @end
 
 @implementation MCCaptureController
@@ -27,24 +31,90 @@ static NSError *MCCaptureError(NSString *message) {
     return self;
 }
 - (BOOL)busy { return self.captureSession != nil || self.editor != nil; }
+- (NSArray<MCImageEditorController *> *)toolConfigurationEditors {
+    NSMutableOrderedSet *editors = [NSMutableOrderedSet orderedSetWithArray:self.overlayEditors ?: @[]];
+    if (self.editor) [editors addObject:self.editor];
+    return editors.array;
+}
+- (void)showEditingNotice:(NSString *)message {
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [editor showPluginMessage:message];
+}
+- (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error {
+    NSAssert(NSThread.isMainThread, @"Tool configuration must be applied on the main thread");
+    for (MCImageEditorController *editor in [self toolConfigurationEditors])
+        if (![editor canApplyToolConfiguration:candidate error:error]) return NO;
+    return YES;
+}
+- (void)applyToolConfiguration:(NSDictionary *)candidate {
+    NSAssert(NSThread.isMainThread, @"Tool configuration must be applied on the main thread");
+    // No editor is changed until all existing screens accept the same snapshot.
+    if (![self canApplyToolConfiguration:candidate error:NULL]) return;
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [editor applyToolConfiguration:candidate];
+    self.toolConfiguration = candidate;
+}
+
+- (void)configureUserActionsForEditor:(MCImageEditorController *)editor {
+    editor.onUserTool = self.onUserTool;
+    editor.onOCR = self.onOCR;
+    editor.onTranslate = self.onTranslate;
+    editor.onScrollCapture = self.onScrollCapture;
+    editor.onPluginContextClosed = self.onPluginContextClosed;
+    editor.pluginIcons = self.pluginIcons ?: @{};
+}
+- (void)setOnUserTool:(void (^)(MCImageEditorController *,NSString *))handler {
+    _onUserTool = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnOCR:(void (^)(MCImageEditorController *))handler {
+    _onOCR = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnTranslate:(void (^)(MCImageEditorController *))handler {
+    _onTranslate = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnScrollCapture:(void (^)(MCImageEditorController *))handler {
+    _onScrollCapture = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnPluginContextClosed:(void (^)(NSString *))handler {
+    _onPluginContextClosed = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setPluginIcons:(NSDictionary<NSString *,NSImage *> *)icons {
+    _pluginIcons = [icons copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)configurePinActionForEditor:(MCImageEditorController *)editor {
+    if (!self.onPinPNGData) { editor.onPinPNGData = nil; return; }
+    __weak MCCaptureController *weakSelf = self;
+    __weak MCImageEditorController *weakEditor = editor;
+    editor.onPinPNGData = ^BOOL(NSData *png) {
+        MCCaptureController *owner = weakSelf;
+        MCImageEditorController *current = weakEditor;
+        return current && owner.onPinPNGData ? owner.onPinPNGData(png, current.pinScreenFrame) : NO;
+    };
+}
+- (void)setOnPinPNGData:(BOOL (^)(NSData *, NSRect))handler {
+    _onPinPNGData = [handler copy];
+    if (self.editor) [self configurePinActionForEditor:self.editor];
+    for (MCImageEditorController *editor in self.overlayEditors) [self configurePinActionForEditor:editor];
+}
 - (void)changed { if (self.onStateChange) self.onStateChange(); }
 - (NSRunningApplication *)frontmostApplication {
     return NSWorkspace.sharedWorkspace.frontmostApplication;
 }
+- (NSArray<NSWindow *> *)captureWindows { return NSApp.windows; }
 - (void)prepareCaptureFocus {
-    // Hide ordinary windows explicitly before hiding the application. Otherwise
-    // showing the overlay with unhide also restores Settings behind it, which
-    // then resurfaces as soon as the user confirms their screenshot.
-    for (NSWindow *window in NSApp.windows) {
-        if (window.visible && (window.styleMask & NSWindowStyleMaskTitled)) [window orderOut:nil];
+    // Keep visible pins on screen. Hiding the entire application would also
+    // remove them before ScreenCaptureKit can include their pixels.
+    for (NSWindow *window in [self captureWindows]) {
+        if (window.visible && ![self.captureWindowNumbers containsObject:@(window.windowNumber)]) [window orderOut:nil];
     }
-    [NSApp hide:nil];
 }
 - (void)restoreCaptureFocus:(NSRunningApplication *)application {
-    [NSApp hide:nil];
-    // The normal windows were explicitly ordered out, and overlays are closed.
-    // Let nonactivating pins reappear in changed without bringing Settings back.
-    [NSApp unhideWithoutActivation];
+    // The overlays are closed and ordinary windows remain ordered out. Do not
+    // hide/unhide the app: existing pins must retain their visibility and order.
     if (!application || application.terminated) return;
     if (@available(macOS 14.0, *)) {
         [application activateFromApplication:NSRunningApplication.currentApplication options:0];
@@ -63,7 +133,10 @@ static NSError *MCCaptureError(NSString *message) {
 - (void)cancelCapture {
     BOOL active = self.captureSession != nil;
     self.captureSession = nil; // Invalidate callbacks before closing any windows.
+    self.captureWindowNumbers = nil;
     self.snapshotsPending = NO;
+    self.overlaysSuspended = NO;
+    self.suspendedEditor = nil;
     NSArray *editors = self.overlayEditors;
     self.overlayEditors = nil;
     for (MCImageEditorController *editor in editors) {
@@ -74,10 +147,49 @@ static NSError *MCCaptureError(NSString *message) {
     self.previousApplication = nil;
     if (active) {
         [self restoreCaptureFocus:previous];
-        // Existing pins restore without focus. An explicitly created new pin
+        // Existing pins keep their focus state. An explicitly created new pin
         // can select itself here, after the normal app-focus restoration.
         [self changed];
     }
+}
+- (BOOL)suspendCaptureForEditor:(MCImageEditorController *)editor error:(NSError **)error {
+    if (!self.captureSession || self.snapshotsPending || self.overlaysSuspended ||
+        ![self.overlayEditors containsObject:editor]) {
+        if (error) *error = MCCaptureError(@"请先选择一个截图区域，再开始滚动截图。");
+        return NO;
+    }
+    self.overlaysSuspended = YES;
+    self.suspendedEditor = editor;
+    for (MCImageEditorController *overlay in self.overlayEditors) [overlay.window orderOut:nil];
+    [self restoreCaptureFocus:self.previousApplication];
+    return YES;
+}
+- (void)resumeSuspendedCapture {
+    if (!self.overlaysSuspended) return;
+    self.overlaysSuspended = NO;
+    MCImageEditorController *focused = self.suspendedEditor;
+    self.suspendedEditor = nil;
+    if (!self.captureSession) return;
+    // show deliberately resets focus to the canvas for a new editor. Restoring
+    // a suspended editor must keep its live text/numeric field editor instead.
+    [NSApp activateIgnoringOtherApps:YES];
+    for (MCImageEditorController *overlay in self.overlayEditors)
+        if (overlay != focused) [overlay.window orderFront:nil];
+    [focused.window makeKeyAndOrderFront:nil];
+}
+- (BOOL)completeSuspendedCaptureWithPNGData:(NSData *)data error:(NSError **)error {
+    if (!self.captureSession || !self.overlaysSuspended) {
+        if (error) *error = MCCaptureError(@"原截图已经结束，滚动结果未替换当前编辑。");
+        return NO;
+    }
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
+    if (!editor) return NO;
+    // Keep busy true throughout replacement, so a queued update cannot install
+    // between closing the frozen selection and presenting the long image.
+    self.editor = editor;
+    [self cancelCapture];
+    [self presentImageEditor:editor];
+    return YES;
 }
 - (void)failSession:(NSString *)session error:(NSError *)error {
     if (![self.captureSession isEqualToString:session]) return;
@@ -99,17 +211,28 @@ static NSError *MCCaptureError(NSString *message) {
     }
     NSData *data = [NSData dataWithContentsOfURL:url options:0 error:error];
     if (!data) return NO;
-    self.editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
-    if (!self.editor) return NO;
+    return [self showEditorForPNGData:data error:error];
+}
+- (BOOL)showEditorForPNGData:(NSData *)data error:(NSError **)error {
+    if (self.editor) { [self.editor show]; return YES; }
+    if (self.captureSession) {
+        if (error) *error = MCCaptureError(@"请先完成或取消当前截图。");
+        return NO;
+    }
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
+    if (!editor) return NO;
+    [self presentImageEditor:editor];
+    return YES;
+}
+- (void)presentImageEditor:(MCImageEditorController *)editor {
+    self.editor = editor;
+    if (self.toolConfiguration) [self.editor applyToolConfiguration:self.toolConfiguration];
     __weak MCCaptureController *weakSelf = self;
-    if (self.onPinPNGData) self.editor.onPinPNGData = ^BOOL(NSData *png) {
-        MCCaptureController *owner = weakSelf;
-        return owner.onPinPNGData ? owner.onPinPNGData(png, owner.editor.pinScreenFrame) : NO;
-    };
+    [self configurePinActionForEditor:self.editor];
+    [self configureUserActionsForEditor:self.editor];
     self.editor.onClose = ^{ weakSelf.editor = nil; [weakSelf changed]; };
     [self.editor show];
     [self changed];
-    return YES;
 }
 // Kept behind narrow methods so the regression test supplies synthetic displays
 // and pixels. The test never requests real ScreenCaptureKit content or images.
@@ -124,11 +247,20 @@ static NSError *MCCaptureError(NSString *message) {
 - (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion {
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:YES completionHandler:completion];
 }
+- (NSArray<SCWindow *> *)includedWindowsFromContent:(SCShareableContent *)content windowNumbers:(NSSet<NSNumber *> *)numbers {
+    NSMutableArray *windows = [NSMutableArray array];
+    for (SCWindow *window in content.windows) {
+        if (window.owningApplication.processID == NSProcessInfo.processInfo.processIdentifier &&
+            [numbers containsObject:@(window.windowID)]) [windows addObject:window];
+    }
+    return windows;
+}
 - (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
+        exceptingWindows:(NSArray<SCWindow *> *)windows
             completion:(void (^)(NSData *, NSError *))completion {
     if (@available(macOS 14.0, *)) {
         SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display
-            excludingApplications:applications exceptingWindows:@[]];
+            excludingApplications:applications exceptingWindows:windows];
         SCStreamConfiguration *configuration = [SCStreamConfiguration new];
         configuration.width = (size_t)llround(filter.contentRect.size.width * filter.pointPixelScale);
         configuration.height = (size_t)llround(filter.contentRect.size.height * filter.pointPixelScale);
@@ -152,6 +284,8 @@ static NSError *MCCaptureError(NSString *message) {
 }
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error {
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:snapshot[@"png"] error:error];
+    if (self.toolConfiguration) [editor applyToolConfiguration:self.toolConfiguration];
+    [self configureUserActionsForEditor:editor];
     [editor prepareOverlayInFrame:[snapshot[@"frame"] rectValue]];
     return editor;
 }
@@ -173,11 +307,7 @@ static NSError *MCCaptureError(NSString *message) {
             MCCaptureController *owner = weakSelf;
             if ([owner.captureSession isEqualToString:session]) [owner cancelCapture];
         };
-        __weak MCImageEditorController *weakEditor = editor;
-        if (self.onPinPNGData) editor.onPinPNGData = ^BOOL(NSData *png) {
-            MCCaptureController *owner = weakSelf;
-            return owner.onPinPNGData ? owner.onPinPNGData(png, weakEditor.pinScreenFrame) : NO;
-        };
+        [self configurePinActionForEditor:editor];
         [editors addObject:editor];
         if (NSPointInRect(pointer, [snapshot[@"frame"] rectValue])) focused = editor;
     }
@@ -217,12 +347,15 @@ static NSError *MCCaptureError(NSString *message) {
             for (SCRunningApplication *application in content.applications) {
                 if (application.processID == NSProcessInfo.processInfo.processIdentifier) [excluded addObject:application];
             }
+            // Exceptions re-include visible pins while the app exclusion keeps
+            // Settings, controls and any late-created host windows out.
+            NSArray<SCWindow *> *includedWindows = [owner includedWindowsFromContent:content windowNumbers:owner.captureWindowNumbers];
             NSMutableArray *snapshots = [NSMutableArray array];
             for (NSUInteger index = 0; index < screens.count; index++) [snapshots addObject:NSNull.null];
             __block NSUInteger remaining = screens.count;
             [displays enumerateObjectsUsingBlock:^(SCDisplay *display, NSUInteger index, BOOL *stop) {
                 (void)stop;
-                [owner captureDisplay:display excludingApplications:excluded completion:^(NSData *png, NSError *captureError) {
+                [owner captureDisplay:display excludingApplications:excluded exceptingWindows:includedWindows completion:^(NSData *png, NSError *captureError) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         MCCaptureController *current = weakSelf;
                         if (![current.captureSession isEqualToString:session]) return;
@@ -241,9 +374,10 @@ static NSError *MCCaptureError(NSString *message) {
         });
     }];
 }
+- (NSEventModifierFlags)captureModifierFlags { return NSEvent.modifierFlags; }
 - (void)captureWhenKeysReleased:(NSString *)session attempts:(NSUInteger)attempts {
     if (![self.captureSession isEqualToString:session]) return;
-    NSEventModifierFlags held = NSEvent.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagShift |
+    NSEventModifierFlags held = [self captureModifierFlags] & (NSEventModifierFlagCommand | NSEventModifierFlagShift |
         NSEventModifierFlagControl | NSEventModifierFlagOption);
     if (held) {
         if (attempts >= 40) {
@@ -256,10 +390,8 @@ static NSError *MCCaptureError(NSString *message) {
         });
         return;
     }
-    __weak MCCaptureController *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if ([weakSelf.captureSession isEqualToString:session]) [weakSelf captureDisplaysForSession:session];
-    });
+    // Filtering removes host controls without waiting for a hide animation.
+    [self captureDisplaysForSession:session];
 }
 - (void)capture {
     NSAssert(NSThread.isMainThread, @"Capture is a main-thread operation");
@@ -295,6 +427,7 @@ static NSError *MCCaptureError(NSString *message) {
     NSRunningApplication *previous = [self frontmostApplication];
     self.previousApplication = previous.processIdentifier == NSProcessInfo.processInfo.processIdentifier ? nil : previous;
     self.captureSession = session;
+    self.captureWindowNumbers = [self.includedWindowNumbers ? self.includedWindowNumbers() : [NSSet set] copy];
     self.snapshotsPending = YES;
     [self changed];
     [self prepareCaptureFocus];

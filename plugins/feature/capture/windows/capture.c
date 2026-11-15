@@ -63,6 +63,13 @@ typedef struct {
 static Capture capture;
 static const wchar_t *OVERLAY_CLASS = L"MoojiCut.Capture.Selection";
 static const wchar_t *EDITOR_CLASS = L"MoojiCut.Capture.Editor";
+static BOOL pin_enabled(void) {
+  return !capture.host.pin_enabled || capture.host.pin_enabled(capture.host.context);
+}
+void mc_capture_refresh_capabilities(void) {
+  if (capture.buttons[7])
+    EnableWindow(capture.buttons[7], pin_enabled());
+}
 static void set_pins_hidden(BOOL hidden) {
   if (capture.host.set_pins_hidden)
     capture.host.set_pins_hidden(capture.host.context, hidden);
@@ -121,16 +128,14 @@ static void draw_annotation(HDC dc, int kind, double x, double y, double width, 
   if (kind == TOOL_RECT)
     Rectangle(dc, left, top, right, bottom);
   else if (kind == TOOL_ARROW) {
-    double dx = (double)right - left, dy = (double)bottom - top, length = sqrt(dx * dx + dy * dy);
-    if (length > 0.5) {
-      double head = minimum(rounded(length * 0.45), maximum(8, rounded(14 * scale + thickness)));
+    if (hypot(width, height) > 0.5) {
       POINT wings[3];
-      wings[0].x = rounded(right - head * dx / length + head * 0.45 * dy / length);
-      wings[0].y = rounded(bottom - head * dy / length - head * 0.45 * dx / length);
+      wings[0].x = offset_x + rounded(image_arrowhead_value(x, y, x + width, y + height, stroke, 0) * scale);
+      wings[0].y = offset_y + rounded(image_arrowhead_value(x, y, x + width, y + height, stroke, 1) * scale);
       wings[1].x = right;
       wings[1].y = bottom;
-      wings[2].x = rounded(right - head * dx / length - head * 0.45 * dy / length);
-      wings[2].y = rounded(bottom - head * dy / length + head * 0.45 * dx / length);
+      wings[2].x = offset_x + rounded(image_arrowhead_value(x, y, x + width, y + height, stroke, 2) * scale);
+      wings[2].y = offset_y + rounded(image_arrowhead_value(x, y, x + width, y + height, stroke, 3) * scale);
       MoveToEx(dc, left, top, NULL);
       LineTo(dc, right, bottom);
       Polyline(dc, wings, 3);
@@ -579,13 +584,8 @@ static void begin_text(POINT point, int index) {
   changed();
 }
 static int hit_text(POINT p) {
-  for (int i = image_session_count(capture.session) - 1; i >= 0; i--)
-    if ((int)image_session_value(capture.session, i, 0) == TOOL_TEXT) {
-      RECT r = annotation_rect(i);
-      if (PtInRect(&r, p))
-        return i;
-    }
-  return -1;
+  // Pixel centers preserve Win32's right/bottom-exclusive integer rectangle.
+  return image_session_hit(capture.session, p.x + 0.5, p.y + 0.5, 0, 1);
 }
 static int hit_handle(RECT rect, POINT point) {
   int radius = dpi_px(capture.editor ? capture.editor : capture.overlay, 6);
@@ -659,6 +659,8 @@ static BOOL add_shape(void) {
 }
 static void editor_command(int command) {
   if (command == ID_OCR || command == ID_TRANSLATE)
+    return;
+  if (command == ID_PIN && !pin_enabled())
     return;
   if (!finish_text(FALSE))
     return;
@@ -795,6 +797,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
                         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, NULL, capture.instance, NULL);
     for (int i = 0; i < 12; i++)
       capture.buttons[i] = hud_button(window, button_ids[i], labels[i]);
+    mc_capture_refresh_capabilities();
     for (int i = 10; i < 12; i++) {
       EnableWindow(capture.buttons[i], FALSE);
       TOOLINFOW tip = {sizeof(tip)};
@@ -1511,9 +1514,10 @@ static BOOL independent_text_style_smoke(void) {
   return image_session_count(capture.session) == 0;
 }
 typedef struct {
-  BOOL accept, valid_image;
+  BOOL accept, valid_image, enabled;
   int attempts, accepted, hidden, restored, x, y, width, height;
 } CaptureHostSmoke;
+static BOOL smoke_pin_enabled(void *context) { return ((CaptureHostSmoke *)context)->enabled; }
 static BOOL smoke_pin_image(void *context, HGLOBAL dib, int x, int y) {
   CaptureHostSmoke *host = context;
   host->attempts++;
@@ -1543,10 +1547,11 @@ int mc_capture_smoke(HINSTANCE instance) {
   int result = 1;
   HGLOBAL dib = NULL;
   CaptureHostSmoke host = {0};
+  host.enabled = TRUE;
   ZeroMemory(&capture, sizeof(capture));
   capture.instance = instance;
   capture.smoke = TRUE;
-  capture.host = (MCCaptureHost){&host, smoke_pin_image, smoke_pins_hidden};
+  capture.host = (MCCaptureHost){&host, smoke_pin_image, smoke_pins_hidden, smoke_pin_enabled};
   set_pins_hidden(TRUE);
   SetRect(&capture.desktop_bounds, 0, 0, 640, 480);
   if (!mc_selection_smoke() || !register_windows(instance) || !surface_new(&capture.desktop, 640, 480) ||
@@ -1607,6 +1612,9 @@ int mc_capture_smoke(HINSTANCE instance) {
   preserve_text(index);
   if (image_session_update(capture.session, index, 150, 100, 150, 70, 0xF26769, 4, 32) != 1 ||
       image_session_value(capture.session, index, 7) != 32)
+    goto cleanup;
+  if (hit_text((POINT){150, 100}) != index || hit_text((POINT){299, 169}) != index ||
+      hit_text((POINT){300, 170}) != -1)
     goto cleanup;
   if (image_session_undo(capture.session) != 1 || image_session_value(capture.session, index, 1) != 50 ||
       image_session_redo(capture.session) != 1)
@@ -1717,6 +1725,13 @@ int mc_capture_smoke(HINSTANCE instance) {
   changed();
   if (!save_capture_preview())
     goto cleanup;
+  host.enabled = FALSE;
+  mc_capture_refresh_capabilities();
+  editor_command(ID_PIN);
+  if (IsWindowEnabled(capture.buttons[7]) || host.attempts || !mc_capture_busy())
+    goto cleanup;
+  host.enabled = TRUE;
+  mc_capture_refresh_capabilities();
   editor_command(ID_PIN);
   if (host.attempts != 1 || host.accepted || host.restored || !mc_capture_busy() || !host.valid_image)
     goto cleanup;

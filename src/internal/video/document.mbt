@@ -46,6 +46,30 @@ fn video_default(source : Map[String, Json]) -> Map[String, Json] raise @protoco
 }
 
 ///|
+pub fn normalize_crop(
+  width : Double,
+  height : Double,
+  crop : Json,
+) -> Json raise @protocol.InputError {
+  match crop {
+    Null => Json::null()
+    Object(rect) => {
+      let x = @protocol.integer_field(rect, "x", 0.0, width - 2.0)
+      let y = @protocol.integer_field(rect, "y", 0.0, height - 2.0)
+      let w = @protocol.integer_field(rect, "width", 2.0, width - x)
+      let h = @protocol.integer_field(rect, "height", 2.0, height - y)
+      Json::object({
+        "x": Json(x),
+        "y": Json(y),
+        "width": Json(@double.floor(w / 2.0) * 2.0),
+        "height": Json(@double.floor(h / 2.0) * 2.0),
+      })
+    }
+    _ => raise @protocol.InputError("invalid_input", "Invalid crop")
+  }
+}
+
+///|
 fn video_plan_document(document : Map[String, Json]) -> Json raise @protocol.InputError {
   let source = @protocol.object_field(document, "source")
   let duration = @protocol.integer_field(source, "durationMs", 1.0, 604800000.0)
@@ -58,18 +82,10 @@ fn video_plan_document(document : Map[String, Json]) -> Json raise @protocol.Inp
   let timeline = document.copy()
   timeline["durationMs"] = Json(duration)
   let plan = match timeline_plan(timeline) { Object(value) => value; _ => abort("timeline result") }
-  let (crop, output_width, output_height) = match document.get("crop") {
-    None | Some(Null) => (Json::null(), width, height)
-    Some(Object(rect)) => {
-      let x = @protocol.integer_field(rect, "x", 0.0, width - 2.0)
-      let y = @protocol.integer_field(rect, "y", 0.0, height - 2.0)
-      let w = @protocol.integer_field(rect, "width", 2.0, width - x)
-      let h = @protocol.integer_field(rect, "height", 2.0, height - y)
-      let even_w = @double.floor(w / 2.0) * 2.0
-      let even_h = @double.floor(h / 2.0) * 2.0
-      (Json::object({ "x": Json(x), "y": Json(y), "width": Json(even_w), "height": Json(even_h) }), even_w, even_h)
-    }
-    _ => raise @protocol.InputError("invalid_input", "Invalid crop")
+  let crop = normalize_crop(width, height, document.get("crop").unwrap_or(Json::null()))
+  let (output_width, output_height) = match crop {
+    Object(rect) => (@protocol.integer_field(rect, "width", 2, width), @protocol.integer_field(rect, "height", 2, height))
+    _ => (width, height)
   }
   let output_duration = @protocol.integer_field(plan, "outputDurationMs", 1.0, duration)
   let profile_text = export_profile(Json::object({
@@ -204,6 +220,65 @@ pub fn video_seek(id : Int, milliseconds : Double) -> String {
     }
     Json::object({ "ok": Json(true), "sourceMs": Json(source_time), "outputMs": Json(output_time), "atEnd": Json(at_end) })
   })
+}
+
+///|
+/// Map a composed preview position back to source time without changing edits.
+/// Join boundaries choose the following kept segment. The output endpoint maps
+/// to the final kept millisecond, matching video_seek's existing end convention.
+/// Invalid session/time returns -1; there is no second timeline state.
+pub fn video_source_time(id : Int32, milliseconds : Double) -> Double {
+  let session = video_session(id) catch { _ => return -1 }
+  let document = @protocol.request_object(session.document) catch {
+    _ => return -1
+  }
+  let planned = video_plan_document(document) catch { _ => return -1 }
+  let plan = match planned {
+    Object(value) => value
+    _ => return -1
+  }
+  let duration = @protocol.integer_field(
+    plan, "outputDurationMs", 1.0, 604800000.0,
+  ) catch {
+    _ => return -1
+  }
+  if !(milliseconds >= 0 && milliseconds <= duration) {
+    return -1
+  }
+  let segments = match plan["segments"] {
+    Array(items) => items
+    _ => return -1
+  }
+  let mut final_source = -1.0
+  for segment in segments {
+    let fields = match segment {
+      Object(fields) => fields
+      _ => return -1
+    }
+    let start = @protocol.integer_field(
+      fields, "sourceStartMs", 0.0, 604800000.0,
+    ) catch {
+      _ => return -1
+    }
+    let end = @protocol.integer_field(fields, "sourceEndMs", 0.0, 604800000.0) catch {
+      _ => return -1
+    }
+    let output_start = @protocol.integer_field(
+      fields, "outputStartMs", 0.0, duration,
+    ) catch {
+      _ => return -1
+    }
+    let output_end = @protocol.integer_field(
+      fields, "outputEndMs", 0.0, duration,
+    ) catch {
+      _ => return -1
+    }
+    if milliseconds < output_end {
+      return start + milliseconds - output_start
+    }
+    final_source = @protocol.larger(start, end - 1)
+  }
+  final_source
 }
 
 ///|

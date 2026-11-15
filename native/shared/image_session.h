@@ -46,6 +46,14 @@ int32_t image_session_remove(int32_t id, int32_t index);
 int32_t image_session_undo(int32_t id);
 int32_t image_session_redo(int32_t id);
 int32_t image_session_count(int32_t id);
+/* Read-only hit in full-image coordinates; tolerance is also in image pixels.
+ * text_only is 0 or 1. Returns a current annotation index, or -1 for no hit or
+ * invalid input/session. Filled covers win over other shapes; rectangles hit
+ * their outline, arrows their strokes, and text/filled covers their bounds. */
+int32_t image_session_hit(int32_t id, double x, double y, double tolerance, int32_t text_only);
+/* Arrowhead wings before host scaling: fields 0/1=first x/y, 2/3=second x/y.
+ * The same geometry is used by hit testing. Invalid input/field returns zero. */
+double image_arrowhead_value(double x, double y, double x2, double y2, double stroke, int32_t field);
 /* Annotation fields: 0=kind, 1=x, 2=y, 3=width, 4=height, 5=RGB color,
  * 6=stroke width, 7=font size (text only), 8=opacity (0..1).
  * Unknown fields return zero. */

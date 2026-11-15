@@ -1,6 +1,8 @@
 #ifndef MOOJICUT_PINNING_H
 #define MOOJICUT_PINNING_H
 #include <windows.h>
+BOOL mc_pin_enabled(void);
+BOOL mc_pin_set_enabled(BOOL enabled);
 BOOL mc_pin_image(HINSTANCE instance, HGLOBAL dib, int x, int y, BOOL hidden);
 void mc_pins_close(void);
 void mc_pins_shutdown(void);

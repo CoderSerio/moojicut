@@ -2,6 +2,9 @@
 #import "plugins/feature/pin/macos/MCPinnedImageController.h"
 #import "native/macos/preferences/MCPinShortcutStore.h"
 #include <math.h>
+#include "moonbit.h"
+#include "native/shared/pin_policy.h"
+#import "native/macos/preferences/MCToolRegistryStore.h"
 #import <Carbon/Carbon.h>
 #include <stdlib.h>
 
@@ -16,7 +19,7 @@ OSStatus MCTestUnregisterPinHotKey(EventHotKeyRef reference) { free(reference); 
 
 // The window and mouse fixtures are local to this process. They never order
 // actual windows front, post input events, capture screens, or use the system
-// clipboard. The spy records capture-hide/restore behavior without UI effects.
+// clipboard. The spy records capture interaction behavior without UI effects.
 @interface MCPinnedImage : NSObject
 @property NSPanel *panel;
 @property NSView *view;
@@ -24,7 +27,7 @@ OSStatus MCTestUnregisterPinHotKey(EventHotKeyRef reference) { free(reference); 
 @property (nonatomic) CGFloat opacity;
 @property CGFloat scale;
 @property NSSize sourceSize;
-@property BOOL restoreVisible;
+@property BOOL pendingSelection;
 @property BOOL userHidden;
 @property BOOL clickThrough;
 @property BOOL displayed;
@@ -108,12 +111,25 @@ static BOOL near(CGFloat actual, CGFloat expected) { return fabs(actual - expect
 
 int main(void) {
     @autoreleasepool {
+        moonbit_init();
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         NSString *domain = [@"dev.moojicut.pin-test." stringByAppendingString:NSUUID.UUID.UUIDString];
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
         MCPinnedImageController *controller = [[MCPinnedImageController alloc] initWithDefaults:defaults];
         BOOL passed = YES;
+        CHECK(near(pin_scale(MC_PIN_MACOS, 8, 1000, 500, 1000, 600), .95) &&
+              near(pin_scale(MC_PIN_WINDOWS, 8, 1000, 500, 1000, 600), 1) &&
+              near(pin_scale(MC_PIN_LINUX, 8, 1000, 500, 1000, 600), 1),
+              "scalar core ABI preserves platform work-area margins");
+        CHECK(near(pin_opacity(MC_PIN_WINDOWS, 137, -1), 111) &&
+              near(pin_opacity(MC_PIN_LINUX, .3, -1), .2) &&
+              pin_scale(MC_PIN_MACOS, NAN, 100, 100, 1000, 1000) == 0,
+              "byte alpha, unit alpha and invalid doubles cross the ABI safely");
+        CHECK(pin_visibility_action(MC_PIN_MACOS, 1, 1, 0, 1, 0) == MC_PIN_SHOW_SELECTED &&
+              pin_visibility_action(MC_PIN_WINDOWS, 1, 1, 0, 1, 0) == MC_PIN_RECOVERY_UNAVAILABLE &&
+              pin_hidden_after(MC_PIN_LINUX, MC_PIN_RESTORE_HIDDEN, 1, 1, 0) == 0,
+              "visibility reducer retains recovery and pass-through platform semantics");
         NSError *error = nil;
         CHECK(![controller createPinPNGData:[NSData data] display:NO error:&error] && error != nil && controller.count == 0,
             "invalid input does not create a window");
@@ -218,11 +234,11 @@ int main(void) {
         NSPasteboard *lockedClipboard = [NSPasteboard pasteboardWithUniqueName];
         CHECK(![first copyToPasteboard:lockedClipboard], "locked pin ignores copy");
         [lockedClipboard releaseGlobally];
-        [controller setCaptureHidden:YES];
-        CHECK(first.clickThrough && first.selected && !firstPanel.visible && recoveryEvent(controller, 2) == eventNotHandledErr,
-            "capture temporarily suspends recovery while preserving the logical pass-through target");
-        [controller setCaptureHidden:NO];
-        CHECK(first.clickThrough && first.selected && firstPanel.visible, "capture restore retains pass-through mode and selection");
+        [controller setCaptureActive:YES];
+        CHECK(first.clickThrough && first.selected && firstPanel.visible && recoveryEvent(controller, 2) == eventNotHandledErr,
+            "capture leaves click-through pins visible while suspending their recovery actions");
+        [controller setCaptureActive:NO];
+        CHECK(first.clickThrough && first.selected && firstPanel.visible, "ending capture retains pass-through mode and selection");
         CHECK(recoveryEvent(controller, 2) == noErr && !first.clickThrough && !firstPanel.ignoresMouseEvents && first.selected,
             "global recovery event makes the same pin interactive after focus loss");
         CHECK(recoveryEvent(controller, 3) == eventNotHandledErr, "unrelated hotkey identifiers are not consumed");
@@ -243,24 +259,37 @@ int main(void) {
         [controller setShortcutsSuspended:NO];
         firstPanel.testVisible = YES;
         secondPanel.testVisible = NO;
-        [controller setCaptureHidden:YES];
-        CHECK(!firstPanel.visible && !secondPanel.visible && first.restoreVisible && !second.restoreVisible,
-            "capture hides only visible pins while remembering their visibility");
+        second.userHidden = YES;
+        NSUInteger firstFronts = firstPanel.frontRequests, secondFronts = secondPanel.frontRequests;
+        NSUInteger recoveryRegistrations = registrations, recoveryUnregistrations = unregistrations;
+        NSRect firstFrame = firstPanel.frame;
+        [controller setCaptureActive:YES];
+        CHECK(firstPanel.visible && !secondPanel.visible && second.userHidden && firstPanel.ignoresMouseEvents &&
+              near(firstPanel.alphaValue, first.opacity) && NSEqualRects(firstFrame, firstPanel.frame),
+            "capture retains visible pin pixels and placement while leaving user-hidden pins hidden");
+        CHECK(([controller.visibleWindowNumbers isEqual:[NSSet setWithObject:@(firstPanel.windowNumber)]]),
+            "only currently visible pin window numbers are eligible for screenshot filter exceptions");
         [controller selectPin:first focus:NO];
-        CHECK(![first handleKeyEvent:key(24, 0)], "hidden capture pins do not accept actions");
-        [controller setCaptureHidden:YES];
-        CHECK(first.restoreVisible, "repeated capture-hide does not lose restore intent");
+        CHECK(![first handleKeyEvent:key(24, 0)], "visible capture pins do not accept editor shortcut actions");
+        [controller toggleVisibility];
+        CHECK(firstPanel.visible && !first.userHidden && second.userHidden, "capture cannot toggle the user's saved visibility");
+        [controller setCaptureActive:YES];
+        CHECK(firstPanel.visible && !secondPanel.visible, "repeated capture activation leaves pin visibility unchanged");
         NSUInteger firstKeys = firstPanel.keyRequests, secondKeys = secondPanel.keyRequests;
-        [controller setCaptureHidden:NO];
+        [controller setCaptureActive:NO];
         CHECK(firstPanel.visible && !secondPanel.visible && firstPanel.keyRequests == firstKeys &&
-              secondPanel.keyRequests == secondKeys, "restoring pins preserves visibility without stealing key focus");
+              secondPanel.keyRequests == secondKeys && !firstPanel.ignoresMouseEvents && second.userHidden &&
+              firstPanel.frontRequests == firstFronts && secondPanel.frontRequests == secondFronts,
+              "ending or cancelling capture restores input without raising existing pins or revealing hidden pins");
+        CHECK(registrations == recoveryRegistrations && unregistrations == recoveryUnregistrations,
+            "capture does not churn recovery registrations and risk revealing hidden pins on registration failure");
 
-        [controller setCaptureHidden:YES];
+        [controller setCaptureActive:YES];
         CHECK([controller pinPNGData:png error:&error], "new pins can be queued while capture is ending");
         MCPinnedImage *queued = controller.pins.lastObject;
-        CHECK(queued.restoreVisible && !queued.panel.visible, "new queued pin remains hidden until capture completes");
+        CHECK(queued.pendingSelection && !queued.panel.visible, "new queued pin remains hidden until capture completes");
         MCPinTestPanel *queuedPanel = spyPanel(queued);
-        [controller setCaptureHidden:NO];
+        [controller setCaptureActive:NO];
         CHECK(queuedPanel.visible && queuedPanel.keyRequests == 1 && queued.selected && !first.selected,
             "only a newly confirmed pin takes local keyboard focus when capture ends");
 
@@ -269,8 +298,49 @@ int main(void) {
         [controller closeAll];
         CHECK(controller.count == 0, "closing all pins releases every retained panel");
         CHECK(registrations == unregistrations, "closing the final pin releases all global recovery registrations");
+        CHECK(controller.enabled, "pin feature defaults to enabled");
+        [controller setCaptureActive:YES];
+        CHECK([controller pinPNGData:png error:&error], "pin confirmation can queue a panel during capture");
+        MCPinnedImage *disabledPending = controller.pins.lastObject;
+        MCPinTestPanel *disabledPanel = spyPanel(disabledPending);
+        controller.enabled = NO;
+        [controller setCaptureActive:NO];
+        CHECK(controller.count == 0 && !disabledPanel.visible && disabledPanel.frontRequests == 0 &&
+              controller.visibleWindowNumbers.count == 0,
+              "disabling pin while capture is active closes queued pins and cannot resurrect them at capture end");
+        controller.enabled = YES;
+        MCPinnedImage *inert = [controller createPinPNGData:png display:NO error:&error];
+        MCPinTestPanel *inertPanel = spyPanel(inert);
+        inert.displayed = YES;
+        [controller refreshRecoveryShortcuts];
+        inert.clickThrough = YES; inert.userHidden = YES; inertPanel.ignoresMouseEvents = YES;
+        __block BOOL reentryRejected = NO;
+        __weak MCPinnedImageController *weakController = controller;
+        controller.onShortcutStatus = ^(NSString *message) {
+            (void)message;
+            if (weakController.disabling) reentryRejected = [weakController createPinPNGData:png display:NO error:NULL] == nil;
+        };
+        MCToolRegistryStore *registry = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
+        registry.applyChange = ^(NSDictionary *candidate) {
+            for (NSDictionary *tool in candidate[@"groups"][@"screenshot"])
+                if ([tool[@"id"] isEqual:@"builtin.image.pin"]) weakController.enabled = [tool[@"enabled"] boolValue];
+        };
+        CHECK([registry setTool:@"builtin.image.pin" enabled:NO error:&error], "management switch invokes the existing pin feature gate");
+        CHECK(!controller.enabled && !controller.disabling && controller.count == 0 && reentryRejected,
+              "disable closes the gate before callback reentry, then finishes cleanup");
+        CHECK(!inertPanel.delegate && !inertPanel.contentView && !inertPanel.ignoresMouseEvents && registrations == unregistrations,
+              "disabling releases hidden click-through panels and every global recovery key");
+        CHECK(![controller createPinPNGData:png display:NO error:&error] && error.code == 2,
+              "disabled feature rejects new pins without losing caller image data");
+        MCPinnedImageController *restored = [[MCPinnedImageController alloc] initWithDefaults:defaults];
+        CHECK(!restored.enabled, "disabled setting persists across controller recreation");
+        controller.onShortcutStatus = nil;
+        CHECK([registry setTool:@"builtin.image.pin" enabled:YES error:&error], "management re-enable uses the same gate");
+        CHECK(controller.enabled && [controller createPinPNGData:png display:NO error:&error] && controller.count == 1,
+              "re-enabling creates working pins after complete cleanup");
+        [controller closeAll];
         [defaults removePersistentDomainForName:domain];
-        puts(passed ? "PASS pinned images: floating lifecycle, selected drag/zoom/opacity, configurable keys, finalized clipboard, capture hide/restore"
+        puts(passed ? "PASS pinned images: floating lifecycle, selected drag/zoom/opacity, configurable keys, finalized clipboard, capture visibility/input"
                     : "FAIL pinned images");
         return passed ? 0 : 1;
     }

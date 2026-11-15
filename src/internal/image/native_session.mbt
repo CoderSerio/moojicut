@@ -216,6 +216,13 @@ fn native_image_annotations(id : Int) -> Array[Json] {
 pub fn image_session_count(id : Int) -> Int { native_image_annotations(id).length() }
 
 ///|
+pub fn image_session_hit(id : Int, x : Double, y : Double, tolerance : Double, text_only : Int) -> Int {
+  if !(x >= -65536 && x <= 65536 && y >= -65536 && y <= 65536 &&
+       tolerance >= 0 && tolerance <= 65536) || (text_only != 0 && text_only != 1) { return -1 }
+  annotation_hit_index(native_image_annotations(id), x, y, tolerance, text_only == 1)
+}
+
+///|
 fn native_image_annotation(id : Int, index : Int) -> Map[String, Json]? {
   let items = native_image_annotations(id)
   if index < 0 || index >= items.length() { return None }

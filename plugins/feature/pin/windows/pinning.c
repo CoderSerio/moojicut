@@ -6,9 +6,12 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include "pinning.h"
+#include "native/shared/feature_runtime.h"
+#include "native/shared/pin_policy.h"
 #include <commctrl.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 #include <windowsx.h>
@@ -20,6 +23,8 @@ typedef struct Pin {
   double zoom;
   BYTE opacity;
   BOOL selected, hidden, passthrough;
+  BOOL retiring;
+  unsigned references;
   struct Pin *next;
 } Pin;
 static Pin *pins;
@@ -32,6 +37,17 @@ static WORD keys[6] = {VK_OEM_PLUS,
 static WORD capture_keys[3];
 static HWND hotkey_host;
 static BOOL global_registered[2], capture_hidden, shortcuts_suspended;
+static int feature_state = MC_FEATURE_ENABLED;
+static unsigned menu_leases;
+BOOL mc_pin_enabled(void) { return feature_can_invoke(feature_state) != 0; }
+static void finish_disable(void) {
+  if (!pins && !hotkey_host && !menu_leases && feature_state == MC_FEATURE_DISABLING)
+    feature_state = feature_transition(feature_state, MC_FEATURE_CLEANUP_FINISHED);
+}
+static void release_pin(Pin *pin) {
+  if (!--pin->references)
+    free(pin);
+}
 static BOOL refresh_pin_hotkeys(void);
 static void toggle_hidden(void);
 static BOOL toggle_passthrough(Pin *pin);
@@ -143,7 +159,7 @@ static BOOL preflight_suspended_keys(const WORD proposed[6]) {
   return registered[0] && registered[1];
 }
 BOOL mc_pin_save_keys(const wchar_t *path, const WORD proposed[6]) {
-  if (!valid(proposed) || has_passthrough())
+  if (!mc_pin_enabled() || !valid(proposed) || has_passthrough())
     return FALSE;
   if ((shortcuts_suspended || !pins) && !preflight_suspended_keys(proposed))
     return FALSE;
@@ -170,7 +186,7 @@ BOOL mc_pin_save_keys(const wchar_t *path, const WORD proposed[6]) {
 }
 static LRESULT CALLBACK hotkey_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
   if (message == WM_HOTKEY) {
-    if (capture_hidden)
+    if (!mc_pin_enabled() || capture_hidden)
       return 0;
     if (wp == 0x7a01)
       toggle_hidden();
@@ -184,6 +200,8 @@ static LRESULT CALLBACK hotkey_proc(HWND window, UINT message, WPARAM wp, LPARAM
   return DefWindowProcW(window, message, wp, lp);
 }
 static BOOL refresh_pin_hotkeys(void) {
+  if (!mc_pin_enabled())
+    return TRUE;
   if (has_passthrough())
     return global_registered[0] && global_registered[1];
   if (!hotkey_host) {
@@ -223,27 +241,21 @@ void mc_pin_suspend_shortcuts(BOOL suspended) {
 static void toggle_hidden(void) {
   if (!global_registered[0])
     refresh_pin_hotkeys();
-  if (!global_registered[0])
-    return;
   Pin *selected = selected_pin();
-  if (selected && selected->passthrough)
-    return;
-  if (selected) {
-    selected->hidden = !selected->hidden;
+  BOOL any_hidden = FALSE;
+  for (Pin *pin = pins; pin; pin = pin->next)
+    any_hidden = any_hidden || pin->hidden;
+  int action = pin_visibility_action(MC_PIN_WINDOWS, selected != NULL, selected && selected->hidden,
+                                     selected && selected->passthrough, any_hidden, global_registered[0]);
+  if (action == MC_PIN_VISIBILITY_NONE || action == MC_PIN_RECOVERY_UNAVAILABLE) return;
+  if (action == MC_PIN_SHOW_SELECTED || action == MC_PIN_HIDE_SELECTED) {
+    selected->hidden = pin_hidden_after(MC_PIN_WINDOWS, action, selected->hidden, selected->passthrough, 1);
     selected->selected = FALSE;
     show_pin(selected);
     return;
   }
-  BOOL restore = FALSE;
-  for (Pin *pin = pins; pin; pin = pin->next)
-    if (pin->hidden)
-      restore = TRUE;
   for (Pin *pin = pins; pin; pin = pin->next) {
-    if (restore) {
-      if (pin->hidden)
-        pin->hidden = FALSE;
-    } else
-      pin->hidden = TRUE;
+    pin->hidden = pin_hidden_after(MC_PIN_WINDOWS, action, pin->hidden, pin->passthrough, 0);
     show_pin(pin);
   }
 }
@@ -272,9 +284,10 @@ static void resize_pin(Pin *pin, double zoom) {
   MONITORINFO monitor = {sizeof(monitor)};
   GetWindowRect(pin->window, &rect);
   GetMonitorInfoW(MonitorFromWindow(pin->window, MONITOR_DEFAULTTONEAREST), &monitor);
-  double maximum = fmin(8.0, fmin((double)(monitor.rcWork.right - monitor.rcWork.left) / pin->width,
-                                  (double)(monitor.rcWork.bottom - monitor.rcWork.top) / pin->height));
-  pin->zoom = fmax(fmin(.1, maximum), fmin(maximum, zoom));
+  double resolved = pin_scale(MC_PIN_WINDOWS, zoom, pin->width, pin->height,
+      monitor.rcWork.right - monitor.rcWork.left, monitor.rcWork.bottom - monitor.rcWork.top);
+  if (resolved <= 0) return;
+  pin->zoom = resolved;
   int w = (int)fmax(1, round(pin->width * pin->zoom)), h = (int)fmax(1, round(pin->height * pin->zoom));
   int x = (rect.left + rect.right - w) / 2, y = (rect.top + rect.bottom - h) / 2;
   x = (int)fmax(monitor.rcWork.left, fmin(monitor.rcWork.right - w, x));
@@ -284,10 +297,9 @@ static void resize_pin(Pin *pin, double zoom) {
 }
 static void pin_action(Pin *pin, int action) {
   if (action < 2)
-    resize_pin(pin, pin->zoom * (action == 0 ? 1.1 : 1 / 1.1));
+    resize_pin(pin, pin_zoom_step(pin->zoom, action == 0 ? 1 : -1));
   else {
-    int alpha = pin->opacity + (action == 2 ? 26 : -26);
-    pin->opacity = (BYTE)(alpha < 26 ? 26 : alpha > 255 ? 255 : alpha);
+    pin->opacity = (BYTE)pin_opacity(MC_PIN_WINDOWS, pin->opacity, action == 2 ? 1 : -1);
     SetLayeredWindowAttributes(pin->window, 0, pin->opacity, LWA_ALPHA);
   }
 }
@@ -324,6 +336,7 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
   Pin *pin = (Pin *)GetWindowLongPtrW(window, GWLP_USERDATA);
   if (message == WM_NCCREATE) {
     pin = (Pin *)((CREATESTRUCTW *)lp)->lpCreateParams;
+    pin->references++; // Window lease, released by WM_NCDESTROY.
     pin->window = window;
     SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)pin);
   }
@@ -428,7 +441,13 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
     return message == WM_SYSKEYDOWN ? DefWindowProcW(window, message, wp, lp) : 0;
   }
   case WM_CONTEXTMENU: {
+    if (!mc_pin_enabled())
+      return 0;
     HMENU menu = CreatePopupMenu();
+    if (!menu)
+      return 0;
+    pin->references++;
+    menu_leases++;
     POINT p;
     GetCursorPos(&p);
     AppendMenuW(menu, MF_STRING, 1, L"复制原图");
@@ -436,6 +455,8 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
     AppendMenuW(menu, MF_STRING, 3, L"关闭贴图");
     int action = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, window, NULL);
     DestroyMenu(menu);
+    if (pin->retiring || !mc_pin_enabled())
+      action = 0;
     if (action == 1)
       copy_pin(pin);
     else if (action == 2) {
@@ -444,6 +465,9 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
       resize_pin(pin, 1);
     } else if (action == 3)
       DestroyWindow(window);
+    release_pin(pin);
+    menu_leases--;
+    finish_disable();
     return 0;
   }
   case WM_DISPLAYCHANGE:
@@ -458,8 +482,10 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
       link = &(*link)->next;
     if (*link)
       *link = pin->next;
+    pin->retiring = TRUE;
     GlobalFree(pin->dib);
-    free(pin);
+    pin->dib = NULL;
+    release_pin(pin);
     if (!pins)
       refresh_pin_hotkeys();
     SetWindowLongPtrW(window, GWLP_USERDATA, 0);
@@ -469,7 +495,7 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
   return DefWindowProcW(window, message, wp, lp);
 }
 BOOL mc_pin_image(HINSTANCE instance, HGLOBAL dib, int x, int y, BOOL hidden) {
-  if (!dib)
+  if (!mc_pin_enabled() || !dib)
     return FALSE;
   BITMAPINFOHEADER *h = GlobalLock(dib);
   if (!h)
@@ -493,10 +519,14 @@ BOOL mc_pin_image(HINSTANCE instance, HGLOBAL dib, int x, int y, BOOL hidden) {
   pin->height = height;
   pin->zoom = 1;
   pin->opacity = 255;
+  pin->references = 1;
   HWND window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED, klass.lpszClassName,
                                 L"Mooji Cut · 贴图", WS_POPUP, x, y, w, height, NULL, NULL, instance, pin);
-  if (!window)
+  if (!window) {
+    release_pin(pin); // Creator lease remains valid even after failed WM_NCCREATE.
     return FALSE;
+  }
+  release_pin(pin);
   pin->dib = dib;
   pin->next = pins;
   pins = pin;
@@ -524,15 +554,39 @@ void mc_pins_close(void) {
   }
 }
 void mc_pins_shutdown(void) {
+  mc_pin_set_enabled(FALSE);
+}
+BOOL mc_pin_set_enabled(BOOL enabled) {
+  if (enabled) {
+    feature_state = feature_transition(feature_state, MC_FEATURE_ENABLE);
+    return mc_pin_enabled(); // Keys are registered lazily when the next pin exists.
+  }
+  feature_state = feature_transition(feature_state, MC_FEATURE_REQUEST_DISABLE);
+  if (menu_leases)
+    EndMenu();
+  mc_pins_exit_passthrough();
   while (pins)
     DestroyWindow(pins->window);
+  for (int i = 0; i < 2; i++) {
+    if (global_registered[i] && hotkey_host)
+      UnregisterHotKey(hotkey_host, 0x7a01 + i);
+    global_registered[i] = FALSE;
+  }
+  if (hotkey_host) {
+    DestroyWindow(hotkey_host);
+    hotkey_host = NULL;
+  }
+  finish_disable();
+  return TRUE;
 }
 void mc_pins_restore_hidden(void) {
-  for (Pin *pin = pins; pin; pin = pin->next)
-    if (!pin->passthrough && pin->hidden) {
-      pin->hidden = FALSE;
+  for (Pin *pin = pins; pin; pin = pin->next) {
+    BOOL hidden = pin_hidden_after(MC_PIN_WINDOWS, MC_PIN_RESTORE_HIDDEN, pin->hidden, pin->passthrough, 0);
+    if (hidden != pin->hidden) {
+      pin->hidden = hidden;
       show_pin(pin);
     }
+  }
 }
 void mc_pins_exit_passthrough(void) {
   for (Pin *pin = pins; pin; pin = pin->next)
@@ -558,7 +612,60 @@ static HGLOBAL clone_dib(HGLOBAL original) {
   }
   return copy;
 }
+typedef struct { BOOL menu_entered, disabled, enable_rejected; } PinMenuSmoke;
+static LRESULT CALLBACK pin_menu_smoke_proc(HWND window, UINT message, WPARAM wp, LPARAM lp,
+                                           UINT_PTR id, DWORD_PTR data) {
+  PinMenuSmoke *state = (PinMenuSmoke *)data;
+  if (message == WM_TIMER && wp == 1) {
+    GUITHREADINFO info = {sizeof(info)};
+    state->menu_entered = GetGUIThreadInfo(GetCurrentThreadId(), &info) &&
+        (info.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE)) != 0;
+    KillTimer(window, 1);
+    mc_pin_set_enabled(FALSE); // Destroys this window during TrackPopupMenu.
+    state->disabled = !mc_pin_enabled() && !pins && !hotkey_host;
+    state->enable_rejected = !mc_pin_set_enabled(TRUE); // Menu callback is still leased.
+    return 0;
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, pin_menu_smoke_proc, id);
+  return DefSubclassProc(window, message, wp, lp);
+}
+typedef struct { HANDLE complete; HWND window; DWORD ui_thread; LONG expired; } PinMenuWatchdog;
+static DWORD WINAPI pin_menu_watchdog(void *context) {
+  PinMenuWatchdog *watchdog = context;
+  if (WaitForSingleObject(watchdog->complete, 3000) == WAIT_TIMEOUT) {
+    InterlockedExchange(&watchdog->expired, 1);
+    PostMessageW(watchdog->window, WM_CANCELMODE, 0, 0);
+    PostThreadMessageW(watchdog->ui_thread, WM_QUIT, 1, 0);
+  }
+  return 0;
+}
+static BOOL pin_menu_disable_smoke(HWND window) {
+  PinMenuSmoke state = {0};
+  if (!SetWindowSubclass(window, pin_menu_smoke_proc, 99, (DWORD_PTR)&state)) return FALSE;
+  ShowWindow(window, SW_SHOWNOACTIVATE); // Only our synthetic image fixture.
+  if (!SetTimer(window, 1, 1, NULL)) { RemoveWindowSubclass(window, pin_menu_smoke_proc, 99); return FALSE; }
+  PinMenuWatchdog watchdog = {CreateEventW(NULL, TRUE, FALSE, NULL), window, GetCurrentThreadId(), 0};
+  HANDLE thread = watchdog.complete ? CreateThread(NULL, 0, pin_menu_watchdog, &watchdog, 0, NULL) : NULL;
+  if (!thread) {
+    if (watchdog.complete) CloseHandle(watchdog.complete);
+    KillTimer(window, 1);
+    RemoveWindowSubclass(window, pin_menu_smoke_proc, 99);
+    return FALSE;
+  }
+  SendMessageW(window, WM_CONTEXTMENU, (WPARAM)window, MAKELPARAM(-1, -1));
+  SetEvent(watchdog.complete);
+  if (WaitForSingleObject(thread, 4000) != WAIT_OBJECT_0) ExitProcess(1);
+  CloseHandle(thread); CloseHandle(watchdog.complete);
+  if (IsWindow(window)) {
+    KillTimer(window, 1);
+    RemoveWindowSubclass(window, pin_menu_smoke_proc, 99);
+  }
+  return !watchdog.expired && state.menu_entered && state.disabled && state.enable_rejected &&
+      !IsWindow(window) && !pins && !hotkey_host && !menu_leases && feature_state == MC_FEATURE_DISABLED;
+}
 BOOL mc_pin_smoke(HINSTANCE instance) {
+  if (!mc_pin_set_enabled(TRUE))
+    return FALSE;
   HGLOBAL dib = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(BITMAPINFOHEADER) + 320 * 200 * 3);
   if (!dib)
     return FALSE;
@@ -711,7 +818,37 @@ BOOL mc_pin_smoke(HINSTANCE instance) {
     return FALSE;
   }
   live = pins->window;
+  HGLOBAL restart = clone_dib(pins->dib);
   SendMessageW(live, WM_LBUTTONDBLCLK, 0, 0);
   ok = ok && !IsWindow(live);
+  if (!restart || !mc_pin_image(instance, restart, 40, 50, TRUE)) {
+    if (restart) GlobalFree(restart);
+    return FALSE;
+  }
+  keys[4] = MAKEWORD(VK_F22, HOTKEYF_CONTROL | HOTKEYF_ALT | HOTKEYF_SHIFT);
+  keys[5] = MAKEWORD(VK_F23, HOTKEYF_CONTROL | HOTKEYF_ALT | HOTKEYF_SHIFT);
+  refresh_pin_hotkeys();
+  pins->selected = TRUE;
+  ok = ok && toggle_passthrough(pins);
+  restart = clone_dib(pins->dib);
+  live = pins->window;
+  mc_pin_set_enabled(FALSE);
+  ok = ok && !IsWindow(live) && !pins && !hotkey_host && !global_registered[0] &&
+      !global_registered[1] && !mc_pin_enabled() && feature_state == MC_FEATURE_DISABLED;
+  if (!restart) return FALSE;
+  BOOL wrongly_accepted = mc_pin_image(instance, restart, 50, 60, TRUE);
+  ok = ok && !wrongly_accepted && GlobalSize(restart) > 0;
+  if (wrongly_accepted) { mc_pins_shutdown(); return FALSE; }
+  if (!mc_pin_set_enabled(TRUE) || !mc_pin_image(instance, restart, 50, 60, TRUE)) {
+    GlobalFree(restart); return FALSE;
+  }
+  ok = ok && global_registered[0] && global_registered[1];
+  BOOL menu_ok = pin_menu_disable_smoke(pins->window);
+  ok = ok && menu_ok;
+  mc_pins_shutdown();
+  memcpy(keys, configured, sizeof(keys));
+  ok = mc_pin_set_enabled(TRUE) && ok;
+  printf("Windows pin lifecycle smoke: %s (disable pass-through, key teardown, re-enable, nested menu retirement).\n",
+      ok ? "passed" : "FAILED");
   return ok;
 }

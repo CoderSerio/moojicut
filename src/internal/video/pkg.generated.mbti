@@ -1,10 +1,17 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "moojicut/core/internal/video"
 
+import {
+  "moojicut/core/internal/protocol",
+  "moonbitlang/core/json",
+}
+
 // Values
 pub fn edit_plan(String) -> String
 
 pub fn export_profile(String) -> String
+
+pub fn native_recording_plan(Int32, Int32, Int32, Int32) -> FixedArray[Int32]
 
 pub fn native_video_clear_cuts(Int32) -> Int32
 
@@ -44,7 +51,21 @@ pub fn native_video_trim(Int32, Int32, Int32) -> Int32
 
 pub fn native_video_undo(Int32) -> Int32
 
+pub fn normalize_crop(Double, Double, @json.Json) -> @json.Json raise @protocol.InputError
+
+pub fn recording_plan(String) -> String
+
+pub fn recording_status(String) -> String
+
 pub fn recording_transition(String, String) -> String
+
+pub fn timeline_tick_step(Double, Double, Double) -> Double
+
+pub fn timeline_time_for_x(Double, Double, Double, Double) -> Double
+
+pub fn timeline_trim_boundary(Int32, Double, Double, Double, Double, Double) -> Double
+
+pub fn timeline_x_for_time(Double, Double, Double, Double) -> Double
 
 pub fn video_command(Int32, String) -> String
 
@@ -55,6 +76,8 @@ pub fn video_open(String, String) -> String
 pub fn video_seek(Int32, Double) -> String
 
 pub fn video_snapshot(Int32) -> String
+
+pub fn video_source_time(Int32, Double) -> Double
 
 // Errors
 
