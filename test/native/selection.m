@@ -1,13 +1,28 @@
 #import "plugins/feature/select/macos/MCSelection.h"
 #include <math.h>
 #include <stdio.h>
+#include "native/shared/selection.h"
 
 #define CHECK(condition, message) do { if (!(condition)) { \
     fprintf(stderr, "FAIL selection: %s\n", message); passed = NO; } } while (0)
 
 int main(void) {
     @autoreleasepool {
+        moonbit_init();
         BOOL passed = YES;
+        double *region = selection_region(250, 160, 40, 30);
+        CHECK(Moonbit_array_length(region) == 4 && region[0] == 40 && region[1] == 30 &&
+              region[2] == 210 && region[3] == 130, "owned MoonBit rectangle crosses the C ABI");
+        moonbit_decref(region);
+        double *handlePoint = selection_handle_point(40, 30, 81, 61, 1, MC_SELECTION_MIDPOINT_EXACT);
+        CHECK(Moonbit_array_length(handlePoint) == 2 && handlePoint[0] == 80.5 && handlePoint[1] == 30,
+              "owned MoonBit point preserves fractional coordinates across the C ABI");
+        moonbit_decref(handlePoint);
+        NSRect fractional = NSMakeRect(9.0 / 37.0, 20, 100, 60);
+        NSPoint fractionalEdge = NSMakePoint(fractional.origin.x + 4, 20);
+        CHECK(NSPointInRect(fractionalEdge, NSMakeRect(fractional.origin.x - 4, 16, 8, 8)) &&
+              MCSelectionHandleAtPoint(fractionalEdge, fractional, 4) == 0,
+              "fractional handle boundaries match Foundation rectangle arithmetic");
         NSSize bounds = NSMakeSize(320, 200);
         MCSelectionGesture first = {0}, second = {0};
         NSRect result = NSZeroRect;

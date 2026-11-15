@@ -6,4 +6,8 @@ import {
   "moonbitlang/core/json",
 }
 
+import {
+  "moojicut/core/internal/selection",
+}
+
 pkgtype(kind: "foreign_library")

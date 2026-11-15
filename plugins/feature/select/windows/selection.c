@@ -1,15 +1,20 @@
 #define WIN32_LEAN_AND_MEAN
 #include "selection.h"
+#include "../../../../native/shared/selection.h"
 #include <stdio.h>
-#include <stdlib.h>
 
 static int lower(int a, int b) { return a < b ? a : b; }
 static int upper(int a, int b) { return a > b ? a : b; }
 static int bound(int value, int low, int high) { return upper(low, lower(value, high)); }
+static MCCorePoint core_point(POINT point) { return (MCCorePoint){point.x, point.y}; }
+static MCCoreRect core_rect(RECT rect) {
+  return (MCCoreRect){rect.left, rect.top, (double)rect.right - rect.left, (double)rect.bottom - rect.top};
+}
+static RECT native_rect(MCCoreRect rect) {
+  return (RECT){(LONG)rect.x, (LONG)rect.y, (LONG)(rect.x + rect.width), (LONG)(rect.y + rect.height)};
+}
 RECT mc_selection_normalize(POINT first, POINT second) {
-  RECT rect = {lower(first.x, second.x), lower(first.y, second.y),
-               upper(first.x, second.x), upper(first.y, second.y)};
-  return rect;
+  return native_rect(mc_core_region(core_point(first), core_point(second)));
 }
 void mc_selection_init(MCSelection *selection, RECT bounds, int minimum_size) {
   *selection = (MCSelection){0};
@@ -47,39 +52,17 @@ MCSelectionResult mc_selection_update(MCSelection *selection, MCSelectionEvent e
   return result;
 }
 int mc_selection_hit_handle(RECT rect, POINT point, int radius) {
-  POINT points[8] = {{rect.left, rect.top}, {(rect.left + rect.right) / 2, rect.top},
-      {rect.right, rect.top}, {rect.right, (rect.top + rect.bottom) / 2},
-      {rect.right, rect.bottom}, {(rect.left + rect.right) / 2, rect.bottom},
-      {rect.left, rect.bottom}, {rect.left, (rect.top + rect.bottom) / 2}};
-  for (int i = 0; i < 8; i++)
-    if (abs(point.x - points[i].x) <= radius && abs(point.y - points[i].y) <= radius)
-      return i;
-  return -1;
+  return mc_core_hit_handle(core_rect(rect), core_point(point), radius,
+                            MC_SELECTION_MIDPOINT_INTEGER);
 }
 RECT mc_selection_transform(RECT rect, POINT from, POINT to, int handle, RECT bounds, int minimum_size) {
-  int dx = to.x - from.x, dy = to.y - from.y;
-  if (handle < 0) {
-    int width = rect.right - rect.left, height = rect.bottom - rect.top;
-    rect.left = bound(rect.left + dx, bounds.left, bounds.right - width);
-    rect.top = bound(rect.top + dy, bounds.top, bounds.bottom - height);
-    rect.right = rect.left + width;
-    rect.bottom = rect.top + height;
-    return rect;
-  }
-  if (handle == 0 || handle == 6 || handle == 7)
-    rect.left = bound(rect.left + dx, bounds.left, rect.right - minimum_size);
-  if (handle == 2 || handle == 3 || handle == 4)
-    rect.right = bound(rect.right + dx, rect.left + minimum_size, bounds.right);
-  if (handle == 0 || handle == 1 || handle == 2)
-    rect.top = bound(rect.top + dy, bounds.top, rect.bottom - minimum_size);
-  if (handle == 4 || handle == 5 || handle == 6)
-    rect.bottom = bound(rect.bottom + dy, rect.top + minimum_size, bounds.bottom);
-  return rect;
+  return native_rect(mc_core_transform(core_rect(rect), core_point(from), core_point(to), handle,
+                                        core_rect(bounds), minimum_size));
 }
 BOOL mc_selection_smoke(void) {
   MCSelection first, second;
-  mc_selection_init(&first, (RECT){0, 0, 640, 480}, 8);
-  mc_selection_init(&second, (RECT){20, 30, 100, 120}, 8);
+  mc_selection_init(&first, (RECT){0, 0, 640, 480}, 2);
+  mc_selection_init(&second, (RECT){20, 30, 100, 120}, 2);
   mc_selection_update(&first, MC_SELECTION_BEGIN, (POINT){330, 220});
   mc_selection_update(&second, MC_SELECTION_BEGIN, (POINT){-20, -30});
   MCSelectionResult result = mc_selection_update(&first, MC_SELECTION_END, (POINT){10, 20});
@@ -92,7 +75,10 @@ BOOL mc_selection_smoke(void) {
   if (mc_selection_update(&first, MC_SELECTION_END, (POINT){600, 450}).status != MC_SELECTION_NONE)
     return FALSE;
   mc_selection_update(&first, MC_SELECTION_BEGIN, (POINT){100, 100});
-  if (mc_selection_update(&first, MC_SELECTION_END, (POINT){104, 105}).status == MC_SELECTION_COMMITTED)
+  if (mc_selection_update(&first, MC_SELECTION_END, (POINT){101, 101}).status == MC_SELECTION_COMMITTED)
+    return FALSE;
+  mc_selection_update(&first, MC_SELECTION_BEGIN, (POINT){100, 100});
+  if (mc_selection_update(&first, MC_SELECTION_END, (POINT){102, 102}).status != MC_SELECTION_COMMITTED)
     return FALSE;
   mc_selection_update(&first, MC_SELECTION_BEGIN, (POINT){100, 100});
   if (mc_selection_update(&first, MC_SELECTION_CANCEL, (POINT){0, 0}).status != MC_SELECTION_CANCELLED ||
@@ -105,6 +91,13 @@ BOOL mc_selection_smoke(void) {
   RECT rect = {30, 40, 80, 90};
   if (mc_selection_hit_handle(rect, (POINT){80, 90}, 7) != 4 ||
       mc_selection_hit_handle(rect, (POINT){60, 60}, 7) != -1)
+    return FALSE;
+  // Keep native integer midpoints while matching macOS's half-open hit edges.
+  RECT odd = {30, 40, 81, 91};
+  if (mc_selection_hit_handle(odd, (POINT){54, 40}, 1) != 1 ||
+      mc_selection_hit_handle(odd, (POINT){75, 85}, 6) != 4 ||
+      mc_selection_hit_handle(odd, (POINT){87, 91}, 6) != -1 ||
+      mc_selection_hit_handle(odd, (POINT){81, 97}, 6) != -1)
     return FALSE;
   RECT moved = mc_selection_transform(rect, (POINT){0, 0}, (POINT){100, 100}, -1, second.bounds, 8);
   if (moved.left != 50 || moved.top != 70 || moved.right != 100 || moved.bottom != 120)
