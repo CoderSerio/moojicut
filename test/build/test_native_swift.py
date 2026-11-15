@@ -33,7 +33,7 @@ class NativeSwiftTest(unittest.TestCase):
             self.assertIn(objc, inputs)
             self.assertFalse(any(str(value).endswith(".swift") for value in inputs))
             self.assertTrue(any(str(value).endswith("MoojiCaptureText.o") for value in inputs))
-            self.assertIn("-L/SDK/MacOSX.sdk/usr/lib/swift", inputs)
+            self.assertIn("-L" + str(Path("/SDK/MacOSX.sdk") / "usr/lib/swift"), inputs)
             self.assertIn("-Wl,-rpath,/usr/lib/swift", inputs)
             compile_commands = [command for command in commands if "-emit-object" in command]
             self.assertEqual(len(compile_commands), 1)

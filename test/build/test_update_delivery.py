@@ -13,7 +13,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
-from prepare_update import APP_NAME, REPOSITORY, SPARKLE, read_archive, sha256, validate_feed, version_values
+from prepare_update import APP_NAME, REPOSITORY, SPARKLE, read_archive, sha256, validate_feed, verify_requirement, version_values
 
 
 class UpdateDeliveryTest(unittest.TestCase):
@@ -105,6 +105,24 @@ class UpdateDeliveryTest(unittest.TestCase):
         versions = ["0.1.0-alpha.9", "0.1.0-alpha.12", "0.1.0-alpha.13", "0.1.0-beta.1", "0.1.0-rc.1", "0.1.0", "0.2.0-alpha.1"]
         values = [version_values(version)[2] for version in versions]
         self.assertEqual(values, sorted(set(values)))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "codesign requirement verification is macOS-only")
+class CodesignRequirementTest(unittest.TestCase):
+    def test_literal_requirement_accepts_matching_identity_and_rejects_another(self):
+        # Build and ad-hoc sign an inert fixture; never run it or use a Keychain
+        # identity. Exercise the real requirement parser and signature check.
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "inert fixture"
+            subprocess.run(["xcrun", "clang", "-x", "c", "-", "-o", str(binary)],
+                           input="int main(void) { return 0; }\n", text=True,
+                           check=True, capture_output=True, timeout=120)
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
+                            "--identifier", "dev.moojicut.update-fixture", str(binary)],
+                           check=True, capture_output=True, timeout=30)
+            verify_requirement(binary, 'identifier "dev.moojicut.update-fixture"')
+            with self.assertRaisesRegex(ValueError, "failed to satisfy.*requirement"):
+                verify_requirement(binary, 'identifier "dev.moojicut.different-fixture"')
 
 
 @unittest.skipUnless(sys.platform == "darwin", "CryptoKit verifier is macOS-only")

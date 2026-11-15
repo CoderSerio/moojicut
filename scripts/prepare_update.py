@@ -146,6 +146,12 @@ def code_identity(app, certificate_prefix):
     return {"teamID": team.group(1), "certificateSHA256": sha256(certificate), "requirement": match.group(1)}
 
 
+def verify_requirement(app, requirement):
+    # codesign treats a bare -R value as a filename. The leading '=' selects
+    # literal requirement source; subprocess passes it without shell quoting.
+    run("/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", "=" + requirement, app)
+
+
 def prepare(archive, feed, output, expected_commit):
     config = json.loads((ROOT / "native/macos/updates/feed.json").read_text())
     require(INSTALL_PATH.is_dir() and not INSTALL_PATH.is_symlink(),
@@ -177,7 +183,7 @@ def prepare(archive, feed, output, expected_commit):
         candidate_identity = code_identity(candidate, scratch / "candidate-cert")
         require(installed_identity == candidate_identity,
                 "Candidate must use the installed app's existing certificate and designated requirement.")
-        run("/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", installed_identity["requirement"], candidate)
+        verify_requirement(candidate, installed_identity["requirement"])
         shutil.rmtree(scratch / "extracted")
         (staged / (archive.name + ".sha256")).write_text(sha256(archive) + "  " + archive.name + "\n")
         assets = [{"name": path.name, "bytes": path.stat().st_size, "sha256": sha256(path)}
