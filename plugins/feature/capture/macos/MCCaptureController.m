@@ -16,6 +16,8 @@ static NSError *MCCaptureError(NSString *message) {
 @property BOOL snapshotsPending;
 @property BOOL requestedScreenAccess;
 @property BOOL showingPermissionHelp;
+@property BOOL overlaysSuspended;
+@property (weak) MCImageEditorController *suspendedEditor;
 @property NSSet<NSNumber *> *captureWindowNumbers;
 @property (nonatomic, copy, readwrite) NSDictionary *toolConfiguration;
 @end
@@ -50,11 +52,26 @@ static NSError *MCCaptureError(NSString *message) {
 
 - (void)configureUserActionsForEditor:(MCImageEditorController *)editor {
     editor.onUserTool = self.onUserTool;
+    editor.onOCR = self.onOCR;
+    editor.onTranslate = self.onTranslate;
+    editor.onScrollCapture = self.onScrollCapture;
     editor.onPluginContextClosed = self.onPluginContextClosed;
     editor.pluginIcons = self.pluginIcons ?: @{};
 }
 - (void)setOnUserTool:(void (^)(MCImageEditorController *,NSString *))handler {
     _onUserTool = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnOCR:(void (^)(MCImageEditorController *))handler {
+    _onOCR = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnTranslate:(void (^)(MCImageEditorController *))handler {
+    _onTranslate = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnScrollCapture:(void (^)(MCImageEditorController *))handler {
+    _onScrollCapture = [handler copy];
     for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
 }
 - (void)setOnPluginContextClosed:(void (^)(NSString *))handler {
@@ -115,6 +132,8 @@ static NSError *MCCaptureError(NSString *message) {
     self.captureSession = nil; // Invalidate callbacks before closing any windows.
     self.captureWindowNumbers = nil;
     self.snapshotsPending = NO;
+    self.overlaysSuspended = NO;
+    self.suspendedEditor = nil;
     NSArray *editors = self.overlayEditors;
     self.overlayEditors = nil;
     for (MCImageEditorController *editor in editors) {
@@ -129,6 +148,41 @@ static NSError *MCCaptureError(NSString *message) {
         // can select itself here, after the normal app-focus restoration.
         [self changed];
     }
+}
+- (BOOL)suspendCaptureForEditor:(MCImageEditorController *)editor error:(NSError **)error {
+    if (!self.captureSession || self.snapshotsPending || self.overlaysSuspended ||
+        ![self.overlayEditors containsObject:editor]) {
+        if (error) *error = MCCaptureError(@"请先选择一个截图区域，再开始滚动截图。");
+        return NO;
+    }
+    self.overlaysSuspended = YES;
+    self.suspendedEditor = editor;
+    for (MCImageEditorController *overlay in self.overlayEditors) [overlay.window orderOut:nil];
+    [self restoreCaptureFocus:self.previousApplication];
+    return YES;
+}
+- (void)resumeSuspendedCapture {
+    if (!self.overlaysSuspended) return;
+    self.overlaysSuspended = NO;
+    MCImageEditorController *focused = self.suspendedEditor;
+    self.suspendedEditor = nil;
+    if (!self.captureSession) return;
+    for (MCImageEditorController *overlay in self.overlayEditors) if (overlay != focused) [overlay show];
+    [focused show];
+}
+- (BOOL)completeSuspendedCaptureWithPNGData:(NSData *)data error:(NSError **)error {
+    if (!self.captureSession || !self.overlaysSuspended) {
+        if (error) *error = MCCaptureError(@"原截图已经结束，滚动结果未替换当前编辑。");
+        return NO;
+    }
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
+    if (!editor) return NO;
+    // Keep busy true throughout replacement, so a queued update cannot install
+    // between closing the frozen selection and presenting the long image.
+    self.editor = editor;
+    [self cancelCapture];
+    [self presentImageEditor:editor];
+    return YES;
 }
 - (void)failSession:(NSString *)session error:(NSError *)error {
     if (![self.captureSession isEqualToString:session]) return;
@@ -150,8 +204,21 @@ static NSError *MCCaptureError(NSString *message) {
     }
     NSData *data = [NSData dataWithContentsOfURL:url options:0 error:error];
     if (!data) return NO;
-    self.editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
-    if (!self.editor) return NO;
+    return [self showEditorForPNGData:data error:error];
+}
+- (BOOL)showEditorForPNGData:(NSData *)data error:(NSError **)error {
+    if (self.editor) { [self.editor show]; return YES; }
+    if (self.captureSession) {
+        if (error) *error = MCCaptureError(@"请先完成或取消当前截图。");
+        return NO;
+    }
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:data error:error];
+    if (!editor) return NO;
+    [self presentImageEditor:editor];
+    return YES;
+}
+- (void)presentImageEditor:(MCImageEditorController *)editor {
+    self.editor = editor;
     if (self.toolConfiguration) [self.editor applyToolConfiguration:self.toolConfiguration];
     __weak MCCaptureController *weakSelf = self;
     [self configurePinActionForEditor:self.editor];
@@ -159,7 +226,6 @@ static NSError *MCCaptureError(NSString *message) {
     self.editor.onClose = ^{ weakSelf.editor = nil; [weakSelf changed]; };
     [self.editor show];
     [self changed];
-    return YES;
 }
 // Kept behind narrow methods so the regression test supplies synthetic displays
 // and pixels. The test never requests real ScreenCaptureKit content or images.

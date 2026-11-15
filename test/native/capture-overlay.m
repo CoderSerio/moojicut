@@ -426,6 +426,16 @@ static BOOL contentSnapshots(void) {
     input.string = @"48";
     CHECK([editor.document[@"revision"] isEqual:revision] && ![beforeField isEqual:editor.captureContentSnapshot],
           "pending numeric field text invalidates results before its control value or document is committed");
+    NSTextView *numericInput = (NSTextView *)input;
+    [numericInput setMarkedText:@"49" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0, input.string.length)];
+    NSDictionary *numericComposition = editor.captureContentSnapshot;
+    NSError *compositionError = nil;
+    CHECK(numericInput.hasMarkedText && [editor capturePNGData:&compositionError] == nil && compositionError != nil,
+          "content actions reject numeric IME even when its unconfirmed text parses as a valid number");
+    CHECK(numericInput.hasMarkedText && [numericComposition isEqual:editor.captureContentSnapshot] &&
+          editor.window.firstResponder == numericInput && [editor.document[@"revision"] isEqual:revision],
+          "rejecting numeric IME preserves its composition, focus, draft and document history");
+    [numericInput insertText:@"48" replacementRange:NSMakeRange(NSNotFound,0)];
     [editor.window makeFirstResponder:editor.canvas.textView];
     NSDictionary *beforeIME = editor.captureContentSnapshot;
     [editor.canvas.textView setMarkedText:@"zhong" selectedRange:NSMakeRange(5,0) replacementRange:NSMakeRange(NSNotFound,0)];

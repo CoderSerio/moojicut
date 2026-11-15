@@ -824,6 +824,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         MCNumberControl *control = controls[index];
         NSText *editor = control.field.currentEditor;
         if (!editor) continue;
+        if ([editor isKindOfClass:NSTextView.class] && [(NSTextView *)editor hasMarkedText]) {
+            if (error) *error = MCEditorError(@"请先完成输入，再执行此操作。");
+            return nil;
+        }
         NSScanner *scanner = [NSScanner scannerWithString:[editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
         scanner.locale = [(NSNumberFormatter *)control.field.formatter locale];
         double value = 0;

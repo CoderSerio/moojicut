@@ -8,6 +8,8 @@
 #import "native/macos/shortcuts/MCGlobalShortcutManager.h"
 #import "plugins/feature/capture/macos/MCCaptureController.h"
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
+#import "plugins/feature/capture_text/macos/MCTextToolsController.h"
+#import "plugins/feature/scroll_capture/macos/MCScrollCaptureController.h"
 #import "plugins/feature/pin/macos/MCPinnedImageController.h"
 #import "plugins/feature/recording/macos/MCMacRecordingController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -48,6 +50,8 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @property MCPreferencesController *preferences;
 @property MCToolRegistryStore *toolRegistryStore;
 @property MCUserPluginManager *userPlugins;
+@property MCTextToolsController *textTools;
+@property MCScrollCaptureController *scrollCapture;
 @property NSMutableDictionary<NSString *, NSString *> *pluginRequestTokens;
 @property NSUserDefaults *defaults;
 @property NSDictionary *diagnostics;
@@ -106,7 +110,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.report[@"windowNumber"] = @(self.preferences.window.windowNumber); [self writeReport];
 }
 - (void)capture:(__unused id)sender {
-    if (self.updateController.installationPending) return;
+    if (self.updateController.installationPending || self.scrollCapture.busy) return;
     [self.captureController capture];
 }
 - (void)applyPinToolConfiguration {
@@ -136,7 +140,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 - (void)restorePinnedImages:(__unused id)sender { [self.pinnedImages restoreHiddenPins]; }
 - (void)unlockPinnedImages:(__unused id)sender { [self.pinnedImages disableClickThrough]; }
 - (void)openImage:(__unused id)sender {
-    if (self.updateController.installationPending) return;
+    if (self.updateController.installationPending || self.scrollCapture.busy) return;
     self.choosingImage = YES;
     [self.updateController operationStateDidChange];
     NSOpenPanel *panel = [NSOpenPanel openPanel];
@@ -198,6 +202,48 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
             } else [weakEditor showPluginMessage:error.localizedDescription ?: @"插件未返回结果。"];
         }];
 }
+- (void)runTextToolInEditor:(MCImageEditorController *)editor translate:(BOOL)translate {
+    if (self.updateController.installationPending || self.scrollCapture.busy) return;
+    NSError *error = nil;
+    NSDictionary *snapshot = editor.captureContentSnapshot;
+    NSData *png = snapshot ? [editor capturePNGData:&error] : nil;
+    if (!png) { [editor showPluginMessage:error.localizedDescription ?: @"请先选择截图区域。"]; return; }
+    __weak MCImageEditorController *weakEditor = editor;
+    [self.textTools openPNGData:png owner:editor.pluginContextIdentifier parentWindow:editor.window
+        isCurrent:^BOOL{ return [weakEditor.captureContentSnapshot isEqual:snapshot]; } translate:translate];
+}
+- (void)startScrollingFromEditor:(MCImageEditorController *)editor {
+    if (self.updateController.installationPending || self.scrollCapture.busy) return;
+    NSError *error = nil;
+    NSRect rect = editor.captureScreenFrame;
+    // Validate any live text/property edit before hiding it. Cancellation keeps
+    // the original editor and its undo history instead of discarding the draft.
+    if (NSIsEmptyRect(rect) || ![editor capturePNGData:&error] ||
+        ![self.captureController suspendCaptureForEditor:editor error:&error]) {
+        [editor showPluginMessage:error.localizedDescription ?: @"请先选择截图区域。"]; return;
+    }
+    [self.textTools cancelForOwner:editor.pluginContextIdentifier];
+    [self.userPlugins cancelInvocationsForOwner:editor.pluginContextIdentifier];
+    __weak MCNativeHost *weakSelf = self;
+    __weak MCImageEditorController *weakEditor = editor;
+    MCScrollCaptureController *scroll = [[MCScrollCaptureController alloc] initWithScreenRect:rect
+        includedWindowNumbers:^{ return weakSelf.pinnedImages.visibleWindowNumbers ?: [NSSet set]; }];
+    __weak MCScrollCaptureController *weakScroll = scroll;
+    self.scrollCapture = scroll;
+    scroll.onStateChange = ^{ [weakSelf.updateController operationStateDidChange]; };
+    scroll.onCompletion = ^(NSData *png, NSError *failure) {
+        MCNativeHost *host = weakSelf;
+        if (!host || host.scrollCapture != weakScroll) return;
+        host.scrollCapture = nil;
+        NSError *error = failure;
+        if (png && [host.captureController completeSuspendedCaptureWithPNGData:png error:&error]) return;
+        [host.captureController resumeSuspendedCapture];
+        if (error && !([error.domain isEqual:NSCocoaErrorDomain] && error.code == NSUserCancelledError))
+            [weakEditor showPluginMessage:error.localizedDescription ?: @"滚动截图未完成，已保留原截图。"];
+        [host.updateController operationStateDidChange];
+    };
+    [scroll start];
+}
 - (BOOL)applicationShouldHandleReopen:(__unused NSApplication *)sender hasVisibleWindows:(__unused BOOL)flag {
     // Finder and Spotlight send a reopen event to an already running menu bar
     // app. Reuse (or recreate) settings so opening Mooji Cut has a visible result.
@@ -236,15 +282,20 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     MCPluginPackageStore *packages = [[MCPluginPackageStore alloc] initWithRootURL:[NSURL fileURLWithPath:pluginDirectory isDirectory:YES]];
     NSURL *workerURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/MoojiPluginWorker"];
     self.userPlugins = [[MCUserPluginManager alloc] initWithRegistry:self.toolRegistryStore packages:packages workerURL:workerURL];
+    self.textTools = [MCTextToolsController new];
     self.pluginRequestTokens = [NSMutableDictionary dictionary];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userPluginsChanged:)
         name:MCUserPluginsDidChangeNotification object:self.userPlugins];
     self.captureController.onUserTool = ^(MCImageEditorController *editor, NSString *identifier) {
         [weakSelf runUserTool:identifier inEditor:editor];
     };
+    self.captureController.onOCR = ^(MCImageEditorController *editor) { [weakSelf runTextToolInEditor:editor translate:NO]; };
+    self.captureController.onTranslate = ^(MCImageEditorController *editor) { [weakSelf runTextToolInEditor:editor translate:YES]; };
+    self.captureController.onScrollCapture = ^(MCImageEditorController *editor) { [weakSelf startScrollingFromEditor:editor]; };
     self.captureController.onPluginContextClosed = ^(NSString *identifier) {
         [weakSelf.pluginRequestTokens removeObjectForKey:identifier];
         [weakSelf.userPlugins cancelInvocationsForOwner:identifier];
+        [weakSelf.textTools cancelForOwner:identifier];
     };
     self.toolRegistryStore.prepareChange = ^BOOL(NSDictionary *candidate, NSError **error) {
         return [weakSelf.captureController canApplyToolConfiguration:candidate error:error];
@@ -254,11 +305,13 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         [weakSelf applyPinToolConfiguration];
     };
     self.updateController.isOperationBusy = ^BOOL{
-        return weakSelf.captureController.busy || weakSelf.recordingController.busy || weakSelf.choosingImage || weakSelf.userPlugins.busy;
+        return weakSelf.captureController.busy || weakSelf.recordingController.busy || weakSelf.choosingImage ||
+            weakSelf.userPlugins.busy || weakSelf.scrollCapture.busy;
     };
     self.pinnedImages.onShortcutStatus = ^(NSString *error) { weakSelf.preferences.pinShortcutRegistrationError = error; };
     self.captureController.includedWindowNumbers = ^{ return weakSelf.pinnedImages.visibleWindowNumbers ?: [NSSet set]; };
     self.captureController.onStateChange = ^{
+        if (!weakSelf.captureController.busy) [weakSelf.scrollCapture cancel];
         [weakSelf.pinnedImages setCaptureActive:weakSelf.captureController.busy];
         [weakSelf.updateController operationStateDidChange];
     };
@@ -416,6 +469,11 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         [alert addButtonWithTitle:@"继续使用"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
         return NSTerminateCancel;
     }
+    self.scrollCapture.onCompletion = nil;
+    self.scrollCapture.onStateChange = nil;
+    [self.scrollCapture cancel];
+    self.scrollCapture = nil;
+    [self.textTools cancelAll];
     if (!self.userPlugins) return NSTerminateNow;
     __block BOOL completed = NO;
     __block BOOL waitingForShutdown = NO;

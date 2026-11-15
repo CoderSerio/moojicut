@@ -427,6 +427,12 @@ class NativeBuild:
                  *native_sources("macos", "feature.capture"), archive,
                  "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", tool_layout)
         self.run(tool_layout)
+        scroll_capture = shortcuts / "scroll-capture"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/scroll-capture.m", *native_sources("macos", "feature.scroll_capture"),
+                 "-framework", "AppKit", "-framework", "ScreenCaptureKit", "-framework", "ImageIO",
+                 "-framework", "CoreGraphics", "-o", scroll_capture)
+        self.run(scroll_capture)
         tool_settings = shortcuts / "tool-registry-settings"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
                  "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/tool-registry-settings.m",

@@ -13,7 +13,7 @@
           "native/macos/updates/MCUpdateController.m",
           "native/macos/updates/MCReleaseSource.m"
         ],
-        "requires": ["system.shortcut_config", "system.user_plugins", "feature.capture", "feature.capture_text", "feature.pin", "feature.recording"]
+        "requires": ["system.shortcut_config", "system.user_plugins", "feature.capture", "feature.capture_text", "feature.scroll_capture", "feature.pin", "feature.recording"]
       },
       "system.shortcut_config": {
         "sources": ["native/macos/preferences/MCShortcutStore.m", "native/macos/preferences/MCPinShortcutStore.m", "native/macos/preferences/MCSystemShortcutCheck.m"],
@@ -41,6 +41,10 @@
       },
       "feature.capture_text": {
         "sources": ["plugins/feature/capture_text/macos/MCTextRecognitionService.m", "plugins/feature/capture_text/macos/MCTextToolsController.m", "plugins/feature/capture_text/macos/MCTranslationBridge.swift"],
+        "requires": []
+      },
+      "feature.scroll_capture": {
+        "sources": ["plugins/feature/scroll_capture/macos/MCScrollStitcher.m", "plugins/feature/scroll_capture/macos/MCScrollCaptureController.m"],
         "requires": []
       },
       "feature.pin": {
