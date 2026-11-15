@@ -2,12 +2,12 @@
 using @json {type Json}
 
 ///|
-priv suberror InputError {
+pub(all) suberror InputError {
   InputError(String, String)
 }
 
 ///|
-fn response(body : () -> Json raise InputError) -> String {
+pub fn response(body : () -> Json raise InputError) -> String {
   let value = body() catch {
     InputError(code, message) =>
       Json::object({
@@ -19,7 +19,7 @@ fn response(body : () -> Json raise InputError) -> String {
 }
 
 ///|
-fn request_object(text : String) -> Map[String, Json] raise InputError {
+pub fn request_object(text : String) -> Map[String, Json] raise InputError {
   if text.length() > 65536 {
     raise InputError("invalid_input", "Request is too large")
   }
@@ -37,7 +37,7 @@ fn request_object(text : String) -> Map[String, Json] raise InputError {
 }
 
 ///|
-fn object_field(
+pub fn object_field(
   fields : Map[String, Json],
   key : String,
 ) -> Map[String, Json] raise InputError {
@@ -48,9 +48,9 @@ fn object_field(
 }
 
 ///|
-// Keep values as bounded integral doubles across the JavaScript ABI. No unchecked
+// Keep values as bounded integral doubles across the host ABI. No unchecked
 // float-to-Int32 conversion can wrap a large or non-finite caller input.
-fn integer_field(
+pub fn integer_field(
   fields : Map[String, Json],
   key : String,
   minimum : Double,
@@ -71,7 +71,7 @@ fn integer_field(
 }
 
 ///|
-fn smaller(a : Double, b : Double) -> Double {
+pub fn smaller(a : Double, b : Double) -> Double {
   if a < b {
     a
   } else {
@@ -80,7 +80,7 @@ fn smaller(a : Double, b : Double) -> Double {
 }
 
 ///|
-fn larger(a : Double, b : Double) -> Double {
+pub fn larger(a : Double, b : Double) -> Double {
   if a > b {
     a
   } else {

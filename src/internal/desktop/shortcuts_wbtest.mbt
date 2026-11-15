@@ -19,8 +19,3 @@ test "desktop shortcuts protect typing and reject conflicts across actions" {
     assert_eq(shortcut_validate(65, modifier, 0, 0, 0, 0), 3)
   }
 }
-
-///|
-test "native preview health check exercises image and video core" {
-  assert_eq(preview_core_check(), 1)
-}

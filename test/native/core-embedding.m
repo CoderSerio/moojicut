@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #include <assert.h>
 #include "moonbit.h"
+#include "../../native/shared/editor_style.h"
 
 // Signatures observed in native foreign_library output from moonc 0.10.20.
 // This test deliberately checks the real boundary instead of a mocked core.
@@ -57,9 +58,30 @@ static NSDictionary *EditVideo(int32_t session, NSDictionary *command) {
   NSCAssert([result[@"ok"] boolValue], @"Video command failed: %@", result);
   return result;
 }
+static void CheckEditorStyles(void) {
+  NSCAssert(editor_style_property_mask(MC_STYLE_TOOL_TEXT) ==
+            ((1 << MC_STYLE_COLOR) | (1 << MC_STYLE_OPACITY) | (1 << MC_STYLE_FONT)), @"Style capabilities cross the C boundary");
+  NSCAssert(editor_style_min(MC_STYLE_STROKE) == 1 && editor_style_max(MC_STYLE_STROKE) == 96 &&
+            editor_style_step(MC_STYLE_STROKE) == 1 && editor_style_default(MC_STYLE_STROKE) == 4, @"Style domain exports");
+  int32_t first = editor_style_create();
+  int32_t second = editor_style_create();
+  NSCAssert(first > 0 && second > 0 && first != second, @"Independent style handles");
+  NSCAssert(editor_style_set(first, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE, 2.5) == 1 &&
+            editor_style_get(first, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE) == 2.5, @"Fractional styles roundtrip through C");
+  NSCAssert(editor_style_get(first, MC_STYLE_TOOL_ARROW, MC_STYLE_STROKE) == 4 &&
+            editor_style_get(second, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE) == 4, @"Styles stay isolated per tool and editor");
+  editor_style_dispose(first);
+  NSCAssert(editor_style_get(first, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE) == 0 &&
+            editor_style_set(first, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE, 8) == 0, @"Disposed style handles reject access");
+  NSCAssert(editor_style_get(second, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE) == 4 &&
+            editor_style_set(second, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE, 6.5) == 1 &&
+            editor_style_get(second, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE) == 6.5, @"Disposal leaves the other editor usable");
+  editor_style_dispose(second);
+}
 int main(void) {
   @autoreleasepool {
     moonbit_init(); // Once per process, before allocations or exported calls.
+    CheckEditorStyles();
     moonbit_string_t unicode = MoonString(@"中文🦊");
     assert(Moonbit_array_length(unicode) == 4);
     assert(unicode[0] == 0x4e2d && unicode[1] == 0x6587 && unicode[2] == 0xd83e && unicode[3] == 0xdd8a);
@@ -110,7 +132,7 @@ int main(void) {
       NSDictionary *result = Call(image_create, @{ @"width":@640, @"height":@360 });
       NSCAssert([result[@"ok"] boolValue], @"Repeated bridge invocation");
     } }
-    puts("PASS native embedding: UTF-16 Chinese/emoji, ownership, 1000 calls, image revisions/finalize, video edits/preview/dispose");
+    puts("PASS native embedding: UTF-16 Chinese/emoji, ownership, 1000 calls, editor style ABI/isolation, image revisions/finalize, video edits/preview/dispose");
   }
   return 0;
 }
