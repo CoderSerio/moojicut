@@ -11,3 +11,9 @@ pub fn tool_registry_normalize(saved_json : String) -> String {
 pub fn tool_registry_update(request_json : String) -> String {
   @tool_registry.tool_registry_update(request_json)
 }
+
+///|
+#export_name("tool_registry_resolve")
+pub fn tool_registry_resolve(request_json : String) -> String {
+  @tool_registry.tool_registry_resolve(request_json)
+}

@@ -20,6 +20,12 @@ to `builtin.pin`. Selection and workflow controls remain host controls. The
 and annotation kinds remain stable when display order changes. Loading an older
 four-tool layout appends pin, enabled, after all saved entries.
 
+Installed user tools enter the same layout through `tool_registry_resolve`.
+Their validated identities use `user.<pluginId>/<toolId>`, and their descriptors
+have `type:"action"`, `action:"run"`, and a package-local `toolId`, with no
+annotation `kind`. Manifest validation and typed user tools live in
+`../plugin_protocol`; the registry does not reinterpret their capability rules.
+
 ## JSON boundary
 
 `tool_registry_normalize(savedJson)` accepts the saved layout object as JSON.
@@ -64,6 +70,27 @@ outputs so settings can retain their position. Hosts persist **layout**, render
 **groups**, and dispatch by stable ID and descriptor type rather than array
 index. Native function declarations are in
 `native/shared/tool_registry.h`.
+
+## Installed-package resolution
+
+`tool_registry_resolve` accepts
+`{layout:null|<saved layout>,manifests:[<manifest objects>],command?:<command>}`.
+Null layout starts from defaults; commands use the same enabled/move shape as
+above. The response shape is unchanged. The catalog accepts at most 64 user
+tools total, with at most 16 per package. Duplicate package IDs are errors.
+
+Existing saved order and enabled preferences always win. Missing built-ins are
+appended first, then new user tools in manifest-array and declaration order.
+Hosts should supply a stable installed-package order. New tools start enabled;
+this never invokes them automatically. Removed tools remain hidden unknown
+entries, retaining their preference and position for reinstall. A package
+upgrade can change titles without changing identities or saved preferences.
+Commands cannot target a tool absent from the current installed catalog.
+
+The older normalize/update exports remain available for built-in-only callers.
+A host with installed packages must use resolve for **all** layout reads and
+updates so that enabled and reorder commands can find user tools. The new
+export is declared in `native/shared/plugin_protocol.h`.
 
 Invalid input returns `{ok:false,error:{code,message}}`, without a replacement
 layout. Hosts must not overwrite saved preferences after an error. JSON parsing

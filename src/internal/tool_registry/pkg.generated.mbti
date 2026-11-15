@@ -4,6 +4,8 @@ package "moojicut/core/internal/tool_registry"
 // Values
 pub fn tool_registry_normalize(String) -> String
 
+pub fn tool_registry_resolve(String) -> String
+
 pub fn tool_registry_update(String) -> String
 
 // Errors

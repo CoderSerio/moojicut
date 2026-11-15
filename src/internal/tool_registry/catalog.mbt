@@ -108,15 +108,66 @@ fn ToolId::belongs_to(_self : ToolId, group : ToolGroup) -> Bool {
 
 ///|
 // Unknown identities survive a save/reload, but cannot become executable tools.
+priv enum AvailableTool {
+  BuiltinTool(ToolId)
+  PluginTool(@plugin_protocol.UserTool)
+}
+
+///|
+fn AvailableTool::key(self : AvailableTool) -> String {
+  match self {
+    BuiltinTool(tool) => tool.key()
+    PluginTool(tool) => tool.global_id()
+  }
+}
+
+///|
+fn AvailableTool::belongs_to(self : AvailableTool, group : ToolGroup) -> Bool {
+  match self {
+    BuiltinTool(tool) => tool.belongs_to(group)
+    PluginTool(_) => group is Screenshot
+  }
+}
+
+///|
+priv struct Catalog {
+  users : Array[@plugin_protocol.UserTool]
+}
+
+///|
+fn Catalog::find(self : Catalog, key : String) -> AvailableTool? {
+  if ToolId::from_key(key) is Some(tool) {
+    return Some(BuiltinTool(tool))
+  }
+  for tool in self.users {
+    if tool.global_id() == key {
+      return Some(PluginTool(tool))
+    }
+  }
+  None
+}
+
+///|
+fn Catalog::all(self : Catalog, group : ToolGroup) -> Array[AvailableTool] {
+  let result = catalog(group).map(tool => BuiltinTool(tool))
+  if group is Screenshot {
+    for tool in self.users {
+      result.push(PluginTool(tool))
+    }
+  }
+  result
+}
+
+///|
 priv enum SavedId {
-  Builtin(ToolId)
+  Known(AvailableTool)
   Unknown(String)
 }
 
 ///|
 fn SavedId::key(self : SavedId) -> String {
   match self {
-    Builtin(tool) => tool.key()
+    Known(tool) => tool.key()
     Unknown(key) => key
   }
 }
@@ -172,12 +223,11 @@ fn Layout::with_entries(
 }
 
 ///|
-fn default_layout() -> Layout {
+fn default_layout(catalog : Catalog) -> Layout {
   {
-    screenshot: catalog(Screenshot).map(tool => {
-      id: Builtin(tool),
-      enabled: true,
-    }),
+    screenshot: catalog
+    .all(Screenshot)
+    .map(tool => { id: Known(tool), enabled: true, }),
     recording: [],
     video_editing: [],
   }
@@ -185,8 +235,8 @@ fn default_layout() -> Layout {
 
 ///|
 priv enum Command {
-  SetEnabled(ToolId, Bool)
-  Move(ToolGroup, ToolId, ToolId?)
+  SetEnabled(AvailableTool, Bool)
+  Move(ToolGroup, AvailableTool, AvailableTool?)
 }
 
 ///|
