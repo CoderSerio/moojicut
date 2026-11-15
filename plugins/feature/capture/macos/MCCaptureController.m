@@ -167,8 +167,12 @@ static NSError *MCCaptureError(NSString *message) {
     MCImageEditorController *focused = self.suspendedEditor;
     self.suspendedEditor = nil;
     if (!self.captureSession) return;
-    for (MCImageEditorController *overlay in self.overlayEditors) if (overlay != focused) [overlay show];
-    [focused show];
+    // show deliberately resets focus to the canvas for a new editor. Restoring
+    // a suspended editor must keep its live text/numeric field editor instead.
+    [NSApp activateIgnoringOtherApps:YES];
+    for (MCImageEditorController *overlay in self.overlayEditors)
+        if (overlay != focused) [overlay.window orderFront:nil];
+    [focused.window makeKeyAndOrderFront:nil];
 }
 - (BOOL)completeSuspendedCaptureWithPNGData:(NSData *)data error:(NSError **)error {
     if (!self.captureSession || !self.overlaysSuspended) {

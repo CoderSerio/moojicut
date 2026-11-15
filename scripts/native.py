@@ -61,7 +61,7 @@ class NativeBuild:
         manifest = (ROOT / "moon.mod").read_text()
         self.name = self.manifest_value(manifest, "name")
         self.version = self.manifest_value(manifest, "version")
-        self.release_version = release_version or self.version + "-alpha.12"
+        self.release_version = release_version or self.version + "-alpha.13"
         version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
                                self.release_version)
         if not version:
@@ -612,7 +612,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "test-text", "smoke", "release", "archive-test"))
     parser.add_argument("--release-version", metavar="VERSION",
-                        help="Release label (default: <moon.mod version>-alpha.12).")
+                        help="Release label (default: <moon.mod version>-alpha.13).")
     parser.add_argument("--profile", choices=("development", "smoke", "production"),
                         help="Default: isolated development; release uses production, smoke uses smoke.")
     parser.add_argument("--test-id", help="Stable lowercase identifier for an isolated test profile.")

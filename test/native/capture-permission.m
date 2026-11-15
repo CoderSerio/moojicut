@@ -7,6 +7,7 @@
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include "moonbit.h"
+#include <string.h>
 
 // Compile MCCaptureController.m with both CG APIs redirected to these fakes.
 // No real TCC request, screencapture process, modal window, or clipboard access
@@ -14,6 +15,42 @@
 static bool preflightResult, requestResult;
 static NSUInteger preflightCalls, requestCalls, alertCalls, unexpectedLaunches, unexpectedCaptures, appHides;
 static __weak MCCaptureController *reentrantController;
+static NSMutableArray<NSWindow *> *shownWindows;
+static NSMutableArray<NSWindow *> *keyWindows;
+static NSMutableArray<NSWindow *> *orderedOutWindows;
+
+@interface MCImageCanvas : NSView
+@property NSTextView *textView;
+- (BOOL)finishTextEditing:(BOOL)commit;
+@end
+@interface MCImageEditorController (MCSuspensionTest)
+@property (readonly) MCImageCanvas *canvas;
+@property (readonly) NSTextField *fontSize;
+@property (readonly) NSSegmentedControl *tools;
+- (BOOL)setCaptureRegion:(NSRect)rect;
+- (void)addTextAtPoint:(NSPoint)point;
+- (void)chooseTool:(id)sender;
+@end
+@interface NSWindow (MCSuspensionTest)
+- (void)mc_permission_orderOut:(id)sender;
+- (void)mc_permission_orderFront:(id)sender;
+- (void)mc_permission_makeKeyAndOrderFront:(id)sender;
+@end
+@implementation NSWindow (MCSuspensionTest)
+- (void)mc_permission_orderFront:(id)sender {
+    (void)sender;
+    [shownWindows addObject:self]; // Never order a fixture window onto the desktop.
+}
+- (void)mc_permission_makeKeyAndOrderFront:(id)sender {
+    (void)sender;
+    [shownWindows addObject:self];
+    [keyWindows addObject:self];
+}
+- (void)mc_permission_orderOut:(id)sender {
+    [orderedOutWindows addObject:self];
+    [self mc_permission_orderOut:sender];
+}
+@end
 
 bool MCFakePreflight(void) { preflightCalls++; return preflightResult; }
 bool MCFakeRequest(void) { requestCalls++; return requestResult; }
@@ -34,10 +71,12 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @interface NSApplication (MCPermissionTest)
 - (void)mc_permission_activateIgnoringOtherApps:(BOOL)flag;
 - (void)mc_permission_hide:(id)sender;
+- (void)mc_permission_unhide:(id)sender;
 @end
 @implementation NSApplication (MCPermissionTest)
 - (void)mc_permission_activateIgnoringOtherApps:(BOOL)flag { (void)flag; }
 - (void)mc_permission_hide:(id)sender { (void)sender; appHides++; }
+- (void)mc_permission_unhide:(id)sender { (void)sender; }
 @end
 
 @interface NSTask (MCPermissionTest)
@@ -54,6 +93,8 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @end
 
 @interface MCCaptureController (MCPermissionTestHooks)
+@property (readonly) NSString *captureSession;
+@property (readonly) MCImageEditorController *editor;
 - (void)captureWhenKeysReleased:(NSString *)session attempts:(NSUInteger)attempts;
 - (void)captureDisplaysForSession:(NSString *)session;
 - (NSArray<NSDictionary *> *)screenDescriptors;
@@ -133,6 +174,8 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @property NSArray<SCWindow *> *includedWindows;
 @property NSArray *fakeWindows;
 @property BOOL realFocusPreparation, realKeyReleaseCheck;
+@property BOOL realEditors;
+@property NSMutableArray<MCImageEditorController *> *realCreatedEditors;
 @property NSRunningApplication *fakeFrontmost;
 @property NSRunningApplication *restoredApplication;
 @property NSMutableArray<NSString *> *focusEvents;
@@ -144,6 +187,7 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
         _requestedDisplayIDs = [NSMutableArray array];
         _createdSnapshots = [NSMutableArray array];
         _createdEditors = [NSMutableArray array];
+        _realCreatedEditors = [NSMutableArray array];
         _focusEvents = [NSMutableArray array];
         MCFakeRunningApplication *external = [MCFakeRunningApplication new];
         external.processIdentifier = NSProcessInfo.processInfo.processIdentifier + 1;
@@ -184,8 +228,12 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
     self.includedWindows = windows;
 }
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error {
-    (void)error;
     [self.createdSnapshots addObject:snapshot];
+    if (self.realEditors) {
+        MCImageEditorController *editor = [super editorForSnapshot:snapshot error:error];
+        if (editor) [self.realCreatedEditors addObject:editor];
+        return editor;
+    }
     MCFakeOverlay *editor = [MCFakeOverlay new];
     [self.createdEditors addObject:editor];
     return editor;
@@ -248,11 +296,28 @@ static void drainMainQueue(void) {
     }
     NSCAssert(drained, @"The test must drain asynchronous capture completions");
 }
-static void finishImage(MCPermissionCapture *controller, NSNumber *displayID, NSString *pixels, NSError *error) {
+static void finishPNG(MCPermissionCapture *controller, NSNumber *displayID, NSData *pixels, NSError *error) {
     void (^completion)(NSData *, NSError *) = controller.imageCompletions[displayID];
     NSCAssert(completion, @"Expected an intercepted screenshot request");
-    completion([pixels dataUsingEncoding:NSUTF8StringEncoding], error);
+    completion(pixels, error);
     drainMainQueue();
+}
+static void finishImage(MCPermissionCapture *controller, NSNumber *displayID, NSString *pixels, NSError *error) {
+    finishPNG(controller, displayID, [pixels dataUsingEncoding:NSUTF8StringEncoding], error);
+}
+static NSData *syntheticPNG(NSInteger width, NSInteger height) {
+    NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:width pixelsHigh:height
+        bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+        bytesPerRow:width * 4 bitsPerPixel:32];
+    memset(bitmap.bitmapData, 255, bitmap.bytesPerRow * height);
+    return [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+}
+static void completeSyntheticScreens(MCPermissionCapture *controller, NSData *png) {
+    [controller captureDisplaysForSession:controller.interceptedSession];
+    controller.pendingContent(fakeContent(@[@27,@14]), nil);
+    drainMainQueue();
+    finishPNG(controller, @27, png, nil);
+    finishPNG(controller, @14, png, nil);
 }
 
 static void exchange(Class type, SEL original, SEL replacement) {
@@ -262,9 +327,13 @@ static void exchange(Class type, SEL original, SEL replacement) {
     method_exchangeImplementations(first, second);
 }
 static void toggleInterceptions(void) {
+    exchange(NSWindow.class, @selector(orderOut:), @selector(mc_permission_orderOut:));
+    exchange(NSWindow.class, @selector(orderFront:), @selector(mc_permission_orderFront:));
+    exchange(NSWindow.class, @selector(makeKeyAndOrderFront:), @selector(mc_permission_makeKeyAndOrderFront:));
     exchange(NSAlert.class, @selector(runModal), @selector(mc_permission_runModal));
     exchange(NSApplication.class, @selector(activateIgnoringOtherApps:), @selector(mc_permission_activateIgnoringOtherApps:));
     exchange(NSApplication.class, @selector(hide:), @selector(mc_permission_hide:));
+    exchange(NSApplication.class, @selector(unhide:), @selector(mc_permission_unhide:));
     exchange(NSTask.class, @selector(launchAndReturnError:), @selector(mc_permission_launchAndReturnError:));
     exchange(NSTask.class, @selector(launch), @selector(mc_permission_launch));
     exchange(object_getClass(SCShareableContent.class),
@@ -284,9 +353,206 @@ static void reset(bool preflight, bool request) {
     if (!(condition)) { fprintf(stderr, "FAIL: %s\n", message); passed = NO; } \
 } while (0)
 
+static BOOL exerciseSuspendedCapture(void) {
+    BOOL passed = YES;
+    reset(true, false);
+    shownWindows = [NSMutableArray array];
+    keyWindows = [NSMutableArray array];
+    orderedOutWindows = [NSMutableArray array];
+    NSData *png = syntheticPNG(800, 500);
+    NSData *longPNG = syntheticPNG(640, 1200);
+    MCPermissionCapture *controller = [MCPermissionCapture new];
+    controller.realEditors = YES;
+    controller.realFocusPreparation = YES;
+    MCFakeOwnWindow *pin = [MCFakeOwnWindow new]; pin.windowNumber = 201; pin.visible = YES;
+    MCFakeOwnWindow *hiddenPin = [MCFakeOwnWindow new]; hiddenPin.windowNumber = 202;
+    controller.fakeWindows = @[pin,hiddenPin];
+    controller.includedWindowNumbers = ^{ return [NSSet setWithObject:@201]; };
+    NSMutableArray<NSNumber *> *busySamples = [NSMutableArray array];
+    NSMutableArray<NSString *> *closedContexts = [NSMutableArray array];
+    __weak MCPermissionCapture *weakCapture = controller;
+    controller.onStateChange = ^{ [busySamples addObject:@(weakCapture.busy)]; };
+    controller.onPluginContextClosed = ^(NSString *identifier) {
+        [closedContexts addObject:identifier];
+        [busySamples addObject:@(weakCapture.busy)];
+    };
+    NSMutableArray<MCImageEditorController *> *ocrCalls = [NSMutableArray array];
+    NSMutableArray<MCImageEditorController *> *translateCalls = [NSMutableArray array];
+    NSMutableArray<MCImageEditorController *> *scrollCalls = [NSMutableArray array];
+    controller.onOCR = ^(MCImageEditorController *editor) { [ocrCalls addObject:editor]; };
+    controller.onTranslate = ^(MCImageEditorController *editor) { [translateCalls addObject:editor]; };
+    controller.onScrollCapture = ^(MCImageEditorController *editor) { [scrollCalls addObject:editor]; };
+    controller.onPinPNGData = ^BOOL(NSData *data, NSRect frame) { (void)frame; return data.length > 0; };
+    [controller capture];
+    CHECK(![controller suspendCaptureForEditor:[MCImageEditorController new] error:NULL] && controller.busy,
+          "a pending capture cannot be suspended before its overlays exist");
+    completeSyntheticScreens(controller, png);
+    CHECK(controller.realCreatedEditors.count == 2 && shownWindows.count == 2,
+          "suspension fixture creates two real editors from synthetic screen pixels");
+    if (controller.realCreatedEditors.count != 2) { [controller cancelCapture]; return NO; }
+    MCImageEditorController *first = controller.realCreatedEditors[0];
+    MCImageEditorController *focused = controller.realCreatedEditors[1];
+    NSArray *overlays = @[first, focused];
+    NSArray *overlayWindows = @[first.window, focused.window];
+    for (MCImageEditorController *editor in overlays) {
+        CHECK(editor.onOCR && editor.onTranslate && editor.onScrollCapture && editor.onPinPNGData,
+              "new screen overlays inherit OCR, translation, scrolling and pin actions");
+        if (editor.onOCR) editor.onOCR(editor);
+        if (editor.onTranslate) editor.onTranslate(editor);
+        if (editor.onScrollCapture) editor.onScrollCapture(editor);
+    }
+    CHECK([ocrCalls isEqual:overlays] && [translateCalls isEqual:overlays] && [scrollCalls isEqual:overlays],
+          "overlay actions pass their own editor to the configured callbacks");
+    CHECK([focused setCaptureRegion:NSMakeRect(20,20,700,440)], "suspension fixture has a selected region");
+    CHECK(([focused applyAnnotation:@{@"id":@"retained", @"type":@"rect", @"x":@60, @"y":@60,
+        @"width":@100, @"height":@80, @"stroke":@3, @"opacity":@1, @"color":@"#dd2222"}]),
+          "suspension fixture has an undoable annotation");
+    CHECK([first setCaptureRegion:NSMakeRect(20,20,700,440)], "second overlay can keep independent property input");
+    for (MCImageEditorController *editor in overlays) {
+        for (NSInteger index = 0; index < editor.tools.segmentCount; index++) {
+            if ([editor.tools tagForSegment:index] != 3) continue;
+            editor.tools.selectedSegment = index;
+            [editor chooseTool:editor.tools];
+            break;
+        }
+    }
+    [first.window makeFirstResponder:first.fontSize];
+    NSText *numericInput = first.fontSize.currentEditor;
+    numericInput.string = @"48";
+    NSDictionary *numericDocument = first.document;
+    NSDictionary *numericSnapshot = first.captureContentSnapshot;
+    [focused addTextAtPoint:NSMakePoint(160,180)];
+    focused.canvas.textView.string = @"unfinished text stays editable";
+    [focused.window makeFirstResponder:focused.canvas.textView];
+    NSTextView *textInput = focused.canvas.textView;
+    CHECK(numericInput && first.window.firstResponder == numericInput &&
+          textInput && focused.window.firstResponder == textInput,
+          "fixture has real text and numeric first responders, not simulated draft dictionaries");
+    NSDictionary *document = focused.document;
+    NSDictionary *snapshot = focused.captureContentSnapshot;
+    NSString *session = controller.captureSession;
+    CHECK([document[@"undo"] count] == 1 && focused.canvas.textView != nil,
+          "fixture retains both document undo and an uncommitted text draft");
+    NSError *error = nil;
+    [shownWindows removeAllObjects];
+    [keyWindows removeAllObjects];
+    [orderedOutWindows removeAllObjects];
+    [busySamples removeAllObjects];
+    CHECK([controller suspendCaptureForEditor:focused error:&error] && error == nil,
+          "a current selected overlay can suspend its capture session");
+    CHECK([orderedOutWindows isEqual:overlayWindows] && shownWindows.count == 0,
+          "suspension orders out precisely the frozen overlays without recreating them");
+    CHECK(controller.restoredApplication == controller.fakeFrontmost && controller.busy &&
+          [controller.captureSession isEqual:session] && [focused.document isEqual:document] &&
+          [focused.captureContentSnapshot isEqual:snapshot] && closedContexts.count == 0,
+          "suspension restores external focus while preserving the session, document, draft and plugin context");
+    CHECK(pin.visible && pin.orderOutCalls == 0 && !hiddenPin.visible && hiddenPin.orderOutCalls == 0 && appHides == 0,
+          "suspension leaves visible and hidden pins alone and never hides the application");
+    CHECK(![controller suspendCaptureForEditor:first error:NULL] && orderedOutWindows.count == 2,
+          "a duplicate suspension cannot replace the original focused editor");
+    error = nil;
+    CHECK(![controller completeSuspendedCaptureWithPNGData:[@"not a PNG" dataUsingEncoding:NSUTF8StringEncoding] error:&error] && error,
+          "invalid scrolling output fails before closing the original edit");
+    CHECK(controller.busy && [controller.captureSession isEqual:session] && !controller.editor &&
+          [focused.document isEqual:document] && [focused.captureContentSnapshot isEqual:snapshot] && closedContexts.count == 0,
+          "a failed replacement preserves original history and pending text for recovery");
+    controller.onOCR = nil; controller.onTranslate = nil; controller.onScrollCapture = nil;
+    CHECK(!first.onOCR && !focused.onOCR && !first.onTranslate && !focused.onTranslate &&
+          !first.onScrollCapture && !focused.onScrollCapture,
+          "capability changes reach suspended overlays in place");
+    controller.onOCR = ^(MCImageEditorController *editor) { [ocrCalls addObject:editor]; };
+    controller.onTranslate = ^(MCImageEditorController *editor) { [translateCalls addObject:editor]; };
+    controller.onScrollCapture = ^(MCImageEditorController *editor) { [scrollCalls addObject:editor]; };
+    [controller resumeSuspendedCapture];
+    CHECK([shownWindows isEqual:overlayWindows] && keyWindows.count == 1 && keyWindows.lastObject == focused.window &&
+          focused.window == overlayWindows[1] && first.window == overlayWindows[0],
+          "cancel/failure resumes the same windows and presents the previously focused editor last");
+    CHECK(controller.busy && [controller.captureSession isEqual:session] &&
+          [focused.document isEqual:document] && [focused.captureContentSnapshot isEqual:snapshot] &&
+          ![busySamples containsObject:@NO] && closedContexts.count == 0,
+          "resuming leaves editing, undo, draft and capture identity intact without reporting idle");
+    CHECK(focused.window.firstResponder == textInput && [textInput.string isEqual:@"unfinished text stays editable"] &&
+          first.window.firstResponder == numericInput && first.fontSize.currentEditor == numericInput &&
+          [numericInput.string isEqual:@"48"] && [first.document isEqual:numericDocument] &&
+          [first.captureContentSnapshot isEqual:numericSnapshot],
+          "resume preserves text focus and uncommitted numeric field input without committing or replacing either responder");
+    [controller resumeSuspendedCapture];
+    CHECK(shownWindows.count == 2 && pin.visible && !hiddenPin.visible && appHides == 0,
+          "repeated resume is a no-op and does not restore user-hidden pins");
+    error = nil;
+    CHECK(![controller completeSuspendedCaptureWithPNGData:longPNG error:&error] && error &&
+          [focused.document isEqual:document] && !controller.editor,
+          "a result arriving after the suspended attempt was resumed cannot replace the original edit");
+    [focused.canvas finishTextEditing:NO];
+    [focused undo:nil];
+    CHECK([focused.document[@"annotations"] count] == 0 && [focused.document[@"redo"] count] == 1,
+          "original annotation undo still works after cancellation or failure");
+    [focused redo:nil];
+    CHECK([focused.document[@"annotations"] count] == 1 && [focused.document[@"undo"] count] == 1,
+          "redo restores the same annotation after the suspended round trip");
+
+    CHECK([controller suspendCaptureForEditor:focused error:NULL], "restored capture can start another scrolling attempt");
+    [busySamples removeAllObjects];
+    [shownWindows removeAllObjects];
+    error = nil;
+    CHECK([controller completeSuspendedCaptureWithPNGData:longPNG error:&error] && error == nil,
+          "a valid long PNG replaces the suspended capture");
+    MCImageEditorController *replacement = controller.editor;
+    CHECK(replacement && replacement != focused && controller.busy && !controller.captureSession &&
+          busySamples.count > 0 && ![busySamples containsObject:@NO],
+          "replacement remains busy throughout old-context closure and state-change callbacks");
+    CHECK(first.window == nil && focused.window == nil && closedContexts.count == 2 &&
+          shownWindows.count == 1 && shownWindows.firstObject == replacement.window,
+          "successful replacement closes every old overlay and presents exactly one new editor");
+    NSBitmapImageRep *result = [NSBitmapImageRep imageRepWithData:[replacement renderPNGData:NULL]];
+    CHECK(result.pixelsWide == 640 && result.pixelsHigh == 1200 && [replacement.document[@"undo"] count] == 0,
+          "replacement edits the long image at its real dimensions with fresh history");
+    CHECK(replacement.onOCR && replacement.onTranslate && replacement.onScrollCapture && replacement.onPinPNGData,
+          "replacement editor inherits content and pin callbacks");
+    if (replacement.onOCR) replacement.onOCR(replacement);
+    if (replacement.onTranslate) replacement.onTranslate(replacement);
+    if (replacement.onScrollCapture) replacement.onScrollCapture(replacement);
+    CHECK(ocrCalls.lastObject == replacement && translateCalls.lastObject == replacement && scrollCalls.lastObject == replacement,
+          "replacement callbacks receive the new editor instead of a closed overlay");
+    CHECK(![controller completeSuspendedCaptureWithPNGData:png error:NULL] && controller.editor == replacement,
+          "duplicate old completion cannot overwrite the replacement editor");
+    [replacement cancel:nil];
+    CHECK(!controller.busy, "closing the replacement finally releases busy state");
+
+    // Ending a suspended session invalidates it, including when a fresh capture
+    // has already started. The host separately guards scroll-operation identity.
+    [controller capture];
+    completeSyntheticScreens(controller, png);
+    MCImageEditorController *cancelled = controller.realCreatedEditors.lastObject;
+    CHECK([cancelled setCaptureRegion:NSMakeRect(20,20,700,440)] &&
+          [controller suspendCaptureForEditor:cancelled error:NULL], "next synthetic session can suspend");
+    void (^staleClose)(void) = cancelled.onClose;
+    [controller cancelCapture];
+    CHECK(!controller.busy && cancelled.window == nil, "explicit cancellation ends a suspended session");
+    [shownWindows removeAllObjects];
+    [controller resumeSuspendedCapture];
+    CHECK(shownWindows.count == 0 && ![controller completeSuspendedCaptureWithPNGData:longPNG error:NULL],
+          "resuming or completing an ended suspension cannot reopen its overlays");
+    [controller capture];
+    NSString *newSession = controller.captureSession;
+    if (staleClose) staleClose();
+    CHECK(![controller completeSuspendedCaptureWithPNGData:longPNG error:NULL] &&
+          controller.busy && [controller.captureSession isEqual:newSession] && shownWindows.count == 0,
+          "old close/result callbacks cannot end or replace a new pending capture session");
+    [controller cancelCapture];
+    CHECK(pin.visible && pin.orderOutCalls == 0 && !hiddenPin.visible && hiddenPin.orderOutCalls == 0 && appHides == 0,
+          "all suspend, resume, replacement and cancellation paths preserve pin visibility");
+    shownWindows = nil;
+    keyWindows = nil;
+    orderedOutWindows = nil;
+    return passed;
+}
+
 int main(void) {
     @autoreleasepool {
         moonbit_init();
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         BOOL passed = YES;
         toggleInterceptions();
         @try {
@@ -460,12 +726,13 @@ int main(void) {
             CHECK(!controller.busy && controller.createdEditors.count == 0 && alertCalls == 1,
                   "screenshot failure closes the session and discards late results");
             controller = nil;
+            passed = exerciseSuspendedCapture() && passed;
             CHECK(unexpectedLaunches == 0 && unexpectedCaptures == 0, "no real process or ScreenCaptureKit capture API was invoked");
         } @finally {
             reentrantController = nil;
             toggleInterceptions();
         }
-        printf("Capture sessions (fake TCC/pixels, display mapping, cancellation, pin dispatch, no modal UI): %s\n",
+        printf("Capture sessions (fake TCC/pixels, suspension/replacement, undo, callbacks, pin isolation, no modal UI): %s\n",
                passed ? "passed" : "FAILED");
         return passed ? 0 : 1;
     }

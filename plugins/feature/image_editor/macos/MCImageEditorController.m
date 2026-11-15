@@ -1172,40 +1172,24 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (NSDictionary *)captureContentSnapshot {
     NSAssert(NSThread.isMainThread, @"Capture content snapshots belong to the editor's main thread");
-    if (!self.window || !self.canvas) return nil;
-    // Annotations/viewport contain only scalar JSON fields. Copy their values,
-    // especially mutable draft strings; never retain live mutable edit state.
+    if (!self.window || !self.canvas || self.canvas.dragging || self.canvas.regionDragging ||
+        (self.overlayMode && !self.hasCaptureRegion)) return nil;
+    NSDictionary *plan = [self pendingEditCommitPlan:NULL];
+    if (!plan) return nil; // Invalid fields and IME composition cannot retain a lease.
+    NSDictionary *document = plan[@"document"] ?: self.document;
+    // Compare exactly the document content used by capturePNGData, without
+    // rendering pixels on the lease timer. Committing an unchanged draft may
+    // alter revision/history, focus, selection and tool defaults, but not the
+    // image supplied to OCR. Those UI/transaction details are not content.
     NSDictionary *(^annotation)(NSDictionary *) = ^NSDictionary *(NSDictionary *value) {
         return [[NSDictionary alloc] initWithDictionary:value ?: @{} copyItems:YES];
     };
-    NSMutableArray *fields = [NSMutableArray array];
-    for (MCNumberControl *control in @[self.fontControl, self.strokeControl, self.colorControl.opacityControl]) {
-        NSText *input = control.field.currentEditor;
-        NSTextView *textInput = [input isKindOfClass:NSTextView.class] ? (NSTextView *)input : nil;
-        [fields addObject:@{@"value":@(control.value), @"editing":@(input != nil),
-            @"text":[input.string copy] ?: @"", @"marked":@(textInput.hasMarkedText),
-            @"markedRange":NSStringFromRange(textInput ? textInput.markedRange : NSMakeRange(NSNotFound,0))}];
-    }
-    MCStyleValues style = self.properties.values;
-    MCSelectionGesture region = self.canvas.regionGesture;
-    NSDictionary *regionGesture = region.active ? @{@"operation":@(region.operation),
-        @"anchor":NSStringFromPoint(region.anchor), @"original":NSStringFromRect(region.original),
-        @"preview":NSStringFromRect(region.preview), @"bounds":NSStringFromSize(region.bounds)} : @{};
-    NSTextView *text = self.canvas.textView;
-    return @{
-        @"context":self.pluginContextIdentifier, @"revision":self.document[@"revision"],
-        @"viewport":annotation(self.document[@"viewport"]), @"overlay":@(self.overlayMode),
-        @"hasRegion":@(self.hasCaptureRegion), @"activeTool":@(self.activeTool),
-        @"selectedID":[self.canvas.selectedID copy] ?: @"",
-        @"text":@{@"editing":@(text != nil), @"draft":annotation(self.canvas.textDraft),
-            @"value":[text.string copy] ?: @"", @"marked":@(text.hasMarkedText),
-            @"markedRange":NSStringFromRange(text ? text.markedRange : NSMakeRange(NSNotFound,0))},
-        @"fields":[fields copy], @"style":@[@(style.rgb),@(style.opacity),@(style.stroke),@(style.fontSize)],
-        @"drawing":@{@"active":@(self.canvas.dragging), @"start":NSStringFromPoint(self.canvas.start),
-            @"pending":annotation(self.canvas.pending), @"original":annotation(self.canvas.transformOriginal),
-            @"preview":annotation(self.canvas.transformPreview), @"handle":@(self.canvas.resizeHandle)},
-        @"regionGesture":regionGesture,
-    };
+    // Annotation and viewport values are scalar JSON. Copy the scalars too so
+    // the saved identity can never alias live mutable text storage.
+    NSMutableArray *annotations = [NSMutableArray array];
+    for (NSDictionary *value in document[@"annotations"]) [annotations addObject:annotation(value)];
+    return @{@"context":self.pluginContextIdentifier, @"width":document[@"width"], @"height":document[@"height"],
+        @"viewport":annotation(document[@"viewport"]), @"annotations":[annotations copy]};
 }
 - (void)showPluginMessage:(NSString *)message {
     self.properties.status.stringValue = message; self.properties.status.hidden = NO;

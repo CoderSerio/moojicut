@@ -7,7 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSRect pinScreenFrame;
 @property (nonatomic, readonly) NSRect captureScreenFrame;
 // Small immutable content identity for asynchronous consumers. Compare on the
-// main thread before presenting results; nil means the editor is closed.
+// main thread before presenting results; nil means closed or temporarily invalid
+// (unfinished input, selection or annotation gesture).
 @property (nonatomic, readonly, nullable) NSDictionary *captureContentSnapshot;
 @property (nonatomic, copy, readonly, nullable) NSDictionary *toolConfiguration;
 @property (nonatomic, copy, nullable) void (^onClose)(void);

@@ -402,7 +402,15 @@ static BOOL contentSnapshots(void) {
     BOOL passed = YES;
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
     [editor prepareOverlayInFrame:NSMakeRect(-900,120,800,500)];
+    CHECK(editor.captureContentSnapshot == nil, "unselected overlays have no usable capture content identity");
     [editor setCaptureRegion:NSMakeRect(20,20,700,440)];
+    NSDictionary *unannotated = editor.captureContentSnapshot;
+    selectTool(editor,1);
+    editor.strokeStepper.doubleValue = 12;
+    [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
+    selectTool(editor,2);
+    CHECK([unannotated isEqual:editor.captureContentSnapshot],
+          "tool switching and unused creation defaults do not invalidate OCR content");
     selectTool(editor,3); [editor addTextAtPoint:NSMakePoint(80,80)];
     [editor.canvas.textView insertText:@"原稿" replacementRange:NSMakeRange(NSNotFound,0)];
     NSNumber *revision = editor.document[@"revision"];
@@ -412,12 +420,12 @@ static BOOL contentSnapshots(void) {
     [editor.canvas.textView insertText:@"追加" replacementRange:NSMakeRange(NSNotFound,0)];
     CHECK([editor.document[@"revision"] isEqual:revision] && ![original isEqual:editor.captureContentSnapshot],
           "uncommitted text invalidates asynchronous results even while the document revision is unchanged");
-    CHECK([original[@"text"][@"value"] isEqual:@"原稿"], "saved snapshot strings do not alias the live text storage");
+    CHECK([original[@"annotations"][0][@"text"] isEqual:@"原稿"], "saved snapshot strings do not alias the live text storage");
     NSDictionary *beforeStyle = editor.captureContentSnapshot;
     editor.fontStepper.doubleValue = 40;
     [editor.fontStepper sendAction:editor.fontStepper.action to:editor.fontStepper.target];
     CHECK([editor.document[@"revision"] isEqual:revision] && ![beforeStyle isEqual:editor.captureContentSnapshot] &&
-          [beforeStyle[@"text"][@"draft"][@"fontSize"] intValue] != 40,
+          [beforeStyle[@"annotations"][0][@"fontSize"] intValue] != 40,
           "uncommitted annotation styling changes identity without mutating the older draft snapshot");
     [editor.window makeFirstResponder:editor.fontSize];
     NSText *input = editor.fontSize.currentEditor;
@@ -427,30 +435,60 @@ static BOOL contentSnapshots(void) {
     CHECK([editor.document[@"revision"] isEqual:revision] && ![beforeField isEqual:editor.captureContentSnapshot],
           "pending numeric field text invalidates results before its control value or document is committed");
     NSTextView *numericInput = (NSTextView *)input;
+    NSDictionary *pendingNumber = editor.captureContentSnapshot;
+    NSData *pendingPixels = [editor capturePNGData:NULL];
+    [editor.window makeFirstResponder:editor.canvas.textView];
+    CHECK([pendingNumber isEqual:editor.captureContentSnapshot] &&
+          [pendingPixels isEqual:[editor capturePNGData:NULL]],
+          "ending a valid numeric field edit preserves actual candidate content and rendered pixels");
+    NSDictionary *pendingText = editor.captureContentSnapshot;
+    NSData *pendingTextPixels = [editor capturePNGData:NULL];
+    CHECK([editor.canvas finishTextEditing:YES] && ![editor.document[@"revision"] isEqual:revision] &&
+          [pendingText isEqual:editor.captureContentSnapshot] &&
+          [pendingTextPixels isEqual:[editor capturePNGData:NULL]],
+          "committing the same pending text keeps the OCR lease despite revision and history changes");
+    selectTool(editor,1);
+    CHECK([pendingText isEqual:editor.captureContentSnapshot],
+          "clearing the selected annotation and choosing another tool preserves rendered content");
+    [editor setCaptureRegion:NSMakeRect(25,20,695,440)];
+    CHECK(![pendingText isEqual:editor.captureContentSnapshot], "crop changes invalidate capture content");
+    selectTool(editor,3); [editor addTextAtPoint:NSMakePoint(300,80)];
+    [editor.canvas.textView insertText:@"待编辑" replacementRange:NSMakeRange(NSNotFound,0)];
+    revision = editor.document[@"revision"];
+    [editor.window makeFirstResponder:editor.fontSize];
+    numericInput = (NSTextView *)editor.fontSize.currentEditor;
+    numericInput.string = @"invalid";
+    CHECK(editor.captureContentSnapshot == nil && [editor capturePNGData:NULL] == nil,
+          "invalid pending numeric text cannot keep a stale OCR lease alive");
+    numericInput.string = @"48";
     [numericInput setMarkedText:@"49" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0, input.string.length)];
-    NSDictionary *numericComposition = editor.captureContentSnapshot;
+    NSString *numericComposition = [numericInput.string copy];
+    NSRange numericMarkedRange = numericInput.markedRange;
     NSError *compositionError = nil;
-    CHECK(numericInput.hasMarkedText && [editor capturePNGData:&compositionError] == nil && compositionError != nil,
+    CHECK(numericInput.hasMarkedText && editor.captureContentSnapshot == nil &&
+          [editor capturePNGData:&compositionError] == nil && compositionError != nil,
           "content actions reject numeric IME even when its unconfirmed text parses as a valid number");
-    CHECK(numericInput.hasMarkedText && [numericComposition isEqual:editor.captureContentSnapshot] &&
+    CHECK(numericInput.hasMarkedText && [numericComposition isEqual:numericInput.string] &&
+          NSEqualRanges(numericMarkedRange,numericInput.markedRange) &&
           editor.window.firstResponder == numericInput && [editor.document[@"revision"] isEqual:revision],
           "rejecting numeric IME preserves its composition, focus, draft and document history");
     [numericInput insertText:@"48" replacementRange:NSMakeRange(NSNotFound,0)];
     [editor.window makeFirstResponder:editor.canvas.textView];
-    NSDictionary *beforeIME = editor.captureContentSnapshot;
     [editor.canvas.textView setMarkedText:@"zhong" selectedRange:NSMakeRange(5,0) replacementRange:NSMakeRange(NSNotFound,0)];
-    CHECK([editor.document[@"revision"] isEqual:revision] && ![beforeIME isEqual:editor.captureContentSnapshot] &&
-          [editor.captureContentSnapshot[@"text"][@"marked"] boolValue],
-          "IME composition is represented without forcing a document commit");
+    CHECK([editor.document[@"revision"] isEqual:revision] && editor.captureContentSnapshot == nil &&
+          editor.canvas.textView.hasMarkedText,
+          "IME composition invalidates results without forcing a document commit");
     [editor.canvas.textView insertText:@"中文" replacementRange:NSMakeRange(NSNotFound,0)];
     selectTool(editor,1);
     revision = editor.document[@"revision"];
     NSDictionary *beforeDrawing = editor.captureContentSnapshot;
     [editor.canvas mouseDown:mouse(editor.canvas,NSEventTypeLeftMouseDown,NSMakePoint(400,250))];
     [editor.canvas mouseDragged:mouse(editor.canvas,NSEventTypeLeftMouseDragged,NSMakePoint(500,320))];
-    CHECK([editor.document[@"revision"] isEqual:revision] && ![beforeDrawing isEqual:editor.captureContentSnapshot] &&
-          [editor.captureContentSnapshot[@"drawing"][@"active"] boolValue],
+    CHECK([editor.document[@"revision"] isEqual:revision] && editor.captureContentSnapshot == nil,
           "a pending drawing gesture invalidates results before its undoable edit commits");
+    [editor.canvas mouseUp:mouse(editor.canvas,NSEventTypeLeftMouseUp,NSMakePoint(500,320))];
+    CHECK(editor.captureContentSnapshot != nil && ![beforeDrawing isEqual:editor.captureContentSnapshot],
+          "a committed drawing returns a new valid content identity");
     [editor cancel:nil];
     CHECK(editor.captureContentSnapshot == nil, "closed editors have no valid content snapshot");
     return passed;

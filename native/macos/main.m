@@ -206,9 +206,10 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 - (void)runTextToolInEditor:(MCImageEditorController *)editor translate:(BOOL)translate {
     if (self.updateController.installationPending || self.scrollCapture.busy) return;
     NSError *error = nil;
-    NSDictionary *snapshot = editor.captureContentSnapshot;
-    NSData *png = snapshot ? [editor capturePNGData:&error] : nil;
+    NSData *png = [editor capturePNGData:&error];
+    NSDictionary *snapshot = png ? editor.captureContentSnapshot : nil;
     if (!png) { [editor showPluginMessage:error.localizedDescription ?: @"请先选择截图区域。"]; return; }
+    if (!snapshot) { [editor showPluginMessage:@"请先完成当前输入或标注操作。"]; return; }
     __weak MCImageEditorController *weakEditor = editor;
     [self.textTools openPNGData:png owner:editor.pluginContextIdentifier parentWindow:editor.window
         isCurrent:^BOOL{ return [weakEditor.captureContentSnapshot isEqual:snapshot]; } translate:translate];
