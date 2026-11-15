@@ -74,9 +74,9 @@ document.querySelectorAll("[data-tool]").forEach((button) =>
   button.addEventListener("click", () => {
     const show = button.getAttribute("aria-checked") !== "true";
     button.setAttribute("aria-checked", String(show));
-    document.querySelector(
-      `[data-preview-tool="${button.dataset.tool}"]`,
-    ).hidden = !show;
+    document
+      .querySelector(`[data-preview-tool="${button.dataset.tool}"]`)
+      .toggleAttribute("hidden", !show);
   }),
 );
 const agent = navigator.userAgent;
