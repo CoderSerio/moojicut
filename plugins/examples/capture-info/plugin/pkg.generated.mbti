@@ -1,0 +1,13 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/capture-info-example/plugin"
+
+// Values
+pub fn mooji_run() -> Int32
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

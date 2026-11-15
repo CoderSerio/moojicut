@@ -1,6 +1,7 @@
 #import "MCToolRegistryStore.h"
 #import "plugins/feature/pin/macos/MCPinnedImageController.h"
 #include "native/shared/tool_registry.h"
+#include "native/shared/plugin_protocol.h"
 #include <stdint.h>
 
 NSNotificationName const MCToolRegistryDidChangeNotification = @"MCToolRegistryDidChangeNotification";
@@ -68,6 +69,7 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
 @property NSUserDefaults *defaults;
 @property BOOL publishing;
 @property (nonatomic, copy, readwrite) NSDictionary *snapshot;
+@property (nonatomic, copy, readwrite) NSArray<NSDictionary *> *pluginManifests;
 @property (nonatomic, strong, readwrite, nullable) NSError *loadError;
 @end
 
@@ -76,6 +78,7 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
     NSParameterAssert(NSThread.isMainThread);
     if ((self = [super init])) {
         _defaults = defaults;
+        _pluginManifests = @[];
         id saved = [defaults objectForKey:MCToolLayoutKey];
         NSError *error = nil;
         NSString *json = saved ? MCToolJSON(saved, &error) : @"";
@@ -114,8 +117,8 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
     }
     self.publishing = YES;
     @try {
-        NSString *json = MCToolJSON(@{@"layout":self.snapshot[@"layout"], @"command":command}, error);
-        NSDictionary *candidate = json ? MCCallToolRegistry(tool_registry_update, json, error) : nil;
+        NSString *json = MCToolJSON(@{@"layout":self.snapshot[@"layout"], @"manifests":self.pluginManifests, @"command":command}, error);
+        NSDictionary *candidate = json ? MCCallToolRegistry(tool_registry_resolve, json, error) : nil;
         if (!candidate) return NO;
         if ([candidate[@"layout"] isEqual:self.snapshot[@"layout"]]) return YES;
         NSError *preflightError = nil;
@@ -123,6 +126,14 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
             if (error) *error = preflightError ?: MCToolError(@"请先完成当前编辑，再修改工具设置。");
             return NO;
         }
+        [self publishCandidate:candidate persist:YES];
+        return YES;
+    } @finally {
+        self.publishing = NO;
+    }
+}
+- (void)publishCandidate:(NSDictionary *)candidate persist:(BOOL)persist {
+    if (persist) {
         [self.defaults setObject:candidate[@"layout"] forKey:MCToolLayoutKey];
         for (NSDictionary *tool in candidate[@"groups"][@"screenshot"]) {
             if ([tool[@"id"] isEqualToString:MCPinToolID]) {
@@ -130,10 +141,32 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
                 break;
             }
         }
-        self.snapshot = candidate;
         self.loadError = nil;
-        if (self.applyChange) self.applyChange(candidate);
-        [NSNotificationCenter.defaultCenter postNotificationName:MCToolRegistryDidChangeNotification object:self];
+    }
+    self.snapshot = candidate;
+    if (self.applyChange) self.applyChange(candidate);
+    [NSNotificationCenter.defaultCenter postNotificationName:MCToolRegistryDidChangeNotification object:self];
+}
+- (BOOL)replacePluginManifests:(NSArray<NSDictionary *> *)manifests commit:(BOOL (^)(NSError **))commit error:(NSError **)error {
+    return [self replacePluginManifests:manifests commit:commit persistLayout:commit != nil error:error];
+}
+- (BOOL)replacePluginManifests:(NSArray<NSDictionary *> *)manifests commit:(BOOL (^)(NSError **))commit persistLayout:(BOOL)persistLayout error:(NSError **)error {
+    if (error) *error = nil;
+    if (!NSThread.isMainThread || self.publishing) {
+        if (error) *error = MCToolError(@"工具设置正在更新，请稍后重试。");
+        return NO;
+    }
+    self.publishing = YES;
+    @try {
+        NSString *json = MCToolJSON(@{@"layout":self.snapshot[@"layout"], @"manifests":manifests}, error);
+        NSDictionary *candidate = json ? MCCallToolRegistry(tool_registry_resolve, json, error) : nil;
+        if (!candidate) return NO;
+        if (self.prepareChange && !self.prepareChange(candidate, error)) return NO;
+        // The package store's atomic catalog rename is the commit point. No
+        // editor or preference changes occur before this callback succeeds.
+        if (commit && !commit(error)) return NO;
+        self.pluginManifests = [manifests copy];
+        [self publishCandidate:candidate persist:persistLayout];
         return YES;
     } @finally {
         self.publishing = NO;

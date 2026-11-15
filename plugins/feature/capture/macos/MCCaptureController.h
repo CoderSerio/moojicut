@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 
+@class MCImageEditorController;
 NS_ASSUME_NONNULL_BEGIN
 @interface MCCaptureController : NSObject
 @property (nonatomic, readonly) BOOL busy;
@@ -7,6 +8,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error;
 - (void)applyToolConfiguration:(NSDictionary *)candidate;
 @property (nonatomic, copy, nullable) void (^onStateChange)(void);
+@property (nonatomic, copy, nullable) void (^onUserTool)(MCImageEditorController *editor, NSString *identifier);
+@property (nonatomic, copy, nullable) void (^onPluginContextClosed)(NSString *identifier);
+@property (nonatomic, copy) NSDictionary<NSString *, NSImage *> *pluginIcons;
 @property (nonatomic, copy, nullable) BOOL (^onPinPNGData)(NSData *data, NSRect screenFrame);
 - (void)capture;
 - (void)cancelCapture;

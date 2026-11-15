@@ -47,6 +47,23 @@ static NSError *MCCaptureError(NSString *message) {
     self.toolConfiguration = candidate;
 }
 
+- (void)configureUserActionsForEditor:(MCImageEditorController *)editor {
+    editor.onUserTool = self.onUserTool;
+    editor.onPluginContextClosed = self.onPluginContextClosed;
+    editor.pluginIcons = self.pluginIcons ?: @{};
+}
+- (void)setOnUserTool:(void (^)(MCImageEditorController *,NSString *))handler {
+    _onUserTool = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnPluginContextClosed:(void (^)(NSString *))handler {
+    _onPluginContextClosed = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setPluginIcons:(NSDictionary<NSString *,NSImage *> *)icons {
+    _pluginIcons = [icons copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
 - (void)configurePinActionForEditor:(MCImageEditorController *)editor {
     if (!self.onPinPNGData) { editor.onPinPNGData = nil; return; }
     __weak MCCaptureController *weakSelf = self;
@@ -139,6 +156,7 @@ static NSError *MCCaptureError(NSString *message) {
     if (self.toolConfiguration) [self.editor applyToolConfiguration:self.toolConfiguration];
     __weak MCCaptureController *weakSelf = self;
     [self configurePinActionForEditor:self.editor];
+    [self configureUserActionsForEditor:self.editor];
     self.editor.onClose = ^{ weakSelf.editor = nil; [weakSelf changed]; };
     [self.editor show];
     [self changed];
@@ -186,6 +204,7 @@ static NSError *MCCaptureError(NSString *message) {
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error {
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:snapshot[@"png"] error:error];
     if (self.toolConfiguration) [editor applyToolConfiguration:self.toolConfiguration];
+    [self configureUserActionsForEditor:editor];
     [editor prepareOverlayInFrame:[snapshot[@"frame"] rectValue]];
     return editor;
 }

@@ -46,7 +46,8 @@ It is stable across package upgrades. A user catalog descriptor contains `id`,
 
 ## Invocation and result
 
-Only an explicit click on a currently available user tool starts an invocation.
+Ordinary invocations require an explicit click on a currently available user tool.
+Import validation separately probes every declared tool with synthetic metadata.
 The host prepares this request through MoonBit and sends it to the plugin:
 
 The fixed Extism export is `mooji_run` with signature `() -> i32`. The manifest's

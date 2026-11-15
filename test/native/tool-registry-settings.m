@@ -99,7 +99,7 @@ int main(void) {
             NSButton *import = (NSButton *)findView(preferences.window.contentView, @"plugin-import");
             CHECK(table && table.numberOfRows == 5 && groups.segmentCount == 3 && !preferences.window.visible,
                   "real preferences exposes three categories and one tool list in a hidden fixture");
-            CHECK(import && !import.enabled && [import.toolTip containsString:@"即将支持"], "import is honestly unavailable at this stage");
+            CHECK(import && !import.enabled && [import.toolTip containsString:@"尚未初始化"], "import stays unavailable until the plugin service is attached");
             [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
             CHECK(!up.enabled && down.enabled, "first row only moves down");
             [down performClick:nil];
@@ -187,7 +187,7 @@ int main(void) {
             [NSNotificationCenter.defaultCenter removeObserver:observer];
             [defaults removePersistentDomainForName:domain];
         }
-        puts(passed ? "PASS tool settings: persistence, transaction veto, reentrancy, native list, switches, reorder, drag and reopen" : "FAIL tool settings");
+        puts(passed ? "PASS tool settings: persistence, transaction veto, reentrancy, native list, switches, reorder delegates and reopen" : "FAIL tool settings");
         return passed ? 0 : 1;
     }
 }

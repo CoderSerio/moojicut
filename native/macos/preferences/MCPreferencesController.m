@@ -100,6 +100,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSTabViewItem *general = [[NSTabViewItem alloc] initWithIdentifier:@"general"]; general.label = @"通用"; general.view = [self generalPage];
     NSTabViewItem *shortcuts = [[NSTabViewItem alloc] initWithIdentifier:@"shortcuts"]; shortcuts.label = @"快捷键"; shortcuts.view = [self shortcutsPage];
     self.pluginManagement = [[MCPluginManagementController alloc] initWithStore:self.toolRegistryStore];
+    self.pluginManagement.userPluginManager = self.userPluginManager;
     NSTabViewItem *plugins = [[NSTabViewItem alloc] initWithIdentifier:@"plugins"]; plugins.label = @"插件管理"; plugins.view = self.pluginManagement.view;
     NSTabViewItem *about = [[NSTabViewItem alloc] initWithIdentifier:@"about"]; about.label = @"关于"; about.view = [self aboutPage];
     NSTabViewItem *updates = [[NSTabViewItem alloc] initWithIdentifier:@"updates"]; updates.label = @"更新"; updates.view = [self updatesPage];
@@ -473,6 +474,9 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.disclosure.accessibilityLabel = self.technicalDetails.hidden ? @"展开技术信息" : @"收起技术信息";
 }
 - (void)show { if (!self.window) [self buildWindow]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+- (void)setUserPluginManager:(MCUserPluginManager *)manager {
+    _userPluginManager = manager; self.pluginManagement.userPluginManager = manager;
+}
 - (void)setToolRegistryStore:(MCToolRegistryStore *)store {
     _toolRegistryStore = store;
     self.pluginManagement.toolRegistryStore = store;

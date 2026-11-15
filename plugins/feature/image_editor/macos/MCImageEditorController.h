@@ -7,6 +7,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSRect pinScreenFrame;
 @property (nonatomic, copy, readonly, nullable) NSDictionary *toolConfiguration;
 @property (nonatomic, copy, nullable) void (^onClose)(void);
+@property (nonatomic, copy, readonly) NSString *pluginContextIdentifier;
+@property (nonatomic, readonly, nullable) NSDictionary *pluginCaptureMetadata;
+@property (nonatomic, copy, nullable) void (^onUserTool)(MCImageEditorController *editor, NSString *identifier);
+@property (nonatomic, copy, nullable) void (^onPluginContextClosed)(NSString *identifier);
+@property (nonatomic, copy) NSDictionary<NSString *, NSImage *> *pluginIcons;
+- (void)showPluginMessage:(NSString *)message;
 @property (nonatomic, copy, nullable) BOOL (^onPinPNGData)(NSData *data);
 - (nullable instancetype)initWithPNGData:(NSData *)data error:(NSError **)error;
 // Call preflight for every editor before applying on the main thread.

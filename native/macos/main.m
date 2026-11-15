@@ -3,6 +3,8 @@
 #import <unistd.h>
 #import "native/macos/preferences/MCPreferencesController.h"
 #import "native/macos/preferences/MCToolRegistryStore.h"
+#import "native/macos/plugins/MCPluginPackageStore.h"
+#import "native/macos/plugins/MCUserPluginManager.h"
 #import "native/macos/shortcuts/MCGlobalShortcutManager.h"
 #import "plugins/feature/capture/macos/MCCaptureController.h"
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
@@ -45,6 +47,8 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @property NSStatusItem *statusItem;
 @property MCPreferencesController *preferences;
 @property MCToolRegistryStore *toolRegistryStore;
+@property MCUserPluginManager *userPlugins;
+@property NSMutableDictionary<NSString *, NSString *> *pluginRequestTokens;
 @property NSUserDefaults *defaults;
 @property NSDictionary *diagnostics;
 @property NSMutableDictionary *report;
@@ -83,6 +87,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoonBitCoreVersion"] ?: @"开发版本";
         self.preferences = [[MCPreferencesController alloc] initWithDefaults:self.defaults coreVersion:version diagnostics:self.diagnostics];
         self.preferences.toolRegistryStore = self.toolRegistryStore;
+        self.preferences.userPluginManager = self.userPlugins;
         __weak MCNativeHost *weakSelf = self;
         self.preferences.onClose = ^{ [weakSelf.globalShortcuts resume]; [weakSelf.pinnedImages setShortcutsSuspended:NO]; weakSelf.preferences = nil; };
         self.preferences.onShortcutRecordingChanged = ^(BOOL recording) {
@@ -159,6 +164,40 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
             item.enabled = !self.updateController.installationPending;
 }
 - (void)updateStateChanged:(__unused NSNotification *)notification { [self updateRecordingState]; }
+- (void)userPluginsChanged:(__unused NSNotification *)notification {
+    NSMutableDictionary *icons = [NSMutableDictionary dictionary];
+    for (NSDictionary *tool in [self.toolRegistryStore toolsForGroup:@"screenshot"]) {
+        NSString *pluginID = tool[@"pluginId"];
+        NSImage *icon = pluginID ? [self.userPlugins iconForPlugin:pluginID] : nil;
+        if (icon) icons[tool[@"id"]] = icon;
+    }
+    if (![self.captureController.pluginIcons isEqual:icons]) self.captureController.pluginIcons = icons;
+    [self.updateController operationStateDidChange];
+}
+- (void)runUserTool:(NSString *)identifier inEditor:(MCImageEditorController *)editor {
+    NSDictionary *capture = editor.pluginCaptureMetadata;
+    if (!capture) { [editor showPluginMessage:@"请先选择截图区域。"]; return; }
+    NSString *owner = editor.pluginContextIdentifier;
+    NSString *token = NSUUID.UUID.UUIDString;
+    self.pluginRequestTokens[owner] = token;
+    __weak MCImageEditorController *weakEditor = editor;
+    __weak MCNativeHost *weakSelf = self;
+    BOOL (^isCurrent)(void) = ^BOOL{
+        MCImageEditorController *current = weakEditor;
+        return current.window && [current.pluginCaptureMetadata isEqual:capture] &&
+            [weakSelf.pluginRequestTokens[owner] isEqual:token];
+    };
+    [editor showPluginMessage:@"插件正在处理…"];
+    [self.userPlugins invokeTool:identifier owner:owner capture:capture isCurrent:isCurrent
+        completion:^(NSDictionary *result, NSError *error) {
+            if (!isCurrent()) return;
+            [weakSelf.pluginRequestTokens removeObjectForKey:owner];
+            if (result) {
+                [weakSelf.userPlugins presentResult:result toolID:identifier owner:owner parentWindow:weakEditor.window];
+                [weakEditor showPluginMessage:@"插件处理完成，可在结果窗口查看或复制文本。"];
+            } else [weakEditor showPluginMessage:error.localizedDescription ?: @"插件未返回结果。"];
+        }];
+}
 - (BOOL)applicationShouldHandleReopen:(__unused NSApplication *)sender hasVisibleWindows:(__unused BOOL)flag {
     // Finder and Spotlight send a reopen event to an already running menu bar
     // app. Reuse (or recreate) settings so opening Mooji Cut has a visible result.
@@ -181,6 +220,32 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateStateChanged:)
         name:MCUpdateStateDidChangeNotification object:self.updateController];
     __weak MCNativeHost *weakSelf = self;
+    NSString *pluginDirectory = NSProcessInfo.processInfo.environment[@"MOOJICUT_PLUGIN_DIRECTORY"];
+    if (!pluginDirectory.length) {
+        NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
+        NSURL *root = [support URLByAppendingPathComponent:@"Mooji Cut" isDirectory:YES];
+        // Test defaults never resolve to the user's production plugin catalog.
+        if (![domain isEqual:@"dev.mooncap.native.preferences"]) {
+            NSString *profile = [[domain dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
+            profile = [[profile stringByReplacingOccurrencesOfString:@"/" withString:@"_"] stringByReplacingOccurrencesOfString:@"+" withString:@"-"];
+            root = [[root URLByAppendingPathComponent:@"Test Profiles" isDirectory:YES]
+                URLByAppendingPathComponent:profile isDirectory:YES];
+        }
+        pluginDirectory = [root URLByAppendingPathComponent:@"Plugins" isDirectory:YES].path;
+    }
+    MCPluginPackageStore *packages = [[MCPluginPackageStore alloc] initWithRootURL:[NSURL fileURLWithPath:pluginDirectory isDirectory:YES]];
+    NSURL *workerURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/MoojiPluginWorker"];
+    self.userPlugins = [[MCUserPluginManager alloc] initWithRegistry:self.toolRegistryStore packages:packages workerURL:workerURL];
+    self.pluginRequestTokens = [NSMutableDictionary dictionary];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userPluginsChanged:)
+        name:MCUserPluginsDidChangeNotification object:self.userPlugins];
+    self.captureController.onUserTool = ^(MCImageEditorController *editor, NSString *identifier) {
+        [weakSelf runUserTool:identifier inEditor:editor];
+    };
+    self.captureController.onPluginContextClosed = ^(NSString *identifier) {
+        [weakSelf.pluginRequestTokens removeObjectForKey:identifier];
+        [weakSelf.userPlugins cancelInvocationsForOwner:identifier];
+    };
     self.toolRegistryStore.prepareChange = ^BOOL(NSDictionary *candidate, NSError **error) {
         return [weakSelf.captureController canApplyToolConfiguration:candidate error:error];
     };
@@ -189,7 +254,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         [weakSelf applyPinToolConfiguration];
     };
     self.updateController.isOperationBusy = ^BOOL{
-        return weakSelf.captureController.busy || weakSelf.recordingController.busy || weakSelf.choosingImage;
+        return weakSelf.captureController.busy || weakSelf.recordingController.busy || weakSelf.choosingImage || weakSelf.userPlugins.busy;
     };
     self.pinnedImages.onShortcutStatus = ^(NSString *error) { weakSelf.preferences.pinShortcutRegistrationError = error; };
     self.captureController.onStateChange = ^{
@@ -245,6 +310,9 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.statusItem.menu = menu;
     [self updatePinCapability];
     [self updateRecordingState];
+    [self.userPlugins loadInstalledPluginsWithCompletion:^(NSError *error) {
+        if (error) NSLog(@"Unable to load all user plugins: %@", error.localizedDescription);
+    }];
     if (self.smoke) [self runSmoke];
     else if ([NSProcessInfo.processInfo.arguments containsObject:@"--open-image"]) {
         NSArray *arguments = NSProcessInfo.processInfo.arguments;
@@ -347,7 +415,13 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         [alert addButtonWithTitle:@"继续使用"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
         return NSTerminateCancel;
     }
-    return NSTerminateNow;
+    if (!self.userPlugins) return NSTerminateNow;
+    [self.userPlugins shutdownWithCompletion:^{
+        // A manager with no work can finish synchronously. AppKit must first
+        // receive NSTerminateLater before we reply to its termination request.
+        dispatch_async(dispatch_get_main_queue(), ^{ [NSApp replyToApplicationShouldTerminate:YES]; });
+    }];
+    return NSTerminateLater;
 }
 - (void)applicationWillTerminate:(__unused NSNotification *)notification {
     [self.globalShortcuts invalidate];

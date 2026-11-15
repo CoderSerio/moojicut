@@ -13,10 +13,14 @@
           "native/macos/updates/MCUpdateController.m",
           "native/macos/updates/MCReleaseSource.m"
         ],
-        "requires": ["system.shortcut_config", "feature.capture", "feature.pin", "feature.recording"]
+        "requires": ["system.shortcut_config", "system.user_plugins", "feature.capture", "feature.pin", "feature.recording"]
       },
       "system.shortcut_config": {
         "sources": ["native/macos/preferences/MCShortcutStore.m", "native/macos/preferences/MCPinShortcutStore.m", "native/macos/preferences/MCSystemShortcutCheck.m"],
+        "requires": []
+      },
+      "system.user_plugins": {
+        "sources": ["native/macos/plugins/MCPluginPackageStore.m", "native/macos/plugins/MCPluginWorker.m", "native/macos/plugins/MCUserPluginManager.m", "native/macos/plugins/MCPluginResultController.m"],
         "requires": []
       },
       "component.style_controls": {
