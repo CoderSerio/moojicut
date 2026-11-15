@@ -1,6 +1,7 @@
 #import "MCVideoEditor.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import "native/macos/runtime/MCRuntimeProfile.h"
 #include "moonbit.h"
 #include <math.h>
 
@@ -34,8 +35,7 @@ static CGRect MCVideoBounds(AVAssetTrack *track) {
     return CGRectApplyAffineTransform(CGRectMake(0, 0, track.naturalSize.width, track.naturalSize.height), track.preferredTransform);
 }
 static NSURL *MCExportDirectory(void) {
-    NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
-    return [support URLByAppendingPathComponent:@"MoojiCut/Exports" isDirectory:YES];
+    return [MCRuntimeSupportDirectory(@"MoojiCut") URLByAppendingPathComponent:@"Exports" isDirectory:YES];
 }
 static BOOL MCWaitUntil(BOOL (^done)(void), NSTimeInterval timeout) {
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];

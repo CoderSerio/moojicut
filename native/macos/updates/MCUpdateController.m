@@ -90,7 +90,27 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
     if (!enabled && self.backgroundLookup) [self cancelCheck];
     [self notifyState];
 }
-- (BOOL)mayStartForBundle { return [self.bundle.bundleURL isEqual:NSBundle.mainBundle.bundleURL]; }
++ (NSString *)installationErrorForBundleURL:(NSURL *)url profile:(id)profile identifier:(NSString *)identifier {
+    // Legacy production builds have no profile key. Test/development apps must
+    // never discover or install production releases, even if moved manually.
+    if ((profile && ![profile isEqual:@"production"]) || ![identifier isEqualToString:@"dev.moojicut.native"])
+        return @"此测试版本不使用正式更新服务。请从「应用程序」打开 Mooji Cut 检查更新。";
+    NSString *path = url.path.stringByStandardizingPath;
+    NSString *resolved = url.URLByResolvingSymlinksInPath.path.stringByStandardizingPath;
+    NSString *installation = @"/Applications/Mooji Cut.app";
+    // Check both paths: an alias elsewhere must not update the production app,
+    // and an Applications symlink must not update a development checkout.
+    if (!url.isFileURL || ![path isEqualToString:installation] || ![resolved isEqualToString:installation])
+        return @"请先退出 Mooji Cut，将应用移至「应用程序」文件夹（/Applications/Mooji Cut.app），再从那里重新打开并检查更新。请勿使用指向开发目录的替身或符号链接。";
+    return nil;
+}
+- (NSString *)installationError {
+    return [self.class installationErrorForBundleURL:self.bundle.bundleURL
+        profile:[self.bundle objectForInfoDictionaryKey:@"MoojiCutBuildProfile"] identifier:self.bundle.bundleIdentifier];
+}
+- (BOOL)mayStartForBundle {
+    return [self.bundle.bundleURL isEqual:NSBundle.mainBundle.bundleURL] && !self.installationError;
+}
 - (BOOL)startSparkle:(NSError **)error {
     self.controller = [[SPUStandardUpdaterController alloc] initWithStartingUpdater:NO updaterDelegate:self userDriverDelegate:nil];
     if (![self.controller.updater startUpdater:error]) return NO;
@@ -104,7 +124,7 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
     self.started = YES;
     NSString *errorMessage = [self.class configurationErrorForBundle:self.bundle];
     if (!errorMessage && !self.mayStartForBundle)
-        errorMessage = @"仅可更新当前应用。";
+        errorMessage = self.installationError ?: @"仅可更新当前应用。";
     if (errorMessage) { self.message = errorMessage; [self notifyState]; return; }
     NSError *error = nil;
     if (![self startSparkle:&error]) {
@@ -267,6 +287,22 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
 - (void)updater:(__unused SPUUpdater *)updater didFindValidUpdate:(__unused SUAppcastItem *)item {
     self.message = @"发现可用更新，请在更新窗口中查看。"; [self notifyState];
 }
+- (void)userDidCancelDownload:(__unused SPUUpdater *)updater {
+    // Sparkle reports download cancellation as a successful (nil-error) end
+    // to the cycle, not SUInstallationCanceledError.
+    self.message = @"更新下载已取消，可继续使用当前版本。";
+    [self notifyState];
+}
+- (void)updater:(__unused SPUUpdater *)updater userDidMakeChoice:(SPUUserUpdateChoice)choice
+    forUpdate:(__unused SUAppcastItem *)item state:(SPUUserUpdateState *)state {
+    if (choice == SPUUserUpdateChoiceInstall) return;
+    if (choice == SPUUserUpdateChoiceSkip)
+        self.message = @"已跳过此版本，仍可手动检查更新。";
+    else if (state.stage == SPUUserUpdateStageInstalling)
+        self.message = @"更新已准备好，将在退出应用后安装。";
+    else self.message = @"暂不更新，可继续使用当前版本。";
+    [self notifyState];
+}
 - (void)updaterDidNotFindUpdate:(__unused SPUUpdater *)updater error:(__unused NSError *)error {
     // A feed may contain a newer release that is incompatible with this OS.
     self.message = @"当前没有可安装的更新。"; [self notifyState];
@@ -295,7 +331,10 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
         else if ([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUInstallationCanceledError)
             self.message = @"更新已取消。";
         else self.message = [@"未能完成更新：" stringByAppendingString:error.localizedDescription];
-    } else if ([self.message isEqualToString:@"正在检查更新…"]) self.message = @"更新检查已结束。";
+    } else if (!self.installationPending &&
+        ([self.message isEqualToString:@"正在验证签名更新源…"] ||
+         [self.message isEqualToString:@"发现可用更新，请在更新窗口中查看。"]))
+        self.message = @"更新检查已结束，可继续使用当前版本。";
     [self notifyState];
 }
 - (void)dealloc {

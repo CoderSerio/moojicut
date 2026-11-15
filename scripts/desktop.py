@@ -280,19 +280,14 @@ class DesktopBuild:
 
 
 def main():
+    if sys.platform == "darwin":
+        from native import main as native_main
+        native_main()
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
     parser.add_argument("--release-version", default="0.1.0-alpha.12")
     args = parser.parse_args()
-    if sys.platform == "darwin":
-        from native import NativeBuild
-        native = NativeBuild(args.release_version)
-        if args.command == "dev":
-            native.build()
-            native.run("/usr/bin/open", native_path(), "--args", "--preferences")
-        else:
-            getattr(native, args.command)()
-        return
     native = DesktopBuild(args.release_version)
     if args.command == "dev":
         native.build()
@@ -302,11 +297,6 @@ def main():
         native.smoke()
     else:
         getattr(native, args.command)()
-
-
-def native_path():
-    from native import APP
-    return APP
 
 
 if __name__ == "__main__":

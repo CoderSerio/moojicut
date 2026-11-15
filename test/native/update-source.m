@@ -66,6 +66,14 @@ static BOOL waitFor(BOOL (^done)(void)) {
 }
 @end
 
+// Sparkle's state object has no public initializer. This read-only state
+// double supplies only the documented property used by the real delegate.
+@interface MCFixtureUpdateState : NSObject
+@property SPUUserUpdateStage stage;
+@end
+@implementation MCFixtureUpdateState
+@end
+
 static NSBundle *fixtureBundle(NSURL *directory) {
     NSURL *contents = [[directory URLByAppendingPathComponent:@"Updater.app"] URLByAppendingPathComponent:@"Contents"];
     [NSFileManager.defaultManager createDirectoryAtURL:contents withIntermediateDirectories:YES attributes:nil error:NULL];
@@ -195,6 +203,48 @@ static BOOL controllerFixtures(NSBundle *bundle) {
     return passed;
 }
 
+static BOOL completedChoiceFixtures(NSBundle *bundle) {
+    NSArray<NSDictionary *> *cases = @[
+        @{@"choice":@(-1), @"stage":@(SPUUserUpdateStageNotDownloaded), @"status":@"下载已取消"},
+        @{@"choice":@(SPUUserUpdateChoiceSkip), @"stage":@(SPUUserUpdateStageNotDownloaded), @"status":@"已跳过"},
+        @{@"choice":@(SPUUserUpdateChoiceDismiss), @"stage":@(SPUUserUpdateStageNotDownloaded), @"status":@"暂不更新"},
+        @{@"choice":@(SPUUserUpdateChoiceDismiss), @"stage":@(SPUUserUpdateStageDownloaded), @"status":@"暂不更新"},
+        @{@"choice":@(SPUUserUpdateChoiceDismiss), @"stage":@(SPUUserUpdateStageInstalling), @"status":@"退出应用后安装"},
+        @{@"choice":@(-2), @"stage":@(SPUUserUpdateStageNotDownloaded), @"status":@"更新检查已结束"}
+    ];
+    for (NSDictionary *fixture in cases) {
+        MCQueuedReleaseSource *source = [MCQueuedReleaseSource new];
+        MCFixtureUpdater *controller = [[MCFixtureUpdater alloc] initWithBundle:bundle releaseSource:source];
+        [controller start]; [controller checkForUpdates:nil];
+        complete(source, 0, releases(@"0.1.0-alpha.9", YES, YES), nil);
+        id<SPUUpdaterDelegate> delegate = (id)controller;
+        SUAppcastItem *item = SUAppcastItem.emptyAppcastItem;
+        [delegate updater:(id)controller didFindValidUpdate:item];
+        NSInteger choice = [fixture[@"choice"] integerValue];
+        // Sparkle checks these optional selectors before delivering callbacks.
+        if (choice == -1 && [delegate respondsToSelector:@selector(userDidCancelDownload:)])
+            [delegate userDidCancelDownload:(id)controller];
+        else if (choice >= 0 && [delegate respondsToSelector:@selector(updater:userDidMakeChoice:forUpdate:state:)]) {
+            MCFixtureUpdateState *state = [MCFixtureUpdateState new];
+            state.stage = [fixture[@"stage"] integerValue];
+            [delegate updater:(id)controller userDidMakeChoice:(SPUUserUpdateChoice)choice forUpdate:item state:(id)state];
+        }
+        controller.active = NO;
+        [delegate updater:(id)controller didFinishUpdateCycleForUpdateCheck:SPUUpdateCheckUpdates error:nil];
+        if (!require(controller.canCheckForUpdates && !controller.installationPending &&
+            [controller.statusText containsString:fixture[@"status"]],
+            @"nil-error completion preserves choice status, ends stale progress and releases manual retry")) return NO;
+        [controller checkForUpdates:nil];
+        if (!require(source.callbacks.count == 2 && controller.checkingSource,
+            @"a completed or cancelled update cycle can start a fresh release lookup")) return NO;
+        complete(source, 1, releases(@"0.1.0-alpha.8", YES, YES), nil);
+        [delegate updater:(id)controller didFinishUpdateCycleForUpdateCheck:SPUUpdateCheckUpdates error:nil];
+        if (!require(controller.canCheckForUpdates && [controller.statusText containsString:@"最新版本"],
+            @"normal cycle cleanup does not overwrite the specific current-version status")) return NO;
+    }
+    return YES;
+}
+
 static NSData *protocolBody;
 static NSInteger protocolStatus;
 static NSDictionary *protocolHeaders;
@@ -261,9 +311,10 @@ int main(void) {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
-        BOOL passed = controllerFixtures(fixtureBundle(directory)) && transportFixtures();
+        NSBundle *bundle = fixtureBundle(directory);
+        BOOL passed = controllerFixtures(bundle) && completedChoiceFixtures(bundle) && transportFixtures();
         [NSFileManager.defaultManager removeItemAtURL:directory error:NULL];
-        puts(passed ? "PASS update source: release discovery, signed-feed routing, busy/cancel/duplicate gates, automatic checks and bounded offline transport" : "FAIL update source");
+        puts(passed ? "PASS update source: release discovery, signed-feed routing, busy/cancel/duplicate gates, download/choice cancellation and retry, automatic checks and bounded offline transport" : "FAIL update source");
         return passed ? 0 : 1;
     }
 }
