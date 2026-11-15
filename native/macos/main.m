@@ -416,11 +416,19 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         return NSTerminateCancel;
     }
     if (!self.userPlugins) return NSTerminateNow;
+    __block BOOL completed = NO;
+    __block BOOL waitingForShutdown = NO;
     [self.userPlugins shutdownWithCompletion:^{
-        // A manager with no work can finish synchronously. AppKit must first
-        // receive NSTerminateLater before we reply to its termination request.
-        dispatch_async(dispatch_get_main_queue(), ^{ [NSApp replyToApplicationShouldTerminate:YES]; });
+        completed = YES;
+        // Asynchronous completions arrive on the main thread after AppKit has
+        // received NSTerminateLater. Do not enqueue a second main-queue hop.
+        if (waitingForShutdown) [NSApp replyToApplicationShouldTerminate:YES];
     }];
+    // An idle manager drains synchronously. Returning Later here would enter
+    // AppKit's nested modal loop, which cannot re-enter a main GCD callback
+    // that initiated terminate: just to deliver a queued confirmation.
+    if (completed) return NSTerminateNow;
+    waitingForShutdown = YES;
     return NSTerminateLater;
 }
 - (void)applicationWillTerminate:(__unused NSNotification *)notification {

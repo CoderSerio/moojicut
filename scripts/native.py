@@ -446,6 +446,17 @@ class NativeBuild:
                  "-framework", "AppKit", "-framework", "Sparkle",
                  "-Wl,-rpath," + str(sparkle), "-o", update_source)
         self.run(update_source)
+        termination = shortcuts / "app-termination"
+        host_sources = [source for source in native_sources("macos")
+                        if source != ROOT / "native/macos/main.m"]
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
+                 "-I", ROOT, "-I", self.include, "-I", ROOT / "native/macos",
+                 ROOT / "test/native/app-termination.m", *host_sources, archive,
+                 "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath," + str(sparkle),
+                 *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
+                 "-o", termination)
+        for mode in ("idle-gcd", "async-event", "worker-event"):
+            self.run(termination, mode)
 
     def smoke(self):
         self.build()
