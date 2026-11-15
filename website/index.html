@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f7f5f0" />
+    <meta
+      name="description"
+      content="Capture your screen, make your point, and keep your flow. Mooji Cut is a free, open-source screenshot and screen recording app for Mac, Windows, and Linux."
+    />
+    <meta property="og:title" content="Mooji Cut — Consider it captured." />
+    <meta
+      property="og:description"
+      content="Screenshots, pinned references, and simple screen recordings. Free, open source, and made for your everyday flow."
+    />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:image"
+      content="https://coderserio.github.io/moojicut/assets/social.png"
+    />
+    <meta property="og:url" content="https://coderserio.github.io/moojicut/" />
+    <link rel="canonical" href="https://coderserio.github.io/moojicut/" />
+    <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="app.js" defer></script>
+    <title>Mooji Cut — Consider it captured.</title>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <svg
+      class="icon-defs"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <defs>
+        <symbol id="i-arrow" viewBox="0 0 24 24">
+          <path d="M5 12h14m-5-5 5 5-5 5" />
+        </symbol>
+        <symbol id="i-download" viewBox="0 0 24 24">
+          <path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4" />
+        </symbol>
+        <symbol id="i-capture" viewBox="0 0 24 24">
+          <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 8h8v8H8z" />
+        </symbol>
+        <symbol id="i-pin" viewBox="0 0 24 24">
+          <path d="m16 3 5 5-4 2-3 6-2-1-6 6m6-6-4-4 6-3z" />
+        </symbol>
+        <symbol id="i-video" viewBox="0 0 24 24">
+          <rect x="3" y="6" width="12" height="12" rx="3" />
+          <path d="m15 10 6-3v10l-6-3" />
+        </symbol>
+        <symbol id="i-play" viewBox="0 0 24 24">
+          <path d="m8 4 12 8-12 8z" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="m5 12 4 4L19 6" />
+        </symbol>
+        <symbol id="i-github" viewBox="0 0 24 24">
+          <path
+            d="M9 19c-5 1-5-2-7-3m15 6v-4c0-1-.3-2-1-2 4-.5 6-2 6-6 0-2-.7-3-2-4 .2-1 .2-2-.3-3-2 0-3 1-4 1-2-.5-5-.5-7 0-1 0-2-1-4-1-.5 1-.5 2-.3 3-1 1-2 2-2 4 0 4 2 5.5 6 6-.7.5-1 1-1 2v4"
+          />
+        </symbol>
+        <symbol id="i-sun" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="4" />
+          <path
+            d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"
+          />
+        </symbol>
+        <symbol id="i-scissors" viewBox="0 0 24 24">
+          <circle cx="6" cy="6" r="3" />
+          <circle cx="6" cy="18" r="3" />
+          <path d="m8 8 13 13M8 16 21 3" />
+        </symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24">
+          <rect x="5" y="10" width="14" height="11" rx="2" />
+          <path d="M8 10V6a4 4 0 0 1 8 0v4m-4 4v3" />
+        </symbol>
+        <symbol id="i-sliders" viewBox="0 0 24 24">
+          <path d="M4 5h16M4 12h16M4 19h16" />
+          <circle cx="9" cy="5" r="2" />
+          <circle cx="16" cy="12" r="2" />
+          <circle cx="7" cy="19" r="2" />
+        </symbol>
+        <symbol id="i-monitor" viewBox="0 0 24 24">
+          <rect x="2" y="3" width="20" height="14" rx="2" />
+          <path d="M8 21h8m-4-4v4" />
+        </symbol>
+      </defs>
+    </svg>
+    <header class="site-header wrap">
+      <a class="brand" href="#" aria-label="Mooji Cut home"
+        ><img src="assets/logo.svg" width="36" height="36" alt="" /><span
+          >Mooji Cut<span class="brand-dot">.</span></span
+        ></a
+      >
+      <nav aria-label="Main navigation">
+        <a href="#features">The little things</a
+        ><a href="#questions">Questions</a
+        ><a
+          class="github-nav"
+          href="https://github.com/CoderSerio/moojicut"
+          aria-label="Mooji Cut on GitHub"
+          ><svg class="icon"><use href="#i-github" /></svg></a
+        ><a class="button small" href="#download"
+          >Get Mooji Cut <svg class="icon"><use href="#i-download" /></svg
+        ></a>
+      </nav>
+    </header>
+    <main id="main">
+      <section class="hero wrap" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <div class="eyebrow">
+            <span class="status-dot"></span> SMALL APP. CLEARER IDEAS.
+          </div>
+          <h1 id="hero-title">
+            Consider it<br /><em>captured.</em
+            ><svg class="scribble" viewBox="0 0 390 22" aria-hidden="true">
+              <path d="M3 15C115 2 263 1 384 10M88 20C181 10 281 10 340 16" />
+            </svg>
+          </h1>
+          <p class="hero-description">
+            A screenshot. A quick recording.<br />A clearer way to show what you
+            mean.
+          </p>
+          <div class="hero-actions">
+            <a class="button" href="#download"
+              >Download Mooji Cut
+              <svg class="icon"><use href="#i-download" /></svg></a
+            ><a class="text-link" href="#playground"
+              >Take a little look <span>↘</span></a
+            >
+          </div>
+          <p class="hero-note">
+            Free & open source <span>·</span> Mac, Windows & Linux
+            <span>·</span> Early preview
+          </p>
+        </div>
+        <div class="hero-art" id="playground">
+          <div class="art-grid" aria-hidden="true"></div>
+          <div class="orbit-label">A LITTLE CLARITY GOES A LONG WAY</div>
+          <div class="demo-tabs" role="tablist" aria-label="Explore Mooji Cut">
+            <button
+              id="tab-capture"
+              role="tab"
+              aria-selected="true"
+              aria-controls="demo-capture"
+              data-mode="capture"
+            >
+              <svg class="icon"><use href="#i-capture" /></svg>Capture</button
+            ><button
+              id="tab-pin"
+              role="tab"
+              aria-selected="false"
+              aria-controls="demo-pin"
+              data-mode="pin"
+              tabindex="-1"
+            >
+              <svg class="icon"><use href="#i-pin" /></svg>Pin</button
+            ><button
+              id="tab-record"
+              role="tab"
+              aria-selected="false"
+              aria-controls="demo-record"
+              data-mode="record"
+              tabindex="-1"
+            >
+              <svg class="icon"><use href="#i-video" /></svg>Edit
+            </button>
+          </div>
+          <div class="demo-stage">
+            <div
+              class="demo-panel capture-panel"
+              id="demo-capture"
+              role="tabpanel"
+              aria-labelledby="tab-capture"
+              tabindex="0"
+            >
+              <div class="sample-window">
+                <div class="window-top">
+                  <span class="traffic"><i></i><i></i><i></i></span
+                  ><span>Sunday somewhere</span><span>↗</span>
+                </div>
+                <div class="sample-page">
+                  <div class="sample-meta">
+                    <span>FIELD NOTES / 004</span><span>TAKE IT SLOW</span>
+                  </div>
+                  <h2>A little<br />room to <em>breathe.</em></h2>
+                  <img
+                    class="landscape"
+                    src="assets/landscape.svg"
+                    alt="Illustrated sun above a calm terracotta landscape"
+                  />
+                  <div class="sample-footer">
+                    <span>Go somewhere. Notice something.</span><span>↗</span>
+                  </div>
+                </div>
+              </div>
+              <div class="selection">
+                <span class="dimensions">612 × 408</span
+                ><i class="handle h-tl"></i><i class="handle h-tr"></i
+                ><i class="handle h-bl"></i><i class="handle h-br"></i>
+                <div class="annotation">This is the feeling.</div>
+                <svg
+                  class="annotation-arrow"
+                  viewBox="0 0 130 100"
+                  aria-hidden="true"
+                >
+                  <path d="M9 9c80-12 110 22 95 72m-19-18 19 21 22-19" />
+                </svg>
+              </div>
+              <div class="capture-tools" aria-hidden="true">
+                <span>↖</span><span class="active">↗</span><span>▢</span
+                ><span>T</span><span>▨</span><span class="divider"></span
+                ><svg class="icon"><use href="#i-pin" /></svg><span>↶</span
+                ><svg class="icon"><use href="#i-check" /></svg>
+              </div>
+              <div class="floating-note">
+                <span class="mini-icon"
+                  ><svg class="icon"><use href="#i-check" /></svg></span
+                ><span
+                  >A point made.<br /><strong>A paragraph saved.</strong></span
+                >
+              </div>
+            </div>
+            <div
+              class="demo-panel pin-panel"
+              id="demo-pin"
+              role="tabpanel"
+              aria-labelledby="tab-pin"
+              tabindex="0"
+              hidden
+            >
+              <div class="pin-document">
+                <span class="document-kicker">THE NEXT GOOD IDEA</span>
+                <h2>Keep inspiration<br />in sight.</h2>
+                <div class="fake-line"></div>
+                <div class="fake-line shorter"></div>
+                <div class="fake-line"></div>
+                <div class="fake-line shortest"></div>
+                <div class="swatches"><i></i><i></i><i></i><i></i></div>
+                <p>A reference, right where you need it.</p>
+              </div>
+              <div class="pinned-photo">
+                <img
+                  src="assets/landscape.svg"
+                  alt="A pinned landscape reference"
+                /><span
+                  ><svg class="icon"><use href="#i-pin" /></svg>Stays on
+                  top</span
+                >
+              </div>
+              <div class="pin-tip">
+                <svg class="icon"><use href="#i-pin" /></svg> Your inspiration.
+                Minus the tab switching.
+              </div>
+            </div>
+            <div
+              class="demo-panel record-panel"
+              id="demo-record"
+              role="tabpanel"
+              aria-labelledby="tab-record"
+              tabindex="0"
+              hidden
+            >
+              <div class="mini-editor">
+                <div class="editor-top">
+                  <span>Video edit</span><span>↶ &nbsp; ↷ &nbsp; ↓</span>
+                </div>
+                <div class="editor-preview">
+                  <img src="assets/landscape.svg" alt="Example video frame" />
+                </div>
+                <div class="transport">
+                  <span id="demo-time">00:00 / 00:12</span
+                  ><button
+                    id="demo-play"
+                    aria-label="Play illustrative timeline"
+                  >
+                    <svg class="icon"><use href="#i-play" /></svg></button
+                  ><span>1×</span>
+                </div>
+                <div class="editor-timeline">
+                  <div class="timeline-tools">
+                    <svg class="icon"><use href="#i-scissors" /></svg
+                    ><span>↶ &nbsp; ↷</span>
+                  </div>
+                  <div class="ruler">
+                    <span>0s</span><span>4s</span><span>8s</span
+                    ><span>12s</span>
+                  </div>
+                  <div class="tracks">
+                    <span class="track-label">V1</span>
+                    <div class="clip clip-one">01</div>
+                    <div class="clip clip-two">02 · 3×</div>
+                    <div class="clip clip-three">03</div>
+                    <div class="playhead"></div>
+                  </div>
+                  <div class="audio-track">
+                    <span>A1</span><i></i><i></i><i></i>
+                  </div>
+                </div>
+              </div>
+              <div class="record-caption">
+                Keep the good bits. Cut the rest.
+              </div>
+            </div>
+          </div>
+          <div class="demo-foot">
+            <span
+              ><span class="tiny-dot"></span> Interactive feature
+              illustration</span
+            ><span id="demo-hint">Capture → annotate → copy</span>
+          </div>
+        </div>
+      </section>
+      <div class="promise-strip wrap">
+        <span
+          ><svg class="icon"><use href="#i-lock" /></svg>Capture & edit
+          locally</span
+        ><span
+          ><svg class="icon"><use href="#i-check" /></svg>No account to get
+          started</span
+        ><span
+          ><svg class="icon"><use href="#i-github" /></svg>Open source. Yours to
+          explore.</span
+        >
+      </div>
+      <section class="features wrap section-space" id="features">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">MADE FOR THE EVERYDAY</span>
+            <h2>Less explaining.<br />More <em>showing.</em></h2>
+          </div>
+          <p>
+            The bug you spotted. The idea you found.<br />The steps that are
+            easier to see.<br />Give them a little clarity.
+          </p>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <span class="feature-number">01 / MAKE YOUR POINT</span>
+            <div class="feature-visual markup-visual" aria-hidden="true">
+              <div class="message-demo">
+                <span class="avatar">J</span>
+                <div>
+                  <strong>One tiny adjustment…</strong>
+                  <div class="message-lines"></div>
+                </div>
+              </div>
+              <div class="red-box"></div>
+              <span class="red-note">Right here ↗</span>
+            </div>
+            <h3>A screenshot says more.</h3>
+            <p>
+              Select a region, add an arrow or a note, and cover details you
+              want to keep private. Copy it into your next conversation.
+            </p>
+          </article>
+          <article>
+            <span class="feature-number">02 / KEEP IT IN VIEW</span>
+            <div class="feature-visual pin-visual" aria-hidden="true">
+              <div class="little-paper">
+                <span>Ideas worth<br />keeping close.</span><i></i><i></i>
+              </div>
+              <div class="little-pin">
+                <svg class="icon"><use href="#i-pin" /></svg
+                ><img src="assets/landscape.svg" alt="" />
+              </div>
+            </div>
+            <h3>Your reference, right there.</h3>
+            <p>
+              Pin a capture over your other windows. Resize it, adjust its
+              opacity, and keep working without the back-and-forth.
+            </p>
+          </article>
+          <article>
+            <span class="feature-number">03 / GET TO THE GOOD PART</span>
+            <div class="feature-visual cut-visual" aria-hidden="true">
+              <div class="clip-strip">
+                <span>01</span><span class="cut-out">✂</span><span>02</span>
+              </div>
+              <div class="cut-pointer"></div>
+              <span class="cut-note">A little shorter. A lot clearer.</span>
+            </div>
+            <h3>Show how it happens.</h3>
+            <p>
+              Record a walkthrough and cut the extra bits. On Mac, split,
+              reorder, adjust speed, and edit audio before exporting to MP4.
+            </p>
+          </article>
+        </div>
+      </section>
+      <section class="your-flow">
+        <div class="wrap flow-inner">
+          <div class="flow-copy">
+            <span class="eyebrow">A TOOL THAT FEELS LIKE YOURS</span>
+            <h2>A little less clutter.<br />A little more <em>you.</em></h2>
+            <p>
+              Keep the tools you reach for. Hide the ones you don’t. Arrange
+              your screenshot toolbar to fit the way you think.
+            </p>
+            <span class="availability"
+              >Tool management & plugins · macOS preview</span
+            >
+          </div>
+          <div class="tool-customizer">
+            <div class="customizer-heading">
+              <svg class="icon"><use href="#i-sliders" /></svg
+              ><span>Your little toolkit</span
+              ><span class="try-label">TRY IT ↓</span>
+            </div>
+            <div class="tool-row">
+              <span class="grip" aria-hidden="true">⠿</span
+              ><span class="tool-glyph">↗</span><span>Arrow</span
+              ><button
+                class="toggle"
+                role="switch"
+                aria-checked="true"
+                aria-label="Show arrow in example toolbar"
+                data-tool="arrow"
+              >
+                <i></i>
+              </button>
+            </div>
+            <div class="tool-row">
+              <span class="grip" aria-hidden="true">⠿</span
+              ><span class="tool-glyph">T</span><span>Text</span
+              ><button
+                class="toggle"
+                role="switch"
+                aria-checked="true"
+                aria-label="Show text in example toolbar"
+                data-tool="text"
+              >
+                <i></i>
+              </button>
+            </div>
+            <div class="tool-row">
+              <span class="grip" aria-hidden="true">⠿</span
+              ><svg class="icon tool-glyph"><use href="#i-pin" /></svg
+              ><span>Pin</span
+              ><button
+                class="toggle"
+                role="switch"
+                aria-checked="true"
+                aria-label="Show pin in example toolbar"
+                data-tool="pin"
+              >
+                <i></i>
+              </button>
+            </div>
+            <div
+              class="toolbar-example"
+              aria-label="Example toolbar"
+              aria-live="polite"
+            >
+              <span class="toolbar-label">YOUR TOOLBAR</span>
+              <div class="preview-tools">
+                <span aria-label="Select">↖</span
+                ><span data-preview-tool="arrow" aria-label="Arrow">↗</span
+                ><span data-preview-tool="text" aria-label="Text">T</span
+                ><svg class="icon" data-preview-tool="pin" aria-label="Pin">
+                  <use href="#i-pin" /></svg
+                ><span aria-label="Done">✓</span>
+              </div>
+            </div>
+            <p class="demo-disclaimer">
+              An example toolbar. Your app settings stay yours.
+            </p>
+          </div>
+        </div>
+      </section>
+      <section
+        class="downloads wrap section-space"
+        id="download"
+        aria-labelledby="download-title"
+      >
+        <div class="download-heading">
+          <img
+            src="assets/app-icon.svg"
+            width="68"
+            height="68"
+            alt="Mooji Cut app icon"
+          /><span class="eyebrow">READY WHEN YOU ARE</span>
+          <h2 id="download-title">Make yourself <em>clear.</em></h2>
+          <p>Pick your computer. Download. Make your first capture.</p>
+          <div class="release-pill">
+            <span class="status-dot"></span
+            ><span data-version>0.1.0-alpha.16</span
+            ><span class="pill-divider">/</span> Free early preview
+          </div>
+        </div>
+        <p id="platform-hint" class="platform-hint" aria-live="polite">
+          Choose the version for your desktop computer.
+        </p>
+        <div class="download-grid">
+          <article class="download-card" data-platform="macos">
+            <div class="os-heading">
+              <span class="os-symbol" aria-hidden="true">⌘</span>
+              <h3>For Mac</h3>
+            </div>
+            <p class="requirements">Apple Silicon · macOS 26 or later</p>
+            <p class="platform-description">
+              The full toolkit, including the new video timeline, text
+              recognition, and plugins.
+            </p>
+            <a
+              class="button"
+              data-download="macos"
+              href="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-macos-arm64.zip"
+              >Download for Mac
+              <svg class="icon"><use href="#i-download" /></svg></a
+            ><span class="file-type">ZIP download · Apple M-series chips</span>
+            <details>
+              <summary>How to install <span>+</span></summary>
+              <div>
+                Unzip the download, move Mooji Cut to Applications, and open it.
+                Allow screen recording when prompted.
+                <p>
+                  This preview is not yet notarized by Apple. If macOS blocks
+                  opening it, review the message in System Settings → Privacy &
+                  Security.
+                </p>
+                <p>
+                  Already using Mooji Cut? Open Settings → Updates in the app.
+                </p>
+              </div>
+            </details>
+          </article>
+          <article class="download-card" data-platform="windows">
+            <div class="os-heading">
+              <span class="windows-symbol" aria-hidden="true"
+                ><i></i><i></i><i></i><i></i
+              ></span>
+              <h3>For Windows</h3>
+            </div>
+            <p class="requirements">Windows 10 / 11 · Intel or AMD 64-bit</p>
+            <p class="platform-description">
+              Capture, annotate, pin, and make simple screen recordings. No
+              installer needed.
+            </p>
+            <a
+              class="button"
+              data-download="windows"
+              href="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-windows-x64.zip"
+              >Download for Windows
+              <svg class="icon"><use href="#i-download" /></svg></a
+            ><span class="file-type">ZIP download · Portable app</span>
+            <details>
+              <summary>How to get started <span>+</span></summary>
+              <div>
+                Unzip the download and open <code>MoojiCut.exe</code>. Find
+                Mooji Cut in your system tray to start capturing.
+                <p>
+                  This preview is unsigned, so Windows may show an
+                  unknown-publisher notice. Recordings currently have no audio;
+                  the new Mac timeline and plugins are not yet available on
+                  Windows.
+                </p>
+              </div>
+            </details>
+          </article>
+          <article class="download-card" data-platform="linux">
+            <div class="os-heading">
+              <svg class="icon linux-symbol"><use href="#i-monitor" /></svg>
+              <h3>For Linux</h3>
+            </div>
+            <p class="requirements">Ubuntu 22.04+ or compatible · x86_64</p>
+            <p class="platform-description">
+              Screenshots, annotation, and pinned references for your Linux
+              desktop.
+            </p>
+            <a
+              class="button"
+              data-download="linux"
+              href="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-linux-x64.tar.gz"
+              >Download for Linux
+              <svg class="icon"><use href="#i-download" /></svg></a
+            ><span class="file-type">tar.gz download · glibc 2.35+</span>
+            <details>
+              <summary>Setup & requirements <span>+</span></summary>
+              <div>
+                Extract the archive and run <code>./launch.sh</code> in its
+                folder. Requires GTK 3, Ayatana AppIndicator, and libcurl.
+                <p>On Ubuntu:</p>
+                <code class="install-command"
+                  >sudo apt install libgtk-3-0 libayatana-appindicator3-1
+                  libcurl4</code
+                >
+                <p>
+                  X11 capture is tested. Wayland depends on your desktop’s
+                  screenshot portal. Screen recording is not available on Linux
+                  yet.
+                </p>
+              </div>
+            </details>
+          </article>
+        </div>
+        <div class="download-fineprint">
+          <span
+            >Official downloads are hosted on GitHub. No account required.</span
+          ><a
+            data-release-link
+            href="https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.16"
+            >Release notes & checksums ↗</a
+          >
+        </div>
+      </section>
+      <section class="faq wrap" id="questions">
+        <div>
+          <span class="eyebrow">A FEW GOOD QUESTIONS</span>
+          <h2>Before you<br />take a <em>shot.</em></h2>
+          <a
+            class="text-link"
+            href="https://github.com/CoderSerio/moojicut/issues"
+            >Ask us on GitHub <span>↗</span></a
+          >
+        </div>
+        <div class="faq-list">
+          <details>
+            <summary>Is Mooji Cut really free?<span>+</span></summary>
+            <p>
+              Yes. Mooji Cut is free and open source under the MIT license.
+              Download the app without an account, or explore and contribute to
+              the code on GitHub.
+            </p>
+          </details>
+          <details>
+            <summary>
+              Where do my screenshots and recordings go?<span>+</span>
+            </summary>
+            <p>
+              Captures and edits are processed on your computer. Copy
+              screenshots to your clipboard or save files where you choose.
+              Mooji Cut does not automatically upload your captures to a cloud
+              gallery.
+            </p>
+          </details>
+          <details>
+            <summary>
+              Does every platform have the same features?<span>+</span>
+            </summary>
+            <p>
+              Not yet. All three platforms support screenshots and annotation.
+              Mac currently has the fullest feature set, including the new video
+              editor, OCR, translation, and plugin management. Windows supports
+              silent screen recording with its existing editor. Linux does not
+              yet support recording.
+            </p>
+          </details>
+          <details>
+            <summary>What does “early preview” mean?<span>+</span></summary>
+            <p>
+              Mooji Cut is actively being developed, and you may encounter rough
+              edges. Scrolling capture is currently disabled. Multi-source video
+              editing, subtitles, and transitions are not part of this release.
+              Check the release notes for the exact scope of each version.
+            </p>
+          </details>
+          <details>
+            <summary>Can I customize it?<span>+</span></summary>
+            <p>
+              On Mac, choose which screenshot tools appear and change their
+              order in Settings → Plugin Management. Import compatible
+              precompiled plugin ZIPs to add tools. The current plugin API works
+              with capture metadata; it does not expose image pixels or network
+              access.
+            </p>
+          </details>
+        </div>
+      </section>
+      <section class="closing wrap">
+        <span class="closing-mark" aria-hidden="true">↗</span>
+        <h2>Small tool.<br /><em>Clearer conversations.</em></h2>
+        <a class="button" href="#download"
+          >Get Mooji Cut <svg class="icon"><use href="#i-download" /></svg
+        ></a>
+      </section>
+    </main>
+    <footer class="wrap">
+      <a class="brand" href="#"
+        ><img src="assets/logo.svg" width="30" height="30" alt="" /><span
+          >Mooji Cut.</span
+        ></a
+      >
+      <p>Made with MoonBit. Made to make a point.</p>
+      <div>
+        <a href="https://github.com/CoderSerio/moojicut">GitHub ↗</a
+        ><a href="https://github.com/CoderSerio/moojicut/releases">Changelog</a
+        ><a href="https://github.com/CoderSerio/moojicut/blob/main/LICENSE"
+          >MIT license</a
+        >
+      </div>
+    </footer>
+  </body>
+</html>

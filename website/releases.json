@@ -1,0 +1,9 @@
+{
+  "version": "0.1.0-alpha.16",
+  "publishedAt": "2026-11-15T17:07:13Z",
+  "downloads": {
+    "macos": "https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-macos-arm64.zip",
+    "windows": "https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-windows-x64.zip",
+    "linux": "https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-linux-x64.tar.gz"
+  }
+}

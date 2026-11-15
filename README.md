@@ -10,7 +10,7 @@
 
 <p align="center">简洁的截图与录屏工具，MoonBit 驱动。截取画面、标出重点、剪辑录屏，让日常操作保持直接。</p>
 
-<p align="center"><a href="https://github.com/CoderSerio/moojicut/releases">下载预览版</a> · <a href="https://github.com/CoderSerio/moojicut/issues">反馈问题</a> · <a href="https://github.com/CoderSerio/moojicut">查看源码</a></p>
+<p align="center"><a href="https://coderserio.github.io/moojicut/">官网</a> · <a href="https://github.com/CoderSerio/moojicut/releases">下载预览版</a> · <a href="https://github.com/CoderSerio/moojicut/issues">反馈问题</a> · <a href="https://github.com/CoderSerio/moojicut">查看源码</a></p>
 
 ## 为什么选择 Mooji Cut
 

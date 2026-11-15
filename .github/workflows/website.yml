@@ -1,0 +1,46 @@
+name: Deploy website
+
+on:
+  push:
+    branches: [main]
+    paths: [website/**, .github/workflows/website.yml]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/configure-pages@v5
+      - name: Refresh official downloads
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 website/scripts/sync_releases.py
+      - name: Prepare public files
+        run: |
+          mkdir -p .artifacts/website-public
+          cp website/index.html website/style.css website/app.js website/releases.json website/robots.txt website/sitemap.xml .artifacts/website-public/
+          cp -R website/assets .artifacts/website-public/assets
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: .artifacts/website-public
+      - uses: actions/deploy-pages@v4
+        id: deployment

@@ -10,7 +10,7 @@
 
 <p align="center">A simple screenshot and screen recording app, powered by MoonBit. Capture your screen, highlight what matters, and trim recordings.</p>
 
-<p align="center"><a href="https://github.com/CoderSerio/moojicut/releases">Download Preview</a> · <a href="https://github.com/CoderSerio/moojicut/issues">Report an Issue</a> · <a href="https://github.com/CoderSerio/moojicut">Source Code</a></p>
+<p align="center"><a href="https://coderserio.github.io/moojicut/">Website</a> · <a href="https://github.com/CoderSerio/moojicut/releases">Download Preview</a> · <a href="https://github.com/CoderSerio/moojicut/issues">Report an Issue</a> · <a href="https://github.com/CoderSerio/moojicut">Source Code</a></p>
 
 ## Why Mooji Cut
 
