@@ -29,7 +29,10 @@ EXECUTABLE_NAME = "MoojiCut"
 APP = ROOT / "dist/native-app.noindex" / (APP_NAME + ".app")
 ARTIFACTS = ROOT / ".artifacts"
 FRAMEWORKS = ["AppKit", "Foundation", "Carbon", "ScreenCaptureKit", "AVKit",
-              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "UniformTypeIdentifiers"]
+              "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "UniformTypeIdentifiers",
+              "Vision", "ImageIO", "SwiftUI", "Translation"]
+TEXT_FRAMEWORKS = ("AppKit", "Foundation", "CoreGraphics", "Vision", "ImageIO", "SwiftUI", "Translation")
+SWIFT_MINIMUM_MACOS = "26.0"
 
 
 class NativeBuild:
@@ -114,6 +117,33 @@ class NativeBuild:
     def moon_command(self, directory, *args, quiet=False):
         return self.run(self.moon, "-C", ROOT, "--target-dir", directory / "moon", *args, quiet=quiet)
 
+    def native_link_inputs(self, directory, sources):
+        """Compile Swift separately; never pass a .swift source to clang.
+
+        The bridge exposes a checked-in Objective-C header. The generated header
+        is kept with the object only for ABI inspection, not imported alongside
+        the manual declaration. Swift's autolink metadata resolves its system
+        libraries using the active toolchain/SDK; no toolchain dylib is bundled.
+        """
+        sources = [Path(source) for source in sources]
+        swift = [source for source in sources if source.suffix == ".swift"]
+        if not swift:
+            return sources
+        directory = Path(directory) / "swift"
+        directory.mkdir(parents=True, exist_ok=True)
+        sdk = Path(self.run("xcrun", "--sdk", "macosx", "--show-sdk-path", quiet=True).strip())
+        target = platform.machine() + "-apple-macosx" + SWIFT_MINIMUM_MACOS
+        info = json.loads(self.run("xcrun", "swiftc", "-print-target-info", "-target", target, quiet=True))
+        output = directory / "MoojiCaptureText.o"
+        self.run("xcrun", "swiftc", "-swift-version", "6", "-parse-as-library", "-whole-module-optimization", "-emit-object",
+                 "-O", "-warnings-as-errors", "-target", target, "-sdk", sdk,
+                 "-module-name", "MoojiCaptureText", "-emit-objc-header",
+                 "-emit-objc-header-path", directory / "MoojiCaptureText-Swift.h", *swift, "-o", output)
+        runtime_paths = dict.fromkeys([str(sdk / "usr/lib/swift"), *info["paths"]["runtimeLibraryPaths"]])
+        return ([source for source in sources if source.suffix != ".swift"] + [output,
+                "-mmacosx-version-min=" + SWIFT_MINIMUM_MACOS,
+                *("-L" + path for path in runtime_paths), "-Wl,-rpath,/usr/lib/swift"])
+
     def archive(self, directory):
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check", quiet=True)
         directory.mkdir(parents=True, exist_ok=True)
@@ -196,6 +226,7 @@ class NativeBuild:
         archive = self.archive(directory)
         native = ROOT / "native/macos"
         sources = native_sources("macos")
+        link_inputs = self.native_link_inputs(directory, sources)
         brand = ROOT / "assets/brand/mooji-cut"
         with tempfile.TemporaryDirectory(prefix="staging-", dir=directory) as staging_name:
             staging = Path(staging_name)
@@ -214,7 +245,7 @@ class NativeBuild:
             shutil.copy2(ROOT / "LICENSE", resources / "LICENSE.txt")
             shutil.copy2(ROOT / "assets/icons/lucide/LICENSE", resources / "Lucide-LICENSE.txt")
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
-                     "-I", self.include, "-I", ROOT, "-I", native, "-F", sparkle, *sources, archive,
+                     "-I", self.include, "-I", ROOT, "-I", native, "-F", sparkle, *link_inputs, archive,
                      "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath,@executable_path/../Frameworks",
                      *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                      "-o", executable)
@@ -449,14 +480,62 @@ class NativeBuild:
         termination = shortcuts / "app-termination"
         host_sources = [source for source in native_sources("macos")
                         if source != ROOT / "native/macos/main.m"]
+        host_inputs = self.native_link_inputs(shortcuts, host_sources)
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
                  "-I", ROOT, "-I", self.include, "-I", ROOT / "native/macos",
-                 ROOT / "test/native/app-termination.m", *host_sources, archive,
+                 ROOT / "test/native/app-termination.m", *host_inputs, archive,
                  "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath," + str(sparkle),
                  *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                  "-o", termination)
         for mode in ("idle-gcd", "async-event", "worker-event"):
             self.run(termination, mode)
+        self.text_tests()
+
+    def text_tests(self, translation=False):
+        """CLI/hidden-window fixtures only; does not build or register an app."""
+        directory = ARTIFACTS / "native-text"
+        directory.mkdir(parents=True, exist_ok=True)
+        feature = ROOT / "plugins/feature/capture_text/macos"
+        recognition = directory / "text-recognition"
+        recognition_object = directory / "MCTextRecognitionService-test.o"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 "-DCGImageSourceCreateImageAtIndex=MCTestCreateImageAtIndex",
+                 "-c", feature / "MCTextRecognitionService.m", "-o", recognition_object)
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/text-recognition.m", recognition_object,
+                 "-framework", "Foundation", "-framework", "AppKit", "-framework", "CoreText",
+                 "-framework", "Vision", "-framework", "ImageIO", "-framework", "CoreGraphics",
+                 "-lz", "-o", recognition)
+        self.run(recognition, directory / "recognition-evidence")
+        controller = directory / "text-tools"
+        # The UI fixture implements a controlled MCTranslationBridge test double.
+        # Linking the real Swift class here would duplicate its Objective-C name
+        # and trigger system language discovery during deterministic state tests.
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 "-mmacosx-version-min=" + SWIFT_MINIMUM_MACOS,
+                 ROOT / "test/native/text-tools.m", feature / "MCTextToolsController.m", feature / "MCTextRecognitionService.m",
+                 "-framework", "Foundation", "-framework", "AppKit", "-framework", "Vision",
+                 "-framework", "ImageIO", "-framework", "CoreGraphics",
+                 "-o", controller)
+        self.run(controller)
+        # Compile and link the real bridge even when optional language resources
+        # are absent. Default tests do not execute the Translation CLI.
+        inputs = self.native_link_inputs(directory, native_sources("macos", "feature.capture_text"))
+        bridge = directory / "translation-bridge"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/translation-bridge.m", *inputs,
+                 *(argument for framework in TEXT_FRAMEWORKS for argument in ("-framework", framework)),
+                 "-o", bridge)
+        self.run(bridge)
+        objects = [item for item in inputs if isinstance(item, Path) and item.suffix == ".o"]
+        executable = directory / "translation-service"
+        self.run("xcrun", "swiftc", "-swift-version", "6", "-parse-as-library", "-warnings-as-errors",
+                 "-target", platform.machine() + "-apple-macosx" + SWIFT_MINIMUM_MACOS,
+                 ROOT / "test/native/translation-service.swift", *objects, "-o", executable)
+        if translation:
+            # Installed language resources only. The fixture reports SKIP when
+            # resources are absent; automated tests must not download models.
+            self.run(executable)
 
     def smoke(self):
         self.build()
@@ -477,12 +556,18 @@ class NativeBuild:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
+    parser.add_argument("command", choices=("build", "dev", "test", "test-text", "smoke", "release"))
     parser.add_argument("--release-version", metavar="VERSION",
                         help="Release label (default: <moon.mod version>-alpha.12).")
+    parser.add_argument("--translation", action="store_true",
+                        help="With test-text, also run the installed-only Translation CLI (never downloads languages).")
     args = parser.parse_args()
+    if args.translation and args.command != "test-text":
+        parser.error("--translation is only supported with test-text")
     native = NativeBuild(args.release_version)
-    if args.command == "dev":
+    if args.command == "test-text":
+        native.text_tests(translation=args.translation)
+    elif args.command == "dev":
         native.build()
         native.run("/usr/bin/open", APP, "--args", "--preferences")
     else:

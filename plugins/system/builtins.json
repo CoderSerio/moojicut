@@ -13,7 +13,7 @@
           "native/macos/updates/MCUpdateController.m",
           "native/macos/updates/MCReleaseSource.m"
         ],
-        "requires": ["system.shortcut_config", "system.user_plugins", "feature.capture", "feature.pin", "feature.recording"]
+        "requires": ["system.shortcut_config", "system.user_plugins", "feature.capture", "feature.capture_text", "feature.pin", "feature.recording"]
       },
       "system.shortcut_config": {
         "sources": ["native/macos/preferences/MCShortcutStore.m", "native/macos/preferences/MCPinShortcutStore.m", "native/macos/preferences/MCSystemShortcutCheck.m"],
@@ -38,6 +38,10 @@
       "feature.capture": {
         "sources": ["plugins/feature/capture/macos/MCCaptureController.m"],
         "requires": ["feature.image_editor"]
+      },
+      "feature.capture_text": {
+        "sources": ["plugins/feature/capture_text/macos/MCTextRecognitionService.m", "plugins/feature/capture_text/macos/MCTextToolsController.m", "plugins/feature/capture_text/macos/MCTranslationBridge.swift"],
+        "requires": []
       },
       "feature.pin": {
         "sources": ["plugins/feature/pin/macos/MCPinnedImageController.m"],
