@@ -28,7 +28,7 @@
 
 Undo and redo let you make adjustments as you go.
 
-Mooji Cut is in early preview. This README covers the `0.1.0-alpha.13` development candidate; published builds may not include all of these features. Platform support and known limitations are listed in the release notes for each version.
+Mooji Cut is in early preview. This README covers the `0.1.0-alpha.14` development candidate; published builds may not include all of these features. Platform support and known limitations are listed in the release notes for each version.
 
 ## Tools and Plugins
 

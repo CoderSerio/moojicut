@@ -10,6 +10,9 @@ extern moonbit_string_t image_create(moonbit_string_t);
 extern moonbit_string_t image_apply(moonbit_string_t);
 extern moonbit_string_t image_finalize(moonbit_string_t);
 
+static const CGFloat MCEditorToolWidth = 30;
+static const CGFloat MCEditorToolHeight = 28;
+
 static NSError *MCEditorError(NSString *message) {
     return [NSError errorWithDomain:@"dev.moojicut.image-editor" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
 }
@@ -786,18 +789,22 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         NSString *title = entry[@"title"];
         BOOL userAction = [entry[@"action"] isEqual:@"run"];
         NSImage *icon = userAction ? (self.pluginIcons[entry[@"id"]] ?: [NSImage imageWithSystemSymbolName:@"puzzlepiece.extension" accessibilityDescription:title]) : MCIconImage(pin ? MC_ICON_PIN : icons[kind], title);
+        icon = [icon copy];
+        CGFloat extent = MAX(icon.size.width, icon.size.height);
+        if (extent > 0) icon.size = NSMakeSize(icon.size.width * 18 / extent, icon.size.height * 18 / extent);
+        icon.accessibilityDescription = title;
         [self.tools setTag:userAction ? (NSInteger)(1000 + index) : pin ? MCPinActionTag : kind forSegment:index];
         [self.tools setEnabled:!userAction || self.onUserTool != nil forSegment:index];
         [self.tools setToolTip:title forSegment:index];
         [self.tools setImage:icon forSegment:index];
         [self.tools setLabel:icon ? @"" : title forSegment:index];
         [self.tools setImageScaling:NSImageScaleProportionallyDown forSegment:index];
-        [self.tools setWidth:30 forSegment:index];
+        [self.tools setWidth:MCEditorToolWidth forSegment:index];
     }
     [self selectActiveToolSegment];
     [self syncPinAction];
-    [self.tools setFrameSize:NSMakeSize(visible.count * 30 + 5, 28)];
-    self.toolScrollWidth.constant = MIN(245, visible.count * 30 + 5);
+    [self.tools setFrameSize:NSMakeSize(visible.count * MCEditorToolWidth, MCEditorToolHeight)];
+    self.toolScrollWidth.constant = MIN(8 * MCEditorToolWidth, NSWidth(self.tools.frame));
     [self positionFloatingToolbar];
 }
 - (BOOL)configurationEndsCurrentTool:(NSDictionary *)candidate {
@@ -952,26 +959,32 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     button.image = image;
     button.imagePosition = NSImageOnly;
     button.bordered = NO;
-    button.contentTintColor = NSColor.labelColor;
+    // Let native borderless controls share the same enabled/disabled template
+    // tint as the tool segments; a forced tint makes the two groups disagree.
+    button.contentTintColor = nil;
     button.title = @"";
     button.bezelStyle = NSBezelStyleTexturedRounded;
+    [button.widthAnchor constraintEqualToConstant:MCEditorToolWidth].active = YES;
+    [button.heightAnchor constraintEqualToConstant:MCEditorToolHeight].active = YES;
 }
 - (NSButton *)unavailableButton:(MCIcon)icon label:(NSString *)label {
     NSButton *button = [self button:label action:NULL key:nil];
     [self configureIconButton:button icon:icon label:label shortcut:nil];
     button.enabled = NO;
-    // AppKit applies the disabled appearance; avoid dimming its tint twice.
-    button.contentTintColor = NSColor.labelColor;
     button.toolTip = [label stringByAppendingString:@" · 尚未开放"];
     button.accessibilityHelp = @"尚未开放";
     return button;
 }
 - (NSView *)toolbarDivider {
-    NSBox *divider = [NSBox new];
+    // Separators own their group padding; icon centers otherwise stay exactly
+    // one tool width apart on both sides of the segmented control.
+    NSView *container = [NSView new];
+    NSBox *divider = [[NSBox alloc] initWithFrame:NSMakeRect(4, 0, 1, 18)];
     divider.boxType = NSBoxSeparator;
-    [divider.widthAnchor constraintEqualToConstant:1].active = YES;
-    [divider.heightAnchor constraintEqualToConstant:18].active = YES;
-    return divider;
+    [container addSubview:divider];
+    [container.widthAnchor constraintEqualToConstant:9].active = YES;
+    [container.heightAnchor constraintEqualToConstant:18].active = YES;
+    return container;
 }
 - (void)prepareWindow {
     if (!self.window) {
@@ -990,7 +1003,11 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.canvas.accessibilityLabel = @"截图标注画布";
         [root addSubview:self.canvas];
         self.tools = [NSSegmentedControl segmentedControlWithLabels:@[@"选择"] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(chooseTool:)];
-        self.tools.selectedSegmentBezelColor = MCSelectedToolColor();
+        // Borderless TexturedSquare retains AppKit's per-selection accent,
+        // tracking, focus and accessibility without a persistent group bezel.
+        self.tools.segmentStyle = NSSegmentStyleTexturedSquare;
+        self.tools.cell.bordered = NO;
+        self.tools.cell.bezeled = NO;
         self.activeTool = [self isToolEnabled:MCRectTool] ? MCRectTool : MCSelectTool;
         [self rebuildToolSegments];
         self.tools.accessibilityLabel = @"截图工具";
@@ -1001,8 +1018,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.redoButton = [self button:@"重做" action:@selector(redo:) key:@"z"];
         [self configureIconButton:self.undoButton icon:MC_ICON_UNDO label:@"撤销" shortcut:@"⌘Z"];
         [self configureIconButton:self.redoButton icon:MC_ICON_REDO label:@"重做" shortcut:@"⇧⌘Z"];
-        [self.undoButton.widthAnchor constraintEqualToConstant:32].active = YES;
-        [self.redoButton.widthAnchor constraintEqualToConstant:32].active = YES;
         self.undoButton.keyEquivalentModifierMask = NSEventModifierFlagCommand;
         self.redoButton.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
         self.pinButton = [self button:@"贴图" action:@selector(pinImage:) key:nil];
@@ -1023,8 +1038,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.toolScroll.drawsBackground = NO; self.toolScroll.borderType = NSNoBorder;
         self.toolScroll.hasHorizontalScroller = YES; self.toolScroll.autohidesScrollers = YES;
         self.toolScroll.scrollerStyle = NSScrollerStyleOverlay; self.toolScroll.documentView = self.tools;
-        self.toolScrollWidth = [self.toolScroll.widthAnchor constraintEqualToConstant:MIN(245, self.visibleTools.count * 30 + 5)];
-        self.toolScrollWidth.active = YES; [self.toolScroll.heightAnchor constraintEqualToConstant:30].active = YES;
+        self.toolScrollWidth = [self.toolScroll.widthAnchor constraintEqualToConstant:MIN(8 * MCEditorToolWidth, NSWidth(self.tools.frame))];
+        self.toolScrollWidth.active = YES; [self.toolScroll.heightAnchor constraintEqualToConstant:MCEditorToolHeight].active = YES;
         self.contentActionDivider = [self toolbarDivider];
         self.toolbar = [NSStackView stackViewWithViews:@[self.toolScroll, self.contentActionDivider, self.ocrButton,
             self.translateButton, self.scrollCaptureButton, [self toolbarDivider], self.undoButton, self.redoButton, spacer,
@@ -1032,11 +1047,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.toolbar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
         self.toolbar.alignment = NSLayoutAttributeCenterY;
         self.toolbar.detachesHiddenViews = YES;
-        self.toolbar.spacing = 6;
+        self.toolbar.spacing = 0;
         self.toolbar.frame = NSMakeRect(18, height - 46, width - 36, 32);
         self.toolbar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-        for (NSButton *button in @[self.ocrButton, self.translateButton, self.scrollCaptureButton, self.pinButton, self.cancelButton, self.confirmButton])
-            [button.widthAnchor constraintEqualToConstant:28].active = YES;
         [root addSubview:self.toolbar];
         self.properties.frame = NSMakeRect(24, height - 86, width - 48, 28);
         self.properties.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
@@ -1117,8 +1130,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     CGFloat available = MAX(1, NSWidth(root.bounds) - 2 * margin);
     CGFloat inset = MIN(12, available / 8);
     CGFloat contentAvailable = MAX(1, available - 2 * inset);
-    self.toolbar.spacing = 6;
-    self.toolScrollWidth.constant = MIN(245, NSWidth(self.tools.frame));
+    self.toolbar.spacing = 0;
+    self.toolScrollWidth.constant = MIN(8 * MCEditorToolWidth, NSWidth(self.tools.frame));
     CGFloat rowWidth = ceil(self.toolbar.fittingSize.width);
     if (rowWidth > contentAvailable) {
         self.toolScrollWidth.constant = MAX(35, self.toolScrollWidth.constant - (rowWidth - contentAvailable));

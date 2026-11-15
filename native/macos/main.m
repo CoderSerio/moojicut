@@ -285,7 +285,9 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     };
     self.captureController.onOCR = ^(MCImageEditorController *editor) { [weakSelf runTextToolInEditor:editor translate:NO]; };
     self.captureController.onTranslate = ^(MCImageEditorController *editor) { [weakSelf runTextToolInEditor:editor translate:YES]; };
-    self.captureController.onScrollCapture = ^(MCImageEditorController *editor) { [weakSelf startScrollingFromEditor:editor]; };
+    // Keep the scrolling prototype out of the released toolbar until its
+    // real-page capture problems are resolved. A missing action hides it.
+    self.captureController.onScrollCapture = nil;
     self.captureController.onPluginContextClosed = ^(NSString *identifier) {
         [weakSelf.pluginRequestTokens removeObjectForKey:identifier];
         [weakSelf.userPlugins cancelInvocationsForOwner:identifier];

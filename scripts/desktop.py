@@ -286,7 +286,7 @@ def main():
         return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
-    parser.add_argument("--release-version", default="0.1.0-alpha.13")
+    parser.add_argument("--release-version", default="0.1.0-alpha.14")
     args = parser.parse_args()
     native = DesktopBuild(args.release_version)
     if args.command == "dev":
