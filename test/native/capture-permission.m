@@ -12,7 +12,7 @@
 // No real TCC request, screencapture process, modal window, or clipboard access
 // is permitted by this test, even when checking the granted branch.
 static bool preflightResult, requestResult;
-static NSUInteger preflightCalls, requestCalls, alertCalls, unexpectedLaunches, unexpectedCaptures;
+static NSUInteger preflightCalls, requestCalls, alertCalls, unexpectedLaunches, unexpectedCaptures, appHides;
 static __weak MCCaptureController *reentrantController;
 
 bool MCFakePreflight(void) { preflightCalls++; return preflightResult; }
@@ -37,7 +37,7 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @end
 @implementation NSApplication (MCPermissionTest)
 - (void)mc_permission_activateIgnoringOtherApps:(BOOL)flag { (void)flag; }
-- (void)mc_permission_hide:(id)sender { (void)sender; }
+- (void)mc_permission_hide:(id)sender { (void)sender; appHides++; }
 @end
 
 @interface NSTask (MCPermissionTest)
@@ -59,7 +59,10 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 - (NSArray<NSDictionary *> *)screenDescriptors;
 - (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion;
 - (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
+        exceptingWindows:(NSArray<SCWindow *> *)windows
             completion:(void (^)(NSData *, NSError *))completion;
+- (NSArray<NSWindow *> *)captureWindows;
+- (NSEventModifierFlags)captureModifierFlags;
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error;
 - (void)screenParametersChanged:(NSNotification *)notification;
 - (NSRunningApplication *)frontmostApplication;
@@ -74,6 +77,7 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @interface MCFakeContent : NSObject
 @property NSArray *displays;
 @property NSArray *applications;
+@property NSArray *windows;
 @end
 @implementation MCFakeContent
 @end
@@ -81,6 +85,21 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @property pid_t processID;
 @end
 @implementation MCFakeApplication
+@end
+@interface MCFakeCaptureWindow : NSObject
+@property CGWindowID windowID;
+@property MCFakeApplication *owningApplication;
+@end
+@implementation MCFakeCaptureWindow
+@end
+@interface MCFakeOwnWindow : NSObject
+@property NSInteger windowNumber;
+@property (getter=isVisible) BOOL visible;
+@property NSUInteger orderOutCalls;
+- (void)orderOut:(id)sender;
+@end
+@implementation MCFakeOwnWindow
+- (void)orderOut:(id)sender { (void)sender; self.visible = NO; self.orderOutCalls++; }
 @end
 @interface MCFakeRunningApplication : NSObject
 @property pid_t processIdentifier;
@@ -111,6 +130,9 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @property NSMutableArray<NSDictionary *> *createdSnapshots;
 @property NSMutableArray<MCFakeOverlay *> *createdEditors;
 @property NSArray *excludedApplications;
+@property NSArray<SCWindow *> *includedWindows;
+@property NSArray *fakeWindows;
+@property BOOL realFocusPreparation, realKeyReleaseCheck;
 @property NSRunningApplication *fakeFrontmost;
 @property NSRunningApplication *restoredApplication;
 @property NSMutableArray<NSString *> *focusEvents;
@@ -130,12 +152,18 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
     return self;
 }
 - (NSRunningApplication *)frontmostApplication { return self.fakeFrontmost; }
-- (void)prepareCaptureFocus { [self.focusEvents addObject:@"prepare"]; }
+- (NSArray<NSWindow *> *)captureWindows { return self.fakeWindows ?: @[]; }
+- (NSEventModifierFlags)captureModifierFlags { return 0; }
+- (void)prepareCaptureFocus {
+    if (self.realFocusPreparation) [super prepareCaptureFocus];
+    [self.focusEvents addObject:@"prepare"];
+}
 - (void)restoreCaptureFocus:(NSRunningApplication *)application {
     self.restoredApplication = application;
     [self.focusEvents addObject:@"restore"];
 }
 - (void)captureWhenKeysReleased:(NSString *)session attempts:(NSUInteger)attempts {
+    if (self.realKeyReleaseCheck) { [super captureWhenKeysReleased:session attempts:attempts]; return; }
     self.launchCount++;
     self.invalidLaunch = session.length == 0 || attempts != 0;
     self.interceptedSession = session;
@@ -148,10 +176,12 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 }
 - (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion { self.pendingContent = completion; }
 - (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
+        exceptingWindows:(NSArray<SCWindow *> *)windows
             completion:(void (^)(NSData *, NSError *))completion {
     [self.requestedDisplayIDs addObject:@(display.displayID)];
     self.imageCompletions[@(display.displayID)] = [completion copy];
     self.excludedApplications = applications;
+    self.includedWindows = windows;
 }
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error {
     (void)error;
@@ -199,6 +229,14 @@ static SCShareableContent *fakeContent(NSArray<NSNumber *> *ids) {
     ownApplication.processID = NSProcessInfo.processInfo.processIdentifier;
     MCFakeApplication *otherApplication = [MCFakeApplication new]; otherApplication.processID = 1;
     content.applications = @[otherApplication, ownApplication];
+    NSMutableArray *windows = [NSMutableArray array];
+    // 101: Settings, 201: visible pin, 202: user-hidden pin, 401: other app.
+    for (NSNumber *number in @[@101,@201,@202,@401]) {
+        MCFakeCaptureWindow *window = [MCFakeCaptureWindow new]; window.windowID = number.unsignedIntValue;
+        window.owningApplication = number.intValue == 401 ? otherApplication : ownApplication;
+        [windows addObject:window];
+    }
+    content.windows = windows;
     return (SCShareableContent *)content;
 }
 static void drainMainQueue(void) {
@@ -296,20 +334,44 @@ int main(void) {
                   "an existing grant bypasses permission UI and reaches launch");
             CHECK(!controller.invalidLaunch, "an existing grant supplies a new capture session");
             controller = nil;
+            // Capture never hides the application or a visible pin. Explicit
+            // window filtering also removes the need for a fixed post-key delay.
+            reset(true, false);
+            controller = [MCPermissionCapture new];
+            controller.realFocusPreparation = YES;
+            controller.realKeyReleaseCheck = YES;
+            MCFakeOwnWindow *settings = [MCFakeOwnWindow new]; settings.windowNumber = 101; settings.visible = YES;
+            MCFakeOwnWindow *pin = [MCFakeOwnWindow new]; pin.windowNumber = 201; pin.visible = YES;
+            MCFakeOwnWindow *hiddenPin = [MCFakeOwnWindow new]; hiddenPin.windowNumber = 202;
+            controller.fakeWindows = @[settings,pin,hiddenPin];
+            controller.includedWindowNumbers = ^{ return [NSSet setWithObject:@201]; };
+            [controller capture];
+            CHECK(!settings.visible && settings.orderOutCalls == 1 && pin.visible && pin.orderOutCalls == 0 &&
+                  !hiddenPin.visible && hiddenPin.orderOutCalls == 0 && appHides == 0,
+                  "capture orders out host controls without hiding the app, visible pins or restoring hidden pins");
+            CHECK(controller.pendingContent != nil, "released keys begin content acquisition immediately without a hide delay");
+            [controller cancelCapture];
+            CHECK(pin.visible && !hiddenPin.visible, "cancelling capture does not change pin visibility");
+            controller = nil;
             // Display enumeration order differs from NSScreen order; callbacks
             // complete out of order. Both snapshots must retain their own frame.
             reset(true, false);
             controller = [MCPermissionCapture new];
+            NSMutableSet *visibleNumbers = [NSMutableSet setWithObjects:@201,@401,nil];
+            controller.includedWindowNumbers = ^{ return visibleNumbers; };
             __block NSUInteger pinCalls = 0;
             controller.onPinPNGData = ^BOOL(NSData *data, NSRect screenFrame) { (void)screenFrame; pinCalls++; return data.length > 0; };
             [controller capture];
+            [visibleNumbers removeAllObjects]; // Session owns its visibility snapshot.
             [controller captureDisplaysForSession:controller.interceptedSession];
             controller.pendingContent(fakeContent(@[@27,@14]), nil);
             drainMainQueue();
             CHECK(([controller.requestedDisplayIDs isEqual:@[@14,@27]]), "display IDs map snapshots to NSScreen frames, not enumeration indices");
             CHECK(controller.excludedApplications.count == 1 &&
                   [(SCRunningApplication *)controller.excludedApplications.firstObject processID] == NSProcessInfo.processInfo.processIdentifier,
-                  "the app's own settings and pinned windows are excluded from the capture");
+                  "the app exclusion still removes Settings and other host controls");
+            CHECK(controller.includedWindows.count == 1 && controller.includedWindows.firstObject.windowID == 201,
+                  "visible own pins are re-included in captured pixels; hidden pins and foreign windows are not exceptions");
             finishImage(controller, @27, @"left screen pixels", nil);
             CHECK(controller.createdEditors.count == 0, "no overlay is shown while any screen is still being captured");
             finishImage(controller, @14, @"main screen pixels", nil);
@@ -351,7 +413,7 @@ int main(void) {
             CHECK(!controller.busy && controller.createdEditors.count == 0, "monitor changes cancel pending capture without showing an overlay");
             controller = nil;
 
-            // App focus is restored before changed brings pins back. All app
+            // App focus is restored before a newly confirmed pin can take key. All app
             // access and activation is intercepted; no external app is touched.
             reset(true, false);
             controller = [MCPermissionCapture new];
@@ -366,7 +428,7 @@ int main(void) {
             [controller cancelCapture];
             CHECK(controller.restoredApplication == external, "capture returns focus to the original external application");
             CHECK(([controller.focusEvents isEqual:@[@"busy", @"prepare", @"restore", @"idle"]]),
-                  "prepare runs once and focus restores before pins are allowed to reappear");
+                  "prepare runs once and focus restores before a new pin can appear");
             [controller cancelCapture];
             CHECK(controller.focusEvents.count == 4, "cancelling an ended session does not steal focus again");
             MCFakeRunningApplication *ownApplication = [MCFakeRunningApplication new];

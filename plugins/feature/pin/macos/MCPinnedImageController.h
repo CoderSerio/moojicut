@@ -19,9 +19,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)disableClickThrough;
 - (void)setShortcutsSuspended:(BOOL)suspended;
 - (void)closeAll;
-// Temporarily remove our own pins from a capture without discarding them.
-// Existing pins restore without taking key. A newly confirmed pin may take key
-// when capture finishes, using a nonactivating panel (never app activation).
-- (void)setCaptureHidden:(BOOL)hidden;
+// Capture suspends pin interaction, not visibility. User-hidden pins stay hidden.
+// Newly confirmed pins wait until capture ends before showing or taking key.
+- (void)setCaptureActive:(BOOL)active;
+@property (nonatomic, readonly) NSSet<NSNumber *> *visibleWindowNumbers;
 @end
 NS_ASSUME_NONNULL_END

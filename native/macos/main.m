@@ -257,8 +257,9 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         return weakSelf.captureController.busy || weakSelf.recordingController.busy || weakSelf.choosingImage || weakSelf.userPlugins.busy;
     };
     self.pinnedImages.onShortcutStatus = ^(NSString *error) { weakSelf.preferences.pinShortcutRegistrationError = error; };
+    self.captureController.includedWindowNumbers = ^{ return weakSelf.pinnedImages.visibleWindowNumbers ?: [NSSet set]; };
     self.captureController.onStateChange = ^{
-        [weakSelf.pinnedImages setCaptureHidden:weakSelf.captureController.busy];
+        [weakSelf.pinnedImages setCaptureActive:weakSelf.captureController.busy];
         [weakSelf.updateController operationStateDidChange];
     };
     [self updatePinCapability];

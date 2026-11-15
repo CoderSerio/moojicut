@@ -16,6 +16,7 @@ static NSError *MCCaptureError(NSString *message) {
 @property BOOL snapshotsPending;
 @property BOOL requestedScreenAccess;
 @property BOOL showingPermissionHelp;
+@property NSSet<NSNumber *> *captureWindowNumbers;
 @property (nonatomic, copy, readwrite) NSDictionary *toolConfiguration;
 @end
 
@@ -83,20 +84,17 @@ static NSError *MCCaptureError(NSString *message) {
 - (NSRunningApplication *)frontmostApplication {
     return NSWorkspace.sharedWorkspace.frontmostApplication;
 }
+- (NSArray<NSWindow *> *)captureWindows { return NSApp.windows; }
 - (void)prepareCaptureFocus {
-    // Hide ordinary windows explicitly before hiding the application. Otherwise
-    // showing the overlay with unhide also restores Settings behind it, which
-    // then resurfaces as soon as the user confirms their screenshot.
-    for (NSWindow *window in NSApp.windows) {
-        if (window.visible && (window.styleMask & NSWindowStyleMaskTitled)) [window orderOut:nil];
+    // Keep visible pins on screen. Hiding the entire application would also
+    // remove them before ScreenCaptureKit can include their pixels.
+    for (NSWindow *window in [self captureWindows]) {
+        if (window.visible && ![self.captureWindowNumbers containsObject:@(window.windowNumber)]) [window orderOut:nil];
     }
-    [NSApp hide:nil];
 }
 - (void)restoreCaptureFocus:(NSRunningApplication *)application {
-    [NSApp hide:nil];
-    // The normal windows were explicitly ordered out, and overlays are closed.
-    // Let nonactivating pins reappear in changed without bringing Settings back.
-    [NSApp unhideWithoutActivation];
+    // The overlays are closed and ordinary windows remain ordered out. Do not
+    // hide/unhide the app: existing pins must retain their visibility and order.
     if (!application || application.terminated) return;
     if (@available(macOS 14.0, *)) {
         [application activateFromApplication:NSRunningApplication.currentApplication options:0];
@@ -115,6 +113,7 @@ static NSError *MCCaptureError(NSString *message) {
 - (void)cancelCapture {
     BOOL active = self.captureSession != nil;
     self.captureSession = nil; // Invalidate callbacks before closing any windows.
+    self.captureWindowNumbers = nil;
     self.snapshotsPending = NO;
     NSArray *editors = self.overlayEditors;
     self.overlayEditors = nil;
@@ -126,7 +125,7 @@ static NSError *MCCaptureError(NSString *message) {
     self.previousApplication = nil;
     if (active) {
         [self restoreCaptureFocus:previous];
-        // Existing pins restore without focus. An explicitly created new pin
+        // Existing pins keep their focus state. An explicitly created new pin
         // can select itself here, after the normal app-focus restoration.
         [self changed];
     }
@@ -175,11 +174,20 @@ static NSError *MCCaptureError(NSString *message) {
 - (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion {
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:YES completionHandler:completion];
 }
+- (NSArray<SCWindow *> *)includedWindowsFromContent:(SCShareableContent *)content windowNumbers:(NSSet<NSNumber *> *)numbers {
+    NSMutableArray *windows = [NSMutableArray array];
+    for (SCWindow *window in content.windows) {
+        if (window.owningApplication.processID == NSProcessInfo.processInfo.processIdentifier &&
+            [numbers containsObject:@(window.windowID)]) [windows addObject:window];
+    }
+    return windows;
+}
 - (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
+        exceptingWindows:(NSArray<SCWindow *> *)windows
             completion:(void (^)(NSData *, NSError *))completion {
     if (@available(macOS 14.0, *)) {
         SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display
-            excludingApplications:applications exceptingWindows:@[]];
+            excludingApplications:applications exceptingWindows:windows];
         SCStreamConfiguration *configuration = [SCStreamConfiguration new];
         configuration.width = (size_t)llround(filter.contentRect.size.width * filter.pointPixelScale);
         configuration.height = (size_t)llround(filter.contentRect.size.height * filter.pointPixelScale);
@@ -266,12 +274,15 @@ static NSError *MCCaptureError(NSString *message) {
             for (SCRunningApplication *application in content.applications) {
                 if (application.processID == NSProcessInfo.processInfo.processIdentifier) [excluded addObject:application];
             }
+            // Exceptions re-include visible pins while the app exclusion keeps
+            // Settings, controls and any late-created host windows out.
+            NSArray<SCWindow *> *includedWindows = [owner includedWindowsFromContent:content windowNumbers:owner.captureWindowNumbers];
             NSMutableArray *snapshots = [NSMutableArray array];
             for (NSUInteger index = 0; index < screens.count; index++) [snapshots addObject:NSNull.null];
             __block NSUInteger remaining = screens.count;
             [displays enumerateObjectsUsingBlock:^(SCDisplay *display, NSUInteger index, BOOL *stop) {
                 (void)stop;
-                [owner captureDisplay:display excludingApplications:excluded completion:^(NSData *png, NSError *captureError) {
+                [owner captureDisplay:display excludingApplications:excluded exceptingWindows:includedWindows completion:^(NSData *png, NSError *captureError) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         MCCaptureController *current = weakSelf;
                         if (![current.captureSession isEqualToString:session]) return;
@@ -290,9 +301,10 @@ static NSError *MCCaptureError(NSString *message) {
         });
     }];
 }
+- (NSEventModifierFlags)captureModifierFlags { return NSEvent.modifierFlags; }
 - (void)captureWhenKeysReleased:(NSString *)session attempts:(NSUInteger)attempts {
     if (![self.captureSession isEqualToString:session]) return;
-    NSEventModifierFlags held = NSEvent.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagShift |
+    NSEventModifierFlags held = [self captureModifierFlags] & (NSEventModifierFlagCommand | NSEventModifierFlagShift |
         NSEventModifierFlagControl | NSEventModifierFlagOption);
     if (held) {
         if (attempts >= 40) {
@@ -305,10 +317,8 @@ static NSError *MCCaptureError(NSString *message) {
         });
         return;
     }
-    __weak MCCaptureController *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if ([weakSelf.captureSession isEqualToString:session]) [weakSelf captureDisplaysForSession:session];
-    });
+    // Filtering removes host controls without waiting for a hide animation.
+    [self captureDisplaysForSession:session];
 }
 - (void)capture {
     NSAssert(NSThread.isMainThread, @"Capture is a main-thread operation");
@@ -344,6 +354,7 @@ static NSError *MCCaptureError(NSString *message) {
     NSRunningApplication *previous = [self frontmostApplication];
     self.previousApplication = previous.processIdentifier == NSProcessInfo.processInfo.processIdentifier ? nil : previous;
     self.captureSession = session;
+    self.captureWindowNumbers = [self.includedWindowNumbers ? self.includedWindowNumbers() : [NSSet set] copy];
     self.snapshotsPending = YES;
     [self changed];
     [self prepareCaptureFocus];

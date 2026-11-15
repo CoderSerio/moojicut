@@ -198,6 +198,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property (readonly) NSTextField *fontSize;
 @property (readonly) NSStepper *fontStepper;
 @property NSStackView *toolbar;
+@property NSScrollView *toolbarScroll;
+@property NSScrollView *propertiesScroll;
+@property NSView *contentActionDivider;
 @property MCStylePropertiesView *properties;
 @property int32_t styleHandle;
 @property (readonly) NSStackView *colorGroup;
@@ -210,6 +213,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property (readonly) NSStepper *strokeStepper;
 @property NSButton *ocrButton;
 @property NSButton *translateButton;
+@property NSButton *scrollCaptureButton;
 @property MCImageTool activeTool;
 @property (nonatomic, copy, readwrite) NSDictionary *toolConfiguration;
 - (BOOL)isToolEnabled:(MCImageTool)tool;
@@ -231,6 +235,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (void)syncTextControls;
 - (void)styleChanged:(id)sender;
 - (void)positionFloatingToolbar;
+- (void)syncContentActions;
 - (BOOL)setCaptureRegion:(NSRect)rect;
 - (void)pinImage:(id)sender;
 - (void)chooseTool:(id)sender;
@@ -378,31 +383,50 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)resetCursorRects {
     [super resetCursorRects];
-    if (self.editor.overlayMode) {
-        [self addCursorRect:self.bounds cursor:NSCursor.crosshairCursor];
-        if (self.editor.hasCaptureRegion) {
-            NSRect region = [self viewRectForImageRect:[self captureRect]];
-            [self addCursorRect:region cursor:self.editor.activeTool == MCTextTool ? NSCursor.IBeamCursor : NSCursor.crosshairCursor];
-            for (NSInteger handle = 0; handle < 8; handle++) {
-                NSPoint center = [self handlePoint:handle inRect:region];
-                [self addCursorRect:NSMakeRect(center.x - 6, center.y - 6, 12, 12) cursor:NSCursor.crosshairCursor];
-            }
+    if (self.editor.overlayMode && !self.editor.hasCaptureRegion) {
+        [self addCanvasCursorRect:self.bounds cursor:NSCursor.crosshairCursor];
+    } else {
+        NSRect region = [self viewRectForImageRect:self.editor.overlayMode ? [self captureRect] : MCAnnotationRect(self.editor.document[@"viewport"])];
+        if (self.editor.activeTool != MCSelectTool)
+            [self addCanvasCursorRect:region cursor:self.editor.activeTool == MCTextTool ? NSCursor.IBeamCursor : NSCursor.crosshairCursor];
+        if (self.editor.overlayMode) for (NSInteger handle = 0; handle < 8; handle++) {
+            NSPoint center = [self handlePoint:handle inRect:region];
+            [self addCanvasCursorRect:NSMakeRect(center.x - 6, center.y - 6, 12, 12) cursor:NSCursor.crosshairCursor];
         }
     }
     if (![self selectedAnnotation]) return;
     NSRect frame = [self selectionFrame];
-    [self addCursorRect:NSInsetRect(frame, -4, -4) cursor:NSCursor.openHandCursor];
-    if (self.textView) [self addCursorRect:NSInsetRect(frame, 6, 6) cursor:NSCursor.IBeamCursor];
+    [self addCanvasCursorRect:NSInsetRect(frame, -4, -4) cursor:NSCursor.openHandCursor];
+    if (self.textView) [self addCanvasCursorRect:NSInsetRect(frame, 6, 6) cursor:NSCursor.IBeamCursor];
     for (NSInteger handle = 0; handle < 8; handle++) {
         NSPoint center = [self handlePoint:handle inRect:frame];
         NSCursor *cursor = (handle == 1 || handle == 5) ? NSCursor.resizeUpDownCursor :
             (handle == 3 || handle == 7) ? NSCursor.resizeLeftRightCursor : NSCursor.crosshairCursor;
-        [self addCursorRect:NSMakeRect(center.x - 6, center.y - 6, 12, 12) cursor:cursor];
+        [self addCanvasCursorRect:NSMakeRect(center.x - 6, center.y - 6, 12, 12) cursor:cursor];
     }
+}
+- (void)addCanvasCursorRect:(NSRect)rect cursor:(NSCursor *)cursor {
+    rect = NSIntersectionRect(rect, self.bounds);
+    if (NSIsEmptyRect(rect)) return;
+    NSView *hud = self.editor.floatingToolbar;
+    NSRect occlusion = hud && !hud.hidden ? [self convertRect:hud.bounds fromView:hud] : NSZeroRect;
+    NSRect overlap = NSIntersectionRect(rect, occlusion);
+    if (NSIsEmptyRect(overlap)) { [self addCursorRect:rect cursor:cursor]; return; }
+    // Cursor rectangles ignore sibling-view hit testing. Subtract the floating
+    // controls explicitly, including when they overlap a selection/resize handle.
+    NSRect pieces[] = {
+        NSMakeRect(NSMinX(rect), NSMinY(rect), NSWidth(rect), NSMinY(overlap) - NSMinY(rect)),
+        NSMakeRect(NSMinX(rect), NSMaxY(overlap), NSWidth(rect), NSMaxY(rect) - NSMaxY(overlap)),
+        NSMakeRect(NSMinX(rect), NSMinY(overlap), NSMinX(overlap) - NSMinX(rect), NSHeight(overlap)),
+        NSMakeRect(NSMaxX(overlap), NSMinY(overlap), NSMaxX(rect) - NSMaxX(overlap), NSHeight(overlap)),
+    };
+    for (NSUInteger index = 0; index < 4; index++)
+        if (!NSIsEmptyRect(pieces[index])) [self addCursorRect:pieces[index] cursor:cursor];
 }
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
     [self updateTextFrame];
+    [self.editor positionFloatingToolbar];
 }
 - (void)updateTextFrame {
     if (self.textView) {
@@ -592,7 +616,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
                                      [self.editor.document[@"height"] doubleValue]);
         if (MCSelectionBegin(&_regionGesture, operation, self.start, region, imageSize)) {
             self.selectedID = nil;
-            self.editor.floatingToolbar.hidden = YES;
+            [self.editor positionFloatingToolbar];
             self.needsDisplay = YES;
         }
         return;
@@ -661,6 +685,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if (self.regionDragging) {
         MCSelectionUpdate(&_regionGesture, [self imagePoint:event]);
         self.needsDisplay = YES;
+        [self.window invalidateCursorRectsForView:self];
         return;
     }
     if (!self.dragging) return;
@@ -987,6 +1012,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.confirmButton.keyEquivalentModifierMask = 0;
         self.ocrButton = [self unavailableButton:MC_ICON_OCR label:@"文字识别（OCR）"];
         self.translateButton = [self unavailableButton:MC_ICON_TRANSLATE label:@"翻译"];
+        self.scrollCaptureButton = [self unavailableButton:MC_ICON_CHEVRON_DOWN label:@"滚动截图"];
         NSView *spacer = [NSView new];
         [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
         self.toolScroll = [NSScrollView new];
@@ -995,20 +1021,23 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.toolScroll.scrollerStyle = NSScrollerStyleOverlay; self.toolScroll.documentView = self.tools;
         self.toolScrollWidth = [self.toolScroll.widthAnchor constraintEqualToConstant:MIN(245, self.visibleTools.count * 30 + 5)];
         self.toolScrollWidth.active = YES; [self.toolScroll.heightAnchor constraintEqualToConstant:30].active = YES;
-        self.toolbar = [NSStackView stackViewWithViews:@[self.toolScroll, [self toolbarDivider], self.ocrButton,
-            self.translateButton, [self toolbarDivider], self.undoButton, self.redoButton, spacer,
+        self.contentActionDivider = [self toolbarDivider];
+        self.toolbar = [NSStackView stackViewWithViews:@[self.toolScroll, self.contentActionDivider, self.ocrButton,
+            self.translateButton, self.scrollCaptureButton, [self toolbarDivider], self.undoButton, self.redoButton, spacer,
             self.cancelButton, self.confirmButton]];
         self.toolbar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
         self.toolbar.alignment = NSLayoutAttributeCenterY;
+        self.toolbar.detachesHiddenViews = YES;
         self.toolbar.spacing = 6;
         self.toolbar.frame = NSMakeRect(18, height - 46, width - 36, 32);
         self.toolbar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-        for (NSButton *button in @[self.ocrButton, self.translateButton, self.pinButton, self.cancelButton, self.confirmButton])
+        for (NSButton *button in @[self.ocrButton, self.translateButton, self.scrollCaptureButton, self.pinButton, self.cancelButton, self.confirmButton])
             [button.widthAnchor constraintEqualToConstant:28].active = YES;
         [root addSubview:self.toolbar];
         self.properties.frame = NSMakeRect(24, height - 86, width - 48, 28);
         self.properties.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
         [root addSubview:self.properties];
+        [self syncContentActions];
         [self.window center];
     }
     [self refresh];
@@ -1037,9 +1066,15 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     for (NSView *view in @[self.toolbar, self.properties]) {
         [view removeFromSuperview];
         view.autoresizingMask = NSViewNotSizable;
-        [self.floatingToolbar addSubview:view];
+        NSScrollView *scroll = [NSScrollView new];
+        scroll.drawsBackground = NO; scroll.borderType = NSNoBorder;
+        scroll.hasHorizontalScroller = YES; scroll.autohidesScrollers = YES;
+        scroll.scrollerStyle = NSScrollerStyleOverlay; scroll.documentView = view;
+        [self.floatingToolbar addSubview:scroll];
+        if (view == self.toolbar) self.toolbarScroll = scroll; else self.propertiesScroll = scroll;
     }
     [root addSubview:self.floatingToolbar];
+    [self syncContentActions];
     // The system color panel must remain above the capture overlay.
     NSColorPanel.sharedColorPanel.level = self.window.level + 1;
     self.canvas.needsDisplay = YES;
@@ -1067,23 +1102,41 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     return passed;
 }
 - (void)positionFloatingToolbar {
-    if (!self.overlayMode) return;
+    if (!self.overlayMode || !self.floatingToolbar) return;
     self.floatingToolbar.hidden = !self.hasCaptureRegion || self.canvas.regionDragging;
+    [self.window invalidateCursorRectsForView:self.canvas];
     if (self.floatingToolbar.hidden) return;
     NSView *root = self.window.contentView;
     NSRect region = [self.canvas viewRectForImageRect:MCAnnotationRect(self.document[@"viewport"])];
     region = [self.canvas convertRect:region toView:root];
-    CGFloat width = MIN(500, NSWidth(root.bounds) - 24), height = 92;
-    CGFloat x = MAX(12, MIN(NSMinX(region), NSWidth(root.bounds) - width - 12));
+    CGFloat margin = MIN(12, NSWidth(root.bounds) / 8);
+    CGFloat available = MAX(1, NSWidth(root.bounds) - 2 * margin);
+    CGFloat inset = MIN(12, available / 8);
+    CGFloat contentAvailable = MAX(1, available - 2 * inset);
+    self.toolbar.spacing = 6;
+    self.toolScrollWidth.constant = MIN(245, NSWidth(self.tools.frame));
+    CGFloat rowWidth = ceil(self.toolbar.fittingSize.width);
+    if (rowWidth > contentAvailable) {
+        self.toolScrollWidth.constant = MAX(35, self.toolScrollWidth.constant - (rowWidth - contentAvailable));
+        rowWidth = ceil(self.toolbar.fittingSize.width);
+    }
+    // Hidden property groups detach from the stack, so each tool contributes
+    // only its actual controls. Keep numeric/text fields at their natural width;
+    // exceptionally narrow displays scroll the row instead of squeezing input.
+    CGFloat propertiesWidth = ceil(self.properties.fittingSize.width);
+    CGFloat width = MIN(available, MAX(rowWidth, propertiesWidth) + 2 * inset), height = 92;
+    CGFloat x = MAX(margin, MIN(NSMinX(region), NSWidth(root.bounds) - width - margin));
     CGFloat y = NSMinY(region) - height - 10;
     if (y < 12) y = NSMaxY(region) + 10;
     y = MAX(12, MIN(y, NSHeight(root.bounds) - height - 12));
     self.floatingToolbar.frame = NSMakeRect(x, y, width, height);
-    self.toolbar.spacing = width < 440 ? 2 : 6;
-    for (NSInteger index = 0; index < self.tools.segmentCount; index++)
-        [self.tools setWidth:width < 440 ? 21 : 28 forSegment:index];
-    self.toolbar.frame = NSMakeRect(12, 48, width - 24, 32);
-    self.properties.frame = NSMakeRect(18, 12, width - 36, 28);
+    CGFloat viewportWidth = MAX(1, width - 2 * inset);
+    self.toolbarScroll.frame = NSMakeRect(inset, 48, viewportWidth, 32);
+    self.propertiesScroll.frame = NSMakeRect(inset, 12, viewportWidth, 28);
+    self.toolbar.frame = NSMakeRect(0, 0, MAX(rowWidth, viewportWidth), 32);
+    self.properties.frame = NSMakeRect(0, 0, MAX(propertiesWidth, viewportWidth), 28);
+    [self.floatingToolbar layoutSubtreeIfNeeded];
+    [self.window invalidateCursorRectsForView:self.canvas];
 }
 - (void)show {
     if (!self.window) [self prepareWindow];
@@ -1113,8 +1166,78 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSDictionary *viewport = self.document[@"viewport"];
     return @{@"width":viewport[@"width"], @"height":viewport[@"height"], @"format":@"png", @"revision":self.document[@"revision"]};
 }
+- (NSDictionary *)captureContentSnapshot {
+    NSAssert(NSThread.isMainThread, @"Capture content snapshots belong to the editor's main thread");
+    if (!self.window || !self.canvas) return nil;
+    // Annotations/viewport contain only scalar JSON fields. Copy their values,
+    // especially mutable draft strings; never retain live mutable edit state.
+    NSDictionary *(^annotation)(NSDictionary *) = ^NSDictionary *(NSDictionary *value) {
+        return [[NSDictionary alloc] initWithDictionary:value ?: @{} copyItems:YES];
+    };
+    NSMutableArray *fields = [NSMutableArray array];
+    for (MCNumberControl *control in @[self.fontControl, self.strokeControl, self.colorControl.opacityControl]) {
+        NSText *input = control.field.currentEditor;
+        NSTextView *textInput = [input isKindOfClass:NSTextView.class] ? (NSTextView *)input : nil;
+        [fields addObject:@{@"value":@(control.value), @"editing":@(input != nil),
+            @"text":[input.string copy] ?: @"", @"marked":@(textInput.hasMarkedText),
+            @"markedRange":NSStringFromRange(textInput ? textInput.markedRange : NSMakeRange(NSNotFound,0))}];
+    }
+    MCStyleValues style = self.properties.values;
+    MCSelectionGesture region = self.canvas.regionGesture;
+    NSDictionary *regionGesture = region.active ? @{@"operation":@(region.operation),
+        @"anchor":NSStringFromPoint(region.anchor), @"original":NSStringFromRect(region.original),
+        @"preview":NSStringFromRect(region.preview), @"bounds":NSStringFromSize(region.bounds)} : @{};
+    NSTextView *text = self.canvas.textView;
+    return @{
+        @"context":self.pluginContextIdentifier, @"revision":self.document[@"revision"],
+        @"viewport":annotation(self.document[@"viewport"]), @"overlay":@(self.overlayMode),
+        @"hasRegion":@(self.hasCaptureRegion), @"activeTool":@(self.activeTool),
+        @"selectedID":[self.canvas.selectedID copy] ?: @"",
+        @"text":@{@"editing":@(text != nil), @"draft":annotation(self.canvas.textDraft),
+            @"value":[text.string copy] ?: @"", @"marked":@(text.hasMarkedText),
+            @"markedRange":NSStringFromRange(text ? text.markedRange : NSMakeRange(NSNotFound,0))},
+        @"fields":[fields copy], @"style":@[@(style.rgb),@(style.opacity),@(style.stroke),@(style.fontSize)],
+        @"drawing":@{@"active":@(self.canvas.dragging), @"start":NSStringFromPoint(self.canvas.start),
+            @"pending":annotation(self.canvas.pending), @"original":annotation(self.canvas.transformOriginal),
+            @"preview":annotation(self.canvas.transformPreview), @"handle":@(self.canvas.resizeHandle)},
+        @"regionGesture":regionGesture,
+    };
+}
 - (void)showPluginMessage:(NSString *)message {
     self.properties.status.stringValue = message; self.properties.status.hidden = NO;
+    [self positionFloatingToolbar];
+}
+- (void)setOnOCR:(void (^)(MCImageEditorController *))handler {
+    _onOCR = [handler copy]; [self syncContentActions];
+}
+- (void)setOnTranslate:(void (^)(MCImageEditorController *))handler {
+    _onTranslate = [handler copy]; [self syncContentActions];
+}
+- (void)setOnScrollCapture:(void (^)(MCImageEditorController *))handler {
+    _onScrollCapture = [handler copy]; [self syncContentActions];
+}
+- (void)syncContentActions {
+    self.ocrButton.enabled = self.onOCR != nil; self.translateButton.enabled = self.onTranslate != nil;
+    self.ocrButton.hidden = self.overlayMode && !self.onOCR;
+    self.translateButton.hidden = self.overlayMode && !self.onTranslate;
+    self.scrollCaptureButton.enabled = self.onScrollCapture != nil;
+    self.scrollCaptureButton.hidden = !self.overlayMode || !self.onScrollCapture;
+    self.contentActionDivider.hidden = self.ocrButton.hidden && self.translateButton.hidden && self.scrollCaptureButton.hidden;
+    self.ocrButton.target = self; self.ocrButton.action = @selector(runOCR:);
+    self.translateButton.target = self; self.translateButton.action = @selector(runTranslate:);
+    self.scrollCaptureButton.target = self; self.scrollCaptureButton.action = @selector(runScrollCapture:);
+    self.scrollCaptureButton.toolTip = @"滚动截图";
+    self.scrollCaptureButton.accessibilityHelp = nil;
+    self.ocrButton.toolTip = self.onOCR ? @"文字识别（OCR）" : @"文字识别（OCR） · 尚未开放";
+    self.translateButton.toolTip = self.onTranslate ? @"翻译" : @"翻译 · 尚未开放";
+    self.ocrButton.accessibilityHelp = self.onOCR ? nil : @"尚未开放";
+    self.translateButton.accessibilityHelp = self.onTranslate ? nil : @"尚未开放";
+    [self positionFloatingToolbar];
+}
+- (void)runOCR:(__unused id)sender { if (self.onOCR && self.pluginCaptureMetadata) self.onOCR(self); }
+- (void)runTranslate:(__unused id)sender { if (self.onTranslate && self.pluginCaptureMetadata) self.onTranslate(self); }
+- (void)runScrollCapture:(__unused id)sender {
+    if (self.overlayMode && self.onScrollCapture && self.pluginCaptureMetadata) self.onScrollCapture(self);
 }
 - (void)setOnPinPNGData:(BOOL (^)(NSData *))handler {
     _onPinPNGData = [handler copy];
@@ -1147,6 +1270,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
             editor_style_get(self.styleHandle, (int32_t)tool, MC_STYLE_FONT)};
     }
     self.properties.propertyMask = editor_style_property_mask((int32_t)tool);
+    [self positionFloatingToolbar];
+    [self.window invalidateCursorRectsForView:self.canvas];
 }
 - (void)styleChanged:(id)sender {
     int32_t fields = [self.properties syncFromSender:sender];
@@ -1270,6 +1395,14 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     }
     return [self renderDocumentPNGData:self.document error:error];
 }
+- (NSData *)capturePNGData:(NSError **)error {
+    if (self.canvas.dragging || self.canvas.regionDragging || (self.overlayMode && !self.hasCaptureRegion)) {
+        if (error) *error = MCEditorError(@"请先完成当前截图选区或标注操作。");
+        return nil;
+    }
+    NSDictionary *plan = [self pendingEditCommitPlan:error];
+    return plan ? [self renderDocumentPNGData:plan[@"document"] ?: self.document error:error] : nil;
+}
 - (NSData *)renderDocumentPNGData:(NSDictionary *)document error:(NSError **)error {
     if (self.overlayMode && !self.hasCaptureRegion) {
         if (error) *error = MCEditorError(@"请先框选截图范围。");
@@ -1325,6 +1458,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if (!self.window || !self.canvas) return NSZeroRect;
     NSRect region = [self.canvas viewRectForImageRect:MCAnnotationRect(self.document[@"viewport"])];
     return [self.window convertRectToScreen:[self.canvas convertRect:region toView:nil]];
+}
+- (NSRect)captureScreenFrame {
+    if (self.overlayMode && !self.hasCaptureRegion) return NSZeroRect;
+    return self.pinScreenFrame;
 }
 - (void)pinImage:(id)sender {
     (void)sender;
