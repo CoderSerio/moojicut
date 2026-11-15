@@ -1,84 +1,115 @@
-const tabs = [...document.querySelectorAll('[role="tab"]')];
-const panels = [...document.querySelectorAll('[role="tabpanel"]')];
-const hints = {
-  capture: "Capture → annotate → copy",
-  pin: "Keep a reference close",
-  record: "Split → reorder → export",
-};
-let frame = null,
-  start = 0,
-  elapsed = 0;
-const play = document.querySelector("#demo-play");
-const playhead = document.querySelector(".playhead");
-const time = document.querySelector("#demo-time");
-function stopPreview() {
-  cancelAnimationFrame(frame);
-  frame = null;
-  play.setAttribute("aria-label", "Play illustrative timeline");
-  play.innerHTML = '<svg class="icon"><use href="#i-play"/></svg>';
+import { createMotionController } from "./src/motion-controller.js";
+
+const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+const hasObserver = "IntersectionObserver" in window;
+if (hasObserver && !reduced.matches) {
+  const reveal = new IntersectionObserver(
+    (entries) => {
+      entries.forEach(({ target, isIntersecting }) => {
+        if (!isIntersecting) return;
+        target.classList.add("is-visible");
+        reveal.unobserve(target);
+      });
+    },
+    { threshold: 0.06 },
+  );
+  document.querySelectorAll("[data-reveal]").forEach((element) => {
+    // Above-the-fold content stays visible even if JS stops during enhancement.
+    if (element.getBoundingClientRect().top < window.innerHeight) return;
+    element.classList.add("reveal-pending");
+    reveal.observe(element);
+  });
 }
-function selectTab(tab, focus = false) {
-  stopPreview();
-  tabs.forEach((item) => {
-    const active = item === tab;
-    item.setAttribute("aria-selected", String(active));
-    item.tabIndex = active ? 0 : -1;
+
+let motionModule;
+const loadMotion = () => (motionModule ??= import("./src/motion-player.jsx"));
+const controllers = new Map();
+document.querySelectorAll("[data-motion]").forEach((element) => {
+  const button = element.querySelector(".motion-toggle");
+  const kind = element.dataset.motion;
+  const controller = createMotionController({
+    load: loadMotion,
+    mount: (module, callbacks) =>
+      module.mountPlayer(
+        element.querySelector(".motion-mount"),
+        kind,
+        callbacks,
+      ),
+    onReady: () => element.classList.add("ready"),
+    onError: () => {
+      element.classList.remove("ready");
+      button.hidden = true;
+    },
+    onState: (playing) => {
+      const action = playing ? "Pause" : "Play";
+      button.setAttribute(
+        "aria-label",
+        `${action} ${kind === "edit" ? "editor" : kind} animation`,
+      );
+      button.title = `${action} animation`;
+      button
+        .querySelector("use")
+        .setAttribute("href", playing ? "#i-pause" : "#i-play");
+    },
   });
-  panels.forEach((panel) => {
-    panel.hidden = panel.id !== tab.getAttribute("aria-controls");
-  });
-  document.querySelector("#demo-hint").textContent = hints[tab.dataset.mode];
-  if (focus) tab.focus();
+  controller.setHidden(document.hidden);
+  controller.setReduced(reduced.matches);
+  button.hidden = !hasObserver;
+  button.addEventListener("click", () => controller.toggle());
+  controllers.set(element, controller);
+});
+if (hasObserver) {
+  const motionObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach(({ target, isIntersecting, intersectionRatio }) => {
+        controllers
+          .get(target)
+          .setVisible(isIntersecting && intersectionRatio >= 0.12);
+      });
+    },
+    { threshold: [0, 0.12] },
+  );
+  controllers.forEach((_, element) => motionObserver.observe(element));
+  const sectionObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        document.querySelectorAll(".section-nav a").forEach((link) => {
+          if (link.hash === `#${entry.target.id}`)
+            link.setAttribute("aria-current", "location");
+          else link.removeAttribute("aria-current");
+        });
+      }
+    },
+    { rootMargin: "-30% 0px -60% 0px", threshold: 0 },
+  );
+  document
+    .querySelectorAll("main > section")
+    .forEach((element) => sectionObserver.observe(element));
 }
-tabs.forEach((tab, index) => {
-  tab.addEventListener("click", () => selectTab(tab));
-  tab.addEventListener("keydown", (event) => {
-    const next =
-      event.key === "ArrowRight"
-        ? (index + 1) % tabs.length
-        : event.key === "ArrowLeft"
-          ? (index + tabs.length - 1) % tabs.length
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? tabs.length - 1
-              : null;
-    if (next !== null) {
-      event.preventDefault();
-      selectTab(tabs[next], true);
-    }
-  });
-});
-play.addEventListener("click", () => {
-  if (frame !== null) {
-    stopPreview();
-    return;
-  }
-  if (elapsed >= 12000) elapsed = 0;
-  start = performance.now() - elapsed;
-  play.setAttribute("aria-label", "Pause illustrative timeline");
-  play.textContent = "Ⅱ";
-  function tick(now) {
-    elapsed = Math.min(now - start, 12000);
-    playhead.style.left = `${elapsed / 120}%`;
-    time.textContent = `00:${String(Math.floor(elapsed / 1000)).padStart(2, "0")} / 00:12`;
-    if (elapsed >= 12000) stopPreview();
-    else frame = requestAnimationFrame(tick);
-  }
-  frame = requestAnimationFrame(tick);
-});
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopPreview();
-});
-document.querySelectorAll("[data-tool]").forEach((button) =>
+document.addEventListener("visibilitychange", () =>
+  controllers.forEach((controller) => controller.setHidden(document.hidden)),
+);
+reduced.addEventListener("change", () =>
+  controllers.forEach((controller) => controller.setReduced(reduced.matches)),
+);
+
+const toolButtons = document.querySelectorAll("[data-tool]");
+toolButtons.forEach((button) =>
   button.addEventListener("click", () => {
     const show = button.getAttribute("aria-checked") !== "true";
     button.setAttribute("aria-checked", String(show));
     document
       .querySelector(`[data-preview-tool="${button.dataset.tool}"]`)
       .toggleAttribute("hidden", !show);
+    const total = [...toolButtons].filter(
+      (item) => item.getAttribute("aria-checked") === "true",
+    ).length;
+    document.querySelector(".stage-caption").textContent =
+      `${total} optional ${total === 1 ? "tool" : "tools"} shown. Your toolbar, your way.`;
   }),
 );
+
 const agent = navigator.userAgent;
 const mobile =
   /Android|iPhone|iPad|iPod/i.test(agent) ||
@@ -98,13 +129,12 @@ if (platform) {
     .classList.add("suggested");
   const name = { macos: "Mac", windows: "Windows", linux: "Linux" }[platform];
   document.querySelector("#platform-hint").textContent =
-    `Looks like you’re on ${name}. Check the requirements below to choose the right download.`;
+    `Looks like you’re on ${name}. Check the system and chip requirements below.`;
 } else if (mobile)
   document.querySelector("#platform-hint").textContent =
-    "Mooji Cut is a desktop app. Open this page on your computer to download.";
-// A same-origin snapshot keeps downloading independent of GitHub API rate limits.
-// The HTML links remain usable with JavaScript disabled or the snapshot unavailable.
-fetch("releases.json", { cache: "no-cache" })
+    "Made for your desktop. Open this page on your computer to download.";
+// Same-origin snapshot; the HTML also contains working no-JavaScript download links.
+fetch(`${import.meta.env.BASE_URL}releases.json`, { cache: "no-cache" })
   .then((response) => {
     if (!response.ok) throw new Error("No release snapshot");
     return response.json();

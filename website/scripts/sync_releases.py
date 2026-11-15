@@ -39,7 +39,7 @@ def main():
         if any(downloads[key] != base + name for key, name in expected.items()):
             raise ValueError("Unexpected release download URL")
         snapshot = {"version": version, "publishedAt": release["published_at"], "downloads": downloads}
-        (ROOT / "releases.json").write_text(json.dumps(snapshot, indent=2) + "\n")
+        (ROOT / "public" / "releases.json").write_text(json.dumps(snapshot, indent=2) + "\n")
         # Keep the no-JavaScript experience on the same release as the snapshot.
         page = ROOT / "index.html"
         content = page.read_text()

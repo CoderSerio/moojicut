@@ -29,18 +29,23 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
       - uses: actions/configure-pages@v5
       - name: Refresh official downloads
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 website/scripts/sync_releases.py
-      - name: Prepare public files
+      - name: Build website
         run: |
-          mkdir -p .artifacts/website-public
-          cp website/index.html website/style.css website/app.js website/releases.json website/robots.txt website/sitemap.xml .artifacts/website-public/
-          cp -R website/assets .artifacts/website-public/assets
+          npm ci --prefix website
+          npm test --prefix website
+          npm run build --prefix website
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: .artifacts/website-public
+          path: website/dist
       - uses: actions/deploy-pages@v4
         id: deployment
