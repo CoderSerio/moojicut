@@ -3,6 +3,7 @@
 #include "moonbit.h"
 #include "native/shared/editor_style.h"
 #include "native/shared/update_release.h"
+#include "native/shared/plugin_protocol.h"
 
 // Signatures observed in native foreign_library output from moonc 0.10.20.
 // This test deliberately checks the real boundary instead of a mocked core.
@@ -79,10 +80,55 @@ static void CheckEditorStyles(void) {
             editor_style_get(second, MC_STYLE_TOOL_RECTANGLE, MC_STYLE_STROKE) == 6.5, @"Disposal leaves the other editor usable");
   editor_style_dispose(second);
 }
+static void CheckPluginUTF16Boundary(void) {
+  moonbit_string_t (*functions[])(moonbit_string_t) = {
+    plugin_manifest_validate, plugin_request_prepare, plugin_output_validate, tool_registry_resolve,
+  };
+  // Construct raw C ABI input: NSString/UTF-8 decoding normally rejects these
+  // sequences before they reach MoonBit, so a host-side JSON test is insufficient.
+  const uint16_t invalid[][4] = {
+    {0xd800}, {0xdc00}, {0xdbff}, {0xdfff},
+    {0xd800, 'A'}, {'A', 0xdc00}, {0xd800, 0xd800}, {0xdc00, 0xd800},
+    {0xd800, 0xdc00, 0xd800}, {0xdbff, 0xdfff, 0xdc00},
+  };
+  const int32_t lengths[] = {1,1,1,1,2,2,2,2,3,3};
+  for (NSUInteger function = 0; function < sizeof(functions)/sizeof(functions[0]); function++) {
+    for (NSUInteger sample = 0; sample < sizeof(lengths)/sizeof(lengths[0]); sample++) {
+      // Wrap each malformed sequence inside JSON text so rejection cannot rely
+      // on an unrelated syntax error. The Unicode check precedes field parsing.
+      const uint16_t prefix[] = {'{','"','x','"',':','"'};
+      int32_t count = (int32_t)(sizeof(prefix)/sizeof(prefix[0])) + lengths[sample] + 2;
+      moonbit_string_t input = moonbit_make_string_raw(count);
+      memcpy(input, prefix, sizeof(prefix));
+      memcpy(input + 6, invalid[sample], (size_t)lengths[sample] * sizeof(uint16_t));
+      input[count-2] = '"'; input[count-1] = '}';
+      NSDictionary *result = TakeJSON(functions[function](input));
+      NSCAssert(Moonbit_rc_count(Moonbit_object_header(input)) == 1, @"Invalid plugin input stays caller-owned");
+      moonbit_decref(input);
+      NSCAssert(![result[@"ok"] boolValue] && [result[@"error"][@"code"] isEqual:@"invalid_json"],
+                @"Malformed UTF-16 must return invalid_json through every plugin export: %@", result);
+    }
+  }
+  NSString *unicode = @"中文🦊\uD7FF\uE000";
+  NSDictionary *manifest = @{@"apiVersion":@1,@"pluginId":@"com.example.unicode",@"name":unicode,@"version":@"1.0.0",
+    @"entry":@"plugin.wasm",@"runtime":@"extism-1",@"capabilities":@[@"capture.metadata",@"result.text"],
+    @"tools":@[@{@"toolId":@"text",@"title":unicode,@"target":@"screenshot",@"action":@"run"}]};
+  NSDictionary *validated = Call(plugin_manifest_validate, manifest);
+  NSCAssert([validated[@"ok"] boolValue] && [validated[@"manifest"][@"name"] isEqual:unicode], @"Valid UTF-16 survives manifest validation");
+  NSDictionary *request = Call(plugin_request_prepare, @{@"manifest":manifest,@"toolId":@"user.com.example.unicode/text",
+    @"invocationId":@"utf16-test",@"capture":@{@"width":@320,@"height":@180,@"format":@"png",@"revision":@0}});
+  NSCAssert([request[@"ok"] boolValue], @"Valid surrogate pairs also survive request preparation");
+  NSDictionary *result = Call(plugin_output_validate, @{@"invocationId":@"utf16-test",@"output":@{
+    @"apiVersion":@1,@"invocationId":@"utf16-test",@"kind":@"text",@"title":unicode,@"text":unicode}});
+  NSCAssert([result[@"ok"] boolValue] && [result[@"result"][@"text"] isEqual:unicode], @"Plugin result Unicode roundtrips without replacement");
+  NSCAssert([Call(tool_registry_resolve, @{@"layout":NSNull.null,@"manifests":@[manifest]})[@"ok"] boolValue],
+            @"Dynamic tool catalog accepts the same valid Unicode manifest");
+}
 int main(void) {
   @autoreleasepool {
     moonbit_init(); // Once per process, before allocations or exported calls.
     CheckEditorStyles();
+    CheckPluginUTF16Boundary();
     moonbit_string_t unicode = MoonString(@"中文🦊");
     assert(Moonbit_array_length(unicode) == 4);
     assert(unicode[0] == 0x4e2d && unicode[1] == 0x6587 && unicode[2] == 0xd83e && unicode[3] == 0xdd8a);
@@ -158,7 +204,7 @@ int main(void) {
       NSDictionary *result = Call(image_create, @{ @"width":@640, @"height":@360 });
       NSCAssert([result[@"ok"] boolValue], @"Repeated bridge invocation");
     } }
-    puts("PASS native embedding: UTF-16 Chinese/emoji, ownership, 1000 calls, editor style ABI/isolation, image revisions/finalize, video edits/preview/dispose");
+    puts("PASS native embedding: plugin UTF-16 rejection/Unicode roundtrip, ownership, 1000 calls, editor style ABI/isolation, image revisions/finalize, video edits/preview/dispose");
   }
   return 0;
 }

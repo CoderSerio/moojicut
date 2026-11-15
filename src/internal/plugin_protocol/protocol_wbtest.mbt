@@ -411,3 +411,73 @@ test "raw boundaries reject duplicate keys before any host normalization can hid
   )
   @test_support.expect_error(plugin_manifest_validate("null"), "invalid_input")
 }
+
+///|
+test "raw UTF-16 rejects unpaired and adjacent malformed surrogate units" {
+  let malformed : Array[Array[Int32]] = [
+    [0xD800],
+    [0xDBFF],
+    [0xDC00],
+    [0xDFFF],
+    [0xD800, 0x0061],
+    [0x0061, 0xDC00],
+    [0xD800, 0xDBFF],
+    [0xDC00, 0xD800],
+    [0xDC00, 0xDFFF],
+    [0xD800, 0xDC00, 0xDFFF],
+    [0xD800, 0xDC00, 0xDBFF],
+    [0xD800, 0xDBFF, 0xDFFF],
+  ]
+  for units in malformed {
+    // Deliberately bypass Char's scalar invariant, as a raw C ABI caller can.
+    let raw = String::from_array(units.map(unit => unit.unsafe_to_char()))
+    assert_eq(raw.length(), units.length())
+    for index in 0..<units.length() {
+      assert_eq(raw[index].to_int(), units[index])
+    }
+    for input in [raw, "{\"value\":\"" + raw + "\"}"] {
+      @test_support.expect_error(
+        plugin_manifest_validate(input),
+        "invalid_json",
+      )
+      @test_support.expect_error(plugin_request_prepare(input), "invalid_json")
+      @test_support.expect_error(plugin_output_validate(input), "invalid_json")
+    }
+  }
+  let leading = String::from_array([(0xD800).unsafe_to_char()])
+  @test_support.expect_error(
+    plugin_manifest_validate(leading + " ".repeat(65536)),
+    "limit_exceeded",
+  )
+  // ASCII escape sequences still go through the JSON parser's own checks.
+  for escaped in ["\\uD800", "\\uDFFF", "\\uD800\\uD800"] {
+    @test_support.expect_error(
+      plugin_manifest_validate("{\"value\":\"" + escaped + "\"}"),
+      "invalid_json",
+    )
+  }
+}
+
+///|
+test "UTF-16 pair boundaries retain exact UTF-8 byte budgeting" {
+  for
+    units in [
+      [0xD7FF],
+      [0xE000],
+      [0xD800, 0xDC00],
+      [0xDBFF, 0xDFFF],
+      [0xD7FF, 0xD800, 0xDC00, 0xDBFF, 0xDFFF, 0xE000],
+    ] {
+    let value = String::from_array(units.map(unit => unit.unsafe_to_char()))
+    let input = "{\"value\":\"" + value + "\"}"
+    let byte_limit = @utf8.encode(input).length()
+    assert_eq(parse_object(input, byte_limit).get("value"), Some(Json(value)))
+    @test_support.expect_error(
+      @protocol.response(() => {
+        ignore(parse_object(input, byte_limit - 1))
+        Json(true)
+      }),
+      "limit_exceeded",
+    )
+  }
+}

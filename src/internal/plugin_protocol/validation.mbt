@@ -9,7 +9,27 @@ pub fn parse_object(
   text : String,
   byte_limit : Int32,
 ) -> Map[String, Json] raise InputError {
-  if text.length() > byte_limit || @utf8.encode(text).length() > byte_limit {
+  if text.length() > byte_limit {
+    raise InputError("limit_exceeded", "JSON exceeds its UTF-8 byte limit")
+  }
+  // C callers can supply raw UTF-16 that String iteration/UTF-8 encoding
+  // would abort on. Validate code units before either operation.
+  let mut index = 0
+  while index < text.length() {
+    let unit = text[index]
+    if unit.is_leading_surrogate() {
+      if index + 1 >= text.length() || !text[index + 1].is_trailing_surrogate() {
+        raise InputError("invalid_json", "JSON input must contain valid UTF-16")
+      }
+      index += 2
+    } else {
+      if unit.is_trailing_surrogate() {
+        raise InputError("invalid_json", "JSON input must contain valid UTF-16")
+      }
+      index += 1
+    }
+  }
+  if @utf8.encode(text).length() > byte_limit {
     raise InputError("limit_exceeded", "JSON exceeds its UTF-8 byte limit")
   }
   let value = @json.parse(

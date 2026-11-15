@@ -10,6 +10,8 @@ extern "C" {
 /* Owning MoonBit String ABI. Every result is JSON:
  * success {ok:true,...}; failure {ok:false,error:{code,message}}.
  * Validation is pure; no loading, filesystem, network, or UI side effects.
+ * Inputs within the size bound are checked for malformed UTF-16 before UTF-8
+ * encoding; invalid pairs from C callers return invalid_json.
  *
  * manifest_validate: manifest object -> {ok:true,manifest,tools}.
  * request_prepare: {manifest,toolId:<global id>,invocationId,capture}
