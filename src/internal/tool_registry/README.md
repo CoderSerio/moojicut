@@ -4,7 +4,7 @@ This package owns the built-in tool catalog and the user's ordered layout. It
 does not own feature lifecycle, editor documents, annotation history, live
 gestures, or per-tool style sessions.
 
-The first catalog contains four optional screenshot tools:
+The screenshot catalog contains four annotation tools and the pin action:
 
 | Stable ID | Existing image/style kind |
 | --- | --- |
@@ -12,10 +12,13 @@ The first catalog contains four optional screenshot tools:
 | `builtin.image.arrow` | 2 |
 | `builtin.image.text` | 3 |
 | `builtin.image.cover` | 4 |
+| `builtin.image.pin` | None: action `pin` |
 
-All belong to `builtin.image-editor`. Selection and workflow controls remain
-host controls. The `recording` and `videoEditing` catalogs are currently empty.
-IDs and kinds remain stable when display order changes.
+The annotation tools belong to `builtin.image-editor`; the pin action belongs
+to `builtin.pin`. Selection and workflow controls remain host controls. The
+`recording` and `videoEditing` catalogs are currently empty. IDs, action names,
+and annotation kinds remain stable when display order changes. Loading an older
+four-tool layout appends pin, enabled, after all saved entries.
 
 ## JSON boundary
 
@@ -53,10 +56,13 @@ moves to the end, including after hidden unknown entries. Moving before oneself
 is a no-op. Update targets must be known built-ins; cross-group moves fail.
 
 Both functions return `{ok:true,layout,groups}`. Each catalog entry in `groups`
-contains `id`, `pluginId`, `target`, `kind`, `title`, and `enabled`. Disabled
-tools remain in both outputs so settings can retain their position. Hosts
-persist **layout**, render **groups**, and dispatch by stable ID/kind rather
-than array index. Native function declarations are in
+contains `id`, `pluginId`, `target`, `type`, `title`, and `enabled`.
+`type:"annotation"` entries also contain their existing `kind` (1–4).
+`type:"action"` entries contain `action:"pin"` and have no `kind` field. Pin is
+never passed to image annotation or style APIs. Disabled tools remain in both
+outputs so settings can retain their position. Hosts persist **layout**, render
+**groups**, and dispatch by stable ID and descriptor type rather than array
+index. Native function declarations are in
 `native/shared/tool_registry.h`.
 
 Invalid input returns `{ok:false,error:{code,message}}`, without a replacement

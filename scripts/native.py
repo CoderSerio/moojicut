@@ -326,7 +326,7 @@ class NativeBuild:
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
                  "-DRegisterEventHotKey=MCTestRegisterPinHotKey", "-DUnregisterEventHotKey=MCTestUnregisterPinHotKey",
                  ROOT / "test/native/pinned-image.m", *native_sources("macos", "feature.pin"),
-                 archive, "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
+                 "-I", self.include, preferences / "MCToolRegistryStore.m", archive, "-framework", "AppKit", "-framework", "Carbon", "-o", pinned_image)
         self.run(pinned_image)
         global_shortcuts = shortcuts / "global-shortcuts"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",

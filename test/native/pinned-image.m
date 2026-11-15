@@ -2,6 +2,8 @@
 #import "plugins/feature/pin/macos/MCPinnedImageController.h"
 #import "native/macos/preferences/MCPinShortcutStore.h"
 #include <math.h>
+#include "moonbit.h"
+#import "native/macos/preferences/MCToolRegistryStore.h"
 #import <Carbon/Carbon.h>
 #include <stdlib.h>
 
@@ -108,6 +110,7 @@ static BOOL near(CGFloat actual, CGFloat expected) { return fabs(actual - expect
 
 int main(void) {
     @autoreleasepool {
+        moonbit_init();
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         NSString *domain = [@"dev.moojicut.pin-test." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -281,7 +284,12 @@ int main(void) {
             (void)message;
             if (weakController.disabling) reentryRejected = [weakController createPinPNGData:png display:NO error:NULL] == nil;
         };
-        controller.enabled = NO;
+        MCToolRegistryStore *registry = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
+        registry.applyChange = ^(NSDictionary *candidate) {
+            for (NSDictionary *tool in candidate[@"groups"][@"screenshot"])
+                if ([tool[@"id"] isEqual:@"builtin.image.pin"]) weakController.enabled = [tool[@"enabled"] boolValue];
+        };
+        CHECK([registry setTool:@"builtin.image.pin" enabled:NO error:&error], "management switch invokes the existing pin feature gate");
         CHECK(!controller.enabled && !controller.disabling && controller.count == 0 && reentryRejected,
               "disable closes the gate before callback reentry, then finishes cleanup");
         CHECK(!inertPanel.delegate && !inertPanel.contentView && !inertPanel.ignoresMouseEvents && registrations == unregistrations,
@@ -291,7 +299,7 @@ int main(void) {
         MCPinnedImageController *restored = [[MCPinnedImageController alloc] initWithDefaults:defaults];
         CHECK(!restored.enabled, "disabled setting persists across controller recreation");
         controller.onShortcutStatus = nil;
-        controller.enabled = YES;
+        CHECK([registry setTool:@"builtin.image.pin" enabled:YES error:&error], "management re-enable uses the same gate");
         CHECK(controller.enabled && [controller createPinPNGData:png display:NO error:&error] && controller.count == 1,
               "re-enabling creates working pins after complete cleanup");
         [controller closeAll];

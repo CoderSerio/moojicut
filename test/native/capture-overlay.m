@@ -185,7 +185,11 @@ static BOOL exercise(CGFloat scale) {
     CHECK(editor.window != nil && [editor.document[@"viewport"] isEqual:viewport],
           "a pin rejected by the feature gate keeps the crop and editor alive");
     editor.onPinPNGData = nil;
-    CHECK(![[editor valueForKey:@"pinButton"] isEnabled], "removing pin capability disables its visible toolbar button");
+    NSInteger pinSegment = -1;
+    for (NSInteger index = 0; index < editor.tools.segmentCount; index++)
+        if ([editor.tools tagForSegment:index] == 100) pinSegment = index;
+    CHECK(pinSegment >= 0 && ![editor.tools isEnabledForSegment:pinSegment],
+          "removing pin capability disables the real action segment");
     editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; pinnedFrame = weakEditor.pinScreenFrame; return YES; };
     [editor pinImage:nil];
     CHECK(pinned.length > 0 && editor.window == nil, "pin receives the final crop and finishes the capture");

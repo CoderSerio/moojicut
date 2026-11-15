@@ -1,9 +1,22 @@
 #import "MCToolRegistryStore.h"
+#import "plugins/feature/pin/macos/MCPinnedImageController.h"
 #include "native/shared/tool_registry.h"
 #include <stdint.h>
 
 NSNotificationName const MCToolRegistryDidChangeNotification = @"MCToolRegistryDidChangeNotification";
 static NSString *const MCToolLayoutKey = @"builtinToolLayoutV1";
+static NSString *const MCPinToolID = @"builtin.image.pin";
+
+static BOOL MCSavedLayoutContainsPin(id saved) {
+    if (![saved isKindOfClass:NSDictionary.class]) return NO;
+    id groups = saved[@"groups"];
+    if (![groups isKindOfClass:NSDictionary.class]) return NO;
+    id entries = groups[@"screenshot"];
+    if (![entries isKindOfClass:NSArray.class]) return NO;
+    for (id entry in entries)
+        if ([entry isKindOfClass:NSDictionary.class] && [entry[@"id"] isEqual:MCPinToolID]) return YES;
+    return NO;
+}
 
 static NSError *MCToolError(NSString *message) {
     return [NSError errorWithDomain:@"dev.moojicut.tool-registry" code:1
@@ -75,6 +88,16 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
         if (!_snapshot) {
             _snapshot = @{@"layout":@{@"version":@1, @"groups":@{}}, @"groups":@{}};
         }
+        if (!MCSavedLayoutContainsPin(saved) && [defaults objectForKey:MCPinFeatureEnabledDefaultsKey] &&
+            ![defaults boolForKey:MCPinFeatureEnabledDefaultsKey]) {
+            // Older releases stored the pin gate separately. Apply it only to
+            // the in-memory normalized snapshot; construction never saves.
+            NSString *migrationJSON = MCToolJSON(@{@"layout":_snapshot[@"layout"],
+                @"command":@{@"type":@"enabled", @"id":MCPinToolID, @"enabled":@NO}}, &error);
+            NSDictionary *migrated = migrationJSON ? MCCallToolRegistry(tool_registry_update, migrationJSON, &error) : nil;
+            if (migrated) _snapshot = migrated;
+            else if (!_loadError) _loadError = error;
+        }
     }
     return self;
 }
@@ -101,6 +124,12 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
             return NO;
         }
         [self.defaults setObject:candidate[@"layout"] forKey:MCToolLayoutKey];
+        for (NSDictionary *tool in candidate[@"groups"][@"screenshot"]) {
+            if ([tool[@"id"] isEqualToString:MCPinToolID]) {
+                [self.defaults setBool:[tool[@"enabled"] boolValue] forKey:MCPinFeatureEnabledDefaultsKey];
+                break;
+            }
+        }
         self.snapshot = candidate;
         self.loadError = nil;
         if (self.applyChange) self.applyChange(candidate);

@@ -28,7 +28,7 @@ fn update(layout : Json, command : Json) -> Json raise {
 }
 
 ///|
-test "defaults expose only four real screenshot tools with stable style ABI" {
+test "defaults distinguish four annotation tools and the pin action" {
   @test_support.expect_json(
     tool_registry_normalize(""),
     (
@@ -36,12 +36,14 @@ test "defaults expose only four real screenshot tools with stable style ABI" {
       #|{"id":"builtin.image.rectangle","enabled":true},
       #|{"id":"builtin.image.arrow","enabled":true},
       #|{"id":"builtin.image.text","enabled":true},
-      #|{"id":"builtin.image.cover","enabled":true}],"recording":[],"videoEditing":[]}},
+      #|{"id":"builtin.image.cover","enabled":true},
+      #|{"id":"builtin.image.pin","enabled":true}],"recording":[],"videoEditing":[]}},
       #|"groups":{"screenshot":[
-      #|{"id":"builtin.image.rectangle","pluginId":"builtin.image-editor","target":"screenshot","kind":1,"title":"矩形","enabled":true},
-      #|{"id":"builtin.image.arrow","pluginId":"builtin.image-editor","target":"screenshot","kind":2,"title":"箭头","enabled":true},
-      #|{"id":"builtin.image.text","pluginId":"builtin.image-editor","target":"screenshot","kind":3,"title":"文字","enabled":true},
-      #|{"id":"builtin.image.cover","pluginId":"builtin.image-editor","target":"screenshot","kind":4,"title":"遮挡","enabled":true}],"recording":[],"videoEditing":[]}}
+      #|{"id":"builtin.image.rectangle","pluginId":"builtin.image-editor","target":"screenshot","type":"annotation","kind":1,"title":"矩形","enabled":true},
+      #|{"id":"builtin.image.arrow","pluginId":"builtin.image-editor","target":"screenshot","type":"annotation","kind":2,"title":"箭头","enabled":true},
+      #|{"id":"builtin.image.text","pluginId":"builtin.image-editor","target":"screenshot","type":"annotation","kind":3,"title":"文字","enabled":true},
+      #|{"id":"builtin.image.cover","pluginId":"builtin.image-editor","target":"screenshot","type":"annotation","kind":4,"title":"遮挡","enabled":true},
+      #|{"id":"builtin.image.pin","pluginId":"builtin.pin","target":"screenshot","type":"action","action":"pin","title":"贴图","enabled":true}],"recording":[],"videoEditing":[]}}
     ),
   )
 }
@@ -65,7 +67,7 @@ test "normalization deduplicates first wins and preserves hidden unknown identit
     ids(layout, "screenshot"),
     @json.parse(
       (
-        #|["builtin.image.text","future.tool","builtin.image.arrow","builtin.image.rectangle","builtin.image.cover"]
+        #|["builtin.image.text","future.tool","builtin.image.arrow","builtin.image.rectangle","builtin.image.cover","builtin.image.pin"]
       ),
     ),
   )
@@ -73,7 +75,7 @@ test "normalization deduplicates first wins and preserves hidden unknown identit
     ids(result, "screenshot"),
     @json.parse(
       (
-        #|["builtin.image.text","builtin.image.arrow","builtin.image.rectangle","builtin.image.cover"]
+        #|["builtin.image.text","builtin.image.arrow","builtin.image.rectangle","builtin.image.cover","builtin.image.pin"]
       ),
     ),
   )
@@ -102,7 +104,7 @@ test "new tools append after saved order and toggles preserve slots and unknown 
     ids(original, "screenshot"),
     @json.parse(
       (
-        #|["builtin.image.cover","future.tool","builtin.image.rectangle","builtin.image.arrow","builtin.image.text"]
+        #|["builtin.image.cover","future.tool","builtin.image.rectangle","builtin.image.arrow","builtin.image.text","builtin.image.pin"]
       ),
     ),
   )
@@ -155,7 +157,7 @@ test "moving disabled tools changes order without changing tool kind or persiste
     ids(moved, "screenshot"),
     @json.parse(
       (
-        #|["builtin.image.text","builtin.image.rectangle","builtin.image.arrow","builtin.image.cover"]
+        #|["builtin.image.text","builtin.image.rectangle","builtin.image.arrow","builtin.image.cover","builtin.image.pin"]
       ),
     ),
   )
@@ -189,14 +191,111 @@ test "moving disabled tools changes order without changing tool kind or persiste
     ids(last, "screenshot"),
     @json.parse(
       (
-        #|["builtin.image.rectangle","builtin.image.arrow","builtin.image.cover","builtin.image.text"]
+        #|["builtin.image.rectangle","builtin.image.arrow","builtin.image.cover","builtin.image.pin","builtin.image.text"]
       ),
     ),
   )
-  assert_eq(field(entries(last, "screenshot")[3], "enabled"), Json(false))
+  assert_eq(field(entries(last, "screenshot")[4], "enabled"), Json(false))
   assert_eq(
     ids(original, "screenshot"),
     ids(success(tool_registry_normalize("")), "screenshot"),
+  )
+}
+
+///|
+test "old annotation layouts append pin and preserve its action identity through reorder and toggles" {
+  let original = success(
+    tool_registry_normalize(
+      (
+        #|{"version":1,"groups":{"screenshot":[
+        #|{"id":"builtin.image.rectangle","enabled":true},
+        #|{"id":"builtin.image.arrow","enabled":false},
+        #|{"id":"builtin.image.text","enabled":true},
+        #|{"id":"builtin.image.cover","enabled":true}],"recording":[],"videoEditing":[]}}
+      ),
+    ),
+  )
+  assert_eq(
+    field(entries(original, "screenshot")[4], "id"),
+    Json("builtin.image.pin"),
+  )
+  assert_eq(field(entries(original, "screenshot")[4], "enabled"), Json(true))
+  let moved = update(
+    field(original, "layout"),
+    @json.parse(
+      (
+        #|{"type":"move","group":"screenshot","id":"builtin.image.pin","beforeId":"builtin.image.text"}
+      ),
+    ),
+  )
+  assert_eq(
+    ids(moved, "screenshot"),
+    @json.parse(
+      (
+        #|["builtin.image.rectangle","builtin.image.arrow","builtin.image.pin","builtin.image.text","builtin.image.cover"]
+      ),
+    ),
+  )
+  assert_eq(
+    entries(moved, "screenshot")[2],
+    @json.parse(
+      (
+        #|{"id":"builtin.image.pin","pluginId":"builtin.pin","target":"screenshot","type":"action","action":"pin","title":"贴图","enabled":true}
+      ),
+    ),
+  )
+  let disabled = update(
+    field(moved, "layout"),
+    @json.parse(
+      (
+        #|{"type":"enabled","id":"builtin.image.pin","enabled":false}
+      ),
+    ),
+  )
+  assert_eq(ids(disabled, "screenshot"), ids(moved, "screenshot"))
+  assert_eq(field(entries(disabled, "screenshot")[2], "enabled"), Json(false))
+  assert_false(entries(disabled, "screenshot")[2] is Object({ "kind": _, .. }))
+  let disabled_moved = update(
+    field(disabled, "layout"),
+    @json.parse(
+      (
+        #|{"type":"move","group":"screenshot","id":"builtin.image.pin","beforeId":"builtin.image.arrow"}
+      ),
+    ),
+  )
+  assert_eq(
+    ids(disabled_moved, "screenshot"),
+    @json.parse(
+      (
+        #|["builtin.image.rectangle","builtin.image.pin","builtin.image.arrow","builtin.image.text","builtin.image.cover"]
+      ),
+    ),
+  )
+  assert_eq(
+    field(entries(disabled_moved, "screenshot")[1], "enabled"),
+    Json(false),
+  )
+  let restored = update(
+    field(disabled_moved, "layout"),
+    @json.parse(
+      (
+        #|{"type":"enabled","id":"builtin.image.pin","enabled":true}
+      ),
+    ),
+  )
+  assert_eq(ids(restored, "screenshot"), ids(disabled_moved, "screenshot"))
+  assert_eq(entries(restored, "screenshot")[1], entries(moved, "screenshot")[2])
+  assert_eq(field(entries(restored, "screenshot")[2], "enabled"), Json(false))
+  for (index, kind) in [(0, 1), (2, 2), (3, 3), (4, 4)] {
+    let annotation = entries(restored, "screenshot")[index]
+    assert_eq(field(annotation, "type"), Json("annotation"))
+    assert_eq(field(annotation, "kind"), Json(kind))
+    assert_eq(field(annotation, "pluginId"), Json("builtin.image-editor"))
+    assert_false(annotation is Object({ "action": _, .. }))
+  }
+  assert_eq(
+    success(tool_registry_normalize(field(restored, "layout").stringify())),
+    restored,
   )
 }
 
@@ -294,7 +393,7 @@ test "malformed or unsupported saved data fails closed instead of resetting user
 ///|
 test "maximum accepted saved layout remains reloadable after defaults are appended" {
   let unknown : Array[Json] = []
-  for index in 0..<252 {
+  for index in 0..<251 {
     unknown.push(
       Json::object({ "id": Json("future.\{index}"), "enabled": Json(false) }),
     )
@@ -305,7 +404,7 @@ test "maximum accepted saved layout remains reloadable after defaults are append
   })
   let normalized = success(tool_registry_normalize(saved.stringify()))
   assert_eq(entries(field(normalized, "layout"), "screenshot").length(), 256)
-  assert_eq(entries(normalized, "screenshot").length(), 4)
+  assert_eq(entries(normalized, "screenshot").length(), 5)
   assert_eq(
     success(tool_registry_normalize(field(normalized, "layout").stringify())),
     normalized,

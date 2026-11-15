@@ -8,13 +8,18 @@
 // Hidden synthetic windows only: no real capture, system clipboard or events.
 @interface MCImageCanvas : NSView
 @property NSTextView *textView;
+@property NSMutableDictionary *textDraft;
+@property NSString *selectedID;
 - (NSRect)imageFrame;
+- (BOOL)finishTextEditing:(BOOL)commit;
 @end
 @interface MCImageEditorController (MCToolLayoutTest)
 @property (readonly) MCImageCanvas *canvas;
 @property (readonly) NSSegmentedControl *tools;
 @property (readonly) NSInteger activeTool;
 @property (readonly) MCStylePropertiesView *properties;
+@property (readonly) NSStackView *toolbar;
+@property (readonly) NSButton *pinButton;
 - (void)prepareWindow;
 - (void)chooseTool:(id)sender;
 @end
@@ -27,8 +32,13 @@ static NSDictionary *configuration(NSArray<NSNumber *> *order, NSSet<NSNumber *>
     NSArray *ids = @[@"builtin.image.rectangle", @"builtin.image.arrow", @"builtin.image.text", @"builtin.image.cover"];
     NSArray *titles = @[@"矩形", @"箭头", @"文字", @"遮挡"];
     NSMutableArray *entries = [NSMutableArray array];
-    for (NSNumber *kind in order) [entries addObject:@{@"id":ids[kind.integerValue - 1], @"kind":kind,
-        @"title":titles[kind.integerValue - 1], @"enabled":@(![disabled containsObject:kind])}];
+    NSArray *ordered = [order containsObject:@100] ? order : [order arrayByAddingObject:@100];
+    for (NSNumber *kind in ordered) {
+        if (kind.integerValue == 100) [entries addObject:@{@"id":@"builtin.image.pin", @"pluginId":@"builtin.pin",
+            @"type":@"action", @"action":@"pin", @"title":@"贴图", @"enabled":@(![disabled containsObject:kind])}];
+        else [entries addObject:@{@"id":ids[kind.integerValue - 1], @"kind":kind, @"type":@"annotation",
+            @"title":titles[kind.integerValue - 1], @"enabled":@(![disabled containsObject:kind])}];
+    }
     return @{@"ok":@YES, @"layout":@{}, @"groups":@{@"screenshot":entries, @"recording":@[], @"videoEditing":@[]}};
 }
 static NSData *pixels(void) {
@@ -141,7 +151,7 @@ static BOOL interactions(void) {
 static BOOL validationAndFanout(void) {
     BOOL passed = YES;
     NSDictionary *base = configuration(@[@1,@2,@3,@4], [NSSet set]);
-    NSDictionary *none = configuration(@[@4,@3,@2,@1], [NSSet setWithArray:@[@1,@2,@3,@4]]);
+    NSDictionary *none = configuration(@[@4,@3,@2,@1], [NSSet setWithArray:@[@1,@2,@3,@4,@100]]);
     MCImageEditorController *first = editor(), *second = editor(), *opened = editor();
     MCCaptureController *capture = [MCCaptureController new];
     [capture setValue:@[first, second] forKey:@"overlayEditors"];
@@ -181,12 +191,107 @@ static BOOL validationAndFanout(void) {
     for (MCImageEditorController *e in @[first, second, opened, late]) [e cancel:nil];
     return passed;
 }
+static BOOL pinAction(void) {
+    BOOL passed = YES;
+    MCImageEditorController *e = editor();
+    __block NSInteger calls = 0;
+    __block NSData *result = nil;
+    BOOL (^pin)(NSData *) = ^BOOL(NSData *png) { calls++; result = png; return NO; };
+    e.onPinPNGData = pin;
+    choose(e, 2);
+    color(e, [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.4]);
+    NSStepper *stroke = e.properties.strokeControl.stepper;
+    stroke.doubleValue = 9; [stroke sendAction:stroke.action to:stroke.target];
+    MCStyleValues values = e.properties.values;
+    NSDictionary *before = e.document;
+    NSArray *orders = @[@[@100,@1,@2,@3,@4], @[@1,@2,@100,@3,@4], @[@1,@2,@3,@4,@100]];
+    NSArray *positions = @[@1,@3,@5];
+    for (NSUInteger index = 0; index < orders.count; index++) {
+        NSDictionary *candidate = configuration(orders[index], [NSSet set]);
+        CHECK([e canApplyToolConfiguration:candidate error:NULL], "pin action contract preflights without annotation kind");
+        [e applyToolConfiguration:candidate];
+        CHECK(segment(e, 100) == [positions[index] integerValue] && [e.tools isEnabledForSegment:segment(e, 100)],
+              "pin occupies its configured first, middle or final position");
+        choose(e, 100);
+        CHECK(e.activeTool == 2 && [e.tools tagForSegment:e.tools.selectedSegment] == 2 && calls == (NSInteger)index + 1 &&
+              [e.document isEqual:before] && e.window != nil, "failed pin is momentary and retains the editor and current annotation tool");
+        CHECK(e.properties.values.rgb == values.rgb && e.properties.values.stroke == values.stroke &&
+              fabs(e.properties.values.opacity - values.opacity) < .001, "pin action never changes the tool style bank");
+    }
+    NSBitmapImageRep *rendered = [NSBitmapImageRep imageRepWithData:result];
+    CHECK(rendered.pixelsWide == 800 && rendered.pixelsHigh == 500, "pin still uses the real PNG rendering transaction");
+    CHECK(!e.pinButton.superview && ![e.toolbar.arrangedSubviews containsObject:e.pinButton], "the toolbar has no duplicate trailing pin button");
+    e.onPinPNGData = nil;
+    CHECK(![e.tools isEnabledForSegment:segment(e,100)] && !e.pinButton.enabled &&
+          [[e.tools toolTipForSegment:segment(e,100)] containsString:@"已关闭"], "removing the shared pin gate immediately disables the real segment");
+    choose(e,100);
+    CHECK(calls == 3 && e.activeTool == 2 && [e.document isEqual:before], "direct action dispatch cannot bypass a missing pin gate");
+    e.onPinPNGData = pin;
+    CHECK([e.tools isEnabledForSegment:segment(e,100)] && e.pinButton.enabled, "restoring the gate enables pin without rebuilding the editor");
+    choose(e,3);
+    [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(50,220))];
+    [e.canvas.textView setMarkedText:@"zhongwen" selectedRange:NSMakeRange(8,0) replacementRange:NSMakeRange(NSNotFound,0)];
+    NSResponder *responder = e.window.firstResponder;
+    NSDictionary *hidden = configuration(@[@100,@4,@3,@2,@1], [NSSet setWithObject:@100]);
+    CHECK([e canApplyToolConfiguration:hidden error:NULL], "managing pin is independent of the active text transaction");
+    [e applyToolConfiguration:hidden];
+    e.onPinPNGData = nil;
+    CHECK(segment(e,100) == -1 && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder &&
+          e.activeTool == 3 && [e.document isEqual:before], "hiding pin and changing its gate never consume background IME composition");
+    NSDictionary *shown = configuration(@[@1,@100,@3,@2,@4], [NSSet set]);
+    [e applyToolConfiguration:shown]; e.onPinPNGData = pin;
+    CHECK(segment(e,100) == 2 && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder,
+          "reenabling and moving pin preserves IME and the chosen text tool");
+    NSString *composed = e.canvas.textView.string;
+    NSTextView *textView = e.canvas.textView;
+    NSMutableDictionary *draft = e.canvas.textDraft;
+    NSString *selection = e.canvas.selectedID;
+    choose(e,100);
+    CHECK(calls == 3 && e.activeTool == 3 && e.canvas.textView == textView && textView.hasMarkedText &&
+          e.canvas.textDraft == draft && [e.canvas.selectedID isEqual:selection] && [e.document isEqual:before] &&
+          [textView.string isEqual:composed] && e.window.firstResponder == responder,
+          "explicit pin rejects IME without touching composition, selection, draft or history");
+    [textView insertText:@"保留草稿" replacementRange:NSMakeRange(NSNotFound,0)];
+    NSRange selectedRange = textView.selectedRange;
+    NSData *unannotated = result;
+    NSUndoManager *textUndo = textView.undoManager;
+    BOOL canUndo = textUndo.canUndo;
+    choose(e,100);
+    CHECK(calls == 4 && e.activeTool == 3 && e.canvas.textView == textView && e.canvas.textDraft == draft &&
+          [textView.string isEqual:@"保留草稿"] && [e.canvas.selectedID isEqual:selection] &&
+          NSEqualRanges(textView.selectedRange,selectedRange) && e.window.firstResponder == responder &&
+          textView.undoManager == textUndo && textUndo.canUndo == canUndo && [e.document isEqual:before],
+          "handler failure retains the exact live text transaction and document history");
+    CHECK(![result isEqual:unannotated], "candidate PNG includes the pending text without committing it into the editor");
+    textView.string = [@"x" stringByPaddingToLength:10001 withString:@"x" startingAtIndex:0];
+    choose(e,100);
+    CHECK(calls == 4 && e.activeTool == 3 && e.canvas.textView == textView && textView.string.length == 10001 &&
+          e.canvas.textDraft == draft && [e.document isEqual:before],
+          "pin cannot discard a text draft rejected by the shared document validator");
+    [e.canvas finishTextEditing:NO];
+    choose(e,2);
+    CHECK(e.properties.values.stroke == 9 && e.properties.values.rgb == 0xff0000, "the prior arrow defaults survive pin attempts and text edits");
+    [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(300,300))];
+    [e.canvas mouseDragged:mouse(e.canvas, NSEventTypeLeftMouseDragged, NSMakePoint(500,400))];
+    choose(e,100);
+    CHECK(calls == 4 && e.activeTool == 2, "pin during a drag neither invokes the handler nor switches the drawing tool");
+    [e.canvas mouseUp:mouse(e.canvas, NSEventTypeLeftMouseUp, NSMakePoint(500,400))];
+    CHECK([e.document[@"annotations"] count] == 1 && [e.document[@"annotations"][0][@"type"] isEqual:@"arrow"],
+          "ignored pin during a drag preserves the pending annotation transaction");
+    [e cancel:nil];
+    MCImageEditorController *success = editor();
+    choose(success,2);
+    success.onPinPNGData = ^BOOL(NSData *png) { return [NSBitmapImageRep imageRepWithData:png] != nil; };
+    choose(success,100);
+    CHECK(!success.window && success.activeTool == 2, "successful pin closes through the existing action without selecting an action as a tool");
+    return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         moonbit_init();
-        BOOL passed = interactions(); passed = validationAndFanout() && passed;
-        puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME and capture fanout" : "FAIL tool layout");
+        BOOL passed = interactions(); passed = validationAndFanout() && passed; passed = pinAction() && passed;
+        puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME, pin actions and capture fanout" : "FAIL tool layout");
         return passed ? 0 : 1;
     }
 }

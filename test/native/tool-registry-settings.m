@@ -2,6 +2,7 @@
 #import "native/macos/preferences/MCToolRegistryStore.h"
 #import "native/macos/preferences/MCPluginManagementController.h"
 #import "native/macos/preferences/MCPreferencesController.h"
+#import "plugins/feature/pin/macos/MCPinnedImageController.h"
 #include "moonbit.h"
 
 NSNotificationName const MCUpdateStateDidChangeNotification = @"MCUpdateStateDidChangeNotification";
@@ -27,6 +28,11 @@ static NSView *findView(NSView *view, NSString *identifier) {
 static NSArray *ids(MCToolRegistryStore *store) {
     return [[store toolsForGroup:@"screenshot"] valueForKey:@"id"];
 }
+static NSDictionary *toolWithID(MCToolRegistryStore *store, NSString *identifier) {
+    for (NSDictionary *tool in [store toolsForGroup:@"screenshot"])
+        if ([tool[@"id"] isEqual:identifier]) return tool;
+    return nil;
+}
 static NSButton *toggleFor(NSTableView *table, NSInteger row) {
     return (NSButton *)[table.delegate tableView:table viewForTableColumn:table.tableColumns[1] row:row];
 }
@@ -41,7 +47,7 @@ int main(void) {
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
         NSString *key = @"builtinToolLayoutV1";
         NSString *rectangle = @"builtin.image.rectangle", *arrow = @"builtin.image.arrow";
-        NSString *text = @"builtin.image.text", *cover = @"builtin.image.cover";
+        NSString *text = @"builtin.image.text", *cover = @"builtin.image.cover", *pin = @"builtin.image.pin";
         MCToolRegistryStore *store = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
         __block NSUInteger prepared = 0, applied = 0, notified = 0;
         __block BOOL veto = NO, nestedRejected = NO;
@@ -60,17 +66,17 @@ int main(void) {
         MCPreferencesController *preferences = nil;
         MCPluginManagementController *controller = nil;
         @try {
-            CHECK(([ids(store) isEqual:@[rectangle, arrow, text, cover]] && !store.loadError), "first launch exposes four built-in tools in default order");
+            CHECK(([ids(store) isEqual:@[rectangle, arrow, text, cover, pin]] && !store.loadError), "first launch exposes built-in tools and the pin action in default order");
             CHECK([defaults objectForKey:key] == nil, "opening settings does not write defaults");
             CHECK([store toolsForGroup:@"recording"].count == 0 && [store toolsForGroup:@"videoEditing"].count == 0,
                   "unintegrated groups remain empty");
             NSError *error = nil;
             CHECK([store moveTool:text inGroup:@"screenshot" beforeTool:rectangle error:&error], "moving by stable ID succeeds");
-            CHECK(([ids(store) isEqual:@[text, rectangle, arrow, cover]]), "move preserves the other tools' relative order");
+            CHECK(([ids(store) isEqual:@[text, rectangle, arrow, cover, pin]]), "move preserves the other tools' relative order");
             CHECK(nestedRejected && prepared == 1 && applied == 1 && notified == 1, "publication is synchronous and rejects reentrant changes");
             CHECK([store setTool:cover enabled:NO error:&error], "disable persists");
             MCToolRegistryStore *reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
-            CHECK([ids(reopened) isEqual:ids(store)] && ![[reopened toolsForGroup:@"screenshot"].lastObject[@"enabled"] boolValue],
+            CHECK([ids(reopened) isEqual:ids(store)] && ![toolWithID(reopened, cover)[@"enabled"] boolValue],
                   "reopening preserves enabled state and order");
             NSDictionary *before = store.snapshot, *saved = [defaults dictionaryForKey:key];
             NSUInteger count = notified;
@@ -91,13 +97,13 @@ int main(void) {
             NSButton *up = (NSButton *)findView(preferences.window.contentView, @"plugin-tool-move-up");
             NSButton *down = (NSButton *)findView(preferences.window.contentView, @"plugin-tool-move-down");
             NSButton *import = (NSButton *)findView(preferences.window.contentView, @"plugin-import");
-            CHECK(table && table.numberOfRows == 4 && groups.segmentCount == 3 && !preferences.window.visible,
+            CHECK(table && table.numberOfRows == 5 && groups.segmentCount == 3 && !preferences.window.visible,
                   "real preferences exposes three categories and one tool list in a hidden fixture");
             CHECK(import && !import.enabled && [import.toolTip containsString:@"即将支持"], "import is honestly unavailable at this stage");
             [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
             CHECK(!up.enabled && down.enabled, "first row only moves down");
             [down performClick:nil];
-            CHECK(([ids(store) isEqual:@[rectangle, text, arrow, cover]] && table.selectedRow == 1), "down button saves order and follows stable selection");
+            CHECK(([ids(store) isEqual:@[rectangle, text, arrow, cover, pin]] && table.selectedRow == 1), "down button saves order and follows stable selection");
             [up performClick:nil];
             CHECK([ids(store).firstObject isEqual:text] && table.selectedRow == 0, "up button updates the same order contract");
             veto = YES;
@@ -115,9 +121,9 @@ int main(void) {
             id<NSPasteboardWriting> writer = [table.dataSource tableView:table pasteboardWriterForRow:0];
             [drag.draggingPasteboard writeObjects:@[writer]];
             id<NSDraggingInfo> info = (id<NSDraggingInfo>)drag;
-            CHECK([table.dataSource tableView:table validateDrop:info proposedRow:4 proposedDropOperation:NSTableViewDropAbove] == NSDragOperationMove,
+            CHECK([table.dataSource tableView:table validateDrop:info proposedRow:5 proposedDropOperation:NSTableViewDropAbove] == NSDragOperationMove,
                   "same-table drag is accepted");
-            CHECK([table.dataSource tableView:table acceptDrop:info row:4 dropOperation:NSTableViewDropAbove] && [ids(store).lastObject isEqual:text],
+            CHECK([table.dataSource tableView:table acceptDrop:info row:5 dropOperation:NSTableViewDropAbove] && [ids(store).lastObject isEqual:text],
                   "dragging to the end persists actual stable-ID order");
             drag.draggingSource = [NSTableView new];
             CHECK([table.dataSource tableView:table validateDrop:info proposedRow:0 proposedDropOperation:NSTableViewDropAbove] == NSDragOperationNone,
@@ -128,6 +134,13 @@ int main(void) {
                 CHECK(table.numberOfRows == 0 && !up.enabled && !down.enabled, "empty groups expose no fake interactive actions");
             }
             groups.selectedSegment = 0; [groups sendAction:groups.action to:groups.target];
+            [preferences setPinningEnabled:NO];
+            CHECK(![toolWithID(store, pin)[@"enabled"] boolValue] && ![defaults boolForKey:MCPinFeatureEnabledDefaultsKey],
+                  "legacy general checkbox uses the same registry gate and persisted preference");
+            NSInteger pinRow = (NSInteger)[ids(store) indexOfObject:pin];
+            [toggleFor(table, pinRow) performClick:nil];
+            CHECK(preferences.pinningEnabled && [(NSButton *)[preferences valueForKey:@"pinningCheckbox"] state] == NSControlStateValueOn &&
+                  [defaults boolForKey:MCPinFeatureEnabledDefaultsKey], "management switch also updates the general checkbox and shared gate");
             NSString *previewPath = NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOL_SETTINGS_PREVIEW"];
             if (previewPath.length) {
                 NSView *content = preferences.window.contentView;
@@ -140,13 +153,31 @@ int main(void) {
             [preferences.window close]; preferences = nil;
             reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
             controller = [[MCPluginManagementController alloc] initWithStore:reopened];
-            CHECK(((NSTableView *)findView(controller.view, @"plugin-management-table")).numberOfRows == 4 &&
+            CHECK(((NSTableView *)findView(controller.view, @"plugin-management-table")).numberOfRows == 5 &&
                   [ids(reopened) isEqual:ids(store)], "management view can reopen after its previous observer was removed");
             [controller invalidate]; controller = nil;
 
+            // A new layout is authoritative over the legacy key. Old layouts
+            // without an explicit pin entry inherit its disabled preference.
+            [defaults setBool:NO forKey:MCPinFeatureEnabledDefaultsKey];
+            reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
+            CHECK([toolWithID(reopened, pin)[@"enabled"] boolValue], "explicit registry pin state wins over stale legacy defaults");
+            NSMutableDictionary *oldLayout = [store.snapshot[@"layout"] mutableCopy];
+            NSMutableDictionary *oldGroups = [oldLayout[@"groups"] mutableCopy];
+            oldGroups[@"screenshot"] = [oldGroups[@"screenshot"] filteredArrayUsingPredicate:
+                [NSPredicate predicateWithBlock:^BOOL(NSDictionary *entry, __unused NSDictionary *bindings) {
+                    return ![entry[@"id"] isEqual:pin];
+                }]];
+            oldLayout[@"groups"] = oldGroups; [defaults setObject:oldLayout forKey:key];
+            reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
+            CHECK(![toolWithID(reopened, pin)[@"enabled"] boolValue] && [[defaults dictionaryForKey:key] isEqual:oldLayout],
+                  "old disabled pin gate migrates in memory without a startup write");
+            CHECK([reopened setTool:pin enabled:YES error:&error] && [defaults boolForKey:MCPinFeatureEnabledDefaultsKey],
+                  "first explicit edit saves the migrated layout and shared gate");
+
             [defaults setObject:@{@"version":@999} forKey:key];
             reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
-            CHECK(reopened.loadError && [reopened toolsForGroup:@"screenshot"].count == 4 &&
+            CHECK(reopened.loadError && [reopened toolsForGroup:@"screenshot"].count == 5 &&
                   [[defaults dictionaryForKey:key][@"version"] integerValue] == 999,
                   "corrupt preferences recover in memory without overwriting the original");
             CHECK([reopened setTool:text enabled:NO error:&error] && !reopened.loadError &&

@@ -1,10 +1,12 @@
 #import "MCPreferencesController.h"
 #import "MCShortcutRecorder.h"
 #import "MCPluginManagementController.h"
+#import "MCToolRegistryStore.h"
 #import "native/macos/updates/MCUpdateController.h"
 #import "plugins/feature/pin/macos/MCPinnedImageController.h"
 
 static NSString *const MCAppearanceKey = @"appearance";
+static NSString *const MCPinDescription = @"将截图固定在屏幕上。关闭后会关闭所有贴图并释放贴图快捷键。";
 static NSTextField *MCLabel(NSString *text, CGFloat size, BOOL secondary) {
     NSTextField *label = [NSTextField wrappingLabelWithString:text];
     label.font = [NSFont systemFontOfSize:size];
@@ -61,6 +63,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 @property NSButton *cancelUpdatesButton;
 @property NSButton *releasePageButton;
 @property NSButton *pinningCheckbox;
+@property NSTextField *pinningDescription;
 @property NSTextField *updateStatus;
 @property MCPluginManagementController *pluginManagement;
 @end
@@ -91,6 +94,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     toolbar.delegate = self; toolbar.allowsUserCustomization = NO; toolbar.autosavesConfiguration = NO;
     toolbar.displayMode = NSToolbarDisplayModeIconAndLabel; window.toolbar = toolbar;
     self.window = window;
+    [self observeToolRegistry];
     NSTabView *pages = [[NSTabView alloc] initWithFrame:window.contentView.bounds];
     pages.tabViewType = NSNoTabsNoBorder; pages.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     NSTabViewItem *general = [[NSTabViewItem alloc] initWithIdentifier:@"general"]; general.label = @"通用"; general.view = [self generalPage];
@@ -116,18 +120,35 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSTextField *background = MCLabel(@"关闭设置窗口后，Mooji Cut 会继续在菜单栏运行。", 13, NO);
     self.pinningCheckbox = [NSButton checkboxWithTitle:@"启用贴图" target:self action:@selector(pinningChanged:)];
     self.pinningCheckbox.state = self.pinningEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+    self.pinningDescription = MCLabel(MCPinDescription, 12, YES);
     NSStackView *stack = MCStack(@[MCHeading(@"外观"), grid, separator, MCHeading(@"内置功能"), self.pinningCheckbox,
-        MCLabel(@"将截图固定在屏幕上。关闭后会关闭所有贴图并释放贴图快捷键。", 12, YES), background,
+        self.pinningDescription, background,
         MCLabel(@"设置会自动保存。", 11, YES)], NSUserInterfaceLayoutOrientationVertical, 12);
     [stack setCustomSpacing:18 afterView:grid];
     [separator.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     MCPin(stack, page); return page;
 }
 - (BOOL)pinningEnabled {
+    if (self.toolRegistryStore) {
+        for (NSDictionary *tool in [self.toolRegistryStore toolsForGroup:@"screenshot"])
+            if ([tool[@"id"] isEqualToString:@"builtin.image.pin"]) return [tool[@"enabled"] boolValue];
+        return NO;
+    }
     id saved = [self.defaults objectForKey:MCPinFeatureEnabledDefaultsKey];
     return !saved || [saved boolValue];
 }
 - (void)setPinningEnabled:(BOOL)enabled {
+    if (self.toolRegistryStore) {
+        NSError *error = nil;
+        BOOL changed = [self.toolRegistryStore setTool:@"builtin.image.pin" enabled:enabled error:&error];
+        [self refreshPinningControl];
+        if (!changed) {
+            self.pinningDescription.stringValue = error.localizedDescription ?: @"无法修改贴图设置，请先完成当前编辑。";
+            self.pinningDescription.textColor = NSColor.systemRedColor;
+            if (self.pinningDescription) NSAccessibilityPostNotification(self.pinningDescription, NSAccessibilityValueChangedNotification);
+        }
+        return;
+    }
     [self.defaults setBool:enabled forKey:MCPinFeatureEnabledDefaultsKey];
     self.pinningCheckbox.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
     if (self.onPinningEnabledChanged) self.onPinningEnabledChanged(enabled);
@@ -455,7 +476,21 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)setToolRegistryStore:(MCToolRegistryStore *)store {
     _toolRegistryStore = store;
     self.pluginManagement.toolRegistryStore = store;
+    [self observeToolRegistry];
+    [self refreshPinningControl];
 }
+- (void)observeToolRegistry {
+    [NSNotificationCenter.defaultCenter removeObserver:self name:MCToolRegistryDidChangeNotification object:nil];
+    if (self.window && self.toolRegistryStore)
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(toolRegistryChanged:)
+            name:MCToolRegistryDidChangeNotification object:self.toolRegistryStore];
+}
+- (void)refreshPinningControl {
+    self.pinningCheckbox.state = self.pinningEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+    self.pinningDescription.stringValue = MCPinDescription;
+    self.pinningDescription.textColor = NSColor.secondaryLabelColor;
+}
+- (void)toolRegistryChanged:(__unused NSNotification *)notification { [self refreshPinningControl]; }
 - (void)selectPage:(NSString *)identifier {
     if (![@[@"general", @"shortcuts", @"plugins", @"about", @"updates"] containsObject:identifier]) return;
     [self cancelShortcutRecording];
@@ -489,6 +524,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     // Preference toolbars keep AppKit view/validation state. Detach that state
     // before relinquishing the one settings window owned by this controller.
     [self.pluginManagement invalidate]; self.pluginManagement = nil;
+    [NSNotificationCenter.defaultCenter removeObserver:self name:MCToolRegistryDidChangeNotification object:nil];
     self.window.toolbar.delegate = nil;
     for (NSToolbarItem *item in self.window.toolbar.items) item.target = nil;
     self.window.toolbar = nil;
@@ -497,7 +533,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.shortcutRecorders = nil; self.shortcutClearButtons = nil; self.shortcutFeedback = nil; self.shortcutAvailability = nil;
     self.pinShortcutRecorders = nil; self.pinShortcutClearButtons = nil; self.pinShortcutFeedback = nil; self.shortcutGroups = nil;
     self.automaticUpdatesCheckbox = nil; self.checkUpdatesButton = nil; self.cancelUpdatesButton = nil;
-    self.releasePageButton = nil; self.pinningCheckbox = nil; self.updateStatus = nil;
+    self.releasePageButton = nil; self.pinningCheckbox = nil; self.pinningDescription = nil; self.updateStatus = nil;
     if (self.onClose) self.onClose();
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }

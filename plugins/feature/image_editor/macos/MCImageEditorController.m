@@ -126,17 +126,19 @@ static void MCDrawImage(NSImage *image, NSDictionary *document, NSDictionary *pe
 }
 
 typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool, MCTextTool, MCRedactTool };
+static const NSInteger MCPinActionTag = 100;
 static NSArray<NSDictionary *> *MCImageToolDescriptors(NSDictionary *configuration) {
     return configuration ? configuration[@"groups"][@"screenshot"] : @[
-        @{@"id":@"builtin.image.rectangle", @"kind":@1, @"title":@"矩形", @"enabled":@YES},
-        @{@"id":@"builtin.image.arrow", @"kind":@2, @"title":@"箭头", @"enabled":@YES},
-        @{@"id":@"builtin.image.text", @"kind":@3, @"title":@"文字", @"enabled":@YES},
-        @{@"id":@"builtin.image.cover", @"kind":@4, @"title":@"遮挡", @"enabled":@YES}];
+        @{@"id":@"builtin.image.rectangle", @"type":@"annotation", @"kind":@1, @"title":@"矩形", @"enabled":@YES},
+        @{@"id":@"builtin.image.arrow", @"type":@"annotation", @"kind":@2, @"title":@"箭头", @"enabled":@YES},
+        @{@"id":@"builtin.image.text", @"type":@"annotation", @"kind":@3, @"title":@"文字", @"enabled":@YES},
+        @{@"id":@"builtin.image.cover", @"type":@"annotation", @"kind":@4, @"title":@"遮挡", @"enabled":@YES},
+        @{@"id":@"builtin.image.pin", @"pluginId":@"builtin.pin", @"type":@"action", @"action":@"pin", @"title":@"贴图", @"enabled":@YES}];
 }
 static BOOL MCImageToolEnabled(NSDictionary *configuration, MCImageTool tool) {
     if (tool == MCSelectTool) return YES; // Host selection is not a configurable annotation tool.
     for (NSDictionary *entry in MCImageToolDescriptors(configuration))
-        if ([entry[@"kind"] integerValue] == tool) return [entry[@"enabled"] boolValue];
+        if ([entry[@"type"] isEqual:@"annotation"] && [entry[@"kind"] integerValue] == tool) return [entry[@"enabled"] boolValue];
     return NO;
 }
 static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **error) {
@@ -145,13 +147,20 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSArray *ids = @[@"builtin.image.rectangle", @"builtin.image.arrow", @"builtin.image.text", @"builtin.image.cover"];
     NSMutableSet *seen = [NSMutableSet set];
     BOOL valid = [candidate isKindOfClass:NSDictionary.class] && [candidate[@"ok"] isKindOfClass:NSNumber.class] && [candidate[@"ok"] boolValue] &&
-        [entries isKindOfClass:NSArray.class] && entries.count == ids.count;
+        [entries isKindOfClass:NSArray.class] && entries.count == ids.count + 1;
     if (valid) for (id entry in entries) {
-        if (![entry isKindOfClass:NSDictionary.class] || ![entry[@"kind"] isKindOfClass:NSNumber.class] ||
-            ![entry[@"enabled"] isKindOfClass:NSNumber.class] || ![entry[@"title"] isKindOfClass:NSString.class]) { valid = NO; break; }
-        NSInteger kind = [entry[@"kind"] integerValue];
-        if (kind < MCRectTool || kind > MCRedactTool || [entry[@"kind"] doubleValue] != kind ||
-            ![entry[@"id"] isEqual:ids[kind - 1]] || [seen containsObject:entry[@"id"]]) { valid = NO; break; }
+        if (![entry isKindOfClass:NSDictionary.class] || ![entry[@"enabled"] isKindOfClass:NSNumber.class] ||
+            ![entry[@"title"] isKindOfClass:NSString.class] || ![entry[@"id"] isKindOfClass:NSString.class] ||
+            [seen containsObject:entry[@"id"]]) { valid = NO; break; }
+        if ([entry[@"id"] isEqual:@"builtin.image.pin"]) {
+            if (![entry[@"type"] isEqual:@"action"] || ![entry[@"action"] isEqual:@"pin"] ||
+                ![entry[@"pluginId"] isEqual:@"builtin.pin"] || entry[@"kind"]) { valid = NO; break; }
+        } else {
+            if (![entry[@"type"] isEqual:@"annotation"] || ![entry[@"kind"] isKindOfClass:NSNumber.class]) { valid = NO; break; }
+            NSInteger kind = [entry[@"kind"] integerValue];
+            if (kind < MCRectTool || kind > MCRedactTool || [entry[@"kind"] doubleValue] != kind ||
+                ![entry[@"id"] isEqual:ids[kind - 1]]) { valid = NO; break; }
+        }
         [seen addObject:entry[@"id"]];
     }
     if (!valid && error) *error = MCEditorError(@"无法读取截图工具配置。");
@@ -194,6 +203,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (BOOL)isToolEnabled:(MCImageTool)tool;
 - (void)rebuildToolSegments;
 - (void)selectActiveToolSegment;
+- (BOOL)isPinActionConfigured;
+- (void)syncPinAction;
+- (NSDictionary *)pendingEditCommitPlan:(NSError **)error;
+- (NSData *)renderDocumentPNGData:(NSDictionary *)document error:(NSError **)error;
 @property NSButton *pinButton;
 @property NSVisualEffectView *floatingToolbar;
 @property BOOL overlayMode;
@@ -698,6 +711,24 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 
 @implementation MCImageEditorController
 - (BOOL)isToolEnabled:(MCImageTool)tool { return MCImageToolEnabled(self.toolConfiguration, tool); }
+- (BOOL)isPinActionConfigured {
+    for (NSDictionary *entry in MCImageToolDescriptors(self.toolConfiguration))
+        if ([entry[@"id"] isEqual:@"builtin.image.pin"]) return [entry[@"enabled"] boolValue];
+    return NO;
+}
+- (void)syncPinAction {
+    BOOL enabled = [self isPinActionConfigured] && self.onPinPNGData != nil;
+    NSString *hint = enabled ? @"贴图置顶" : @"贴图已关闭，可在设置中启用";
+    self.pinButton.enabled = enabled;
+    self.pinButton.toolTip = hint;
+    for (NSInteger index = 0; index < self.tools.segmentCount; index++) {
+        if ([self.tools tagForSegment:index] == MCPinActionTag) {
+            [self.tools setEnabled:enabled forSegment:index];
+            [self.tools setToolTip:hint forSegment:index];
+        }
+    }
+}
+
 - (void)selectActiveToolSegment {
     self.tools.selectedSegment = -1;
     for (NSInteger index = 0; index < self.tools.segmentCount; index++)
@@ -712,10 +743,11 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     const MCIcon icons[] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT, MC_ICON_REDACT};
     for (NSUInteger index = 0; index < visible.count; index++) {
         NSDictionary *entry = visible[index];
+        BOOL pin = [entry[@"id"] isEqual:@"builtin.image.pin"];
         NSInteger kind = [entry[@"kind"] integerValue];
         NSString *title = entry[@"title"];
-        NSImage *icon = MCIconImage(icons[kind], title);
-        [self.tools setTag:kind forSegment:index];
+        NSImage *icon = MCIconImage(pin ? MC_ICON_PIN : icons[kind], title);
+        [self.tools setTag:pin ? MCPinActionTag : kind forSegment:index];
         [self.tools setEnabled:YES forSegment:index];
         [self.tools setToolTip:title forSegment:index];
         [self.tools setImage:icon forSegment:index];
@@ -724,6 +756,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         [self.tools setWidth:30 forSegment:index];
     }
     [self selectActiveToolSegment];
+    [self syncPinAction];
     [self positionFloatingToolbar];
 }
 - (BOOL)configurationEndsCurrentTool:(NSDictionary *)candidate {
@@ -735,8 +768,11 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (NSDictionary *)toolConfigurationCommitPlan:(NSDictionary *)candidate error:(NSError **)error {
     if (!MCValidImageToolConfiguration(candidate, error)) return nil;
     if (![self configurationEndsCurrentTool:candidate]) return @{};
+    return [self pendingEditCommitPlan:error];
+}
+- (NSDictionary *)pendingEditCommitPlan:(NSError **)error {
     if (self.canvas.textView.hasMarkedText) {
-        if (error) *error = MCEditorError(@"请先完成中文输入，再关闭文字工具。");
+        if (error) *error = MCEditorError(@"请先完成中文输入，再执行此操作。");
         return nil;
     }
     NSMutableDictionary *fields = [NSMutableDictionary dictionary];
@@ -752,7 +788,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         double value = 0;
         if (![scanner scanDouble:&value] || !scanner.isAtEnd || !isfinite(value) ||
             value < control.stepper.minValue || value > control.stepper.maxValue) {
-            if (error) *error = MCEditorError(@"请先填写有效的标注属性，再关闭工具。");
+            if (error) *error = MCEditorError(@"请先填写有效的标注属性，再执行此操作。");
             return nil;
         }
         fields[@(properties[index])] = @(properties[index] == MC_STYLE_OPACITY ? value / 100 : value);
@@ -910,7 +946,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.tools.selectedSegmentBezelColor = MCSelectedToolColor();
         self.activeTool = [self isToolEnabled:MCRectTool] ? MCRectTool : MCSelectTool;
         [self rebuildToolSegments];
-        self.tools.accessibilityLabel = @"标注工具";
+        self.tools.accessibilityLabel = @"截图工具";
         self.properties = [[MCStylePropertiesView alloc] initWithFrame:NSZeroRect];
         __weak MCImageEditorController *weakSelf = self;
         self.properties.onChange = ^(id sender) { [weakSelf styleChanged:sender]; };
@@ -937,7 +973,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
         self.toolbar = [NSStackView stackViewWithViews:@[self.tools, [self toolbarDivider], self.ocrButton,
             self.translateButton, [self toolbarDivider], self.undoButton, self.redoButton, spacer,
-            self.pinButton, self.cancelButton, self.confirmButton]];
+            self.cancelButton, self.confirmButton]];
         self.toolbar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
         self.toolbar.alignment = NSLayoutAttributeCenterY;
         self.toolbar.spacing = 6;
@@ -1039,13 +1075,12 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.canvas.needsDisplay = YES;
     [self.canvas updateTextFrame];
     [self syncTextControls];
-    self.pinButton.enabled = self.onPinPNGData != nil;
+    [self syncPinAction];
     [self positionFloatingToolbar];
 }
 - (void)setOnPinPNGData:(BOOL (^)(NSData *))handler {
     _onPinPNGData = [handler copy];
-    self.pinButton.enabled = handler != nil;
-    self.pinButton.toolTip = handler ? @"贴图置顶" : @"贴图已关闭，可在设置中启用";
+    [self syncPinAction];
 }
 - (void)showError:(NSError *)error {
     [self.properties showMessage:error.localizedDescription];
@@ -1113,13 +1148,21 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)chooseTool:(id)sender {
     (void)sender;
+    NSInteger segment = self.tools.selectedSegment;
+    NSInteger tag = segment >= 0 ? [self.tools tagForSegment:segment] : MCSelectTool;
+    if (tag == MCPinActionTag) {
+        // Pin is a momentary action: it never becomes an annotation tool or a
+        // style-bank key. The explicit click uses the existing pin transaction.
+        [self selectActiveToolSegment];
+        [self pinImage:nil];
+        return;
+    }
     if (self.canvas.textView.hasMarkedText) {
         [self selectActiveToolSegment];
         return;
     }
     if (![self.canvas finishTextEditing:YES]) { [self selectActiveToolSegment]; return; }
-    NSInteger segment = self.tools.selectedSegment;
-    MCImageTool tool = segment >= 0 ? [self.tools tagForSegment:segment] : MCSelectTool;
+    MCImageTool tool = tag;
     if (![self isToolEnabled:tool]) { [self selectActiveToolSegment]; return; }
     self.activeTool = tool;
     [self.canvas cancelGesture];
@@ -1181,7 +1224,14 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         if (error) *error = MCEditorError(@"文字尚未保存，请检查后重试。");
         return nil;
     }
-    NSDictionary *finalized = MCCallImage(image_finalize, @{@"document":self.document}, error);
+    return [self renderDocumentPNGData:self.document error:error];
+}
+- (NSData *)renderDocumentPNGData:(NSDictionary *)document error:(NSError **)error {
+    if (self.overlayMode && !self.hasCaptureRegion) {
+        if (error) *error = MCEditorError(@"请先框选截图范围。");
+        return nil;
+    }
+    NSDictionary *finalized = MCCallImage(image_finalize, @{@"document":document}, error);
     if (!finalized) return nil;
     NSInteger width = [finalized[@"width"] integerValue], height = [finalized[@"height"] integerValue];
     NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:width pixelsHigh:height
@@ -1193,9 +1243,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     CGContextRef cg = context.CGContext;
     CGContextTranslateCTM(cg, 0, height);
     CGContextScaleCTM(cg, 1, -1);
-    CGContextTranslateCTM(cg, -[self.document[@"viewport"][@"x"] doubleValue], -[self.document[@"viewport"][@"y"] doubleValue]);
+    CGContextTranslateCTM(cg, -[document[@"viewport"][@"x"] doubleValue], -[document[@"viewport"][@"y"] doubleValue]);
     [NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithCGContext:cg flipped:YES]];
-    MCDrawImage(self.image, self.document, nil, NSZeroRect);
+    MCDrawImage(self.image, document, nil, NSZeroRect);
     [NSGraphicsContext restoreGraphicsState];
     NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
     if (!png && error) *error = MCEditorError(@"无法编码 PNG 图片。");
@@ -1234,12 +1284,16 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)pinImage:(id)sender {
     (void)sender;
-    if (!self.onPinPNGData || self.canvas.dragging || self.canvas.regionDragging) return;
+    if (![self isPinActionConfigured] || !self.onPinPNGData || self.canvas.dragging || self.canvas.regionDragging) return;
     NSError *error = nil;
-    NSData *png = [self renderPNGData:&error];
-    if (!png) { [self showError:error]; return; }
-    if (self.onPinPNGData(png)) [self.window close];
-    else [self showError:MCEditorError(@"贴图未能创建，已保留当前编辑。")];
+    NSDictionary *plan = [self pendingEditCommitPlan:&error];
+    NSData *png = plan ? [self renderDocumentPNGData:plan[@"document"] ?: self.document error:&error] : nil;
+    if (png && self.onPinPNGData(png)) { [self.window close]; return; }
+    // Keep the original text/field editor, selection and undo state intact on
+    // failure. showError: hides property controls, which could end field input.
+    self.properties.status.stringValue = error.localizedDescription ?: @"贴图未能创建，已保留当前编辑。";
+    self.properties.status.hidden = NO;
+    NSBeep();
 }
 - (void)cancel:(id)sender { (void)sender; [self.canvas finishTextEditing:NO]; [self.window close]; }
 - (void)windowWillClose:(NSNotification *)notification {

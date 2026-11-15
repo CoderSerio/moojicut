@@ -126,6 +126,10 @@ pub fn selection_transform(Double, Double, Double, Double, Double, Double, Doubl
 
 pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
+pub fn tool_registry_normalize(String) -> String
+
+pub fn tool_registry_update(String) -> String
+
 pub fn update_release_create(String, Int32, String) -> Int32
 
 pub fn update_release_dispose(Int32) -> Unit

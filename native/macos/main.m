@@ -104,6 +104,15 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     if (self.updateController.installationPending) return;
     [self.captureController capture];
 }
+- (void)applyPinToolConfiguration {
+    for (NSDictionary *tool in [self.toolRegistryStore toolsForGroup:@"screenshot"]) {
+        if ([tool[@"id"] isEqual:@"builtin.image.pin"]) {
+            self.pinnedImages.enabled = [tool[@"enabled"] boolValue];
+            break;
+        }
+    }
+    [self updatePinCapability];
+}
 - (void)updatePinCapability {
     if (!self.pinnedImages.enabled) self.captureController.onPinPNGData = nil;
     else {
@@ -166,6 +175,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.captureController = [MCCaptureController new];
     self.toolRegistryStore = [[MCToolRegistryStore alloc] initWithDefaults:self.defaults];
     [self.captureController applyToolConfiguration:self.toolRegistryStore.snapshot];
+    [self applyPinToolConfiguration];
     self.recordingController = [MCMacRecordingController new];
     self.updateController = [MCUpdateController new];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateStateChanged:)
@@ -176,6 +186,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     };
     self.toolRegistryStore.applyChange = ^(NSDictionary *candidate) {
         [weakSelf.captureController applyToolConfiguration:candidate];
+        [weakSelf applyPinToolConfiguration];
     };
     self.updateController.isOperationBusy = ^BOOL{
         return weakSelf.captureController.busy || weakSelf.recordingController.busy || weakSelf.choosingImage;

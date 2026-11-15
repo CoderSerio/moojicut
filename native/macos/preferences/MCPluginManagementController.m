@@ -44,7 +44,7 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
         trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(groupChanged:)];
     self.groups.selectedSegment = 0; self.groups.accessibilityLabel = @"插件工具分类";
     self.groups.identifier = @"plugin-management-groups";
-    NSTextField *hint = [NSTextField wrappingLabelWithString:@"开关控制工具是否显示；拖动行或使用下方按钮调整顺序。"];
+    NSTextField *hint = [NSTextField wrappingLabelWithString:@"启用或停用工具；拖动行或使用下方按钮调整顺序。"];
     hint.font = [NSFont systemFontOfSize:12]; hint.textColor = NSColor.secondaryLabelColor;
     self.table = [[NSTableView alloc] initWithFrame:NSZeroRect];
     self.table.identifier = @"plugin-management-table"; self.table.accessibilityLabel = @"工具显示顺序";
@@ -134,7 +134,7 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
 - (NSInteger)numberOfRowsInTableView:(__unused NSTableView *)tableView { return (NSInteger)self.rows.count; }
 - (NSImage *)iconForTool:(NSDictionary *)tool {
     NSDictionary *icons = @{@"builtin.image.rectangle":@(MC_ICON_RECTANGLE), @"builtin.image.arrow":@(MC_ICON_ARROW),
-        @"builtin.image.text":@(MC_ICON_TEXT), @"builtin.image.cover":@(MC_ICON_REDACT)};
+        @"builtin.image.text":@(MC_ICON_TEXT), @"builtin.image.cover":@(MC_ICON_REDACT), @"builtin.image.pin":@(MC_ICON_PIN)};
     NSNumber *icon = icons[tool[@"id"]];
     NSImage *image = icon ? MCIconImage((MCIcon)icon.integerValue, tool[@"title"]) : nil;
     return image ?: [NSImage imageWithSystemSymbolName:@"puzzlepiece.extension" accessibilityDescription:@"工具"];
@@ -142,24 +142,35 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
 - (NSView *)tableView:(__unused NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
     NSDictionary *tool = self.rows[(NSUInteger)row];
     if ([column.identifier isEqualToString:@"enabled"]) {
-        NSButton *toggle = [NSButton checkboxWithTitle:@"显示" target:self action:@selector(toggleTool:)];
+        NSButton *toggle = [NSButton checkboxWithTitle:@"启用" target:self action:@selector(toggleTool:)];
         toggle.identifier = tool[@"id"]; toggle.state = [tool[@"enabled"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-        toggle.accessibilityLabel = [NSString stringWithFormat:@"显示%@", tool[@"title"]];
+        toggle.accessibilityLabel = [NSString stringWithFormat:@"启用%@", tool[@"title"]];
+        if ([tool[@"id"] isEqualToString:@"builtin.image.pin"])
+            toggle.toolTip = @"关闭后会关闭所有贴图并释放贴图快捷键。";
         return toggle;
     }
     NSTableCellView *cell = [NSTableCellView new];
     NSImageView *image = [[NSImageView alloc] initWithFrame:NSZeroRect]; image.image = [self iconForTool:tool];
-    NSTextField *label = [NSTextField labelWithString:tool[@"title"] ?: @"工具"];
-    label.lineBreakMode = NSLineBreakByTruncatingTail;
-    image.translatesAutoresizingMaskIntoConstraints = label.translatesAutoresizingMaskIntoConstraints = NO;
-    [cell addSubview:image]; [cell addSubview:label]; cell.imageView = image; cell.textField = label;
+    NSString *title = tool[@"title"] ?: @"工具";
+    NSTextField *label = [NSTextField labelWithString:title];
+    label.lineBreakMode = NSLineBreakByTruncatingTail; label.font = [NSFont systemFontOfSize:13];
+    NSString *type = tool[@"type"];
+    NSString *detail = [type isEqualToString:@"action"] ? @"内置 · 操作" :
+        [type isEqualToString:@"annotation"] ? @"内置 · 工具" : @"工具";
+    NSTextField *subtitle = [NSTextField labelWithString:detail];
+    subtitle.font = [NSFont systemFontOfSize:11]; subtitle.textColor = NSColor.secondaryLabelColor;
+    NSStackView *titles = [NSStackView stackViewWithViews:@[label, subtitle]];
+    titles.orientation = NSUserInterfaceLayoutOrientationVertical; titles.alignment = NSLayoutAttributeLeading; titles.spacing = 1;
+    image.translatesAutoresizingMaskIntoConstraints = titles.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell addSubview:image]; [cell addSubview:titles]; cell.imageView = image; cell.textField = label;
     [NSLayoutConstraint activateConstraints:@[
         [image.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:4],
         [image.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
         [image.widthAnchor constraintEqualToConstant:20], [image.heightAnchor constraintEqualToConstant:20],
-        [label.leadingAnchor constraintEqualToAnchor:image.trailingAnchor constant:10],
-        [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-8],
-        [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+        [titles.leadingAnchor constraintEqualToAnchor:image.trailingAnchor constant:10],
+        [titles.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-8],
+        [titles.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+        [label.widthAnchor constraintEqualToAnchor:titles.widthAnchor],
     ]];
     return cell;
 }

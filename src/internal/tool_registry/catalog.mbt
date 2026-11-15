@@ -5,6 +5,13 @@ priv enum ToolId {
   Arrow
   Text
   Cover
+  Pin
+}
+
+///|
+priv enum ToolBehavior {
+  Annotation(Int32)
+  PinAction
 }
 
 ///|
@@ -21,6 +28,7 @@ fn ToolId::key(self : ToolId) -> String {
     Arrow => "builtin.image.arrow"
     Text => "builtin.image.text"
     Cover => "builtin.image.cover"
+    Pin => "builtin.image.pin"
   }
 }
 
@@ -31,17 +39,27 @@ fn ToolId::from_key(key : String) -> ToolId? {
     "builtin.image.arrow" => Some(Arrow)
     "builtin.image.text" => Some(Text)
     "builtin.image.cover" => Some(Cover)
+    "builtin.image.pin" => Some(Pin)
     _ => None
   }
 }
 
 ///|
-fn ToolId::kind(self : ToolId) -> Int32 {
+fn ToolId::behavior(self : ToolId) -> ToolBehavior {
   match self {
-    Rectangle => 1
-    Arrow => 2
-    Text => 3
-    Cover => 4
+    Rectangle => Annotation(1)
+    Arrow => Annotation(2)
+    Text => Annotation(3)
+    Cover => Annotation(4)
+    Pin => PinAction
+  }
+}
+
+///|
+fn ToolId::plugin_id(self : ToolId) -> String {
+  match self {
+    Pin => "builtin.pin"
+    _ => "builtin.image-editor"
   }
 }
 
@@ -52,6 +70,7 @@ fn ToolId::title(self : ToolId) -> String {
     Arrow => "箭头"
     Text => "文字"
     Cover => "遮挡"
+    Pin => "贴图"
   }
 }
 
@@ -77,7 +96,7 @@ fn ToolGroup::from_key(key : String) -> ToolGroup? {
 ///|
 fn catalog(group : ToolGroup) -> Array[ToolId] {
   match group {
-    Screenshot => [Rectangle, Arrow, Text, Cover]
+    Screenshot => [Rectangle, Arrow, Text, Cover, Pin]
     _ => []
   }
 }

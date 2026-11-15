@@ -14,6 +14,7 @@ src/
 ├── api_selection.mbt         # 三平台共享选区几何 C ABI
 ├── api_updates.mbt           # GitHub 发布版本与平台资产选择 C ABI
 ├── api_feature_runtime.mbt   # 内置功能启停规则 C ABI
+├── api_tool_registry.mbt     # 内置工具目录、显示开关与排序 C ABI
 ├── api_video.mbt              # 视频、剪辑计划与录制规则兼容入口
 ├── preview.mbt               # 原生程序启动时的跨模块自检
 ├── preview_wbtest.mbt
@@ -25,6 +26,7 @@ src/
     ├── selection/            # 选区/标注的数值几何，保留 macOS 基准
     ├── updates/              # 版本比较、渠道与平台安装包筛选
     ├── feature_runtime/      # 启用、停用中、已停用状态与调用门控
+    ├── tool_registry/        # 稳定工具 ID、版本化布局、启用与排序校验
     ├── video/                # 视频文档、时间线、导出配置、录制规则与会话
     ├── protocol/             # 共享 JSON 校验、数值边界与错误响应
     └── test_support/         # 测试使用的 JSON 断言与结果读取
@@ -46,7 +48,8 @@ MoonBit 以目录为包边界；`internal` 下的包仅供本模块使用，跨�
     ├── video ──→ protocol
     ├── selection
     ├── updates
-    └── feature_runtime
+    ├── feature_runtime
+    └── tool_registry ──→ protocol
 
 image / video 的白盒测试 ──→ test_support（仅测试导入）
 ```
@@ -85,3 +88,16 @@ moon build --target native --release --deny-warn
 已发布的 alpha.9 固定读取 `https://raw.githubusercontent.com/CoderSerio/moojicut/main/updates/macos.xml`，没有新的 GitHub 发现逻辑。给 Release 添加 `macos.xml` 附件不会改变旧包的地址。后续正式升级时，必须为更高版本生成签名源并同步旧固定路径，同时把同份源附到对应 Release；也可以明确要求一次手动换装。当前仓库中的签名源仍指向 alpha.9，不能当作升级到候选版的验收证据。
 
 验收分别记录：核心与原生回归、更新源/包签名校验、旧版实际替换并重启且保留设置、新版 GitHub 发现。最后两项不能由“未发现新版”或模拟 transport 测试代替。真实安装应在隔离账户或虚拟机进行；`MOOJICUT_NATIVE_DEFAULTS_DOMAIN` 只隔离应用设置，不隔离 Sparkle 偏好和录屏草稿。
+
+## 内置工具管理
+
+macOS 设置的“插件管理”将截图、录制控制和录后编辑分开；目前可管理矩形、箭头、文字、遮挡和贴图。
+工具目录、稳定 ID、配置版本、排序与开关校验在 `internal/tool_registry`；原生 Store 只负责持久化与发布。
+标注类型和位置分离，贴图是即时操作，不占用标注/样式枚举。选择、确认、取消等流程入口由宿主保留。
+
+配置先在全部当前编辑器上预检，再同步发布。禁用正在使用的工具会结束可提交的编辑并回到选择；
+中文输入组合中或属性无效时拒绝修改，原开关、配置和输入保持不变。排序和禁用其他工具不重建文档或样式会话。
+贴图的管理开关与原“启用贴图”设置共用已有功能门控，旧设置会迁入布局。
+
+录制与录后编辑目前显示空列表，导入按钮暂不可用；外部 MoonBit/Wasm 插件及 ZIP 安装尚未接入此管理页。
+当前工具目录仅管理已接入的内置功能，不声明任意代码执行或完整插件热更新能力。

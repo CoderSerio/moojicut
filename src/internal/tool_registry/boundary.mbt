@@ -179,17 +179,26 @@ fn result(layout : Layout) -> Json {
     let tools : Array[Json] = []
     for entry in layout.entries(group) {
       match entry.id {
-        Builtin(tool) =>
-          tools.push(
-            Json::object({
-              "id": Json(tool.key()),
-              "pluginId": Json("builtin.image-editor"),
-              "target": Json(group.key()),
-              "kind": Json(tool.kind()),
-              "title": Json(tool.title()),
-              "enabled": Json(entry.enabled),
-            }),
-          )
+        Builtin(tool) => {
+          let descriptor : Map[String, Json] = {
+            "id": Json(tool.key()),
+            "pluginId": Json(tool.plugin_id()),
+            "target": Json(group.key()),
+            "title": Json(tool.title()),
+            "enabled": Json(entry.enabled),
+          }
+          match tool.behavior() {
+            Annotation(kind) => {
+              descriptor["type"] = Json("annotation")
+              descriptor["kind"] = Json(kind)
+            }
+            PinAction => {
+              descriptor["type"] = Json("action")
+              descriptor["action"] = Json("pin")
+            }
+          }
+          tools.push(Json::object(descriptor))
+        }
         Unknown(_) => ()
       }
     }
