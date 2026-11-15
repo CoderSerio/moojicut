@@ -282,7 +282,7 @@ class DesktopBuild:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
-    parser.add_argument("--release-version", default="0.1.0-alpha.11")
+    parser.add_argument("--release-version", default="0.1.0-alpha.12")
     args = parser.parse_args()
     if sys.platform == "darwin":
         from native import NativeBuild
