@@ -17,7 +17,7 @@ host owns those operations and the existing feature/invocation lifecycle.
   "capabilities": ["capture.metadata", "result.text"],
   "tools": [
     {"toolId": "describe", "title": "截图信息", "target": "screenshot", "action": "run"},
-    {"toolId": "copy-size", "title": "复制尺寸", "target": "screenshot", "action": "run"}
+    {"toolId": "copy-size", "title": "查看尺寸", "target": "screenshot", "action": "run"}
   ]
 }
 ```
@@ -81,7 +81,7 @@ the host rather than by the plugin.
 The result must echo the exact invocation ID. Text is nonempty and at most
 32,768 **UTF-8 bytes**; multiline text is supported. It is plain result data,
 never HTML or a command. The native result window provides the user-operated
-copy button; even a tool named “复制尺寸” must not write the clipboard itself.
+copy button; plugins must not write the clipboard themselves.
 
 ## Native boundary
 

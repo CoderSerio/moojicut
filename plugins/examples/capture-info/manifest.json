@@ -8,6 +8,6 @@
   "capabilities": ["capture.metadata", "result.text"],
   "tools": [
     {"toolId": "describe", "title": "截图信息", "target": "screenshot", "action": "run"},
-    {"toolId": "copy-size", "title": "复制尺寸", "target": "screenshot", "action": "run"}
+    {"toolId": "copy-size", "title": "查看尺寸", "target": "screenshot", "action": "run"}
   ]
 }

@@ -1,7 +1,7 @@
 # Capture Info：最小 MoonBit 插件
 
 这个独立示例只依赖现成的 `gmlewis/moonbit-pdk@0.47.35`，没有项目私有 SDK
-或 `moon.work` 路径依赖。一包提供“截图信息”和“复制尺寸”两个工具。
+或 `moon.work` 路径依赖。一包提供“截图信息”和“查看尺寸”两个工具。
 
 在仓库根目录运行：
 
@@ -15,7 +15,7 @@ python3 scripts/package_plugin.py plugins/examples/capture-info --output dist/ca
 
 已验证示例构建、打包及 macOS App 的导入和执行。使用流程是在
 Mooji Cut 的“设置 → 插件”中导入 ZIP，打开一张截图，再点击新增的“截图信息”
-或“复制尺寸”。两者都只接收**当前截图**的宽、高、PNG 格式和修订号，返回纯文本，
+或“查看尺寸”。两者都只接收**当前截图**的宽、高、PNG 格式和修订号，返回纯文本，
 由 App 原生结果窗口显示；只有用户点击窗口的复制按钮才写入剪贴板。
 
 制作自己的插件时，主要修改：

@@ -18,7 +18,7 @@ fn describe(tool_id : String, capture : Capture) -> (String, String)? {
         ),
       )
     "copy-size" =>
-      Some(("复制尺寸", "\{capture.width} × \{capture.height}"))
+      Some(("查看尺寸", "\{capture.width} × \{capture.height}"))
     _ => None
   }
 }

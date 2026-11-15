@@ -16,7 +16,7 @@ python3 scripts/package_plugin.py plugins/examples/capture-info --output dist/ca
 ```
 
 脚本构建 `--target wasm`，输出包含 `manifest.json`、`plugin.wasm` 的 ZIP；存在时
-同时加入 `assets/icon.png`。这是一包两个工具的示例：“截图信息”和“复制尺寸”。
+同时加入 `assets/icon.png`。这是一包两个工具的示例：“截图信息”和“查看尺寸”。
 两者都只返回文本，不自动写剪贴板。
 
 当前固定组合：
