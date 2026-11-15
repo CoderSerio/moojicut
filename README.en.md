@@ -8,14 +8,14 @@
 
 <p align="center"><strong>Consider it captured.</strong></p>
 
-<p align="center">A simple screenshot and screen recording app, powered by MoonBit. Capture your screen, highlight what matters, and trim recordings. We plan to add plugin support so you can extend it to fit your workflow.</p>
+<p align="center">A simple screenshot and screen recording app, powered by MoonBit. Capture your screen, highlight what matters, and trim recordings. We plan to support external plugins so you can extend it to fit your workflow.</p>
 
 <p align="center"><a href="https://github.com/CoderSerio/moojicut/releases">Download Preview</a> · <a href="https://github.com/CoderSerio/moojicut/issues">Report an Issue</a> · <a href="https://github.com/CoderSerio/moojicut">Source Code</a></p>
 
 ## Why Mooji Cut
 
 - **Simple by default.** Focus on everyday capture, annotation, and basic editing. Mooji Cut stays in your menu bar or system tray, ready when you need it.
-- **Extend as needed · Planned.** We plan to support plugin development, so you can add tools for your own workflow while keeping the default experience simple.
+- **Tools your way.** The macOS development version lets you enable, disable, and reorder built-in screenshot tools individually.
 - **Processed locally.** Capture and edit on your computer. You choose how to save and share the results.
 
 ## Capture and Edit
@@ -30,13 +30,11 @@ Undo and redo let you make adjustments as you go.
 
 Mooji Cut is in early preview. This README describes the development version; published builds may not include all of these features. Platform support and known limitations are listed in the release notes for each version.
 
-## Plugin Plans
+## Tools and Plugins
 
-We want Mooji Cut to fit the way you work.
+In the macOS development version, go to Settings → Plugin Management → Screenshot Tools to manage rectangles, arrows, text, solid covers, and pinning. Toggle each tool or select it and use Move Up / Move Down to change its position. The screenshot toolbar reflects your choices, and settings are saved automatically. This management interface is not yet available on Windows or Linux.
 
-We plan to support community-developed plugins for custom processing, connections to other tools, and personal workflows. The aim is to keep the core experience simple, with additional tools available as you need them.
-
-**Plugin support is not available yet.** The scope and APIs are still being planned. We welcome discussions grounded in real use cases.
+**External plugin import is not available yet.** We plan to support community-developed plugins for custom processing, connections to other tools, and personal workflows. The scope and APIs are still being planned. We welcome discussions grounded in real use cases.
 
 ## Get Started
 
