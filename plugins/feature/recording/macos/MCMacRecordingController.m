@@ -73,6 +73,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 - (BOOL)captureInProgress { return [self.stateCapabilities[@"captureInProgress"] boolValue]; }
 - (BOOL)canStop { return [self.stateCapabilities[@"canStop"] boolValue]; }
 - (BOOL)exporting { return self.editor.exporting; }
+- (NSSet<NSNumber *> *)visibleEditorWindowNumbers { return self.editor.visibleWindowNumbers ?: [NSSet set]; }
 - (BOOL)prepareForTermination:(NSError **)error {
     if (self.captureInProgress || self.exporting) {
         if (error) *error = MCRecordingError(@"请先结束录屏或导出。");

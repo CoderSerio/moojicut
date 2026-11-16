@@ -362,6 +362,13 @@ static void CheckProductionEditor(NSURL *directory) {
     FixtureVideoEditor *editor=[[FixtureVideoEditor alloc] initWithDraftDirectory:directory error:&error];assert(editor);
     [editor buildWindow];NSWindow *window=[editor valueForKey:@"window"];
     assert([window.contentView isKindOfClass:MCSharedCanvasView.class] && !window.visible);
+    assert(editor.visibleWindowNumbers.count==0);
+    assert(Wait(^BOOL{return [editor valueForKey:@"waveformTask"]==nil;},10));
+    NSUInteger collapsedCommands=[Canvas(editor).frameDescription[@"commands"] count];
+    Click(editor,@"project-audio-toggle");
+    assert([Canvas(editor).frameDescription[@"commands"] count]>collapsedCommands+100);
+    SaveView(Canvas(editor),@"audio-waveform");
+    Click(editor,@"project-audio-toggle");
     for(NSString *identifier in @[@"play",@"project-split",@"project-mute",@"project-crop",@"export"]) {
         NSDictionary *node=Node(editor,identifier);
         NSRect rect=NSMakeRect([node[@"x"] doubleValue],[node[@"y"] doubleValue],[node[@"width"] doubleValue],[node[@"height"] doubleValue]);

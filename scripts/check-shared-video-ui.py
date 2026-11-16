@@ -61,6 +61,10 @@ def main():
     run(*common, ROOT / "test/native/video-media.m", media, archive, *frameworks, "-o", media_test)
     # Unique runs preserve earlier evidence and prevent export overwrites.
     run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=output))
+    waveform_test = output / "audio-waveform"
+    run(*common, ROOT / "test/native/audio-waveform.m",
+        ROOT / "components/media_analysis/macos/MCAudioWaveform.m", *frameworks, "-o", waveform_test)
+    run(waveform_test, run_dir / "waveform")
     run(media_test, run_dir)
     project_media_test = output / "video-project-media"
     run(*common, ROOT / "test/native/video-project-media.m", media,

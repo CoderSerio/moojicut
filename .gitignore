@@ -11,6 +11,7 @@ __pycache__/
 work/
 output/
 /docs/*
+!/docs/architecture.md
 !/docs/guide.zh-CN.md
 !/docs/interaction-design.zh-CN.md
 !/docs/shared-editor-ui.zh-CN.md

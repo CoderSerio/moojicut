@@ -102,8 +102,16 @@ fn control_label(s : UI, id : String) -> String {
         return ""
       }
       match project_clip_target(s, id) {
-        Some(c) =>
-          "\{if c.kind == "video" { "视频" } else { "音频" }}\{project_clip_label(c)}，\{clip_rate_label(c)}\{if c.link_group != "" { "，已关联" } else { "，独立" }}"
+        Some(c) => {
+          let wave = if c.kind != "audio" || has_waveform(s) {
+            ""
+          } else if s.waveform is None {
+            "，正在生成波形"
+          } else {
+            "，波形不可用"
+          }
+          "\{if c.kind == "video" { "视频" } else { "音频" }}\{project_clip_label(c)}，\{clip_rate_label(c)}\{if c.link_group != "" { "，已关联" } else { "，独立" }}\{wave}"
+        }
         None =>
           match project_gap_target(s, id) {
             Some(g) =>

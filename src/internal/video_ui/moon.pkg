@@ -2,6 +2,7 @@ import {
   "moojicut/core/internal/video",
   "moojicut/core/internal/protocol",
   "moonbitlang/core/json",
+  "moonbitlang/core/double",
 }
 
 import {

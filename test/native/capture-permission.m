@@ -278,8 +278,8 @@ static SCShareableContent *fakeContent(NSArray<NSNumber *> *ids) {
     MCFakeApplication *otherApplication = [MCFakeApplication new]; otherApplication.processID = 1;
     content.applications = @[otherApplication, ownApplication];
     NSMutableArray *windows = [NSMutableArray array];
-    // 101: Settings, 201: visible pin, 202: user-hidden pin, 401: other app.
-    for (NSNumber *number in @[@101,@201,@202,@401]) {
+    // 101: Settings, 201: visible pin, 202: hidden pin, 301: video editor, 401: other app.
+    for (NSNumber *number in @[@101,@201,@202,@301,@401]) {
         MCFakeCaptureWindow *window = [MCFakeCaptureWindow new]; window.windowID = number.unsignedIntValue;
         window.owningApplication = number.intValue == 401 ? otherApplication : ownApplication;
         [windows addObject:window];
@@ -609,12 +609,13 @@ int main(void) {
             MCFakeOwnWindow *settings = [MCFakeOwnWindow new]; settings.windowNumber = 101; settings.visible = YES;
             MCFakeOwnWindow *pin = [MCFakeOwnWindow new]; pin.windowNumber = 201; pin.visible = YES;
             MCFakeOwnWindow *hiddenPin = [MCFakeOwnWindow new]; hiddenPin.windowNumber = 202;
-            controller.fakeWindows = @[settings,pin,hiddenPin];
-            controller.includedWindowNumbers = ^{ return [NSSet setWithObject:@201]; };
+            MCFakeOwnWindow *videoEditor = [MCFakeOwnWindow new]; videoEditor.windowNumber = 301; videoEditor.visible = YES;
+            controller.fakeWindows = @[settings,pin,hiddenPin,videoEditor];
+            controller.includedWindowNumbers = ^{ return [NSSet setWithObjects:@201,@301,nil]; };
             [controller capture];
             CHECK(!settings.visible && settings.orderOutCalls == 1 && pin.visible && pin.orderOutCalls == 0 &&
-                  !hiddenPin.visible && hiddenPin.orderOutCalls == 0 && appHides == 0,
-                  "capture orders out host controls without hiding the app, visible pins or restoring hidden pins");
+                  !hiddenPin.visible && hiddenPin.orderOutCalls == 0 && videoEditor.visible && videoEditor.orderOutCalls == 0 && appHides == 0,
+                  "capture preserves the video editor and pins while hiding host controls");
             CHECK(controller.pendingContent != nil, "released keys begin content acquisition immediately without a hide delay");
             [controller cancelCapture];
             CHECK(pin.visible && !hiddenPin.visible, "cancelling capture does not change pin visibility");
@@ -623,7 +624,7 @@ int main(void) {
             // complete out of order. Both snapshots must retain their own frame.
             reset(true, false);
             controller = [MCPermissionCapture new];
-            NSMutableSet *visibleNumbers = [NSMutableSet setWithObjects:@201,@401,nil];
+            NSMutableSet *visibleNumbers = [NSMutableSet setWithObjects:@201,@301,@401,nil];
             controller.includedWindowNumbers = ^{ return visibleNumbers; };
             __block NSUInteger pinCalls = 0;
             controller.onPinPNGData = ^BOOL(NSData *data, NSRect screenFrame) { (void)screenFrame; pinCalls++; return data.length > 0; };
@@ -636,8 +637,8 @@ int main(void) {
             CHECK(controller.excludedApplications.count == 1 &&
                   [(SCRunningApplication *)controller.excludedApplications.firstObject processID] == NSProcessInfo.processInfo.processIdentifier,
                   "the app exclusion still removes Settings and other host controls");
-            CHECK(controller.includedWindows.count == 1 && controller.includedWindows.firstObject.windowID == 201,
-                  "visible own pins are re-included in captured pixels; hidden pins and foreign windows are not exceptions");
+            CHECK(controller.includedWindows.count == 2 && controller.includedWindows.firstObject.windowID == 201 && controller.includedWindows.lastObject.windowID == 301,
+                  "visible pins and video editor are re-included; settings, hidden pins and foreign windows are not exceptions");
             finishImage(controller, @27, @"left screen pixels", nil);
             CHECK(controller.createdEditors.count == 0, "no overlay is shown while any screen is still being captured");
             finishImage(controller, @14, @"main screen pixels", nil);

@@ -63,6 +63,7 @@ priv struct UI {
   mut crop_saved : Rect
   mut crop_anchor_x : Double
   mut crop_anchor_y : Double
+  mut waveform : Waveform?
 }
 
 ///|
@@ -284,6 +285,7 @@ pub fn open(snapshot : String) -> Int32 {
     crop_saved: { x: 0, y: 0, width: 0, height: 0, },
     crop_anchor_x: 0,
     crop_anchor_y: 0,
+    waveform: None,
   }
   project_sync_selection(sessions[id])
   id

@@ -380,6 +380,7 @@ pub fn event(id : Int32, event_json : String) -> String {
         s.message = message
         s.message_error = true
       }
+      "waveform" => receive_waveform(s, input)
       "mediaStatus" => {
         let ready = boolean(input, "ready")
         let message = string(input, "message")

@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSString *statusText;
 @property (nonatomic, readonly) NSString *statusItemTitle;
 @property (nonatomic, readonly) NSString *stopActionTitle;
+@property (nonatomic, readonly) NSSet<NSNumber *> *visibleEditorWindowNumbers;
 @property (nonatomic, copy, nullable) void (^onStateChange)(void);
 - (void)startRecording;
 - (void)stopRecording;

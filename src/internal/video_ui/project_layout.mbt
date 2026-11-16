@@ -4,7 +4,7 @@ fn project_track(s : UI, kind : String) -> Rect {
     x: 80,
     y: s.height - (if kind == "audio" { 86.0 } else { 126.0 }),
     width: s.width - 120,
-    height: 30,
+    height: if kind == "audio" { 42.0 } else { 30.0 },
   }
 }
 

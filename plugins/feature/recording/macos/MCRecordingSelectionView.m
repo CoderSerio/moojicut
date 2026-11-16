@@ -33,10 +33,12 @@
         NSButton *start = [NSButton buttonWithTitle:@"录制" image:[NSImage imageWithSystemSymbolName:@"record.circle" accessibilityDescription:nil] target:self action:@selector(confirm:)];
         start.frame = NSMakeRect(44,6,90,32); start.bordered = NO; start.contentTintColor = NSColor.whiteColor;
         start.keyEquivalent = @"\r"; [self.controls addSubview:start];
+        start.toolTip = @"开始录制（Enter）；倒计时期间可以取消";
         NSButton *cancel = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"xmark" accessibilityDescription:@"取消录屏"] target:self action:@selector(cancel:)];
         cancel.frame = NSMakeRect(140,6,32,32); cancel.bordered = NO; cancel.contentTintColor = NSColor.whiteColor; cancel.keyEquivalent = @"\e";
         cancel.toolTip = @"取消 (Esc)"; [self.controls addSubview:cancel];
         [self setAccessibilityLabel:@"拖拽框选，单击选择窗口，回车开始录制，Esc 取消"];
+        self.toolTip = @"拖动框选录屏范围，或单击选择窗口；拖动边框移动选区，拖动圆点调整大小";
     }
     return self;
 }
@@ -53,7 +55,7 @@
 - (void)updateAudio {
     BOOL enabled = self.includesAudio;
     self.audioButton.image = [NSImage imageWithSystemSymbolName:enabled ? @"speaker.wave.2.fill" : @"speaker.slash.fill" accessibilityDescription:@"系统声音"];
-    self.audioButton.toolTip = enabled ? @"系统声音：开" : @"系统声音：关";
+    self.audioButton.toolTip = enabled ? @"录制系统声音：已开启，点击关闭" : @"录制系统声音：已关闭，点击开启";
     [self.audioButton setAccessibilityValue:enabled ? @"开" : @"关"];
 }
 - (void)toggleAudio:(__unused id)sender {
@@ -140,6 +142,7 @@
         NSButton *cancel = [NSButton buttonWithTitle:@"取消" target:self action:@selector(cancel:)];
         cancel.frame = NSMakeRect(56,8,88,32); cancel.keyEquivalent = @"\e";
         cancel.bordered = NO; cancel.wantsLayer = YES; cancel.layer.cornerRadius = 16;
+        cancel.toolTip = @"取消本次录屏（Esc）";
         cancel.layer.backgroundColor = [NSColor colorWithWhite:0.12 alpha:0.94].CGColor;
         cancel.attributedTitle = [[NSAttributedString alloc] initWithString:@"取消" attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium],NSForegroundColorAttributeName:NSColor.whiteColor}];
         [self addSubview:cancel];

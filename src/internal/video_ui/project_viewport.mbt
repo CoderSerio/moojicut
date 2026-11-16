@@ -152,7 +152,7 @@ fn project_scroll(
     y: row.y - 24,
     width: row.width,
     height: if s.audio_expanded {
-      94
+      project_track(s, "audio").y + project_track(s, "audio").height - row.y + 24
     } else {
       54
     },

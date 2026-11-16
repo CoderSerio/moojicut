@@ -321,7 +321,11 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
             weakSelf.userPlugins.busy || weakSelf.scrollCapture.busy;
     };
     self.pinnedImages.onShortcutStatus = ^(NSString *error) { weakSelf.preferences.pinShortcutRegistrationError = error; };
-    self.captureController.includedWindowNumbers = ^{ return weakSelf.pinnedImages.visibleWindowNumbers ?: [NSSet set]; };
+    self.captureController.includedWindowNumbers = ^{
+        NSMutableSet *windows = [NSMutableSet setWithSet:weakSelf.pinnedImages.visibleWindowNumbers ?: [NSSet set]];
+        [windows unionSet:weakSelf.recordingController.visibleEditorWindowNumbers ?: [NSSet set]];
+        return [windows copy];
+    };
     self.captureController.onStateChange = ^{
         [weakSelf updateRecordingState];
         if (!weakSelf.captureController.busy) [weakSelf.scrollCapture cancel];

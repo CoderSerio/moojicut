@@ -65,7 +65,11 @@
       },
       "feature.video_editor": {
         "sources": ["plugins/feature/video_editor/macos/MCVideoEditor.m", "plugins/feature/video_editor/macos/MCVideoMedia.m"],
-        "requires": ["component.shared_canvas"]
+        "requires": ["component.shared_canvas", "component.media_analysis"]
+      },
+      "component.media_analysis": {
+        "sources": ["components/media_analysis/macos/MCAudioWaveform.m"],
+        "requires": []
       },
       "feature.recording": {
         "sources": ["plugins/feature/recording/macos/MCMacRecordingController.m", "plugins/feature/recording/macos/MCRecordingSelectionView.m"],

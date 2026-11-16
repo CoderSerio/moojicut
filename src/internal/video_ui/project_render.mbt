@@ -199,12 +199,22 @@ fn project_draw_row(
         p.clip_border
       },
     )
+    project_draw_waveform(commands, s, c, r)
     if r.width > 48 {
       let label = "#\{c.id[1:]} · \{clip_rate_label(c)}"
       draw_text(
         commands,
         s,
-        { x: r.x + 8, y: r.y, width: r.width - 16, height: r.height, },
+        {
+          x: r.x + 8,
+          y: r.y,
+          width: r.width - 16,
+          height: if kind == "audio" && has_waveform(s) {
+            14.0
+          } else {
+            r.height
+          },
+        },
         label,
         p.text,
         11,
@@ -214,10 +224,11 @@ fn project_draw_row(
     }
     if c.link_group != "" && r.width > 130 {
       // Two overlapping outlines mark the actual linked video/audio group.
+      let link_y = r.y + (if kind == "audio" && has_waveform(s) { 3.0 } else { 10.0 })
       draw_rect(
         commands,
         s,
-        { x: r.x + r.width - 25, y: r.y + 10, width: 10, height: 7, },
+        { x: r.x + r.width - 25, y: link_y, width: 10, height: 7, },
         2,
         p.clip,
         p.secondary,
@@ -225,7 +236,7 @@ fn project_draw_row(
       draw_rect(
         commands,
         s,
-        { x: r.x + r.width - 19, y: r.y + 13, width: 10, height: 7, },
+        { x: r.x + r.width - 19, y: link_y + 3, width: 10, height: 7, },
         2,
         p.clip,
         p.secondary,
@@ -388,7 +399,7 @@ fn project_frame(s : UI) -> Json {
   }
   let px = project_x(s, s.source_time * 90)
   let bottom = if s.audio_expanded {
-    project_track(s, "audio").y + 33
+    project_track(s, "audio").y + project_track(s, "audio").height + 1
   } else {
     row.y + 33
   }

@@ -1,5 +1,6 @@
 #import "MCVideoEditor.h"
 #import "MCVideoMedia.h"
+#import "components/media_analysis/macos/MCAudioWaveform.h"
 #import "components/shared_canvas/macos/MCSharedCanvas.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "native/shared/video_project.h"
@@ -76,6 +77,7 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
 @property NSURL *directory;
 @property NSDictionary *state;
 @property MCVideoMedia *media;
+@property MCAudioWaveform *waveformTask;
 @property MCSharedCanvasView *canvas;
 @property NSWindow *window;
 @property NSTimer *timer;
@@ -101,6 +103,10 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
 
 @implementation MCVideoEditor
 - (BOOL)exporting { return self.choosingExport || self.exportActive; }
+- (NSSet<NSNumber *> *)visibleWindowNumbers {
+    return !self.closed && self.window.visible && !self.window.miniaturized && self.window.windowNumber > 0 ?
+        [NSSet setWithObject:@(self.window.windowNumber)] : [NSSet set];
+}
 - (instancetype)initWithDraftDirectory:(NSURL *)directory error:(NSError **)error {
     if (!(self = [super init])) return nil;
     _session = -1; _ui = -1; _lastExportPercent = -1; _directory = directory;
@@ -198,6 +204,18 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
     if (!self.mediaPrepared && ![self synchronizeMedia:&error]) [self reportError:error];
     else [self.canvas setVideoPlayer:self.mediaSynchronized ? self.media.player : nil];
     [self render]; [self.window center];
+    if ([self.media.metadata[@"hasAudio"] boolValue]) {
+        NSNumber *duration = self.media.metadata[@"durationMs"];
+        self.waveformTask = [MCAudioWaveform readURL:[self.directory URLByAppendingPathComponent:@"source.mp4"]
+            durationMilliseconds:duration.doubleValue completion:^(NSArray<NSNumber *> *peaks, NSError *failure) {
+                MCVideoEditor *owner = weak;
+                if (!owner || owner.closed) return;
+                owner.waveformTask = nil;
+                // Analysis is optional; failure never pauses editing or export.
+                if (failure) NSLog(@"Audio waveform unavailable: %@", failure.localizedDescription);
+                [owner sendUIEvent:@{@"type":@"waveform",@"durationMs":duration,@"peaks":peaks ?: @[]}];
+            }];
+    }
     self.timer = [NSTimer timerWithTimeInterval:1.0/30 repeats:YES block:^(__unused NSTimer *timer) { [weak tick]; }];
     [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
 }
@@ -366,6 +384,7 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
     [self sendUIEvent:@{@"type":@"cancel"}]; self.closed = YES; self.seekGeneration++; self.exportGeneration++;
     self.exportActive = NO; self.choosingExport = NO; self.closeAfterExportCancellation = NO;
     [self.timer invalidate]; self.timer = nil;
+    [self.waveformTask cancel]; self.waveformTask = nil;
     self.canvas.onEvent = nil; self.canvas.onFrameNeeded = nil; [self.canvas setVideoPlayer:nil]; [self.media close];
     if (self.ui >= 0) { video_ui_close(self.ui); self.ui = -1; }
     if (self.session >= 0) { video_project_close(self.session); self.session = -1; }
@@ -376,6 +395,7 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
 - (void)dealloc {
     [_timer invalidate]; _canvas.onEvent = nil; _canvas.onFrameNeeded = nil;
     [_media close];
+    [_waveformTask cancel];
     if (_ui >= 0) video_ui_close(_ui);
     if (_session >= 0) video_project_close(_session);
 }

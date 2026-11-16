@@ -328,7 +328,7 @@ static NSError *MCCaptureError(NSString *message) {
             for (SCRunningApplication *application in content.applications) {
                 if (application.processID == NSProcessInfo.processInfo.processIdentifier) [excluded addObject:application];
             }
-            // Exceptions re-include visible pins while the app exclusion keeps
+            // Exceptions re-include visible pins and video editors while the app exclusion keeps
             // Settings, controls and any late-created host windows out.
             NSArray<SCWindow *> *includedWindows = [owner includedWindowsFromContent:content windowNumbers:owner.captureWindowNumbers];
             NSMutableArray *snapshots = [NSMutableArray array];

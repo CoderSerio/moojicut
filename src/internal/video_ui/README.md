@@ -103,8 +103,23 @@ Core rejection restores authoritative metadata through the normal error/snapshot
 path. Closing or invalidating media cancels UI capture without restore recursion.
 
 Project interaction/rendering is isolated in `project_*.mbt` and reuses shared
-palette, transport, icons, drawing helpers and semantics. No native controls,
-platform symbols, generated thumbnails or audio waveforms are introduced.
+palette, transport, icons, drawing helpers and semantics. No native controls or
+platform symbols are required. `waveform.mbt` draws the audio envelope inside
+audio clips after the host supplies a `waveform` event:
+
+```json
+{"type":"waveform","durationMs":12000,"peaks":[0,0.2,0.8,0]}
+```
+
+The duration must match the original source. Peaks are uniform source-time bins
+(maximum 16,384), finite values in [0,1]; an empty array means unavailable, not
+silence. The host decodes asynchronously and cancels on close. UI state caches
+range maxima and maps visible pixels through source trim, actual speed and
+timeline offset. Waveforms are absent from the project document, undo history
+and render plan. Quiet speech uses square-root display gain only; export gain
+is unchanged. This is a single-source overview, not a spectrum or unlimited
+zoom detail. Multi-asset identities and higher-resolution analysis remain future
+media-port work. Thumbnail generation is not implemented here.
 
 Actual audio slowdown is currently unavailable: audio clips and linked groups
 containing audio disable the 0.5× actual-speed menu item before any operation is
