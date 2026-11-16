@@ -459,6 +459,26 @@ static NSBitmapImageRep *toolbarPixels(MCImageEditorController *editor) {
     }];
     return bitmap;
 }
+// Compare rendered foreground against its actual neutral surface, not merely
+// whether light and dark PNGs differ. Disabled actions are deliberately exempt.
+static double linearChannel(double value) {
+    return value <= .04045 ? value / 12.92 : pow((value + .055) / 1.055, 2.4);
+}
+static double luminance(NSColor *color) {
+    color = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    return .2126 * linearChannel(color.redComponent) + .7152 * linearChannel(color.greenComponent) + .0722 * linearChannel(color.blueComponent);
+}
+static double iconContrast(NSBitmapImageRep *bitmap, NSRect icon, NSView *surface) {
+    double background = luminance([bitmap colorAtX:bitmap.pixelsWide/2 y:bitmap.pixelsHigh-3]);
+    double result = 1;
+    CGFloat sx = bitmap.pixelsWide / NSWidth(surface.bounds), sy = bitmap.pixelsHigh / NSHeight(surface.bounds);
+    for (NSInteger y = MAX(0, floor((NSHeight(surface.bounds)-NSMaxY(icon))*sy)); y < MIN(bitmap.pixelsHigh,ceil((NSHeight(surface.bounds)-NSMinY(icon))*sy)); y++)
+        for (NSInteger x = MAX(0,floor(NSMinX(icon)*sx)); x < MIN(bitmap.pixelsWide,ceil(NSMaxX(icon)*sx)); x++) {
+            double foreground = luminance([bitmap colorAtX:x y:y]);
+            result = MAX(result, (MAX(background,foreground)+.05)/(MIN(background,foreground)+.05));
+        }
+    return result;
+}
 static BOOL toolbarAppearance(void) {
     BOOL passed = YES;
     MCImageEditorController *e = [[MCImageEditorController alloc] initWithPNGData:pixels() error:NULL];
@@ -473,6 +493,10 @@ static BOOL toolbarAppearance(void) {
             timestamp:0 windowNumber:e.window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
         NSBitmapImageRep *normal = toolbarPixels(e);
         NSData *normalPNG = [normal representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        NSRect pointer = [e.tools convertRect:NSMakeRect(6,5,18,18) toView:e.floatingToolbar];
+        NSRect action = [e.ocrButton convertRect:NSInsetRect(e.ocrButton.bounds,6,5) toView:e.floatingToolbar];
+        CHECK(iconContrast(normal,pointer,e.floatingToolbar) >= 4.5 && iconContrast(normal,action,e.floatingToolbar) >= 4.5,
+              "enabled tool and action icons retain readable contrast in light and dark appearances");
         [e.undoButton mouseEntered:hover];
         CHECK([normalPNG isEqual:[toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
               "disabled actions do not acquire an enabled hover background in either appearance");

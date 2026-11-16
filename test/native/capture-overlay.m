@@ -41,6 +41,7 @@
 - (void)prepareWindow;
 - (BOOL)setCaptureRegion:(NSRect)rect;
 - (void)positionFloatingToolbar;
+- (void)showError:(NSError *)error;
 @end
 
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL capture overlay: %s\n", message); passed = NO; } } while (0)
@@ -95,6 +96,29 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor.document[@"undo"] count] == 0, "initial selection establishes the editing baseline");
     CHECK(NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame),
           "floating toolbar stays within its screen");
+    NSRect selectionInRoot = [canvas convertRect:[canvas viewRectForImageRect:NSMakeRect([viewport[@"x"] doubleValue], [viewport[@"y"] doubleValue], [viewport[@"width"] doubleValue], [viewport[@"height"] doubleValue])] toView:editor.window.contentView];
+    CHECK(NSMaxX(selectionInRoot) >= NSWidth(editor.floatingToolbar.frame) + 8 ?
+          fabs(NSMaxX(editor.floatingToolbar.frame) - NSMaxX(selectionInRoot)) < 1 :
+          NSMinX(editor.floatingToolbar.frame) == 8,
+          "toolbar aligns to the right edge, or clamps to the display for a narrow scaled crop");
+    CHECK(NSMaxY(editor.floatingToolbar.frame) < NSMinY(selectionInRoot) &&
+          NSMinY(selectionInRoot) - NSMaxY(editor.floatingToolbar.frame) <= 8,
+          "toolbar sits just below the selection when there is space");
+    CHECK(NSHeight(editor.floatingToolbar.frame) <= 40,
+          "selecting a region does not reserve an empty property row");
+    selectTool(editor,1);
+    CHECK(NSHeight(editor.floatingToolbar.frame) > 40 && NSHeight(editor.floatingToolbar.frame) <= 72,
+          "editable properties expand to a compact second row without reducing hit targets");
+    CHECK(NSMaxX(selectionInRoot) >= NSWidth(editor.floatingToolbar.frame) + 8 ?
+          fabs(NSMaxX(editor.floatingToolbar.frame) - NSMaxX(selectionInRoot)) < 1 :
+          NSMinX(editor.floatingToolbar.frame) == 8,
+          "property widths retain the trailing anchor without moving controls offscreen");
+    selectTool(editor,0);
+    [editor showError:[NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"An actionable error"}]];
+    CHECK(NSHeight(editor.floatingToolbar.frame) > 40 && !((MCStylePropertiesView *)editor.properties).status.hidden,
+          "an error expands a collapsed property row so the message remains visible");
+    [editor refresh];
+    CHECK(NSHeight(editor.floatingToolbar.frame) <= 40, "clearing the message collapses the unused row again");
     CHECK(editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
           "select without a text object shows no irrelevant properties");
     CHECK(editor.ocrButton.superview == editor.toolbar && editor.translateButton.superview == editor.toolbar &&
@@ -326,10 +350,22 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     MCImageCanvas *canvas = editor.canvas;
     NSArray *cursors = canvasCursors(canvas);
     CHECK(hasCursor(cursors, NSMakePoint(20,20), NSCursor.crosshairCursor), "initial region selection uses a canvas crosshair");
+    CHECK([editor setCaptureRegion:NSMakeRect(600,440,190,40)], "bottom-edge fixture selects a region");
+    NSRect bottomSelection = [canvas convertRect:[canvas viewRectForImageRect:NSMakeRect(600,440,190,40)] toView:editor.window.contentView];
+    CHECK(NSMinY(editor.floatingToolbar.frame) > NSMaxY(bottomSelection) &&
+          fabs(NSMaxX(editor.floatingToolbar.frame)-NSMaxX(bottomSelection)) < 1,
+          "when the bottom edge has no space, the menu moves above while staying right-aligned");
+    CHECK([editor setCaptureRegion:NSMakeRect(1,150,80,80)] &&
+          NSContainsRect(editor.window.contentView.bounds,editor.floatingToolbar.frame) && NSMinX(editor.floatingToolbar.frame) == 8,
+          "a narrow crop at the left display edge keeps the whole toolbar reachable");
     // A nearly full-screen crop forces the toolbar over the selection, exactly
     // where sibling cursor rectangles used to leak through native controls.
     CHECK([editor setCaptureRegion:NSMakeRect(10,10,780,480)], "large crop establishes overlay layout");
     CGFloat defaultWidth = NSWidth(editor.floatingToolbar.frame);
+    NSRect selectionRoot = [canvas convertRect:[canvas viewRectForImageRect:NSMakeRect(10,10,780,480)] toView:editor.window.contentView];
+    CHECK(fabs(NSMaxX(editor.floatingToolbar.frame) - NSMaxX(selectionRoot)) < 1 &&
+          NSMinY(editor.floatingToolbar.frame) < NSMidY(selectionRoot),
+          "a full-screen crop keeps the menu at the lower right inside the selection");
     CHECK(defaultWidth < 450, "default screenshot toolbar fits its actual controls instead of a fixed 500-point shell");
     selectTool(editor,1);
     cursors = canvasCursors(canvas);

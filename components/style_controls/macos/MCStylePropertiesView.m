@@ -63,7 +63,8 @@
     self.colorControl.well.enabled = !self.colorControl.hidden;
     self.fontControl.field.enabled = self.fontControl.stepper.enabled = !self.fontControl.hidden;
     self.strokeControl.field.enabled = self.strokeControl.stepper.enabled = !self.strokeControl.hidden;
-    self.status.hidden = mask != 0;
+    // No placeholder row when the current tool has no editable properties.
+    self.status.hidden = YES;
     self.status.stringValue = @"选择标注以调整属性";
 }
 - (int32_t)syncFromSender:(id)sender {
@@ -87,5 +88,6 @@
 - (void)showMessage:(NSString *)message {
     self.propertyMask = 0;
     self.status.stringValue = message;
+    self.status.hidden = message.length == 0;
 }
 @end

@@ -15,8 +15,28 @@ extern moonbit_string_t image_selection(moonbit_string_t);
 static const CGFloat MCEditorToolWidth = 30;
 static const CGFloat MCEditorToolHeight = 28;
 
-// Draw only a single button's state, never a segmented group's bezel. Both
-// kinds of native control keep their AppKit image, tracking and accessibility.
+// Keep native tracking/accessibility, but draw both groups with the same
+// foreground. AppKit's segmented tint assumes a bezel we deliberately omit.
+static void MCDrawToolIcon(NSImage *image, NSRect frame, BOOL enabled) {
+    if (!image) return;
+    NSImage *display = image;
+    if (image.isTemplate) {
+        NSColor *foreground = NSColor.labelColor;
+        display = [NSImage imageWithSize:image.size flipped:NO drawingHandler:^BOOL(NSRect rect) {
+            [image drawInRect:rect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1];
+            [foreground setFill];
+            NSRectFillUsingOperation(rect, NSCompositingOperationSourceIn);
+            return YES;
+        }];
+    }
+    NSSize size = display.size;
+    CGFloat scale = MIN(1, MIN(NSWidth(frame) / MAX(1, size.width), NSHeight(frame) / MAX(1, size.height)));
+    NSRect rect = NSMakeRect(NSMidX(frame) - size.width * scale / 2, NSMidY(frame) - size.height * scale / 2,
+                            size.width * scale, size.height * scale);
+    [display drawInRect:rect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver
+              fraction:enabled ? 1 : .3 respectFlipped:YES hints:nil];
+}
+
 static void MCDrawToolBackground(NSRect frame, BOOL enabled, BOOL selected, BOOL hovered, BOOL pressed) {
     if (!enabled || !(selected || hovered || pressed)) return;
     NSColor *color = selected ? NSColor.controlAccentColor : NSColor.labelColor;
@@ -40,8 +60,11 @@ static void MCDrawToolBackground(NSRect frame, BOOL enabled, BOOL selected, BOOL
 - (void)mouseExited:(__unused NSEvent *)event { self.toolHovered = NO; self.needsDisplay = YES; }
 - (void)drawRect:(NSRect)dirtyRect {
     MCDrawToolBackground(self.bounds, self.enabled, NO, self.toolHovered, self.cell.highlighted);
-    [super drawRect:dirtyRect];
+    if (self.image) MCDrawToolIcon(self.image, NSInsetRect(self.bounds, 6, 5), self.enabled);
+    else [super drawRect:dirtyRect];
 }
+- (BOOL)allowsVibrancy { return NO; }
+- (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; self.needsDisplay = YES; }
 @end
 
 @interface MCEditorToolControl : NSSegmentedControl
@@ -58,15 +81,17 @@ static void MCDrawToolBackground(NSRect frame, BOOL enabled, BOOL selected, BOOL
         NSRect slot = NSMakeRect(NSMinX(frame) + index * MCEditorToolWidth, NSMinY(frame), MCEditorToolWidth, NSHeight(frame));
         MCDrawToolBackground(slot, self.enabled && [self isEnabledForSegment:index], [self isSelectedForSegment:index],
                             control.hoveredSegment == index, control.pressedSegment == index);
-        // This AppKit hook draws only the content, including template tint,
-        // selected/disabled appearance and custom plugin images.
         NSRect content = NSMakeRect(NSMinX(slot), NSMidY(slot) - 9, NSWidth(slot), 18);
-        [self drawSegment:index inFrame:content withView:view];
+        NSImage *image = [self imageForSegment:index];
+        if (image) MCDrawToolIcon(image, content, self.enabled && [self isEnabledForSegment:index]);
+        else [self drawSegment:index inFrame:content withView:view];
     }
 }
 @end
 @implementation MCEditorToolControl
 + (Class)cellClass { return MCEditorToolCell.class; }
+- (BOOL)allowsVibrancy { return NO; }
+- (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; self.needsDisplay = YES; }
 - (instancetype)initWithFrame:(NSRect)frame {
     if ((self = [super initWithFrame:frame])) { _hoveredSegment = -1; _pressedSegment = -1; }
     return self;
@@ -1088,8 +1113,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     button.bordered = NO;
     ((NSButtonCell *)button.cell).highlightsBy = NSNoCellMask;
     ((NSButtonCell *)button.cell).showsStateBy = NSNoCellMask;
-    // Let native borderless controls share the same enabled/disabled template
-    // tint as the tool segments; a forced tint makes the two groups disagree.
+    // MCEditorToolButton and MCEditorToolCell share explicit template drawing.
     button.contentTintColor = nil;
     button.title = @"";
     button.bezelStyle = NSBezelStyleTexturedRounded;
@@ -1132,8 +1156,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.canvas.accessibilityLabel = @"截图标注画布";
         [root addSubview:self.canvas];
         self.tools = [MCEditorToolControl segmentedControlWithLabels:@[@"选择"] trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(chooseTool:)];
-        // The cell draws native segment interiors without the OS group bezel.
-        // TexturedSquare supplies the per-selection accent for template icons.
+        // Native segment tracking with our own consistent, bezel-free drawing.
         self.tools.segmentStyle = NSSegmentStyleTexturedSquare;
         self.tools.cell.bordered = NO;
         self.tools.cell.bezeled = NO;
@@ -1202,11 +1225,12 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.canvas.frame = root.bounds;
     self.canvas.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.floatingToolbar = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-    self.floatingToolbar.material = NSVisualEffectMaterialHUDWindow;
+    self.floatingToolbar.material = NSVisualEffectMaterialPopover;
     self.floatingToolbar.blendingMode = NSVisualEffectBlendingModeWithinWindow;
     self.floatingToolbar.state = NSVisualEffectStateActive;
     self.floatingToolbar.wantsLayer = YES;
-    self.floatingToolbar.layer.cornerRadius = 12;
+    self.floatingToolbar.layer.cornerRadius = 8;
+    self.properties.spacing = 8;
     self.floatingToolbar.layer.masksToBounds = YES;
     self.floatingToolbar.hidden = YES;
     for (NSView *view in @[self.toolbar, self.properties]) {
@@ -1255,9 +1279,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSView *root = self.window.contentView;
     NSRect region = [self.canvas viewRectForImageRect:MCAnnotationRect(self.document[@"viewport"])];
     region = [self.canvas convertRect:region toView:root];
-    CGFloat margin = MIN(12, NSWidth(root.bounds) / 8);
+    CGFloat margin = MIN(8, NSWidth(root.bounds) / 8);
     CGFloat available = MAX(1, NSWidth(root.bounds) - 2 * margin);
-    CGFloat inset = MIN(12, available / 8);
+    CGFloat inset = MIN(6, available / 8);
     CGFloat contentAvailable = MAX(1, available - 2 * inset);
     self.toolbar.spacing = 0;
     self.toolScrollWidth.constant = MIN(8 * MCEditorToolWidth, NSWidth(self.tools.frame));
@@ -1269,18 +1293,29 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     // Hidden property groups detach from the stack, so each tool contributes
     // only its actual controls. Keep numeric/text fields at their natural width;
     // exceptionally narrow displays scroll the row instead of squeezing input.
-    CGFloat propertiesWidth = ceil(self.properties.fittingSize.width);
-    CGFloat width = MIN(available, MAX(rowWidth, propertiesWidth) + 2 * inset), height = 92;
-    CGFloat x = MAX(margin, MIN(NSMinX(region), NSWidth(root.bounds) - width - margin));
-    CGFloat y = NSMinY(region) - height - 10;
-    if (y < 12) y = NSMaxY(region) + 10;
-    y = MAX(12, MIN(y, NSHeight(root.bounds) - height - 12));
+    BOOL hasProperties = NO;
+    for (NSView *view in self.properties.arrangedSubviews) if (!view.hidden) { hasProperties = YES; break; }
+    CGFloat propertiesWidth = hasProperties ? ceil(self.properties.fittingSize.width) : 0;
+    CGFloat rowHeight = MCEditorToolHeight, gap = 4, padding = 6, selectionGap = 6;
+    CGFloat width = MIN(available, MAX(rowWidth, propertiesWidth) + 2 * inset);
+    CGFloat verticalMargin = MIN(8, NSHeight(root.bounds) / 8);
+    CGFloat height = MIN(NSHeight(root.bounds) - 2 * verticalMargin,
+                        rowHeight + 2 * padding + (hasProperties ? rowHeight + gap : 0));
+    // Keep the trailing edge stable when switching tools or loading plugins.
+    CGFloat x = MAX(margin, MIN(NSMaxX(region) - width, NSWidth(root.bounds) - width - margin));
+    CGFloat y = NSMinY(region) - height - selectionGap;
+    if (y < verticalMargin) {
+        CGFloat above = NSMaxY(region) + selectionGap;
+        y = above + height <= NSHeight(root.bounds) - verticalMargin ? above : NSMinY(region) + selectionGap;
+    }
+    y = MAX(verticalMargin, MIN(y, NSHeight(root.bounds) - height - verticalMargin));
     self.floatingToolbar.frame = NSMakeRect(x, y, width, height);
     CGFloat viewportWidth = MAX(1, width - 2 * inset);
-    self.toolbarScroll.frame = NSMakeRect(inset, 48, viewportWidth, 32);
-    self.propertiesScroll.frame = NSMakeRect(inset, 12, viewportWidth, 28);
-    self.toolbar.frame = NSMakeRect(0, 0, MAX(rowWidth, viewportWidth), 32);
-    self.properties.frame = NSMakeRect(0, 0, MAX(propertiesWidth, viewportWidth), 28);
+    self.toolbarScroll.frame = NSMakeRect(inset, height - padding - rowHeight, viewportWidth, rowHeight);
+    self.propertiesScroll.hidden = !hasProperties;
+    self.propertiesScroll.frame = NSMakeRect(inset, padding, viewportWidth, rowHeight);
+    self.toolbar.frame = NSMakeRect(0, 0, MAX(rowWidth, viewportWidth), rowHeight);
+    self.properties.frame = NSMakeRect(0, 0, MAX(propertiesWidth, viewportWidth), rowHeight);
     [self.floatingToolbar layoutSubtreeIfNeeded];
     [self.window invalidateCursorRectsForView:self.canvas];
 }
@@ -1375,6 +1410,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)showError:(NSError *)error {
     [self.properties showMessage:error.localizedDescription];
+    [self positionFloatingToolbar];
     NSBeep();
 }
 - (NSString *)colorHex {
@@ -1604,6 +1640,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     // failure. showError: hides property controls, which could end field input.
     self.properties.status.stringValue = error.localizedDescription ?: @"贴图未能创建，已保留当前编辑。";
     self.properties.status.hidden = NO;
+    [self positionFloatingToolbar];
     NSBeep();
 }
 - (void)cancel:(id)sender { (void)sender; [self.canvas finishTextEditing:NO]; [self.window close]; }
