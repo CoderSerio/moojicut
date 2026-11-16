@@ -178,7 +178,8 @@ static BOOL blend_annotation(int kind, double x, double y, double w, double h, i
   if (kind == TOOL_REDACT && shape == 2) {
     GdiFlush();
     mc_pixelate_bgra(capture.rendered.pixels, capture.rendered.width, capture.rendered.height,
-      capture.rendered.width * 4, rounded(x), rounded(y), rounded(w), rounded(h), block);
+      capture.rendered.width * 4, (int)floor(x), (int)floor(y),
+      (int)ceil(x + w) - (int)floor(x), (int)ceil(y + h) - (int)floor(y), block);
     return TRUE;
   }
   if (opacity <= 0)

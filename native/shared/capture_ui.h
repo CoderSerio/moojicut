@@ -15,6 +15,9 @@ void capture_ui_close(int32_t handle);
  * Top-left logical coordinates. Caller releases the four-double result. */
 double *capture_ui_toolbar_frame(double sw, double sh, double x, double y,
                                 double w, double h, double row, double properties);
+/* Measured full panel dimensions for native themes / accessibility fonts. */
+double *capture_ui_measured_toolbar_frame(double sw, double sh, double x, double y,
+    double w, double h, double measured_width, double measured_height);
 #ifdef __cplusplus
 }
 #endif

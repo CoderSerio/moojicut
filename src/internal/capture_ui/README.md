@@ -72,6 +72,8 @@ returns an owned four-double array `[x,y,width,height]`; release it with
 `moonbit_decref`. The shared policy anchors below the region's right edge, moves
 above when necessary, clamps to the display and omits an empty property row.
 The host converts AppKit's bottom-left coordinates only at this boundary.
+`capture_ui_measured_toolbar_frame` accepts full measured panel width/height
+for GTK/theme/accessibility fonts and uses the same placement/clamping policy.
 
 ## Cases and checks
 

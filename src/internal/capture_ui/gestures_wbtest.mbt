@@ -174,3 +174,12 @@ test "toolbar follows the lower right edge and fits each content configuration" 
   let narrow = toolbar_frame(200, 150, 2, 2, 80, 60, 500, 400)
   expect_frame(narrow, [8.0, 68.0, 184.0, 72.0])
 }
+
+///|
+test "native font metrics participate in toolbar placement" {
+  // Native accessibility fonts need 100pt: the 72pt default would overflow.
+  let tall = measured_toolbar_frame(800, 400, 100, 120, 500, 190, 440, 100)
+  expect_frame(tall, [160.0, 14.0, 440.0, 100.0])
+  let narrow = measured_toolbar_frame(300, 200, 0, 0, 300, 200, 600, 250)
+  expect_frame(narrow, [8.0, 8.0, 284.0, 184.0])
+}

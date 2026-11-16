@@ -6,6 +6,8 @@ pub fn close(Int32) -> Unit
 
 pub fn event(String) -> String
 
+pub fn measured_toolbar_frame(Double, Double, Double, Double, Double, Double, Double, Double) -> FixedArray[Double]
+
 pub fn open(Double, Double) -> Int32
 
 pub fn toolbar_frame(Double, Double, Double, Double, Double, Double, Double, Double) -> FixedArray[Double]

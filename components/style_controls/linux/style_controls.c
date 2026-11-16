@@ -98,11 +98,11 @@ static void hud_provider(GtkWidget *widget, gpointer data) {
 void mc_style_hud_apply(GtkWidget *toolbar) {
   static const char css[] =
       ".mc-capture-hud { background-color: #292730; background-image: none; color: #ece8e2;"
-      " border: 1px solid #514b59; border-radius: 12px; padding: 8px; box-shadow: 0 4px 12px alpha(black, "
+      " border: 1px solid #514b59; border-radius: 8px; padding: 4px; box-shadow: 0 4px 12px alpha(black, "
       "0.25); }"
       ".mc-capture-hud button { background-image: none; background-color: transparent; color: #ece8e2;"
       " border: 1px solid transparent; border-radius: 7px; box-shadow: none; text-shadow: none;"
-      " -gtk-icon-shadow: none; padding: 0; min-width: 30px; min-height: 30px; }"
+      " -gtk-icon-shadow: none; padding: 0; min-width: 26px; min-height: 26px; }"
       ".mc-capture-hud button:hover { background-color: #403b48; }"
       ".mc-capture-hud button:active, .mc-capture-hud button.mc-selected { background-color: #56505f;"
       " border-color: #686170; color: #fff9ef; }"
@@ -499,6 +499,7 @@ MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ran
     gtk_box_pack_start(GTK_BOX(controls->row), number->group, FALSE, FALSE, 3);
   }
   gtk_widget_show_all(controls->row);
+  gtk_widget_set_no_show_all(controls->row, TRUE);
   gtk_widget_set_no_show_all(controls->hint, TRUE);
   gtk_widget_set_no_show_all(controls->shapes, TRUE);
   for (int i = 0; i < 3; i++) gtk_widget_set_no_show_all(controls->shape_buttons[i], TRUE);
@@ -513,6 +514,7 @@ void mc_style_controls_sync(MCStyleControls *controls, unsigned mask, const doub
   if (!controls)
     return;
   controls->mask = mask;
+  gtk_widget_set_visible(controls->row, mask != 0);
   memmove(controls->values, values, sizeof(controls->values));
   GdkRGBA color = style_rgba(values);
   mc_color_control_set(controls->color, &color);
@@ -626,6 +628,18 @@ gboolean mc_style_controls_smoke(void) {
   mc_style_controls_sync(first, (1u << MC_STYLE_COLOR) | (1u << MC_STYLE_OPACITY), initial);
   ok = a.calls == 3 && mc_style_controls_property_visible(first, MC_STYLE_COLOR) &&
        !mc_style_controls_property_visible(first, MC_STYLE_FONT) && ok;
+  mc_style_controls_set_tool(first, MC_STYLE_TOOL_COVER);
+  mc_style_controls_sync(first, editor_style_visible_mask(MC_STYLE_TOOL_COVER, 0), initial);
+  gtk_button_clicked(GTK_BUTTON(first->shape_buttons[2]));
+  ok = a.calls == 4 && a.values[MC_STYLE_SHAPE] == 2 && ok;
+  mc_style_controls_sync(first, editor_style_visible_mask(MC_STYLE_TOOL_COVER, 2), a.values);
+  ok = mc_style_controls_property_visible(first, MC_STYLE_SHAPE) &&
+    mc_style_controls_property_visible(first, MC_STYLE_BLOCK) &&
+    !mc_style_controls_property_visible(first, MC_STYLE_COLOR) && ok;
+  mc_style_controls_set_tool(first, MC_STYLE_TOOL_RECTANGLE);
+  mc_style_controls_sync(first, editor_style_visible_mask(MC_STYLE_TOOL_RECTANGLE, 0), initial);
+  gtk_button_clicked(GTK_BUTTON(first->shape_buttons[2]));
+  ok = a.calls == 4 && !gtk_widget_get_visible(first->shape_buttons[2]) && ok;
   choose_color(NULL, first->color);
   gboolean closed = FALSE;
   g_signal_connect(first->color->dialog, "destroy", G_CALLBACK(smoke_dialog_destroyed), &closed);

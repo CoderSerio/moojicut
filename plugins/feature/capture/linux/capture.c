@@ -270,7 +270,8 @@ static void draw_shape(cairo_t *cr, int kind, const double *r, const char *text)
     cairo_surface_flush(target);
     mc_pixelate_bgra(cairo_image_surface_get_data(target), cairo_image_surface_get_width(target),
         cairo_image_surface_get_height(target), cairo_image_surface_get_stride(target),
-        (int)x, (int)y, (int)w, (int)h, (int)r[9]);
+        (int)floor(x), (int)floor(y), (int)ceil(x + w) - (int)floor(x),
+        (int)ceil(y + h) - (int)floor(y), (int)r[9]);
     cairo_surface_mark_dirty(target);
   } else if (kind == RECTANGLE) {
     if ((int)r[8] == 1) {
@@ -448,7 +449,9 @@ static gboolean masks_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
       if ((int)r[8] == 1) {
         cairo_save(cr); cairo_translate(cr, r[0] + r[2]/2, r[1] + r[3]/2); cairo_scale(cr, r[2]/2, r[3]/2);
         cairo_new_sub_path(cr); cairo_arc(cr, 0, 0, 1, 0, 2*G_PI); cairo_restore(cr);
-      } else cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
+      } else if ((int)r[8] == 2)
+        cairo_rectangle(cr, floor(r[0]), floor(r[1]), ceil(r[0] + r[2]) - floor(r[0]), ceil(r[1] + r[3]) - floor(r[1]));
+      else cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
     }
   cairo_clip(cr);
   composite_document(cr, FALSE, TRUE);
@@ -1009,11 +1012,10 @@ static void layout_controls(void) {
       hh = gtk_widget_get_allocated_height(capture.canvas);
   GtkRequisition size;
   gtk_widget_get_preferred_size(capture.toolbar, &size, NULL);
-  double *frame = capture_ui_toolbar_frame(ww, hh,
+  double *frame = capture_ui_measured_toolbar_frame(ww, hh,
       capture.offset_x + capture.crop[0] * capture.zoom, capture.offset_y + capture.crop[1] * capture.zoom,
-      capture.crop[2] * capture.zoom, capture.crop[3] * capture.zoom, size.width - 12,
-      editor_style_visible_mask(context_kind(), capture.shape) ? size.width - 12 : 0);
-  GdkRectangle toolbar_bounds = {(int)frame[0], (int)frame[1], size.width, MAX(size.height, (int)frame[3])};
+      capture.crop[2] * capture.zoom, capture.crop[3] * capture.zoom, size.width, size.height);
+  GdkRectangle toolbar_bounds = {(int)frame[0], (int)frame[1], (int)frame[2], (int)frame[3]};
   moonbit_decref(frame);
   gboolean changed = memcmp(&toolbar_bounds, &capture.toolbar_bounds, sizeof(toolbar_bounds)) != 0;
   capture.toolbar_bounds = toolbar_bounds;
