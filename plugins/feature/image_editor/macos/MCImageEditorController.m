@@ -3,6 +3,7 @@
 #import "components/icons/macos/MCIcon.h"
 #import "components/style_controls/macos/MCStylePropertiesView.h"
 #import "components/selection/macos/MCSelectionSurface.h"
+#import "components/image_effects/macos/MCPixelate.h"
 #include "moonbit.h"
 #include "native/shared/image_session.h"
 #include "native/shared/capture_ui.h"
@@ -201,10 +202,11 @@ static void MCDrawAnnotation(NSDictionary *annotation) {
     if ([kind isEqualToString:@"redact"]) {
         // Filled covers use the same RGBA style as every other annotation.
         [color setFill];
-        NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
-    } else if ([kind isEqualToString:@"rect"]) {
+        if ([annotation[@"shape"] isEqual:@"ellipse"]) [[NSBezierPath bezierPathWithOvalInRect:rect] fill];
+        else NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
+    } else if ([kind isEqualToString:@"rect"] || [kind isEqualToString:@"ellipse"]) {
         [color setStroke];
-        NSBezierPath *path = [NSBezierPath bezierPathWithRect:rect];
+        NSBezierPath *path = [kind isEqual:@"ellipse"] ? [NSBezierPath bezierPathWithOvalInRect:rect] : [NSBezierPath bezierPathWithRect:rect];
         path.lineWidth = stroke;
         [path stroke];
     } else if ([kind isEqualToString:@"arrow"]) {
@@ -229,14 +231,49 @@ static void MCDrawAnnotation(NSDictionary *annotation) {
         [NSGraphicsContext restoreGraphicsState];
     }
 }
+static BOOL MCIsMask(NSDictionary *annotation) {
+    return [annotation[@"type"] isEqual:@"redact"] || [annotation[@"type"] isEqual:@"mosaic"];
+}
+static void MCDrawBase(NSImage *image, NSDictionary *document, NSArray *annotations) {
+    NSRect rect = NSMakeRect(0, 0, [document[@"width"] doubleValue], [document[@"height"] doubleValue]);
+    [image drawInRect:rect fromRect:NSZeroRect operation:NSCompositingOperationCopy fraction:1 respectFlipped:YES hints:nil];
+    for (NSDictionary *annotation in annotations) if (!MCIsMask(annotation)) MCDrawAnnotation(annotation);
+}
+static void MCDrawMask(NSDictionary *render) {
+    NSDictionary *annotation = render[@"annotation"];
+    if (![annotation[@"type"] isEqual:@"mosaic"]) { MCDrawAnnotation(annotation); return; }
+    [NSGraphicsContext saveGraphicsState];
+    NSRect rect = MCAnnotationRect(annotation);
+    NSRectClip(rect);
+    // Mosaic is always opaque, including a transparent source or allocation failure.
+    [NSColor.blackColor setFill]; NSRectFill(rect);
+    NSGraphicsContext.currentContext.imageInterpolation = NSImageInterpolationNone;
+    NSImage *image = render[@"image"];
+    [image drawInRect:[render[@"grid"] rectValue] fromRect:NSZeroRect
+        operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+    [NSGraphicsContext restoreGraphicsState];
+}
 static void MCDrawImage(NSImage *image, NSDictionary *document, NSDictionary *pending, NSRect liveTextRect) {
     NSRect rect = NSMakeRect(0, 0, [document[@"width"] doubleValue], [document[@"height"] doubleValue]);
     [NSGraphicsContext saveGraphicsState];
     NSRectClip(rect);
-    [image drawInRect:rect fromRect:NSZeroRect operation:NSCompositingOperationCopy fraction:1 respectFlipped:YES hints:nil];
-    NSArray *annotations = document[@"annotations"];
-    for (NSDictionary *annotation in annotations) if (![annotation[@"type"] isEqualToString:@"redact"]) MCDrawAnnotation(annotation);
-    if (pending && ![pending[@"type"] isEqualToString:@"redact"]) MCDrawAnnotation(pending);
+    NSMutableArray *annotations = [document[@"annotations"] mutableCopy];
+    if (pending) [annotations addObject:pending];
+    MCDrawBase(image, document, annotations);
+    NSMutableArray *masks = [NSMutableArray array];
+    for (NSDictionary *annotation in annotations) if (MCIsMask(annotation)) {
+        NSMutableDictionary *render = [@{@"annotation":annotation} mutableCopy];
+        if ([annotation[@"type"] isEqual:@"mosaic"]) {
+            NSRect grid = NSZeroRect;
+            NSImage *sample = MCPixelatedRegion(NSIntersectionRect(rect,MCAnnotationRect(annotation)),
+                [annotation[@"blockSize"] doubleValue], ^{
+                    MCDrawBase(image, document, annotations);
+                    for (NSDictionary *prior in masks) MCDrawMask(prior);
+                }, &grid);
+            if (sample) { render[@"image"] = sample; render[@"grid"] = [NSValue valueWithRect:grid]; }
+        }
+        [masks addObject:render];
+    }
     // The native text view paints covers above its glyphs. Exclude that area
     // here so translucent covers are blended once, including blank text space.
     NSRect excluded = NSIntersectionRect(rect, liveTextRect);
@@ -246,8 +283,7 @@ static void MCDrawImage(NSImage *image, NSDictionary *document, NSDictionary *pe
         clip.windingRule = NSWindingRuleEvenOdd;
         [clip addClip];
     }
-    for (NSDictionary *annotation in annotations) if ([annotation[@"type"] isEqualToString:@"redact"]) MCDrawAnnotation(annotation);
-    if ([pending[@"type"] isEqualToString:@"redact"]) MCDrawAnnotation(pending);
+    for (NSDictionary *render in masks) MCDrawMask(render);
     [NSGraphicsContext restoreGraphicsState];
 }
 
@@ -428,13 +464,24 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSRectClip(NSIntersectionRect(crop, self.bounds));
     [super drawRect:dirtyRect];
     // Match the document's cover ordering without double-compositing alpha.
+    NSAffineTransform *transform = [NSAffineTransform transform];
+    [transform translateXBy:-[draft[@"x"] doubleValue] yBy:-[draft[@"y"] doubleValue]];
+    [transform concat];
+    NSBezierPath *maskClip = [NSBezierPath bezierPath];
+    NSMutableArray *annotations = [NSMutableArray array];
     for (NSDictionary *annotation in self.canvas.editor.document[@"annotations"]) {
-        if (![annotation[@"type"] isEqual:@"redact"]) continue;
-        NSRect cover = MCAnnotationRect(annotation);
-        cover.origin.x -= [draft[@"x"] doubleValue];
-        cover.origin.y -= [draft[@"y"] doubleValue];
-        [MCAnnotationColor(annotation) setFill];
-        NSRectFillUsingOperation(NSIntersectionRect(cover, self.bounds), NSCompositingOperationSourceOver);
+        if (![annotation[@"id"] isEqual:draft[@"id"]]) [annotations addObject:annotation];
+        if (!MCIsMask(annotation)) continue;
+        if ([annotation[@"shape"] isEqual:@"ellipse"] && [annotation[@"type"] isEqual:@"redact"])
+            [maskClip appendBezierPathWithOvalInRect:MCAnnotationRect(annotation)];
+        else [maskClip appendBezierPathWithRect:MCAnnotationRect(annotation)];
+    }
+    if (!maskClip.empty) {
+        [maskClip addClip];
+        NSMutableDictionary *live = [draft mutableCopy]; live[@"text"] = self.string;
+        [annotations addObject:live];
+        NSMutableDictionary *document = [self.canvas.editor.document mutableCopy]; document[@"annotations"] = annotations;
+        MCDrawImage(self.canvas.editor.image, document, nil, NSZeroRect);
     }
     [NSGraphicsContext restoreGraphicsState];
 }
@@ -929,8 +976,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     }
     NSMutableDictionary *fields = [NSMutableDictionary dictionary];
     NSArray<MCNumberControl *> *controls = self.properties ?
-        @[self.fontControl, self.strokeControl, self.colorControl.opacityControl] : @[];
-    const int32_t properties[] = {MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_OPACITY};
+        @[self.fontControl, self.strokeControl, self.colorControl.opacityControl, self.properties.blockControl] : @[];
+    const int32_t properties[] = {MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_OPACITY, MC_STYLE_BLOCK};
     for (NSUInteger index = 0; index < controls.count; index++) {
         MCNumberControl *control = controls[index];
         NSText *editor = control.field.currentEditor;
@@ -943,7 +990,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         scanner.locale = [(NSNumberFormatter *)control.field.formatter locale];
         double value = 0;
         if (![scanner scanDouble:&value] || !scanner.isAtEnd || !isfinite(value) ||
-            value < control.stepper.minValue || value > control.stepper.maxValue) {
+            value < control.stepper.minValue || value > control.stepper.maxValue ||
+            (properties[index] == MC_STYLE_BLOCK && floor(value) != value)) {
             if (error) *error = MCEditorError(@"请先填写有效的标注属性，再执行此操作。");
             return nil;
         }
@@ -957,6 +1005,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if (self.canvas.textView) annotation[@"text"] = self.canvas.textView.string;
     if (fields[@(MC_STYLE_STROKE)]) annotation[@"stroke"] = fields[@(MC_STYLE_STROKE)];
     if (fields[@(MC_STYLE_OPACITY)]) annotation[@"opacity"] = fields[@(MC_STYLE_OPACITY)];
+    if (fields[@(MC_STYLE_BLOCK)]) annotation[@"blockSize"] = fields[@(MC_STYLE_BLOCK)];
     if (fields[@(MC_STYLE_FONT)]) {
         annotation[@"fontSize"] = fields[@(MC_STYLE_FONT)];
         if (annotation) annotation[@"height"] = @(MIN(MCTextHeight(annotation), [self.document[@"height"] doubleValue] - [annotation[@"y"] doubleValue]));
@@ -998,6 +1047,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         if (self.canvas.textView) self.canvas.textDraft = [plan[@"annotation"] mutableCopy];
         if (fields[@(MC_STYLE_FONT)]) self.fontControl.value = [fields[@(MC_STYLE_FONT)] doubleValue];
         if (fields[@(MC_STYLE_STROKE)]) self.strokeControl.value = [fields[@(MC_STYLE_STROKE)] doubleValue];
+        if (fields[@(MC_STYLE_BLOCK)]) self.properties.blockControl.value = [fields[@(MC_STYLE_BLOCK)] doubleValue];
         if (fields[@(MC_STYLE_OPACITY)]) self.colorControl.color = [self.colorControl.color colorWithAlphaComponent:[fields[@(MC_STYLE_OPACITY)] doubleValue]];
         // The document already contains the validated edit; this only ends the
         // native text transaction and restores shortcuts, without a second undo.
@@ -1257,7 +1307,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.propertiesScroll.hidden = !hasProperties;
     self.propertiesScroll.frame = NSMakeRect(inset, padding, viewportWidth, rowHeight);
     self.toolbar.frame = NSMakeRect(0, 0, MAX(rowWidth, viewportWidth), rowHeight);
-    self.properties.frame = NSMakeRect(0, 0, MAX(propertiesWidth, viewportWidth), rowHeight);
+    self.properties.frame = NSMakeRect(0, 0, MAX(1, propertiesWidth), rowHeight);
     [self.floatingToolbar layoutSubtreeIfNeeded];
     [self.window invalidateCursorRectsForView:self.canvas];
 }
@@ -1363,21 +1413,27 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (void)syncTextControls {
     NSDictionary *annotation = [self.canvas selectedAnnotation];
     NSInteger tool = self.activeTool;
+    NSInteger shape = 0;
     if (annotation) {
-        NSDictionary *kinds = @{@"rect":@(MCRectTool), @"arrow":@(MCArrowTool),
-            @"text":@(MCTextTool), @"redact":@(MCRedactTool)};
+        NSDictionary *kinds = @{@"rect":@(MCRectTool), @"ellipse":@(MCRectTool), @"arrow":@(MCArrowTool),
+            @"text":@(MCTextTool), @"redact":@(MCRedactTool), @"mosaic":@(MCRedactTool)};
         tool = [kinds[annotation[@"type"]] integerValue];
+        shape = [annotation[@"type"] isEqual:@"mosaic"] ? 2 :
+            ([annotation[@"type"] isEqual:@"ellipse"] || [annotation[@"shape"] isEqual:@"ellipse"]) ? 1 : 0;
+        self.properties.blockControl.value = annotation[@"blockSize"] ? [annotation[@"blockSize"] doubleValue] : editor_style_default(MC_STYLE_BLOCK);
         self.colorControl.color = MCAnnotationColor(annotation);
         self.fontControl.value = annotation[@"fontSize"] ? [annotation[@"fontSize"] doubleValue] : editor_style_default(MC_STYLE_FONT);
         self.strokeControl.value = [annotation[@"stroke"] doubleValue];
     } else if (tool >= MCRectTool && tool <= MCRedactTool) {
+        shape = (NSInteger)editor_style_get(self.styleHandle, (int32_t)tool, MC_STYLE_SHAPE);
+        self.properties.blockControl.value = editor_style_get(self.styleHandle, (int32_t)tool, MC_STYLE_BLOCK);
         self.properties.values = (MCStyleValues){
             (int32_t)editor_style_get(self.styleHandle, (int32_t)tool, MC_STYLE_COLOR),
             editor_style_get(self.styleHandle, (int32_t)tool, MC_STYLE_OPACITY),
             editor_style_get(self.styleHandle, (int32_t)tool, MC_STYLE_STROKE),
             editor_style_get(self.styleHandle, (int32_t)tool, MC_STYLE_FONT)};
     }
-    self.properties.propertyMask = editor_style_property_mask((int32_t)tool);
+    [self.properties configureForTool:(int32_t)tool shape:(int32_t)shape];
     [self positionFloatingToolbar];
     [self.window invalidateCursorRectsForView:self.canvas];
 }
@@ -1393,15 +1449,21 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     // Selecting or styling an existing object never overwrites creation defaults.
     if (!selected || isNewText) {
         int32_t tool = isNewText ? MCTextTool : (int32_t)self.activeTool;
-        const double valuesByField[] = {values.rgb, values.opacity, values.stroke, values.fontSize};
-        for (int32_t field = MC_STYLE_COLOR; field <= MC_STYLE_FONT; field++)
+        const double valuesByField[] = {values.rgb, values.opacity, values.stroke, values.fontSize,
+            self.properties.shapeControl.selectedSegment, self.properties.blockControl.value};
+        for (int32_t field = MC_STYLE_COLOR; field <= MC_STYLE_BLOCK; field++)
             if (fields & (1 << field)) editor_style_set(self.styleHandle, tool, field, valuesByField[field]);
     }
-    if (!selected) return;
+    if (!selected) { [self syncTextControls]; return; }
+    if (fields & (1 << MC_STYLE_SHAPE)) {
+        [self applyCommand:@{@"type":@"setShape", @"id":self.canvas.selectedID, @"shape":@(self.properties.shapeControl.selectedSegment)}];
+        return;
+    }
     NSMutableDictionary *changed = [selected mutableCopy];
     if (fields & (1 << MC_STYLE_COLOR)) changed[@"color"] = [self colorHex];
     if (fields & (1 << MC_STYLE_OPACITY)) changed[@"opacity"] = @(values.opacity);
     if (fields & (1 << MC_STYLE_STROKE)) changed[@"stroke"] = @(values.stroke);
+    if (fields & (1 << MC_STYLE_BLOCK)) changed[@"blockSize"] = @(self.properties.blockControl.value);
     if (fields & (1 << MC_STYLE_FONT)) {
         changed[@"fontSize"] = @(values.fontSize);
         changed[@"height"] = @(MIN(MCTextHeight(changed), [self.document[@"height"] doubleValue] - [changed[@"y"] doubleValue]));
@@ -1446,7 +1508,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if ([phase isEqual:@"begin"]) {
         if (![self isToolEnabled:self.activeTool] || self.activeTool == MCSelectTool || self.activeTool == MCTextTool) return nil;
         [request addEntriesFromDictionary:@{@"id":NSUUID.UUID.UUIDString, @"kind":@(self.activeTool),
-            @"stroke":@(self.strokeControl.value), @"opacity":@(self.color.color.alphaComponent), @"color":[self colorHex]}];
+            @"stroke":@(self.strokeControl.value), @"opacity":@(self.color.color.alphaComponent), @"color":[self colorHex],
+            @"shape":@(editor_style_get(self.styleHandle, (int32_t)self.activeTool, MC_STYLE_SHAPE)),
+            @"blockSize":@(self.properties.blockControl.value)}];
     }
     return MCCallCore(capture_ui_event, request, NULL);
 }

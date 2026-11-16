@@ -2,6 +2,18 @@
 // internal/editor_style; keep the exported names and signatures stable.
 
 ///|
+#export_name("editor_style_visible_mask")
+pub fn editor_style_visible_mask(tool : Int, shape : Int) -> Int {
+  @style.editor_style_visible_mask(tool, shape)
+}
+
+///|
+#export_name("editor_style_shape_count")
+pub fn editor_style_shape_count(tool : Int) -> Int {
+  @style.editor_style_shape_count(tool)
+}
+
+///|
 #export_name("editor_style_property_mask")
 pub fn editor_style_property_mask(tool : Int) -> Int {
   @style.editor_style_property_mask(tool)

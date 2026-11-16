@@ -2,6 +2,7 @@
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
 #import "plugins/feature/capture/macos/MCCaptureController.h"
 #import "components/style_controls/macos/MCStylePropertiesView.h"
+#import "components/icons/macos/MCIcon.h"
 #include "moonbit.h"
 #include <math.h>
 
@@ -619,6 +620,90 @@ static BOOL sharedGestureCases(void) {
     [e cancel:nil];
     return passed;
 }
+static void variant(MCImageEditorController *editor, NSInteger index) {
+    editor.properties.shapeControl.selectedSegment = index;
+    [editor.properties.shapeControl sendAction:editor.properties.shapeControl.action to:editor.properties.shapeControl.target];
+}
+static BOOL shapeVariants(void) {
+    BOOL passed = YES;
+    NSBitmapImageRep *glyph=[NSBitmapImageRep imageRepWithData:MCIconImage(MC_ICON_MOSAIC,@"马赛克").TIFFRepresentation];
+    NSMutableArray<NSNumber *> *tones=[NSMutableArray array];
+    for (NSValue *point in @[[NSValue valueWithPoint:NSMakePoint(5,5)],[NSValue valueWithPoint:NSMakePoint(12,5)],
+        [NSValue valueWithPoint:NSMakePoint(5,12)],[NSValue valueWithPoint:NSMakePoint(12,12)]])
+        [tones addObject:@([glyph colorAtX:point.pointValue.x*glyph.pixelsWide/18 y:point.pointValue.y*glyph.pixelsHigh/18].alphaComponent)];
+    [tones sortUsingSelector:@selector(compare:)];
+    CHECK(tones.firstObject.doubleValue>.2 && tones.lastObject.doubleValue>.9 &&
+          tones[1].doubleValue-tones[0].doubleValue>.1 && tones[2].doubleValue-tones[1].doubleValue>.1 &&
+          tones[3].doubleValue-tones[2].doubleValue>.1, "mosaic icon has four visibly distinct foreground tones");
+    NSBitmapImageRep *source = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:800 pixelsHigh:500
+        bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:3200 bitsPerPixel:32];
+    for (NSInteger y=0;y<500;y++) for (NSInteger x=0;x<800;x++) {
+        unsigned char *pixel=source.bitmapData+y*source.bytesPerRow+x*4;
+        pixel[0]=x%2 ? 240:20; pixel[1]=y/3; pixel[2]=x/4; pixel[3]=255;
+    }
+    MCImageEditorController *e = [[MCImageEditorController alloc]
+        initWithPNGData:[source representationUsingType:NSBitmapImageFileTypePNG properties:@{}] error:NULL];
+    [e prepareOverlayInFrame:NSMakeRect(0,0,800,500)];
+    [e setCaptureRegion:NSMakeRect(20,20,760,360)];
+    NSBitmapImageRep *baseline=[NSBitmapImageRep imageRepWithData:[e renderPNGData:NULL]];
+    choose(e,1); variant(e,1);
+    CHECK(e.properties.shapeControl.segmentCount==2 && [e.document[@"undo"] count]==0,
+          "outline offers two variants; changing its creation default does not edit the document");
+    draw(e,NSMakePoint(60,50),NSMakePoint(260,150));
+    CHECK([e.document[@"annotations"][0][@"type"] isEqual:@"ellipse"], "round outline is a real ellipse annotation");
+    choose(e,4); variant(e,1);
+    CHECK(e.properties.shapeControl.segmentCount==3 && !e.properties.colorControl.hidden,
+          "cover offers rectangle, ellipse and mosaic with normal fill controls");
+    draw(e,NSMakePoint(320,50),NSMakePoint(520,150));
+    CHECK([e.document[@"annotations"][1][@"shape"] isEqual:@"ellipse"], "round cover carries its own shape geometry");
+    variant(e,2);
+    CHECK(e.properties.colorControl.hidden && !e.properties.blockControl.hidden,
+          "mosaic exposes pixel size and hides irrelevant color/alpha controls");
+    draw(e,NSMakePoint(540,50),NSMakePoint(740,150));
+    NSBitmapImageRep *rendered=[NSBitmapImageRep imageRepWithData:[e renderPNGData:NULL]];
+    CHECK([[rendered colorAtX:42 y:32] isEqual:[baseline colorAtX:42 y:32]] &&
+          [[rendered colorAtX:140 y:80] isEqual:[baseline colorAtX:140 y:80]],
+          "ellipse outline leaves its bounding corners and interior unchanged");
+    CHECK([[rendered colorAtX:302 y:32] isEqual:[baseline colorAtX:302 y:32]] &&
+          ![[rendered colorAtX:400 y:80] isEqual:[baseline colorAtX:400 y:80]],
+          "filled ellipse covers its center without painting its rectangular corners");
+    NSColor *a=[[rendered colorAtX:534 y:54] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    NSColor *b=[[rendered colorAtX:540 y:60] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    NSColor *expected=[[baseline colorAtX:538 y:58] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CHECK(fabs(a.redComponent-b.redComponent)<.01 && fabs(a.greenComponent-b.greenComponent)<.01 &&
+          fabs(a.blueComponent-b.blueComponent)<.01 && a.redComponent>.25 && a.redComponent<.75 &&
+          fabs(a.greenComponent-expected.greenComponent)<.03 && fabs(a.blueComponent-expected.blueComponent)<.03 && a.alphaComponent>.99,
+          "mosaic exports flat sampled blocks with the original orientation and opaque pixels");
+    choose(e,0);
+    [e.canvas mouseDown:mouse(e.canvas,NSEventTypeLeftMouseDown,NSMakePoint(160,50))];
+    [e.canvas mouseUp:mouse(e.canvas,NSEventTypeLeftMouseUp,NSMakePoint(160,50))];
+    CHECK([e.canvas.selectedID isEqual:e.document[@"annotations"][0][@"id"]] && e.properties.shapeControl.selectedSegment==1,
+          "ellipse stroke can be selected and restores the correct secondary property");
+    NSUInteger count=[e.document[@"undo"] count]; variant(e,0);
+    CHECK([e.document[@"annotations"][0][@"type"] isEqual:@"rect"] && [e.document[@"undo"] count]==count+1,
+          "changing an existing shape is one undoable document command");
+    [e undo:nil];
+    CHECK([e.document[@"annotations"][0][@"type"] isEqual:@"ellipse"], "undo restores the former shape");
+    choose(e,1);
+    CHECK(e.properties.shapeControl.selectedSegment==1, "editing an existing shape preserves the remembered creation default");
+    [e.window.contentView layoutSubtreeIfNeeded];
+    NSArray *controls=@[e.properties.shapeControl,e.properties.colorControl,e.properties.strokeControl];
+    for (NSUInteger i=1;i<controls.count;i++) {
+        NSView *before=controls[i-1], *after=controls[i];
+        CGFloat gap=NSMinX(after.frame)-NSMaxX(before.frame);
+        CHECK(gap>=4 && gap<=12, "secondary controls remain compact and ordered from the left");
+    }
+    NSString *directory=NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];
+    if (directory.length) for (NSString *mode in @[@"light",@"dark"]) {
+        e.window.appearance=[NSAppearance appearanceNamed:[mode isEqual:@"dark"]?NSAppearanceNameDarkAqua:NSAppearanceNameAqua];
+        for (NSUInteger i=0;i<3;i++) {
+            choose(e,i==0?1:4); variant(e,i==2?2:1);
+            NSData *png=[toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+            [png writeToFile:[directory stringByAppendingPathComponent:[NSString stringWithFormat:@"shape-options-%@-%lu.png",mode,(unsigned long)i]] atomically:YES];
+        }
+    }
+    [e cancel:nil]; return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
@@ -629,6 +714,7 @@ int main(void) {
         passed = objectSelection(1.5) && passed;
         passed = toolbarAppearance() && passed;
         passed = sharedGestureCases() && passed;
+        passed = shapeVariants() && passed;
         puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME, pin/user actions, overflow and capture fanout" : "FAIL tool layout");
         return passed ? 0 : 1;
     }

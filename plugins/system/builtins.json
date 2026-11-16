@@ -45,7 +45,11 @@
       },
       "feature.image_editor": {
         "sources": ["plugins/feature/image_editor/macos/MCImageEditorController.m"],
-        "requires": ["component.style_controls", "feature.select"]
+        "requires": ["component.style_controls", "component.image_effects", "feature.select"]
+      },
+      "component.image_effects": {
+        "sources": ["components/image_effects/macos/MCPixelate.m"],
+        "requires": []
       },
       "feature.capture": {
         "sources": ["plugins/feature/capture/macos/MCCaptureController.m"],

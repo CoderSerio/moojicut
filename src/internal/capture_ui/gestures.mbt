@@ -13,6 +13,8 @@ priv struct Draft {
   color : String
   opacity : Double
   stroke : Double
+  shape : Int
+  block : Double
 }
 
 ///|
@@ -87,9 +89,9 @@ fn annotation(s : CaptureUI, draft : Draft, x : Double, y : Double) -> Json {
       if arrow {
         "arrow"
       } else if draft.kind == 4 {
-        "redact"
+        if draft.shape == 2 { "mosaic" } else { "redact" }
       } else {
-        "rect"
+        if draft.shape == 1 { "ellipse" } else { "rect" }
       },
     ),
     "x": Json(if arrow { draft.x } else { @protocol.smaller(draft.x, x) }),
@@ -97,13 +99,15 @@ fn annotation(s : CaptureUI, draft : Draft, x : Double, y : Double) -> Json {
     "width": Json(@protocol.larger(1, width)),
     "height": Json(@protocol.larger(1, height)),
     "color": Json(draft.color),
-    "opacity": Json(draft.opacity),
+    "opacity": Json(if draft.kind == 4 && draft.shape == 2 { 1.0 } else { draft.opacity }),
     "stroke": Json(draft.stroke),
   }
   if arrow {
     fields["x2"] = Json(x)
     fields["y2"] = Json(y)
   }
+  if draft.kind == 4 && draft.shape == 1 { fields["shape"] = Json("ellipse") }
+  if draft.kind == 4 && draft.shape == 2 { fields["blockSize"] = Json(draft.block) }
   Json::object(fields)
 }
 
@@ -140,6 +144,12 @@ pub fn event(request : String) -> String {
         let stroke = number(fields, "stroke")
         let opacity = number(fields, "opacity")
         let color = text(fields, "color")
+        let shape = if fields.contains("shape") { @protocol.integer_field(fields, "shape", 0, 2).to_int() } else { 0 }
+        let block = if fields.contains("blockSize") { number(fields, "blockSize") } else { @style.editor_style_default(5) }
+        if (shape != 0 && shape >= @style.editor_style_shape_count(kind)) ||
+          !@style.editor_style_value_valid(5, block) {
+          raise InputError("invalid_style", "Invalid screenshot shape or mosaic size")
+        }
         if !@style.editor_style_value_valid(2, stroke) ||
           !@style.editor_style_value_valid(1, opacity) ||
           color.length() != 7 ||
@@ -162,6 +172,8 @@ pub fn event(request : String) -> String {
           color,
           opacity,
           stroke,
+          shape,
+          block,
         })
       }
       "move" | "end" as phase => {

@@ -25,10 +25,13 @@ static inline NSImage *MCIconImage(MCIcon icon, NSString *label) {
                         controlPoint1:NSMakePoint(command.x1, command.y1)
                         controlPoint2:NSMakePoint(command.x2, command.y2)]; break;
                     case 'Z': [path closePath]; break;
+                    case 'F':
+                        [[NSColor.blackColor colorWithAlphaComponent:command.x1] setFill];
+                        [path fill]; [path removeAllPoints]; break;
                 }
             }
-            [NSColor.blackColor setStroke];
-            [path stroke];
+            [NSColor.blackColor set];
+            if (mc_icon_filled(icon)) [path fill]; else [path stroke];
             [NSGraphicsContext restoreGraphicsState];
             return YES;
         }];

@@ -363,6 +363,37 @@ static BOOL colorPopoverInput(void) {
     return passed;
 }
 
+static BOOL liveShapeMasks(void) {
+    BOOL passed=YES;
+    for (NSString *kind in @[@"redact",@"mosaic"]) {
+        MCImageEditorController *e=fixture(1,NULL);
+        CHECK(([e applyAnnotation:@{@"id":@"mask",@"type":kind,@"shape":@"ellipse",@"x":@20,@"y":@20,
+            @"width":@300,@"height":@100,@"color":@"#00ff00",@"opacity":@0.35,@"stroke":@4,@"blockSize":@12}]),
+            "mask variant enters the shared document");
+        [e addTextAtPoint:NSMakePoint(30,30)];
+        [e.canvas.textView insertText:@"WWWWWWWW" replacementRange:NSMakeRange(NSNotFound,0)];
+        NSBitmapImageRep *exported=[NSBitmapImageRep imageRepWithData:[e capturePNGData:NULL]];
+        CHECK(e.canvas.textView!=nil, "export candidate does not end the live text transaction");
+        [e.canvas layoutSubtreeIfNeeded];
+        NSBitmapImageRep *live=[e.canvas bitmapImageRepForCachingDisplayInRect:e.canvas.bounds];
+        [e.canvas cacheDisplayInRect:e.canvas.bounds toBitmapImageRep:live];
+        NSRect frame=e.canvas.imageFrame;
+        CGFloat backing=live.pixelsWide/NSWidth(e.canvas.bounds);
+        for (NSValue *point in @[[NSValue valueWithPoint:NSMakePoint(54,54)], [NSValue valueWithPoint:NSMakePoint(150,54)],
+                                 [NSValue valueWithPoint:NSMakePoint(250,54)]]) {
+            NSPoint p=point.pointValue;
+            NSInteger x=(frame.origin.x+p.x*frame.size.width/800)*backing;
+            NSInteger y=(frame.origin.y+p.y*frame.size.height/500)*backing;
+            NSColor *a=[[live colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+            NSColor *b=[[exported colorAtX:p.x y:p.y] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+            CHECK(fabs(a.redComponent-b.redComponent)<.06 && fabs(a.greenComponent-b.greenComponent)<.06 &&
+                  fabs(a.blueComponent-b.blueComponent)<.06,
+                  "ellipse and mosaic cover live glyphs exactly as the committed export");
+        }
+        [e cancel:nil];
+    }
+    return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -374,6 +405,7 @@ int main(void) {
         passed = emptyAndCancelledInput() && passed;
         passed = rgbaStyles() && passed;
         passed = colorPopoverInput() && passed;
+        passed = liveShapeMasks() && passed;
         puts(passed ? "PASS inline text: hidden AppKit editor, IME/multiline, re-edit/style, scaled drag/resize, undo and PNG clipboard"
                     : "FAIL inline text interaction");
         return passed ? 0 : 1;

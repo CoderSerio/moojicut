@@ -91,6 +91,12 @@ macOS 负责坐标转换、控件测量和绘制。工具栏只有两个视觉�
 回放已在 native 和 JS 目标验证；Windows/Linux 的旧截图宿主尚未接入这些新入口。
 控件绘制、输入法适配和平台窗口验收仍按下列顺序继续。
 
+形状扩展沿用这条边界：`editor_style` 管方框/圆框/马赛克的可用选项、独立偏好和
+条件属性；`capture_ui` 生成带变体的草稿；`image` 通过 `setShape` 命令完成已有
+标注的切换与撤销，并按椭圆实际轮廓命中。macOS 的 `components/image_effects`
+只采样像素，不持有文档。截图预览、实时文字遮挡和 PNG 导出复用同一绘制流程。
+这批新控件仍是 macOS 适配；其他两端尚未接线，不能据此宣称三端已支持这些形状。
+
 ### 1. 共享选区和录屏准备 UI
 
 继续将 `MCRecordingSelectionView` 和截图的选区/工具栏交互迁到 MoonBit `capture_ui`

@@ -15,11 +15,14 @@ typedef struct {
 @property (nonatomic, readonly) MCColorControl *colorControl;
 @property (nonatomic, readonly) MCNumberControl *fontControl;
 @property (nonatomic, readonly) MCNumberControl *strokeControl;
+@property (nonatomic, readonly) NSSegmentedControl *shapeControl;
+@property (nonatomic, readonly) MCNumberControl *blockControl;
 @property (nonatomic, readonly) NSTextField *status;
 @property (nonatomic) MCStyleValues values;
 @property (nonatomic) int32_t propertyMask;
 @property (nonatomic, copy, nullable) void (^onChange)(id sender);
 - (int32_t)syncFromSender:(nullable id)sender;
+- (void)configureForTool:(int32_t)tool shape:(int32_t)shape;
 - (void)showMessage:(NSString *)message;
 @end
 NS_ASSUME_NONNULL_END

@@ -67,6 +67,9 @@ void icon(Graphics &graphics, MCIcon name, RectF rect, float scale, BOOL disable
       PointF end(x + c.x3 * factor, y + c.y3 * factor);
       path.AddBezier(cursor, to, PointF(x + c.x2 * factor, y + c.y2 * factor), end);
       cursor = end;
+    } else if (c.op == 'F') {
+      Color color = disabled ? Color((BYTE)(255*c.x1), 111, 106, 120) : Color((BYTE)(255*c.x1), 230, 227, 222);
+      SolidBrush brush(color); graphics.FillPath(&brush, &path); path.Reset();
     } else if (c.op == 'Z')
       path.CloseFigure();
   }
@@ -74,7 +77,10 @@ void icon(Graphics &graphics, MCIcon name, RectF rect, float scale, BOOL disable
   pen.SetStartCap(LineCapRound);
   pen.SetEndCap(LineCapRound);
   pen.SetLineJoin(LineJoinRound);
-  graphics.DrawPath(&pen, &path);
+  if (mc_icon_filled(name)) {
+    SolidBrush brush(disabled ? Color(255, 111, 106, 120) : Color(255, 230, 227, 222));
+    graphics.FillPath(&brush, &path);
+  } else graphics.DrawPath(&pen, &path);
 }
 void text(Graphics &graphics, const wchar_t *value, RectF rect, float size, Color color,
           StringAlignment align) {

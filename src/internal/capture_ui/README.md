@@ -16,7 +16,7 @@ reuse handles. The image document and undo history stay in `internal/image`.
 
 | Event | Additional fields | Result |
 | --- | --- | --- |
-| `begin` | `id`, `kind` (1 rectangle, 2 arrow, 4 cover), `x`, `y`, `color`, `opacity`, `stroke` | Freeze identity, tool and style for this gesture |
+| `begin` | `id`, `kind` (1 outline, 2 arrow, 4 cover), `x`, `y`, `color`, `opacity`, `stroke`; optional `shape`, `blockSize` | Freeze identity, tool and style for this gesture |
 | `move` | `x`, `y` | `preview` annotation, no command |
 | `end` | `x`, `y` | One `command:{type:"add",annotations:[...]}`, clears the draft |
 | `cancel` | — | Clear the draft without a command |
@@ -27,6 +27,19 @@ leave the current transaction intact. Cancel or close on tool disable, editor
 close or interrupted input. A repeated end, or end after cancel, emits nothing.
 The host applies a returned command through `image_apply` with the current
 expected revision; an agent can submit that same command directly.
+
+`shape` defaults to 0: outline supports 0 rectangle / 1 ellipse; cover supports
+0 rectangle / 1 ellipse / 2 mosaic. `blockSize` defaults to 12 source pixels
+(4–48). Shared `editor_style` owns per-tool defaults and conditional property
+visibility. Mosaic is opaque and uses the block-size control, not RGBA controls.
+An existing object changes through `image_apply` command
+`{type:"setShape",id,shape}`, preserving identity and bounds with one undo entry.
+Outline and cover families cannot be interchanged by this command.
+
+The macOS compositor renders outlines, elliptical fills and pixelated masks in
+both preview and export. `components/image_effects/macos` samples the scene
+below a mosaic on a source-anchored grid, including other annotations and earlier
+masks. The native inline-text adapter uses the same compositor above live text.
 
 Coordinates are source pixels. Rectangles/covers normalize reverse drags;
 arrows preserve directed endpoints, including horizontal/vertical lines.

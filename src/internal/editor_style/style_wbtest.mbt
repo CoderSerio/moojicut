@@ -1,10 +1,10 @@
 ///|
 test "editor tool capabilities expose the shared style domains" {
   assert_eq(editor_style_property_mask(0), 0)
-  assert_eq(editor_style_property_mask(1), 7)
+  assert_eq(editor_style_property_mask(1), 23)
   assert_eq(editor_style_property_mask(2), 7)
   assert_eq(editor_style_property_mask(3), 11)
-  assert_eq(editor_style_property_mask(4), 3)
+  assert_eq(editor_style_property_mask(4), 51)
   assert_eq(editor_style_property_mask(-1), 0)
   assert_eq(editor_style_property_mask(5), 0)
   let domains : Array[(Double, Double, Double, Double)] = [
@@ -20,7 +20,7 @@ test "editor tool capabilities expose the shared style domains" {
     assert_eq(editor_style_step(property), step)
     assert_eq(editor_style_default(property), initial)
   }
-  for property in [-1, 4, 2147483647] {
+  for property in [-1, 6, 2147483647] {
     assert_eq(editor_style_min(property), 0)
     assert_eq(editor_style_max(property), 0)
     assert_eq(editor_style_step(property), 0)
@@ -117,7 +117,7 @@ test "disposed and invalid style handles cannot access another editor" {
     assert_eq(editor_style_get(current, tool, 0), 0)
     assert_eq(editor_style_set(current, tool, 0, 0), 0)
   }
-  for property in [-1, 4, 2147483647] {
+  for property in [-1, 6, 2147483647] {
     assert_eq(editor_style_get(current, 1, property), 0)
     assert_eq(editor_style_set(current, 1, property, 0), 0)
   }

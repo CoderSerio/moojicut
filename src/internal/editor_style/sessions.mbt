@@ -4,6 +4,8 @@ priv struct EditorStyleValues {
   mut opacity : Double
   mut stroke : Double
   mut font : Double
+  mut shape : Double
+  mut block : Double
 }
 
 ///|
@@ -13,6 +15,8 @@ fn editor_style_initial(tool : Int) -> EditorStyleValues {
     opacity: editor_style_default(1),
     stroke: editor_style_default(2),
     font: editor_style_default(3),
+    shape: editor_style_default(4),
+    block: editor_style_default(5),
   }
 }
 
@@ -56,6 +60,8 @@ pub fn editor_style_get(handle : Int, tool : Int, property : Int) -> Double {
     1 => values.opacity
     2 => values.stroke
     3 => values.font
+    4 => values.shape
+    5 => values.block
     _ => 0
   }
 }
@@ -64,12 +70,15 @@ pub fn editor_style_get(handle : Int, tool : Int, property : Int) -> Double {
 pub fn editor_style_set(handle : Int, tool : Int, property : Int, value : Double) -> Int {
   if !editor_style_value_valid(property, value) { return 0 }
   if (editor_style_property_mask(tool) & (1 << property)) == 0 { return 0 }
+  if property == 4 && value >= editor_style_shape_count(tool).to_double() { return 0 }
   let values = match editor_style_values(handle, tool) { Some(values) => values; None => return 0 }
   match property {
     0 => values.color = value.to_int()
     1 => values.opacity = value
     2 => values.stroke = value
     3 => values.font = value
+    4 => values.shape = value
+    5 => values.block = value
     _ => return 0
   }
   1

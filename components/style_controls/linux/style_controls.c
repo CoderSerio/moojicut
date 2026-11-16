@@ -38,6 +38,9 @@ static gboolean icon_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
   cairo_translate(cr, (gtk_widget_get_allocated_width(widget) - size) / 2.0,
                   (gtk_widget_get_allocated_height(widget) - size) / 2.0);
   cairo_scale(cr, size / 24, size / 24);
+  GdkRGBA color;
+  gtk_style_context_get_color(gtk_widget_get_style_context(widget), gtk_widget_get_state_flags(widget), &color);
+  gdk_cairo_set_source_rgba(cr, &color);
   for (unsigned i = 0; i < path.count; i++) {
     const MCIconCommand *c = &path.commands[i];
     switch (c->op) {
@@ -53,16 +56,18 @@ static gboolean icon_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
     case 'Z':
       cairo_close_path(cr);
       break;
+    case 'F': {
+      GdkRGBA shade = color; shade.alpha *= c->x1;
+      gdk_cairo_set_source_rgba(cr, &shade); cairo_fill(cr);
+      gdk_cairo_set_source_rgba(cr, &color); break;
+    }
     }
   }
-  GdkRGBA color;
-  gtk_style_context_get_color(gtk_widget_get_style_context(widget), gtk_widget_get_state_flags(widget),
-                              &color);
   gdk_cairo_set_source_rgba(cr, &color);
   cairo_set_line_width(cr, 2);
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
   cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-  cairo_stroke(cr);
+  if (mc_icon_filled(icon)) cairo_fill(cr); else cairo_stroke(cr);
   return FALSE;
 }
 GtkWidget *mc_style_icon_button(MCIcon icon, const char *label, GCallback callback, gpointer data) {

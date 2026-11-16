@@ -68,7 +68,19 @@ fn annotation_contains(m : Map[String, Json], px : Double, py : Double, toleranc
     return segment_distance_squared(ax, ay, x2, y2, px, py) <= radius * radius ||
       segment_distance_squared(bx, by, x2, y2, px, py) <= radius * radius
   }
-  if kind == "text" || kind == "redact" {
+  if kind == "ellipse" || (kind == "redact" && image_string(m, "shape", "rect") == "ellipse") {
+    if width <= 0 || height <= 0 { return false }
+    let dx = px - x - width / 2
+    let dy = py - y - height / 2
+    let rx = width / 2
+    let ry = height / 2
+    if kind == "redact" { return dx * dx / (rx * rx) + dy * dy / (ry * ry) <= 1 }
+    let outer = dx * dx / ((rx + radius) * (rx + radius)) + dy * dy / ((ry + radius) * (ry + radius))
+    if outer > 1 { return false }
+    if rx <= radius || ry <= radius { return true }
+    return dx * dx / ((rx - radius) * (rx - radius)) + dy * dy / ((ry - radius) * (ry - radius)) >= 1
+  }
+  if kind == "text" || kind == "redact" || kind == "mosaic" {
     return @selection.contains(x, y, width, height, px, py) != 0
   }
   kind == "rect" && @selection.border_contains(x, y, width, height, px, py, radius) != 0
@@ -84,7 +96,7 @@ fn annotation_hit_index(
     for index = annotations.length() - 1; index >= 0; index = index - 1 {
       let annotation = match annotations[index] { Object(m) => m; _ => continue }
       let kind = image_string(annotation, "type", "")
-      if (kind == "redact") != cover || (text_only && kind != "text") { continue }
+      if (kind == "redact" || kind == "mosaic") != cover || (text_only && kind != "text") { continue }
       if annotation_contains(annotation, px, py, tolerance) { return index }
     }
   }
@@ -115,7 +127,7 @@ pub fn image_selection(request : String) -> String {
         for raw in annotations {
           match raw {
             Object(m) => {
-              if image_string(m, "id", "") == selected && image_string(m, "type", "") == "rect" &&
+              if image_string(m, "id", "") == selected && ["rect", "ellipse"].contains(image_string(m, "type", "")) &&
                 @selection.contains(image_number(m, "x", 0), image_number(m, "y", 0),
                   image_number(m, "width", 0), image_number(m, "height", 0), px, py) != 0 {
                 return Json::object({ "ok": Json(true), "document": Json::object({ "id": Json(selected) }) })

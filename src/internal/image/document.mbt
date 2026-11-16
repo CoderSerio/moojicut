@@ -114,6 +114,12 @@ fn image_annotation(raw : Json) -> Json raise InputError {
     if block < 4 || block > 48 { raise InputError("invalid_annotation", "Mosaic block must be 4–48") }
     m["blockSize"] = Json(block)
   }
+  if kind == "redact" {
+    match m.get("shape") {
+      None | Some(String("rect" | "ellipse")) => ()
+      _ => raise InputError("invalid_annotation", "Unknown cover shape")
+    }
+  }
   Json::object(m)
 }
 
@@ -206,7 +212,7 @@ pub fn image_apply(request : String) -> String {
           }
           next.push(valid)
         }
-      } else if kind == "update" || kind == "resize" || kind == "move" || kind == "remove" || kind == "order" {
+      } else if kind == "update" || kind == "resize" || kind == "move" || kind == "remove" || kind == "order" || kind == "setShape" {
         let removals = if kind == "remove" { image_array(command, "ids") } else { [] }
         let mut ordered : Json = Json::null()
         for a in annotations {
@@ -220,6 +226,18 @@ pub fn image_apply(request : String) -> String {
               let dx = image_number(command, "dx", 0)
               let dy = image_number(command, "dy", 0)
               next.push(image_translate(a, dx, dy))
+            } else if kind == "setShape" {
+              let copy = image_copy(am)
+              let old = image_string(am, "type", "")
+              let shape = @protocol.integer_field(command, "shape", 0, 2).to_int()
+              if old == "rect" || old == "ellipse" {
+                if shape == 2 { raise InputError("invalid_command", "Outline cannot become mosaic") }
+                copy["type"] = Json(if shape == 0 { "rect" } else { "ellipse" })
+              } else if old == "redact" || old == "mosaic" {
+                copy["type"] = Json(if shape == 2 { "mosaic" } else { "redact" })
+                copy["shape"] = Json(if shape == 1 { "ellipse" } else { "rect" })
+              } else { raise InputError("invalid_command", "This annotation has no shape variants") }
+              next.push(image_annotation(Json::object(copy)))
             } else if kind == "order" {
               let annotation_type = image_string(am, "type", "")
               if annotation_type == "redact" || annotation_type == "mosaic" { raise InputError("invalid_command", "Mask stacking is fixed") }

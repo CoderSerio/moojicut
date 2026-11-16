@@ -12,7 +12,9 @@ enum {
   MC_STYLE_COLOR = 0,
   MC_STYLE_OPACITY = 1,
   MC_STYLE_STROKE = 2,
-  MC_STYLE_FONT = 3
+  MC_STYLE_FONT = 3,
+  MC_STYLE_SHAPE = 4,
+  MC_STYLE_BLOCK = 5
 };
 enum {
   MC_STYLE_TOOL_SELECT = 0,
@@ -26,6 +28,8 @@ enum {
  * Unknown tools/properties return zero. Step is a UI increment, not rounding:
  * fractional stroke/font values already accepted by documents remain valid. */
 int32_t editor_style_property_mask(int32_t tool);
+int32_t editor_style_visible_mask(int32_t tool, int32_t shape);
+int32_t editor_style_shape_count(int32_t tool);
 double editor_style_min(int32_t property);
 double editor_style_max(int32_t property);
 double editor_style_step(int32_t property);
