@@ -1,5 +1,7 @@
 #include "capture.h"
 #include "native/shared/image_session.h"
+#include "native/shared/capture_ui.h"
+#include "native/shared/pixelate.h"
 #include "components/icons/shared/mc_icons.h"
 #include "moonbit.h"
 #include "plugins/feature/select/linux/selection.h"
@@ -34,9 +36,9 @@ typedef struct {
   char *request_path;
   guint subscription;
   int session, tool, color, stroke, font_size, width, height, root_width, root_height;
-  int selected, edit_index, gesture;
+  int selected, edit_index, gesture, shape, block;
   MCSelectionDrag selection;
-  double zoom, offset_x, offset_y, opacity, crop[4], original[8], preview[8];
+  double zoom, offset_x, offset_y, opacity, crop[4], original[10], preview[10];
   gboolean dragging, pending, smoke, closing, selecting, editing, composing, x11;
 } Capture;
 static Capture capture;
@@ -194,7 +196,7 @@ static gboolean inside(double x, double y, const double *r) {
   return mc_selection_contains(selection_rect(r), (MCSelectionPoint){x, y});
 }
 static void read_annotation(int index, double *r) {
-  for (int i = 0; i < 8; i++)
+  for (int i = 0; i < 10; i++)
     r[i] = image_session_value(capture.session, index, i + 1);
 }
 static char *annotation_text(int index) {
@@ -218,7 +220,7 @@ static gboolean pending_text(const char *text) {
   return result == 1;
 }
 static gboolean update_annotation(int index, const double *r) {
-  double adjusted[8];
+  double adjusted[10];
   memcpy(adjusted, r, sizeof(adjusted));
   int kind = (int)image_session_value(capture.session, index, 0);
   if (kind == TEXT && !capture.editing) {
@@ -263,12 +265,24 @@ static void draw_shape(cairo_t *cr, int kind, const double *r, const char *text)
                         r[7]);
   cairo_set_line_width(cr, stroke);
   cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-  if (kind == RECTANGLE) {
-    cairo_rectangle(cr, x, y, w, h);
+  if (kind == REDACT && (int)r[8] == 2) {
+    cairo_surface_t *target = cairo_get_target(cr);
+    cairo_surface_flush(target);
+    mc_pixelate_bgra(cairo_image_surface_get_data(target), cairo_image_surface_get_width(target),
+        cairo_image_surface_get_height(target), cairo_image_surface_get_stride(target),
+        (int)x, (int)y, (int)w, (int)h, (int)r[9]);
+    cairo_surface_mark_dirty(target);
+  } else if (kind == RECTANGLE) {
+    if ((int)r[8] == 1) {
+      cairo_save(cr); cairo_translate(cr, x + w / 2, y + h / 2); cairo_scale(cr, w / 2, h / 2);
+      cairo_arc(cr, 0, 0, 1, 0, 2 * G_PI); cairo_restore(cr);
+    } else cairo_rectangle(cr, x, y, w, h);
     cairo_stroke(cr);
   } else if (kind == REDACT) {
-    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
-    cairo_rectangle(cr, x, y, w, h);
+    if ((int)r[8] == 1) {
+      cairo_save(cr); cairo_translate(cr, x + w / 2, y + h / 2); cairo_scale(cr, w / 2, h / 2);
+      cairo_arc(cr, 0, 0, 1, 0, 2 * G_PI); cairo_restore(cr);
+    } else { cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE); cairo_rectangle(cr, x, y, w, h); }
     cairo_fill(cr);
   } else if (kind == ARROW) {
     double len = hypot(w, h);
@@ -293,26 +307,49 @@ static void draw_shape(cairo_t *cr, int kind, const double *r, const char *text)
   }
   cairo_restore(cr);
 }
-static void draw_document(cairo_t *cr, gboolean export) {
+static void composite_document(cairo_t *destination, gboolean export, gboolean draft_text) {
+  // A source-pixel surface makes preview, mask sampling and crop export agree.
+  cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, capture.width, capture.height);
+  if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(surface); return; }
+  cairo_t *cr = cairo_create(surface);
   gdk_cairo_set_source_pixbuf(cr, capture.image, 0, 0);
   cairo_paint(cr);
   int count = image_session_count(capture.session);
-  for (int pass = 0; pass < 2; pass++)
+  for (int pass = 0; pass < 2; pass++) {
+    if (pass == 1 && draft_text && capture.editing) {
+      GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
+      GtkTextIter first, last;
+      gtk_text_buffer_get_bounds(buffer, &first, &last);
+      char *text = gtk_text_buffer_get_text(buffer, &first, &last, FALSE);
+      double r[10]; memcpy(r, capture.preview, sizeof(r));
+      r[4] = capture.color; r[6] = capture.font_size; r[7] = capture.opacity;
+      draw_shape(cr, TEXT, r, text); g_free(text);
+    }
     for (int i = 0; i < count; i++) {
       int kind = (int)image_session_value(capture.session, i, 0);
-      if ((kind == REDACT) != (pass == 1))
-        continue;
-      if (!export && capture.editing && (capture.edit_index == i || kind == REDACT))
-        continue;
-      double r[8];
-      read_annotation(i, r);
+      if ((kind == REDACT) != (pass == 1)) continue;
+      if (!export && capture.editing && (capture.edit_index == i || (kind == REDACT && !draft_text))) continue;
+      double r[10]; read_annotation(i, r);
       if (!export && capture.dragging && capture.gesture == 1 && capture.selected == i)
         memcpy(r, capture.preview, sizeof(r));
       char *text = kind == TEXT ? annotation_text(i) : NULL;
-      draw_shape(cr, kind, r, text);
-      g_free(text);
+      draw_shape(cr, kind, r, text); g_free(text);
     }
+    if (!export && capture.dragging && !capture.gesture && !capture.selecting) {
+      int kind = (int)image_session_preview_value(capture.session, 0);
+      if (kind && (kind == REDACT) == (pass == 1)) {
+        double r[10];
+        for (int i = 0; i < 10; i++) r[i] = image_session_preview_value(capture.session, i + 1);
+        draw_shape(cr, kind, r, NULL);
+      }
+    }
+  }
+  cairo_destroy(cr);
+  cairo_set_source_surface(destination, surface, 0, 0);
+  cairo_paint(destination);
+  cairo_surface_destroy(surface);
 }
+static void draw_document(cairo_t *cr, gboolean export) { composite_document(cr, export, FALSE); }
 static void selection_outline(cairo_t *cr, const double *r, gboolean handles) {
   cairo_save(cr);
   cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
@@ -375,18 +412,11 @@ static gboolean canvas_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
     cairo_restore(cr);
   }
   if (capture.selected >= 0 && !capture.editing) {
-    double r[8];
+    double r[10];
     read_annotation(capture.selected, r);
     if (capture.dragging && capture.gesture == 1)
       memcpy(r, capture.preview, sizeof(r));
     selection_outline(cr, r, TRUE);
-  }
-  if (capture.dragging && capture.gesture == 0 && !capture.selecting) {
-    MCSelectionRect region = capture.tool == ARROW ? mc_selection_vector(&capture.selection)
-                                                    : mc_selection_region(&capture.selection);
-    double r[] = {region.x, region.y, region.width, region.height,
-                    capture.color, capture.stroke, capture.font_size, capture.opacity};
-    draw_shape(cr, capture.tool, r, NULL);
   }
   cairo_restore(cr);
   return FALSE;
@@ -410,12 +440,18 @@ static gboolean masks_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
   cairo_restore(cr);
   cairo_rectangle(cr, capture.crop[0], capture.crop[1], capture.crop[2], capture.crop[3]);
   cairo_clip(cr);
+  // Replace the entire masked scene under the live GTK editor once, including
+  // the current draft. Translucent covers must not be alpha-composited twice.
   for (int i = 0; i < image_session_count(capture.session); i++)
     if ((int)image_session_value(capture.session, i, 0) == REDACT) {
-      double r[8];
-      read_annotation(i, r);
-      draw_shape(cr, REDACT, r, NULL);
+      double r[10]; read_annotation(i, r);
+      if ((int)r[8] == 1) {
+        cairo_save(cr); cairo_translate(cr, r[0] + r[2]/2, r[1] + r[3]/2); cairo_scale(cr, r[2]/2, r[3]/2);
+        cairo_new_sub_path(cr); cairo_arc(cr, 0, 0, 1, 0, 2*G_PI); cairo_restore(cr);
+      } else cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
     }
+  cairo_clip(cr);
+  composite_document(cr, FALSE, TRUE);
   cairo_restore(cr);
   return FALSE;
 }
@@ -461,16 +497,19 @@ static int context_kind(void) {
     return (int)image_session_value(capture.session, capture.selected, 0);
   return capture.tool;
 }
-static void current_style(double values[4]) {
+static void current_style(double values[MC_STYLE_PROPERTY_COUNT]) {
   values[MC_STYLE_COLOR] = capture.color;
   values[MC_STYLE_OPACITY] = capture.opacity;
   values[MC_STYLE_STROKE] = capture.stroke;
   values[MC_STYLE_FONT] = capture.font_size;
+  values[MC_STYLE_SHAPE] = capture.shape;
+  values[MC_STYLE_BLOCK] = capture.block;
 }
 static void sync_control_values(void) {
-  double values[4];
+  double values[MC_STYLE_PROPERTY_COUNT];
   current_style(values);
-  mc_style_controls_sync(capture.style_controls, editor_style_property_mask(context_kind()), values);
+  mc_style_controls_set_tool(capture.style_controls, context_kind());
+  mc_style_controls_sync(capture.style_controls, editor_style_visible_mask(context_kind(), capture.shape), values);
 }
 static void refresh_context(void) { sync_control_values(); }
 static void load_tool_style(int tool) {
@@ -478,12 +517,16 @@ static void load_tool_style(int tool) {
   capture.opacity = editor_style_get(capture.style_bank, tool, MC_STYLE_OPACITY);
   capture.stroke = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_STROKE);
   capture.font_size = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_FONT);
+  capture.shape = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_SHAPE);
+  capture.block = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_BLOCK);
 }
 static void sync_style(void) {
   if (capture.selected >= 0) {
     capture.color = (int)image_session_value(capture.session, capture.selected, 5);
     capture.stroke = (int)image_session_value(capture.session, capture.selected, 6);
     capture.opacity = image_session_value(capture.session, capture.selected, 8);
+    capture.shape = (int)image_session_value(capture.session, capture.selected, 9);
+    capture.block = (int)image_session_value(capture.session, capture.selected, 10);
     if ((int)image_session_value(capture.session, capture.selected, 0) == TEXT)
       capture.font_size = (int)image_session_value(capture.session, capture.selected, 7);
   } else if (!capture.editing)
@@ -606,7 +649,7 @@ static int hit_test(double x, double y) {
   // visible objects have had priority. contains already delegates to MoonBit.
   int i = capture.selected;
   if (hit < 0 && i >= 0 && (int)image_session_value(capture.session, i, 0) == RECTANGLE) {
-    double r[8];
+    double r[10];
     read_annotation(i, r);
     if (inside(x, y, r))
       return i;
@@ -687,6 +730,9 @@ static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer 
   if (!capture.selecting && !capture.gesture && capture.tool != SELECT && capture.tool != TEXT) {
     capture.selected = -1;
     sync_style();
+    image_session_shape_event(capture.session, 2, 0, 0);
+    if (!image_session_shape_begin(capture.session, capture.tool, x, y, capture.color,
+        capture.stroke, capture.opacity, capture.shape, capture.block)) return TRUE;
   }
   capture.selection.original = selection_rect(capture.original);
   memcpy(capture.preview, capture.original, sizeof(capture.preview));
@@ -697,6 +743,7 @@ static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer 
 }
 static void motion(double x, double y) {
   mc_selection_update(&capture.selection, (MCSelectionPoint){x, y});
+  if (!capture.selecting && !capture.gesture) image_session_shape_event(capture.session, 0, x, y);
   if (capture.gesture) {
     double *r = capture.preview, *o = capture.original;
     memcpy(r, o, sizeof(capture.preview));
@@ -755,12 +802,7 @@ static gboolean canvas_release(GtkWidget *widget, GdkEventButton *event, gpointe
                        (int)capture.preview[2], (int)capture.preview[3]);
     sync_crop();
   } else if (capture.tool != SELECT && capture.tool != TEXT) {
-    MCSelectionRect region = capture.tool == ARROW ? mc_selection_vector(&capture.selection)
-                                                    : mc_selection_region(&capture.selection);
-    int w = (int)region.width, h = (int)region.height;
-    if ((capture.tool == ARROW && abs(w) + abs(h) >= 3) || (w >= 2 && h >= 2))
-      image_session_add_rgba(capture.session, capture.tool, (int)region.x, (int)region.y, w, h,
-                             capture.color, capture.stroke, capture.font_size, capture.opacity);
+    image_session_shape_event(capture.session, 1, x, y);
   }
   capture.gesture = 0;
   layout_controls();
@@ -781,6 +823,7 @@ static void tool_clicked(GtkWidget *widget, gpointer data) {
   }
   capture.selected = -1;
   sync_style();
+  layout_controls();
   gtk_widget_grab_focus(capture.canvas);
   gtk_widget_queue_draw(capture.canvas);
 }
@@ -789,16 +832,16 @@ static void style_finished(gpointer data) {
   if (capture.editor && !capture.closing)
     gtk_widget_grab_focus(capture.editing ? capture.entry : capture.canvas);
 }
-static void style_changed(unsigned fields, const double values[4], gpointer data) {
+static void style_changed(unsigned fields, const double values[MC_STYLE_PROPERTY_COUNT], gpointer data) {
   (void)data;
   if (capture.closing || capture.composing)
     return;
-  fields &= (unsigned)editor_style_property_mask(context_kind());
+  fields &= (unsigned)editor_style_visible_mask(context_kind(), capture.shape);
   gboolean defaults = capture.editing ? capture.edit_index < 0 : capture.selected < 0;
   int tool = capture.editing ? TEXT : capture.tool;
   /* Only edits to an active tool or a new text draft change its future style.
    * Selecting/re-editing an existing object never writes the tool style bank. */
-  for (int field = 0; field < 4; field++)
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
     if (fields & (1u << field)) {
       double value = values[field];
       if (!isfinite(value) || value < editor_style_min(field) || value > editor_style_max(field) ||
@@ -812,7 +855,7 @@ static void style_changed(unsigned fields, const double values[4], gpointer data
     return;
   }
   if (defaults)
-    for (int field = 0; field < 4; field++)
+    for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
       if ((fields & (1u << field)) && !editor_style_set(capture.style_bank, tool, field, values[field])) {
         sync_control_values();
         return;
@@ -821,19 +864,24 @@ static void style_changed(unsigned fields, const double values[4], gpointer data
   if (fields & (1u << MC_STYLE_OPACITY)) capture.opacity = values[MC_STYLE_OPACITY];
   if (fields & (1u << MC_STYLE_STROKE)) capture.stroke = (int)values[MC_STYLE_STROKE];
   if (fields & (1u << MC_STYLE_FONT)) capture.font_size = (int)values[MC_STYLE_FONT];
+  if (fields & (1u << MC_STYLE_SHAPE)) capture.shape = (int)values[MC_STYLE_SHAPE];
+  if (fields & (1u << MC_STYLE_BLOCK)) capture.block = (int)values[MC_STYLE_BLOCK];
   if (capture.editing)
     text_style();
   else if (capture.selected >= 0) {
-    double r[8];
+    double r[10];
     read_annotation(capture.selected, r);
     r[4] = capture.color;
     r[5] = capture.stroke;
     r[6] = capture.font_size;
     r[7] = capture.opacity;
-    if (!update_annotation(capture.selected, r))
+    if (fields & ((1u << MC_STYLE_SHAPE) | (1u << MC_STYLE_BLOCK))) {
+      int field = fields & (1u << MC_STYLE_SHAPE) ? MC_STYLE_SHAPE : MC_STYLE_BLOCK;
+      image_session_set_variant(capture.session, capture.selected, field, values[field]);
       sync_style();
+    } else if (!update_annotation(capture.selected, r)) sync_style();
   }
-  sync_control_values();
+  layout_controls();
   gtk_widget_queue_draw(capture.editor);
 }
 static gboolean pin_available(void) {
@@ -961,11 +1009,12 @@ static void layout_controls(void) {
       hh = gtk_widget_get_allocated_height(capture.canvas);
   GtkRequisition size;
   gtk_widget_get_preferred_size(capture.toolbar, &size, NULL);
-  int x = CLAMP((int)(capture.offset_x + capture.crop[0] * capture.zoom), 0, MAX(0, ww - size.width));
-  int y = (int)(capture.offset_y + (capture.crop[1] + capture.crop[3]) * capture.zoom) + 12;
-  if (y + size.height > hh)
-    y = MAX(0, (int)(capture.offset_y + capture.crop[1] * capture.zoom) - size.height - 12);
-  GdkRectangle toolbar_bounds = {x, y, size.width, size.height};
+  double *frame = capture_ui_toolbar_frame(ww, hh,
+      capture.offset_x + capture.crop[0] * capture.zoom, capture.offset_y + capture.crop[1] * capture.zoom,
+      capture.crop[2] * capture.zoom, capture.crop[3] * capture.zoom, size.width - 12,
+      editor_style_visible_mask(context_kind(), capture.shape) ? size.width - 12 : 0);
+  GdkRectangle toolbar_bounds = {(int)frame[0], (int)frame[1], size.width, MAX(size.height, (int)frame[3])};
+  moonbit_decref(frame);
   gboolean changed = memcmp(&toolbar_bounds, &capture.toolbar_bounds, sizeof(toolbar_bounds)) != 0;
   capture.toolbar_bounds = toolbar_bounds;
   if (capture.editing) {
@@ -1070,7 +1119,7 @@ static gboolean open_editor(GdkPixbuf *image) {
   gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), masks, TRUE);
   g_signal_connect(masks, "draw", G_CALLBACK(masks_draw), NULL);
   capture.toolbar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-  gtk_widget_set_size_request(capture.toolbar, 500, 92);
+  gtk_widget_set_size_request(capture.toolbar, -1, -1);
   gtk_container_set_border_width(GTK_CONTAINER(capture.toolbar), 0);
   gtk_widget_set_no_show_all(capture.toolbar, TRUE);
   gtk_style_context_add_class(gtk_widget_get_style_context(capture.toolbar), "mc-capture-hud");
@@ -1083,7 +1132,6 @@ static gboolean open_editor(GdkPixbuf *image) {
     gtk_box_pack_start(GTK_BOX(row), capture.tools[i], FALSE, FALSE, 0);
   }
   gtk_style_context_add_class(gtk_widget_get_style_context(capture.tools[0]), "mc-selected");
-  gtk_box_pack_start(GTK_BOX(row), mc_style_separator(), FALSE, FALSE, 0);
   MCIcon future_icons[] = {MC_ICON_OCR, MC_ICON_TRANSLATE};
   const char *future_names[] = {"OCR · 尚未开放", "翻译 · 尚未开放"};
   for (int i = 0; i < 2; i++) {
@@ -1096,7 +1144,6 @@ static gboolean open_editor(GdkPixbuf *image) {
     gtk_widget_set_tooltip_text(wrapper, future_names[i]);
     gtk_box_pack_start(GTK_BOX(row), wrapper, FALSE, FALSE, 0);
   }
-  gtk_box_pack_start(GTK_BOX(row), mc_style_separator(), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(row), mc_style_icon_button(MC_ICON_UNDO, "撤销 Ctrl+Z", G_CALLBACK(command), GINT_TO_POINTER(1)), FALSE,
                      FALSE, 0);
   gtk_box_pack_start(GTK_BOX(row), mc_style_icon_button(MC_ICON_REDO, "重做 Ctrl+Shift+Z", G_CALLBACK(command), GINT_TO_POINTER(2)),
@@ -1109,8 +1156,8 @@ static gboolean open_editor(GdkPixbuf *image) {
   capture.pin_button = mc_style_icon_button(MC_ICON_PIN, "固定贴图", G_CALLBACK(command), GINT_TO_POINTER(5));
   mc_linux_capture_refresh_capabilities();
   gtk_box_pack_end(GTK_BOX(row), capture.pin_button, FALSE, FALSE, 0);
-  MCStyleRange ranges[4];
-  for (int field = 0; field < 4; field++)
+  MCStyleRange ranges[MC_STYLE_PROPERTY_COUNT];
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
     ranges[field] = (MCStyleRange){editor_style_min(field), editor_style_max(field),
       editor_style_step(field), editor_style_default(field), field == MC_STYLE_OPACITY ? 100 : 1};
   capture.style_controls = mc_style_controls_new(GTK_WINDOW(capture.editor), ranges,
@@ -1229,7 +1276,7 @@ static void smoke_host_pin(GdkPixbuf *image, const GdkRectangle *bounds, gpointe
                  !mc_linux_capture_busy();
 }
 static void smoke_style_rgba(int color, double opacity) {
-  double values[4];
+  double values[MC_STYLE_PROPERTY_COUNT];
   current_style(values);
   values[MC_STYLE_COLOR] = color;
   values[MC_STYLE_OPACITY] = opacity;
@@ -1312,6 +1359,59 @@ static gboolean smoke_tool_styles(void) {
   tool_clicked(NULL, GINT_TO_POINTER(SELECT));
   g_print("Linux tool styles smoke %s: independent defaults, existing-object isolation, new/old text drafts.\n",
            ok ? "passed" : "FAILED");
+  return ok;
+}
+static gboolean smoke_shape_variants(void) {
+  int original_session = capture.session, original_bank = capture.style_bank;
+  capture.session = image_session_create_viewport(capture.width, capture.height, 30, 50, 320, 200);
+  capture.style_bank = editor_style_create();
+  gboolean ok = TRUE;
+  for (int tool = RECTANGLE; tool <= REDACT; tool += 3) {
+    for (int shape = 0; shape < editor_style_shape_count(tool); shape++) {
+      tool_clicked(NULL, GINT_TO_POINTER(tool));
+      double values[MC_STYLE_PROPERTY_COUNT]; current_style(values);
+      values[MC_STYLE_SHAPE] = shape;
+      style_changed(1u << MC_STYLE_SHAPE, values, NULL);
+      if (shape == 2) {
+        smoke_style_number(MC_STYLE_BLOCK, "16");
+        ok = !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
+          mc_style_controls_property_visible(capture.style_controls, MC_STYLE_BLOCK) && ok;
+      }
+      int count = image_session_count(capture.session);
+      GdkEventButton event = {0}; event.button = 1;
+      event.x = capture.offset_x + 100 * capture.zoom; event.y = capture.offset_y + 100 * capture.zoom;
+      ok = canvas_press(capture.canvas, &event, NULL) && ok;
+      motion(180, 160);
+      ok = image_session_count(capture.session) == count && ok;
+      event.x = capture.offset_x + 180 * capture.zoom; event.y = capture.offset_y + 160 * capture.zoom;
+      ok = canvas_release(capture.canvas, &event, NULL) && image_session_count(capture.session) == count + 1 &&
+        image_session_value(capture.session, count, 9) == shape && ok;
+      GdkPixbuf *image = flatten();
+      ok = image != NULL && ok;
+      if (image) {
+        int stride = gdk_pixbuf_get_rowstride(image), channels = gdk_pixbuf_get_n_channels(image);
+        const guchar *pixels = gdk_pixbuf_get_pixels(image);
+        if (tool == REDACT && shape == 1) {
+          const guchar *corner = pixels + 50 * stride + 70 * channels;
+          const guchar *source = gdk_pixbuf_get_pixels(capture.image) + 100 * gdk_pixbuf_get_rowstride(capture.image) +
+            100 * gdk_pixbuf_get_n_channels(capture.image);
+          const guchar *center = pixels + 80 * stride + 110 * channels;
+          ok = memcmp(corner, source, 3) == 0 && center[0] == 17 && center[1] == 17 && center[2] == 17 && ok;
+        }
+        if (shape == 2) {
+          const guchar *a = pixels + 70 * stride + 90 * channels;
+          ok = memcmp(a, a + channels, 3) == 0 && image_session_value(capture.session, count, 10) == 16 && ok;
+        }
+        g_object_unref(image);
+      }
+      command(NULL, GINT_TO_POINTER(1));
+      ok = image_session_count(capture.session) == count && ok;
+    }
+  }
+  image_session_dispose(capture.session); editor_style_dispose(capture.style_bank);
+  capture.session = original_session; capture.style_bank = original_bank;
+  tool_clicked(NULL, GINT_TO_POINTER(SELECT));
+  g_print("Linux shape variants smoke %s: input, shared gesture commit, ellipse pixels, mosaic, undo.\n", ok ? "passed" : "FAILED");
   return ok;
 }
 static gboolean smoke_pointer_route(GtkApplication *application) {
@@ -1489,7 +1589,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   selection_event.y = capture.offset_y + 50 * capture.zoom;
   ok = canvas_release(capture.canvas, &selection_event, NULL) && !capture.selecting &&
        capture.editor == original && !gtk_window_get_decorated(GTK_WINDOW(original)) && ok;
-  ok = smoke_tool_styles() && ok;
+  ok = smoke_tool_styles() && smoke_shape_variants() && ok;
   ok = (editor_style_property_mask(context_kind()) == 0) && !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
        !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) && ok;
   tool_clicked(NULL, GINT_TO_POINTER(TEXT));
@@ -1589,7 +1689,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   text = annotation_text(0);
   ok = g_strcmp0(text, "改过的文字") == 0 && ok;
   g_free(text);
-  double r[8];
+  double r[10];
   read_annotation(0, r);
   r[2] = 100;
   r[4] = 0x225577;
@@ -1641,7 +1741,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
    * blank portion of an active native text editor, and preserve alpha on move. */
   ok = image_session_add_rgba(capture.session, REDACT, 180, 160, 80, 50, 0xFF0000, 4, 24, .5) == 1 && ok;
   int cover = image_session_count(capture.session) - 1;
-  double cover_rect[8];
+  double cover_rect[10];
   read_annotation(cover, cover_rect);
   cover_rect[0] += 5;
   ok = update_annotation(cover, cover_rect) && image_session_value(capture.session, cover, 8) == .5 && ok;

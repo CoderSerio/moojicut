@@ -20,11 +20,13 @@ struct MCColorControl {
   gboolean blocked, destroyed;
 };
 struct MCStyleControls {
-  GtkWidget *row, *hint;
-  MCNumericControl *numbers[4];
+  GtkWidget *row, *hint, *shapes, *shape_buttons[3];
+  int tool;
+  gboolean blocked;
+  MCNumericControl *numbers[MC_STYLE_PROPERTY_COUNT];
   MCColorControl *color;
-  MCStyleRange ranges[4];
-  double values[4];
+  MCStyleRange ranges[MC_STYLE_PROPERTY_COUNT];
+  double values[MC_STYLE_PROPERTY_COUNT];
   unsigned mask;
   MCStyleChanged on_change;
   MCControlFinished on_finish;
@@ -380,7 +382,7 @@ MCColorControl *mc_color_control_new(GtkWindow *parent, const GdkRGBA *value,
 GtkWidget *mc_color_control_widget(MCColorControl *control) { return control->group; }
 void mc_color_control_set_blocked(MCColorControl *control, gboolean blocked) { control->blocked = blocked; }
 
-static GdkRGBA style_rgba(const double values[4]) {
+static GdkRGBA style_rgba(const double values[MC_STYLE_PROPERTY_COUNT]) {
   int color = (int)values[MC_STYLE_COLOR];
   return (GdkRGBA){((color >> 16) & 255) / 255.0, ((color >> 8) & 255) / 255.0,
                     (color & 255) / 255.0, values[MC_STYLE_OPACITY]};
@@ -416,10 +418,27 @@ static void style_color_changed(const GdkRGBA *value, gpointer data) {
   if (controls->on_change)
     controls->on_change((1u << MC_STYLE_COLOR) | (1u << MC_STYLE_OPACITY), controls->values, controls->data);
 }
-MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ranges[4],
+static gboolean shape_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
+  MCStyleControls *controls = data;
+  int index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "shape-index"));
+  const MCIcon outline[] = {MC_ICON_RECTANGLE, MC_ICON_ELLIPSE, MC_ICON_MOSAIC};
+  const MCIcon cover[] = {MC_ICON_REDACT, MC_ICON_COVER_ELLIPSE, MC_ICON_MOSAIC};
+  return icon_draw(widget, cr, GINT_TO_POINTER(controls->tool == MC_STYLE_TOOL_COVER ? cover[index] : outline[index]));
+}
+static void shape_clicked(GtkWidget *widget, gpointer data) {
+  MCStyleControls *controls = data;
+  int index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "shape-index"));
+  if (controls->blocked || !(controls->mask & (1u << MC_STYLE_SHAPE)) ||
+      index >= editor_style_shape_count(controls->tool) || controls->values[MC_STYLE_SHAPE] == index) return;
+  controls->values[MC_STYLE_SHAPE] = index;
+  if (controls->on_change) controls->on_change(1u << MC_STYLE_SHAPE, controls->values, controls->data);
+  style_finished(controls);
+}
+void mc_style_controls_set_tool(MCStyleControls *controls, int tool) { controls->tool = tool; }
+MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ranges[MC_STYLE_PROPERTY_COUNT],
                                       MCStyleChanged on_change, MCControlFinished on_finish,
                                       gpointer data) {
-  for (int field = 0; field < 4; field++)
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
     if (!isfinite(ranges[field].minimum) || !isfinite(ranges[field].maximum) ||
         !isfinite(ranges[field].step) || !isfinite(ranges[field].value) ||
         !isfinite(ranges[field].display_scale) || ranges[field].step <= 0 ||
@@ -428,7 +447,7 @@ MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ran
       return NULL;
   MCStyleControls *controls = g_new0(MCStyleControls, 1);
   memcpy(controls->ranges, ranges, sizeof(controls->ranges));
-  for (int field = 0; field < 4; field++)
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
     controls->values[field] = ranges[field].value;
   controls->on_change = on_change;
   controls->on_finish = on_finish;
@@ -440,11 +459,33 @@ MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ran
   gtk_label_set_xalign(GTK_LABEL(controls->hint), 0);
   gtk_style_context_add_class(gtk_widget_get_style_context(controls->hint), "mc-property-label");
   gtk_box_pack_start(GTK_BOX(controls->row), controls->hint, FALSE, FALSE, 3);
+  controls->shapes = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+  GtkWidget *label = gtk_label_new("形状");
+  gtk_style_context_add_class(gtk_widget_get_style_context(label), "mc-property-label");
+  gtk_box_pack_start(GTK_BOX(controls->shapes), label, FALSE, FALSE, 0);
+  const char *shape_names[] = {"方框", "圆框", "马赛克"};
+  for (int index = 0; index < 3; index++) {
+    GtkWidget *button = controls->shape_buttons[index] = gtk_button_new();
+    GtkWidget *glyph = gtk_drawing_area_new();
+    gtk_widget_set_has_window(glyph, FALSE);
+    gtk_widget_set_size_request(glyph, 18, 18);
+    gtk_widget_set_size_request(button, 28, 28);
+    gtk_widget_set_focus_on_click(button, FALSE);
+    g_object_set_data(G_OBJECT(button), "shape-index", GINT_TO_POINTER(index));
+    g_object_set_data(G_OBJECT(glyph), "shape-index", GINT_TO_POINTER(index));
+    g_signal_connect(glyph, "draw", G_CALLBACK(shape_draw), controls);
+    g_signal_connect(button, "clicked", G_CALLBACK(shape_clicked), controls);
+    gtk_widget_set_tooltip_text(button, shape_names[index]);
+    atk_object_set_name(gtk_widget_get_accessible(button), shape_names[index]);
+    gtk_container_add(GTK_CONTAINER(button), glyph);
+    gtk_box_pack_start(GTK_BOX(controls->shapes), button, FALSE, FALSE, 0);
+  }
+  gtk_box_pack_start(GTK_BOX(controls->row), controls->shapes, FALSE, FALSE, 3);
   GdkRGBA color = style_rgba(controls->values);
   controls->color = mc_color_control_new(parent, &color, style_color_changed, style_finished, controls);
   gtk_box_pack_start(GTK_BOX(controls->row), mc_color_control_widget(controls->color), FALSE, FALSE, 3);
-  const int fields[] = {MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_OPACITY};
-  const char *labels[] = {"字号", "线宽", "不透明度 %"};
+  const int fields[] = {MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_OPACITY, MC_STYLE_BLOCK};
+  const char *labels[] = {"字号", "线宽", "不透明度 %", "颗粒"};
   for (unsigned i = 0; i < G_N_ELEMENTS(fields); i++) {
     int field = fields[i];
     const MCStyleRange *range = &ranges[field];
@@ -459,6 +500,8 @@ MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ran
   }
   gtk_widget_show_all(controls->row);
   gtk_widget_set_no_show_all(controls->hint, TRUE);
+  gtk_widget_set_no_show_all(controls->shapes, TRUE);
+  for (int i = 0; i < 3; i++) gtk_widget_set_no_show_all(controls->shape_buttons[i], TRUE);
   gtk_widget_set_no_show_all(mc_color_control_widget(controls->color), TRUE);
   for (unsigned i = 0; i < G_N_ELEMENTS(fields); i++)
     gtk_widget_set_no_show_all(controls->numbers[fields[i]]->group, TRUE);
@@ -466,7 +509,7 @@ MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ran
   return controls;
 }
 GtkWidget *mc_style_controls_widget(MCStyleControls *controls) { return controls->row; }
-void mc_style_controls_sync(MCStyleControls *controls, unsigned mask, const double values[4]) {
+void mc_style_controls_sync(MCStyleControls *controls, unsigned mask, const double values[MC_STYLE_PROPERTY_COUNT]) {
   if (!controls)
     return;
   controls->mask = mask;
@@ -474,18 +517,29 @@ void mc_style_controls_sync(MCStyleControls *controls, unsigned mask, const doub
   GdkRGBA color = style_rgba(values);
   mc_color_control_set(controls->color, &color);
   gtk_widget_set_visible(mc_color_control_widget(controls->color), (mask & (1u << MC_STYLE_COLOR)) != 0);
-  for (int field = 0; field < 4; field++)
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
     if (controls->numbers[field]) {
       mc_numeric_control_set(controls->numbers[field], values[field] * controls->ranges[field].display_scale);
       gtk_widget_set_visible(controls->numbers[field]->group, (mask & (1u << field)) != 0);
     }
-  gtk_widget_set_visible(controls->hint, mask == 0);
+  gtk_widget_set_visible(controls->shapes, (mask & (1u << MC_STYLE_SHAPE)) != 0);
+  for (int i = 0; i < 3; i++) {
+    GtkWidget *button = controls->shape_buttons[i];
+    gtk_widget_set_visible(button, i < editor_style_shape_count(controls->tool));
+    GtkStyleContext *style = gtk_widget_get_style_context(button);
+    if (i == (int)values[MC_STYLE_SHAPE]) gtk_style_context_add_class(style, "mc-selected");
+    else gtk_style_context_remove_class(style, "mc-selected");
+    gtk_widget_queue_draw(button);
+  }
+  gtk_widget_set_visible(controls->hint, FALSE);
 }
 void mc_style_controls_set_blocked(MCStyleControls *controls, gboolean blocked) {
   if (!controls)
     return;
+  controls->blocked = blocked;
+  gtk_widget_set_sensitive(controls->shapes, !blocked);
   mc_color_control_set_blocked(controls->color, blocked);
-  for (int field = 0; field < 4; field++)
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
     if (controls->numbers[field])
       mc_numeric_control_set_blocked(controls->numbers[field], blocked);
 }
@@ -494,23 +548,24 @@ void mc_style_controls_close_dialog(MCStyleControls *controls) {
     mc_color_control_close_dialog(controls->color);
 }
 GtkWidget *mc_style_controls_entry(MCStyleControls *controls, int field) {
-  return field >= 0 && field < 4 && controls->numbers[field] ? controls->numbers[field]->entry : NULL;
+  return field >= 0 && field < MC_STYLE_PROPERTY_COUNT && controls->numbers[field] ? controls->numbers[field]->entry : NULL;
 }
 GtkWidget *mc_style_controls_step_button(MCStyleControls *controls, int field, gboolean increase) {
-  return field >= 0 && field < 4 && controls->numbers[field]
+  return field >= 0 && field < MC_STYLE_PROPERTY_COUNT && controls->numbers[field]
     ? mc_numeric_control_step_button(controls->numbers[field], increase) : NULL;
 }
 gboolean mc_style_controls_property_visible(MCStyleControls *controls, int field) {
+  if (field == MC_STYLE_SHAPE) return gtk_widget_get_visible(controls->shapes);
   if (field == MC_STYLE_COLOR)
     return gtk_widget_get_visible(mc_color_control_widget(controls->color));
-  return field >= 0 && field < 4 && controls->numbers[field] &&
+  return field >= 0 && field < MC_STYLE_PROPERTY_COUNT && controls->numbers[field] &&
          gtk_widget_get_visible(controls->numbers[field]->group);
 }
 
 /* Independent instances exercise native signals without touching the desktop
  * clipboard or application document. This is used only by --smoke. */
-typedef struct { int calls, finishes; unsigned fields; double values[4]; } StyleProbe;
-static void smoke_style_changed(unsigned fields, const double values[4], gpointer data) {
+typedef struct { int calls, finishes; unsigned fields; double values[MC_STYLE_PROPERTY_COUNT]; } StyleProbe;
+static void smoke_style_changed(unsigned fields, const double values[MC_STYLE_PROPERTY_COUNT], gpointer data) {
   StyleProbe *probe = data;
   probe->calls++;
   probe->fields = fields;
@@ -522,8 +577,8 @@ static void smoke_dialog_destroyed(GtkWidget *widget, gpointer data) {
   *(gboolean *)data = TRUE;
 }
 gboolean mc_style_controls_smoke(void) {
-  MCStyleRange ranges[4] = {{0, 16777215, 1, 0xF26769, 1}, {0, 1, .01, 1, 100},
-                           {1, 96, 1, 4, 1}, {8, 128, 1, 32, 1}};
+  MCStyleRange ranges[MC_STYLE_PROPERTY_COUNT] = {{0, 16777215, 1, 0xF26769, 1}, {0, 1, .01, 1, 100},
+                           {1, 96, 1, 4, 1}, {8, 128, 1, 32, 1}, {0, 2, 1, 0, 1}, {4, 48, 1, 12, 1}};
   StyleProbe a = {0}, b = {0};
   GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL), *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_container_add(GTK_CONTAINER(window), box);
@@ -533,7 +588,7 @@ gboolean mc_style_controls_smoke(void) {
                                                   smoke_style_finished, &b);
   gtk_box_pack_start(GTK_BOX(box), first->row, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), second->row, FALSE, FALSE, 0);
-  double initial[] = {0xF26769, 1, 4, 32};
+  double initial[] = {0xF26769, 1, 4, 32, 0, 12};
   mc_style_controls_sync(first, 15, initial);
   mc_style_controls_sync(second, 15, initial);
   gtk_button_clicked(GTK_BUTTON(first->numbers[MC_STYLE_FONT]->buttons[0]));

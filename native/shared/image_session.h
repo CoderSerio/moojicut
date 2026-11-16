@@ -55,10 +55,19 @@ int32_t image_session_hit(int32_t id, double x, double y, double tolerance, int3
  * The same geometry is used by hit testing. Invalid input/field returns zero. */
 double image_arrowhead_value(double x, double y, double x2, double y2, double stroke, int32_t field);
 /* Annotation fields: 0=kind, 1=x, 2=y, 3=width, 4=height, 5=RGB color,
- * 6=stroke width, 7=font size (text only), 8=opacity (0..1).
+ * 6=stroke width, 7=font size (text only), 8=opacity (0..1), 9=shape (0=rect, 1=ellipse, 2=mosaic),
+ * 10=mosaic block size. Kinds retain their family: ellipse=1, mosaic=4.
  * Unknown fields return zero. */
 double image_session_value(int32_t id, int32_t index, int32_t field);
 moonbit_string_t image_session_text(int32_t id, int32_t index);
+/* Shared capture_ui gesture adapter. Begin freezes tool/style; move previews
+ * only; end adds one undo entry; cancel adds none. Preview fields match value(). */
+int32_t image_session_shape_begin(int32_t id, int32_t kind, double x, double y,
+    int32_t color, double stroke, double opacity, int32_t shape, double block);
+int32_t image_session_shape_event(int32_t id, int32_t phase, double x, double y);
+double image_session_preview_value(int32_t id, int32_t field);
+/* editor_style field 4=shape, 5=block size. One checked undoable mutation. */
+int32_t image_session_set_variant(int32_t id, int32_t index, int32_t field, double value);
 void image_session_dispose(int32_t id);
 
 #ifdef __cplusplus

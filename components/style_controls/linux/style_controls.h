@@ -14,7 +14,7 @@ typedef struct MCStyleControls MCStyleControls;
 typedef void (*MCNumericChanged)(double value, gpointer data);
 typedef void (*MCColorChanged)(const GdkRGBA *value, gpointer data);
 typedef void (*MCControlFinished)(gpointer data);
-typedef void (*MCStyleChanged)(unsigned fields, const double values[4], gpointer data);
+typedef void (*MCStyleChanged)(unsigned fields, const double values[MC_STYLE_PROPERTY_COUNT], gpointer data);
 typedef struct {
   double minimum, maximum, step, value;
   double display_scale;
@@ -37,11 +37,12 @@ gboolean mc_color_control_set(MCColorControl *control, const GdkRGBA *value);
 void mc_color_control_set_blocked(MCColorControl *control, gboolean blocked);
 void mc_color_control_close_dialog(MCColorControl *control);
 
-MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ranges[4],
+MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ranges[MC_STYLE_PROPERTY_COUNT],
                                       MCStyleChanged on_change, MCControlFinished on_finish,
                                       gpointer data);
 GtkWidget *mc_style_controls_widget(MCStyleControls *controls);
-void mc_style_controls_sync(MCStyleControls *controls, unsigned mask, const double values[4]);
+void mc_style_controls_set_tool(MCStyleControls *controls, int tool);
+void mc_style_controls_sync(MCStyleControls *controls, unsigned mask, const double values[MC_STYLE_PROPERTY_COUNT]);
 void mc_style_controls_set_blocked(MCStyleControls *controls, gboolean blocked);
 void mc_style_controls_close_dialog(MCStyleControls *controls);
 GtkWidget *mc_style_controls_entry(MCStyleControls *controls, int field);

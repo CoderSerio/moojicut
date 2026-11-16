@@ -7,6 +7,7 @@
 @property (nonatomic, readwrite) MCNumberControl *fontControl;
 @property (nonatomic, readwrite) MCNumberControl *strokeControl;
 @property (nonatomic, readwrite) NSSegmentedControl *shapeControl;
+@property (nonatomic) NSStackView *shapeGroup;
 @property (nonatomic, readwrite) MCNumberControl *blockControl;
 @property (nonatomic, readwrite) NSTextField *status;
 @end
@@ -29,11 +30,18 @@
         self.shapeControl.segmentStyle = NSSegmentStyleSeparated;
         self.shapeControl.controlSize = NSControlSizeSmall;
         self.shapeControl.accessibilityLabel = @"形状";
+        NSTextField *shapeLabel = [NSTextField labelWithString:@"形状"];
+        shapeLabel.font = [NSFont systemFontOfSize:11];
+        shapeLabel.textColor = NSColor.secondaryLabelColor;
+        self.shapeGroup = [NSStackView stackViewWithViews:@[shapeLabel, self.shapeControl]];
+        self.shapeGroup.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        self.shapeGroup.alignment = NSLayoutAttributeCenterY;
+        self.shapeGroup.spacing = 4;
         self.status = [NSTextField labelWithString:@"选择标注以调整属性"];
         self.status.font = [NSFont systemFontOfSize:11];
         self.status.textColor = NSColor.secondaryLabelColor;
         self.status.lineBreakMode = NSLineBreakByTruncatingTail;
-        for (NSView *view in @[self.shapeControl, self.colorControl, self.fontControl, self.strokeControl, self.blockControl, self.status]) {
+        for (NSView *view in @[self.shapeGroup, self.colorControl, self.fontControl, self.strokeControl, self.blockControl, self.status]) {
             [view setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
             [self addView:view inGravity:NSStackViewGravityLeading];
         }
@@ -91,7 +99,7 @@
     if (self.colorControl.hidden) [self.colorControl closePopover];
     self.fontControl.hidden = !(mask & (1 << MC_STYLE_FONT));
     self.strokeControl.hidden = !(mask & (1 << MC_STYLE_STROKE));
-    self.shapeControl.hidden = !(mask & (1 << MC_STYLE_SHAPE));
+    self.shapeControl.hidden = self.shapeGroup.hidden = !(mask & (1 << MC_STYLE_SHAPE));
     self.blockControl.hidden = !(mask & (1 << MC_STYLE_BLOCK));
     self.colorControl.well.enabled = !self.colorControl.hidden;
     self.fontControl.field.enabled = self.fontControl.stepper.enabled = !self.fontControl.hidden;

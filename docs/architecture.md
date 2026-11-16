@@ -33,7 +33,7 @@ Agent 直接提交与 UI 相同的命令，不用模拟点击。图中 Agent 是
 
 | 范围 | 已有共享实现 | 仍需平台实现或迁移 |
 | --- | --- | --- |
-| 图片文档、选区几何、工具配置 | `src/internal/image`、`selection`、`tool_registry`；`capture_ui` 负责矩形/箭头/遮挡草稿与浮动工具栏定位 | macOS 已接入上述共享交互；工具栏控件绘制、属性面板、文字输入和窗口命中仍需继续迁移 |
+| 图片文档、选区几何、工具配置 | `src/internal/image`、`selection`、`tool_registry`；`capture_ui` 负责矩形/箭头/遮挡草稿与浮动工具栏定位 | macOS、Windows、Linux 已接入上述共享交互；工具栏控件绘制、属性面板、文字输入和窗口命中仍需继续迁移 |
 | 录屏选区 | macOS 截图与录屏共用 `components/selection` 和 `desktop_capture` | 这两个是 macOS 组件；录屏 hover/准备/倒计时 UI 尚未成为三端共享 MoonBit UI |
 | 视频编辑 | `video_project` 管文档与命令；`video_ui` 管布局、图标、时间轴、手势、tooltip 和语义 | macOS 正式编辑器已接入；Windows 仍有旧编辑器，Linux 尚未接入同等录屏/编辑功能 |
 | 音频波形 | `video_ui/waveform.mbt` 管源时间映射、峰值查询和绘制 | `components/media_analysis/macos` 负责解码音频、异步生成包络，另外两端尚未接入 |
@@ -88,7 +88,7 @@ macOS 负责坐标转换、控件测量和绘制。工具栏只有两个视觉�
 历史排序配置保留，但不会把贴图插回左侧。其余用户工具保持相对顺序。
 
 这只是第一批迁移案例，不等同于截图 UI 已完全共享。`capture_ui` 的同一事件
-回放已在 native 和 JS 目标验证；Windows/Linux 的旧截图宿主尚未接入这些新入口。
+回放已在 native 和 JS 目标验证；Windows/Linux 通过 `image_session_shape_*` 薄适配调用同一 reducer，属性范围、显隐、形状切换和撤销也复用 MoonBit。原生层仍负责系统控件、文字输入和像素绘制。
 控件绘制、输入法适配和平台窗口验收仍按下列顺序继续。
 
 形状扩展沿用这条边界：`editor_style` 管方框/圆框/马赛克的可用选项、独立偏好和
@@ -135,3 +135,14 @@ CLI/MCP。自动化编辑与人工编辑得到同一文档和导出计划，呈�
 `capture_ui` 的白盒测试验证草稿/命令/布局；`test/native/tool-layout.m` 和
 `capture-overlay.m` 验证正式截图画布、两组工具栏、插件开关、IME、缩放及导出。
 这些是自动化范围，不能代替三端的真实窗口、权限和键鼠回归。
+
+### 2026-11-17：截图三端接入
+
+这批完成形状标签、方框/圆框/实心覆盖/马赛克、颗粒调整、共享绘制手势、右下角工具栏定位和两组工具菜单。Windows/Linux 都读取 MoonBit 的属性显隐与形状范围；马赛克预览和导出采样已合成的场景。Windows 在冻结桌面之后才隐藏贴图，Linux 不再在截图前隐藏贴图，允许再次截取贴图。
+
+剩余平台差异按以下顺序推进，不以这批截图接入宣称整个应用功能对齐：
+
+1. 复用 `tool_registry` / `plugin_protocol` 接入两端插件管理与 Wasm 执行；接真实 OCR/翻译后再开放入口。
+2. 实现 Windows/Linux 通用画布后端，直接消费现有 `video_ui` 绘制、语义与事件协议；不再新增原生时间线和剪辑状态。
+3. 接媒体预览/导出端口及录屏入口；Linux 分别验证 X11 和 Wayland Portal，Windows 验证混合 DPI、多显示器和 IME。
+4. 更新与签名/安装策略按平台验证，避免用 macOS 更新链代替其他平台的分发闭环。

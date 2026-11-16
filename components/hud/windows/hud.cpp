@@ -114,15 +114,11 @@ extern "C" void mc_hud_card(HDC dc, const RECT *bounds, float scale, const wchar
   Pen border(Color(255, 65, 61, 73), scale);
   graphics.DrawPath(&border, &outline);
   Pen divider(Color(255, 76, 71, 83), scale);
-  const int separators[3] = {198, 286, 374};
+  const int separators[1] = {280};
   for (int offset : separators)
     graphics.DrawLine(&divider, rect.X + offset * scale, rect.Y + 17 * scale, rect.X + offset * scale,
                       rect.Y + 31 * scale);
-  Pen row_separator(Color(255, 54, 51, 61), scale);
-  graphics.DrawLine(&row_separator, rect.X + 12 * scale, rect.Y + 46 * scale, rect.GetRight() - 12 * scale,
-                    rect.Y + 46 * scale);
-  text(graphics, hint, RectF(rect.X + 14 * scale, rect.Y + 52 * scale, 468 * scale, 32 * scale),
-       10.5f * scale, Color(255, 151, 146, 156), StringAlignmentNear);
+  (void)hint;
 }
 extern "C" void mc_hud_button(HDC dc, const RECT *bounds, int kind, int value, BOOL selected, BOOL hovered,
                               BOOL pressed, BOOL focused, BOOL disabled, float scale) {
@@ -164,6 +160,19 @@ extern "C" void mc_hud_button(HDC dc, const RECT *bounds, int kind, int value, B
   } else if (kind == MC_HUD_OPACITY) {
     wchar_t label[40];
     swprintf_s(label, 40, L"不透明度  %d%%", value);
+    text(graphics, label, rect, 12 * scale, Color(255, 222, 217, 228), StringAlignmentCenter);
+  } else if (kind == MC_HUD_SHAPE) {
+    const MCIcon outline[] = {MC_ICON_RECTANGLE, MC_ICON_ELLIPSE, MC_ICON_MOSAIC};
+    const MCIcon cover[] = {MC_ICON_REDACT, MC_ICON_COVER_ELLIPSE, MC_ICON_MOSAIC};
+    int shape = value % 10;
+    if (shape < 0 || shape > 2) shape = 0;
+    text(graphics, L"形状", RectF(rect.X, rect.Y, 44 * scale, rect.Height), 12 * scale,
+         Color(255, 222, 217, 228), StringAlignmentCenter);
+    icon(graphics, value / 10 == 4 ? cover[shape] : outline[shape],
+         RectF(rect.X + 44 * scale, rect.Y, 32 * scale, rect.Height), scale, disabled);
+  } else if (kind == MC_HUD_BLOCK) {
+    wchar_t label[32];
+    swprintf_s(label, 32, L"颗粒  %d", value);
     text(graphics, label, rect, 12 * scale, Color(255, 222, 217, 228), StringAlignmentCenter);
   } else if (kind == MC_HUD_FONT) {
     wchar_t label[32];

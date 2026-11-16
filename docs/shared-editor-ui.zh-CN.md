@@ -44,7 +44,7 @@ flowchart TD
 | 层 | 截图现状依据 | 视频现状及目标职责 |
 | --- | --- | --- |
 | 共享业务核心 | `src/internal/image`、`selection`、`editor_style`，经 `src/api_*.mbt` 和 `native/shared` 暴露接口 | `src/internal/video` 保留 v1/录制/共用几何；`src/internal/video_project` 已实现 v2 片段、恒速、链接、版本事务和 RenderPlan |
-| 复杂 UI | `plugins/feature/image_editor/macos/MCImageEditorController.m` 仍有原生布局；三端 `components/style_controls` 仍是迁移基线 | 已有 `src/internal/video_ui` 负责布局、主题、交互和语义；播放条、时间线、属性面板按职责拆为包内模块，不能照搬三套原生 UI |
+| 复杂 UI | `capture_ui` 的形状手势与工具栏定位已接入三端；`editor_style` 统一形状/颗粒和属性显隐。三端 `components/style_controls` 仍负责控件绘制和输入，尚非一套共享控件渲染 | 已有 `src/internal/video_ui` 负责布局、主题、交互和语义；播放条、时间线、属性面板按职责拆为包内模块，不能照搬三套原生 UI |
 | 通用组件/后端 | `components/icons`、`style_controls`、`hud` 等已有实际组件 | 已有 `components/shared_canvas/macos`；仅解释通用绘制和输入协议。Windows/Linux 对应画布尚未验收，可复用公共绘图/字体库减少适配量 |
 | 功能接入 | `plugins/feature/capture` 组织采集与编辑，`select`、`pin` 等各有入口 | 已有 `plugins/feature/recording` 与 macOS `video_editor`；保留录屏、草稿、窗口生命周期和媒体端口接线，不决定组件布局或剪辑规则 |
 | 应用装配 | `native/*` 宿主、`plugins/system/builtins.json` 的 sources/requires | macOS 正式构建已装配共享 UI、通用画布与媒体端口，录制完成和恢复草稿进入同一编辑窗；其他平台仍待接入 |

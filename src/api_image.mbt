@@ -174,3 +174,27 @@ pub fn image_arrowhead_value(
 ) -> Double {
   @image.image_arrowhead_value(x, y, x2, y2, stroke, field)
 }
+
+///|
+#export_name("image_session_shape_begin")
+pub fn image_session_shape_begin(id : Int, kind : Int, x : Double, y : Double, color : Int, stroke : Double, opacity : Double, shape : Int, block : Double) -> Int {
+  @image.image_session_shape_begin(id, kind, x, y, color, stroke, opacity, shape, block)
+}
+
+///|
+#export_name("image_session_shape_event")
+pub fn image_session_shape_event(id : Int, phase : Int, x : Double, y : Double) -> Int {
+  @image.image_session_shape_event(id, phase, x, y)
+}
+
+///|
+#export_name("image_session_preview_value")
+pub fn image_session_preview_value(id : Int, field : Int) -> Double {
+  @image.image_session_preview_value(id, field)
+}
+
+///|
+#export_name("image_session_set_variant")
+pub fn image_session_set_variant(id : Int, index : Int, field : Int, value : Double) -> Int {
+  @image.image_session_set_variant(id, index, field, value)
+}

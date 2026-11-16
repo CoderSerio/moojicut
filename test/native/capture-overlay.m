@@ -410,8 +410,8 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     selectTool(editor,4); CGFloat cover = NSWidth(editor.floatingToolbar.frame), coverProperties = editor.properties.fittingSize.width;
     selectTool(editor,1); CGFloat shape = NSWidth(editor.floatingToolbar.frame), shapeProperties = editor.properties.fittingSize.width;
     selectTool(editor,3); CGFloat text = NSWidth(editor.floatingToolbar.frame), textProperties = editor.properties.fittingSize.width;
-    CHECK(coverProperties < shapeProperties && coverProperties < textProperties && cover <= shape && cover <= text,
-          "hidden stroke/font groups shrink the property row even when the icon row determines the panel width");
+    CHECK(coverProperties < shapeProperties && cover <= shape && textProperties <= text && coverProperties <= cover,
+          "property groups use their natural widths and fit the measured toolbar");
     CHECK(NSWidth(editor.fontSize.frame) >= 44 && NSWidth(editor.lineWidth.frame) >= 44, "contextual numeric fields keep their natural width");
     __block NSUInteger contentActions = 0;
     editor.onOCR = ^(__unused MCImageEditorController *source) { contentActions++; };

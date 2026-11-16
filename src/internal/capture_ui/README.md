@@ -1,9 +1,10 @@
 # Shared screenshot interactions
 
-This is the first screenshot UI migration slice. macOS now uses this package
-for rectangle, arrow and cover gestures and floating toolbar placement. Text
-input, window hit testing, toolbar control painting and property controls still
-use native adapters. Windows/Linux have not yet adopted this new boundary.
+macOS, Windows and Linux use this package for rectangle/ellipse, arrow and
+cover/mosaic gestures and floating toolbar placement. Text input, window hit
+testing and control painting still use native adapters. Tool/property rules,
+shape variants and undoable documents belong to MoonBit. This is not yet a
+single shared renderer for every screenshot control.
 
 `src/api_capture_ui.mbt` exports the C ABI in `native/shared/capture_ui.h`.
 All calls run on the UI thread. Sessions are per editor, disposable, and never
@@ -47,6 +48,22 @@ Points clamp to source bounds. Movement below 3 pixels, or area shapes with an
 edge below 2 pixels, produces no annotation. Tool enablement/IME preflight stays
 in the host during this migration; it must cancel when the active tool closes.
 
+## Typed desktop adapter
+
+Windows and Linux use `image_session_shape_begin/event/preview_value` in
+`native/shared/image_session.h`; this adapter calls the same `capture_ui.event`
+reducer, then applies its command through `image_apply`. It does not reimplement
+shape normalization or minimum drag thresholds. `begin` freezes style, `move`
+only previews, `end` commits once, and `cancel` discards the draft. Closing the
+image session also releases its interaction session.
+
+Scalar annotation fields retain family IDs (ellipse=outline, mosaic=cover),
+with field 9 for the variant and 10 for mosaic cell size. Existing variants are
+changed using `image_session_set_variant`, backed by `setShape` / `update`.
+Windows GDI and Linux Cairo retain pixel/font adapters. Their shared low-level
+`native/shared/pixelate.h` samples the composited source grid; it owns no UI or
+document state. Both preview and flattened export render that same scene.
+
 ## Layout contract
 
 `capture_ui_toolbar_frame` takes positive finite surface dimensions, a region
@@ -72,3 +89,11 @@ and the equivalent `--target js` for the same shared event tests.
 `tool-layout` to save light/dark screenshots of its synthetic source in the
 production editor. Tests do not install apps, capture the desktop or copy data
 to the system clipboard.
+
+Windows/Linux: `python scripts/desktop.py test` runs the native compiler, shared
+MoonBit tests and real host smoke fixtures (Linux uses Xvfb + D-Bus in CI).
+Fixtures exercise reverse drags, native property changes, ellipse corner/center
+pixels, mosaic cells, one-step undo, live text, crop and export. These automated
+checks do not replace real multi-monitor/DPI, Windows IME or Wayland portal
+regressions. OCR/translation, user ZIP plugins and shared video UI are separate
+platform gaps; disabled entries are not claimed as working features.

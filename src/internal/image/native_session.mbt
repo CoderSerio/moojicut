@@ -5,6 +5,8 @@ priv struct NativeImageSession {
   mut document : Map[String, Json]
   mut text : String
   mut next_annotation : Int
+  gesture : Int
+  mut preview : Json
 }
 
 ///|
@@ -31,7 +33,9 @@ fn native_image_create(request : Json) -> Int {
   }
   let id = native_image_next_id.val
   native_image_next_id.val = id + 1
-  native_image_sessions[id] = { document, text: "文本", next_annotation: 1 }
+  let gesture = @capture_ui.open(image_number(document, "width", 0), image_number(document, "height", 0))
+  if gesture == 0 { return 0 }
+  native_image_sessions[id] = { document, text: "文本", next_annotation: 1, gesture, preview: Json::null() }
   id
 }
 
@@ -232,10 +236,24 @@ fn native_image_annotation(id : Int, index : Int) -> Map[String, Json]? {
 ///|
 pub fn image_session_value(id : Int, index : Int, field : Int) -> Double {
   let annotation = match native_image_annotation(id, index) { Some(value) => value; None => return 0 }
+  native_annotation_value(annotation, field)
+}
+
+///|
+fn native_annotation_value(annotation : Map[String, Json], field : Int) -> Double {
+  let kind = image_string(annotation, "type", "")
   if field == 0 {
-    return match image_string(annotation, "type", "") {
-      "rect" => 1; "arrow" => 2; "text" => 3; "redact" => 4; _ => 0
+    return match kind {
+      "rect" | "ellipse" => 1; "arrow" => 2; "text" => 3; "redact" | "mosaic" => 4; _ => 0
     }
+  }
+  if field == 9 {
+    return if kind == "mosaic" { 2 } else if kind == "ellipse" || image_string(annotation, "shape", "") == "ellipse" { 1 } else { 0 }
+  }
+  if field == 10 { return image_number(annotation, "blockSize", 12) }
+  if kind == "arrow" && (field == 3 || field == 4) {
+    return if field == 3 { image_number(annotation, "x2", 0) - image_number(annotation, "x", 0) }
+      else { image_number(annotation, "y2", 0) - image_number(annotation, "y", 0) }
   }
   if field == 5 {
     let color = image_string(annotation, "color", "#000000")
@@ -261,4 +279,68 @@ pub fn image_session_text(id : Int, index : Int) -> String {
 }
 
 ///|
-pub fn image_session_dispose(id : Int) -> Unit { native_image_sessions.remove(id) }
+pub fn image_session_dispose(id : Int) -> Unit {
+  if native_image_sessions.get(id) is Some(session) { @capture_ui.close(session.gesture) }
+  native_image_sessions.remove(id)
+}
+
+///|
+// Typed adapter to the SAME gesture reducer as the macOS JSON host. The core
+// freezes style at begin; only end mutates the image document / undo stack.
+pub fn image_session_shape_begin(id : Int, kind : Int, x : Double, y : Double,
+  color : Int, stroke : Double, opacity : Double, shape : Int, block : Double) -> Int {
+  let s = match native_image_sessions.get(id) { Some(s) => s; None => return 0 }
+  if color < 0 || color > 16777215 { return 0 }
+  let result = @json.parse(@capture_ui.event(Json::object({
+    "session": Json(s.gesture), "type": Json("begin"), "id": Json("native-\{s.next_annotation}"),
+    "kind": Json(kind), "x": Json(x), "y": Json(y), "color": Json(native_image_color(color)),
+    "stroke": Json(stroke), "opacity": Json(opacity), "shape": Json(shape), "blockSize": Json(block),
+  }).stringify())) catch { _ => return 0 }
+  match result { Object({ "ok": True, .. }) => { s.preview = Json::null(); 1 }; _ => 0 }
+}
+
+///|
+// phase: 0=move, 1=end, 2=cancel. A no-area end succeeds without adding history.
+pub fn image_session_shape_event(id : Int, phase : Int, x : Double, y : Double) -> Int {
+  let s = match native_image_sessions.get(id) { Some(s) => s; None => return 0 }
+  let name = match phase { 0 => "move"; 1 => "end"; 2 => "cancel"; _ => return 0 }
+  let result = @json.parse(@capture_ui.event(Json::object({
+    "session": Json(s.gesture), "type": Json(name), "x": Json(x), "y": Json(y),
+  }).stringify())) catch { _ => return 0 }
+  match result {
+    Object({ "ok": True, "preview": preview, "command": command, .. }) => {
+      s.preview = preview
+      if command != Json::null() {
+        let applied = native_image_command(s, command)
+        if applied == 1 { s.next_annotation += 1 }
+        applied
+      } else { 1 }
+    }
+    _ => 0
+  }
+}
+
+///|
+pub fn image_session_preview_value(id : Int, field : Int) -> Double {
+  match native_image_sessions.get(id) {
+    Some({ preview: Object(annotation), .. }) => native_annotation_value(annotation, field)
+    _ => 0
+  }
+}
+
+///|
+pub fn image_session_set_variant(id : Int, index : Int, field : Int, value : Double) -> Int {
+  let s = match native_image_sessions.get(id) { Some(s) => s; None => return 0 }
+  let annotation = match native_image_annotation(id, index) { Some(a) => a; None => return 0 }
+  if !@style.editor_style_value_valid(field, value) { return 0 }
+  let kind = native_annotation_value(annotation, 0).to_int()
+  if field == 4 {
+    if value >= @style.editor_style_shape_count(kind).to_double() { return 0 }
+    if native_annotation_value(annotation, 9) == value { return 1 }
+    native_image_command(s, Json::object({ "type": Json("setShape"), "id": annotation["id"], "shape": Json(value) }))
+  } else if field == 5 && image_string(annotation, "type", "") == "mosaic" {
+    if native_annotation_value(annotation, 10) == value { return 1 }
+    native_image_command(s, Json::object({ "type": Json("update"), "id": annotation["id"],
+      "patch": Json::object({ "blockSize": Json(value) }) }))
+  } else { 0 }
+}

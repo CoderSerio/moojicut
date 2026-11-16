@@ -37,6 +37,7 @@ static BOOL visible(const MCStyleControls *controls, int property) {
   return (controls->model.mask & (1u << property)) != 0;
 }
 static int numeric_property(const MCStyleControls *controls) {
+  if (visible(controls, MC_STYLE_BLOCK)) return MC_STYLE_BLOCK;
   return visible(controls, MC_STYLE_FONT) ? MC_STYLE_FONT : MC_STYLE_STROKE;
 }
 static LRESULT CALLBACK button_proc(HWND window, UINT message, WPARAM wp, LPARAM lp,
@@ -70,7 +71,7 @@ MCStyleControls *mc_style_controls_create(HWND parent, HINSTANCE instance, int f
       WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
       parent, NULL, instance, NULL);
   const wchar_t *labels[MC_STYLE_CONTROL_COUNT] = {L"标注颜色 · 点击选择", L"不透明度 · 点击选择",
-      L"线条宽度 · 点击选择", L"字号 · 点击选择", L"增大当前数值", L"减小当前数值"};
+      L"线条宽度 · 点击选择", L"字号 · 点击选择", L"形状 · 点击选择", L"马赛克颗粒 · 点击选择", L"增大当前数值", L"减小当前数值"};
   if (!controls->tooltip)
     goto failed;
   for (int i = 0; i < MC_STYLE_CONTROL_COUNT; i++) {
@@ -111,7 +112,7 @@ void mc_style_controls_update(MCStyleControls *controls, const MCStyleControlsMo
   if (!controls || controls->retiring || !model)
     return;
   controls->model = *model;
-  for (int field = 0; field < 4; field++) {
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++) {
     HWND button = controls->buttons[field];
     wchar_t label[96];
     double value = model->property[field].value;
@@ -119,6 +120,10 @@ void mc_style_controls_update(MCStyleControls *controls, const MCStyleControlsMo
       swprintf_s(label, 96, L"颜色：#%06X，点击选择", rounded(value));
     else if (field == MC_STYLE_OPACITY)
       swprintf_s(label, 96, L"不透明度：%d%%，点击选择", rounded(value * 100));
+    else if (field == MC_STYLE_SHAPE)
+      swprintf_s(label, 96, L"形状：%s，点击选择", (const wchar_t *[]){L"方框", L"圆框", L"马赛克"}[rounded(value) >= 0 && rounded(value) <= 2 ? rounded(value) : 0]);
+    else if (field == MC_STYLE_BLOCK)
+      swprintf_s(label, 96, L"颗粒：%g 像素，点击选择", value);
     else
       swprintf_s(label, 96, field == MC_STYLE_FONT ? L"文字大小：%g 像素，点击选择" : L"线宽：%g 像素，点击选择", value);
     SetWindowTextW(button, label);
@@ -136,24 +141,45 @@ void mc_style_controls_update(MCStyleControls *controls, const MCStyleControlsMo
     InvalidateRect(controls->buttons[i], NULL, FALSE);
   }
 }
+static int control_width(int field) {
+  const int widths[] = {76, 112, 76, 76, 84, 76};
+  return widths[field];
+}
+int mc_style_controls_width(const MCStyleControls *controls) {
+  if (!controls || !controls->model.mask) return 0;
+  int width = 0;
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
+    if (visible(controls, field)) width += control_width(field) + 4;
+  if (visible(controls, numeric_property(controls))) width += 24;
+  return width - 4;
+}
 void mc_style_controls_layout(MCStyleControls *controls, int x, int y) {
-  if (!controls || controls->retiring)
-    return;
+  if (!controls || controls->retiring) return;
   HWND parent = controls->parent;
-  const int left[] = {0, 236, 100, 100, 192, 192};
-  const int top[] = {0, 0, 0, 0, 0, 16};
-  const int width[] = {88, 132, 88, 88, 24, 24};
-  for (int i = 0; i < MC_STYLE_CONTROL_COUNT; i++)
-    MoveWindow(controls->buttons[i], x + pixels(parent, left[i]), y + pixels(parent, top[i]),
-        pixels(parent, width[i]), pixels(parent, i >= MC_STYLE_CONTROL_INCREASE ? 16 : 32), TRUE);
+  const int order[] = {MC_STYLE_SHAPE, MC_STYLE_COLOR, MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_BLOCK, MC_STYLE_OPACITY};
+  int left = 0;
+  for (int i = 0; i < MC_STYLE_PROPERTY_COUNT; i++) {
+    int field = order[i];
+    if (!visible(controls, field)) continue;
+    MoveWindow(controls->buttons[field], x + pixels(parent, left), y,
+        pixels(parent, control_width(field)), pixels(parent, 28), TRUE);
+    left += control_width(field) + 4;
+    if (field == numeric_property(controls)) {
+      for (int j = 0; j < 2; j++)
+        MoveWindow(controls->buttons[MC_STYLE_CONTROL_INCREASE + j], x + pixels(parent, left),
+          y + pixels(parent, j * 14), pixels(parent, 20), pixels(parent, 14), TRUE);
+      left += 24;
+    }
+  }
 }
 BOOL mc_style_controls_choose(MCStyleControls *controls, int field, double value) {
-  if (!controls || controls->retiring || field < 0 || field >= 4 || !controls->model.enabled ||
+  if (!controls || controls->retiring || field < 0 || field >= MC_STYLE_PROPERTY_COUNT || !controls->model.enabled ||
       !visible(controls, field))
     return FALSE;
   MCStyleProperty number = controls->model.property[field];
   if (!isfinite(value) || value < number.minimum || value > number.maximum ||
-      (field == MC_STYLE_COLOR && value != floor(value)))
+      ((field == MC_STYLE_COLOR || field == MC_STYLE_SHAPE || field == MC_STYLE_BLOCK) && value != floor(value)) ||
+      (field == MC_STYLE_SHAPE && value >= editor_style_shape_count(controls->model.tool)))
     return FALSE;
   if (value == number.value)
     return TRUE;
@@ -179,6 +205,11 @@ static void popup(MCStyleControls *controls, int field) {
   } else if (field == MC_STYLE_OPACITY) {
     for (int i = 0; i <= 10; i++)
       options[count++] = i / 10.0;
+  } else if (field == MC_STYLE_SHAPE) {
+    for (int i = 0; i < editor_style_shape_count(controls->model.tool); i++) options[count++] = i;
+  } else if (field == MC_STYLE_BLOCK) {
+    const int sizes[] = {4, 8, 12, 16, 24, 32, 48};
+    for (int i = 0; i < (int)ARRAYSIZE(sizes); i++) options[count++] = sizes[i];
   } else if (field == MC_STYLE_STROKE) {
     options[count++] = 2; options[count++] = 4; options[count++] = 8;
   } else {
@@ -193,6 +224,8 @@ static void popup(MCStyleControls *controls, int field) {
     wchar_t label[40];
     if (field == MC_STYLE_COLOR)
       wcscpy_s(label, ARRAYSIZE(label), color_names[i]);
+    else if (field == MC_STYLE_SHAPE)
+      wcscpy_s(label, ARRAYSIZE(label), (const wchar_t *[]){L"方框", L"圆框", L"马赛克"}[i]);
     else if (field == MC_STYLE_OPACITY)
       swprintf_s(label, ARRAYSIZE(label), L"%d%%", rounded(options[i] * 100));
     else
@@ -221,7 +254,7 @@ BOOL mc_style_controls_command(MCStyleControls *controls, WPARAM wp, LPARAM lp) 
     return FALSE;
   if (HIWORD(wp) != BN_CLICKED || !controls->model.enabled)
     return TRUE;
-  if (control < 4)
+  if (control < MC_STYLE_PROPERTY_COUNT)
     popup(controls, control);
   else {
     int field = numeric_property(controls);
@@ -238,10 +271,11 @@ BOOL mc_style_controls_draw(MCStyleControls *controls, const DRAWITEMSTRUCT *ite
   int control = (int)item->CtlID - controls->first_id;
   if (control < 0 || control >= MC_STYLE_CONTROL_COUNT || item->hwndItem != controls->buttons[control])
     return FALSE;
-  const int kinds[] = {MC_HUD_COLOR, MC_HUD_OPACITY, MC_HUD_STROKE, MC_HUD_FONT,
+  const int kinds[] = {MC_HUD_COLOR, MC_HUD_OPACITY, MC_HUD_STROKE, MC_HUD_FONT, MC_HUD_SHAPE, MC_HUD_BLOCK,
       MC_ICON_CHEVRON_UP, MC_ICON_CHEVRON_DOWN};
-  int value = control < 4 ? rounded(controls->model.property[control].value *
+  int value = control < MC_STYLE_PROPERTY_COUNT ? rounded(controls->model.property[control].value *
       (control == MC_STYLE_OPACITY ? 100 : 1)) : 0;
+  if (control == MC_STYLE_CONTROL_SHAPE) value += controls->model.tool * 10;
   mc_hud_button(item->hDC, &item->rcItem, kinds[control], value, FALSE,
       GetPropW(item->hwndItem, L"MoojiCut.Hover") != NULL, (item->itemState & ODS_SELECTED) != 0,
       (item->itemState & ODS_FOCUS) != 0, !IsWindowEnabled(item->hwndItem),

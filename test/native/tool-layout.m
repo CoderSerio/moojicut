@@ -690,7 +690,7 @@ static BOOL shapeVariants(void) {
     NSArray *controls=@[e.properties.shapeControl,e.properties.colorControl,e.properties.strokeControl];
     for (NSUInteger i=1;i<controls.count;i++) {
         NSView *before=controls[i-1], *after=controls[i];
-        CGFloat gap=NSMinX(after.frame)-NSMaxX(before.frame);
+        CGFloat gap=NSMinX([after convertRect:after.bounds toView:e.properties])-NSMaxX([before convertRect:before.bounds toView:e.properties]);
         CHECK(gap>=4 && gap<=12, "secondary controls remain compact and ordered from the left");
     }
     NSString *directory=NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];

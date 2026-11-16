@@ -394,8 +394,7 @@ static void menu_capture(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
   cancel_recording();
   if (host.window) gtk_widget_hide(host.window);
-  mc_linux_pins_hide(TRUE);
-  /* Let the desktop remove the menu/settings and pinned images before freezing the frame. */
+  /* Keep pinned images in the source. Let only menus/settings disappear. */
   g_timeout_add(120, begin_capture, NULL);
 }
 

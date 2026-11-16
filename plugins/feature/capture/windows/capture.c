@@ -7,6 +7,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include "capture.h"
 #include "native/shared/image_session.h"
+#include "native/shared/capture_ui.h"
+#include "native/shared/pixelate.h"
 #include "components/icons/shared/mc_icons.h"
 #include "components/hud/windows/hud.h"
 #include "components/style_controls/windows/style_controls.h"
@@ -57,10 +59,11 @@ typedef struct {
   POINT start, end;
   double zoom, opacity;
   int32_t session, style_bank;
-  int tool, color, stroke, font_size, selected, editing, drag_mode, handle;
+  int tool, color, stroke, font_size, selected, editing, drag_mode, handle, shape, block;
   BOOL dragging, dirty, smoke, closing, composing;
 } Capture;
 static Capture capture;
+static void layout_editor(HWND window);
 static const wchar_t *OVERLAY_CLASS = L"MoojiCut.Capture.Selection";
 static const wchar_t *EDITOR_CLASS = L"MoojiCut.Capture.Editor";
 static BOOL pin_enabled(void) {
@@ -119,14 +122,16 @@ static BOOL surface_new(Surface *surface, int width, int height) {
 
 static void draw_annotation(HDC dc, int kind, double x, double y, double width, double height, int color,
                             double stroke, const wchar_t *text, int text_length, double font_size,
-                            double scale, int offset_x, int offset_y) {
+                            double scale, int offset_x, int offset_y, int shape) {
   int left = offset_x + rounded(x * scale), top = offset_y + rounded(y * scale);
   int right = offset_x + rounded((x + width) * scale), bottom = offset_y + rounded((y + height) * scale);
   int thickness = maximum(1, rounded(stroke * scale));
   HPEN pen = CreatePen(PS_SOLID, thickness, color_ref(color));
   HGDIOBJ prior_pen = SelectObject(dc, pen), prior_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-  if (kind == TOOL_RECT)
-    Rectangle(dc, left, top, right, bottom);
+  if (kind == TOOL_RECT) {
+    if (shape == 1) Ellipse(dc, left, top, right, bottom);
+    else Rectangle(dc, left, top, right, bottom);
+  }
   else if (kind == TOOL_ARROW) {
     if (hypot(width, height) > 0.5) {
       POINT wings[3];
@@ -143,7 +148,11 @@ static void draw_annotation(HDC dc, int kind, double x, double y, double width, 
   } else if (kind == TOOL_REDACT) {
     RECT rect = {left, top, right, bottom};
     HBRUSH fill = CreateSolidBrush(color_ref(color));
-    FillRect(dc, &rect, fill);
+    if (shape == 1) {
+      HGDIOBJ old = SelectObject(dc, fill), edge = SelectObject(dc, GetStockObject(NULL_PEN));
+      Ellipse(dc, left, top, right, bottom);
+      SelectObject(dc, edge); SelectObject(dc, old);
+    } else FillRect(dc, &rect, fill);
     DeleteObject(fill);
   } else if (kind == TOOL_TEXT && text && text_length > 0) {
     HFONT font = CreateFontW(-maximum(1, rounded(font_size * scale)), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
@@ -165,7 +174,13 @@ static void draw_annotation(HDC dc, int kind, double x, double y, double width, 
 /* Rasterize coverage once, then source-over blend RGB. This preserves the same
  * GDI font layout for preview/export and supports opacity 0 without special colors. */
 static BOOL blend_annotation(int kind, double x, double y, double w, double h, int color, double stroke,
-                             const wchar_t *text, int length, double font, double opacity) {
+                             const wchar_t *text, int length, double font, double opacity, int shape, int block) {
+  if (kind == TOOL_REDACT && shape == 2) {
+    GdiFlush();
+    mc_pixelate_bgra(capture.rendered.pixels, capture.rendered.width, capture.rendered.height,
+      capture.rendered.width * 4, rounded(x), rounded(y), rounded(w), rounded(h), block);
+    return TRUE;
+  }
   if (opacity <= 0)
     return TRUE;
   int margin = rounded(stroke + 18), left = maximum(0, (int)floor(fmin(x, x + w)) - margin),
@@ -178,7 +193,7 @@ static BOOL blend_annotation(int kind, double x, double y, double w, double h, i
   if (!surface_new(&mask, right - left, bottom - top))
     return FALSE;
   memset(mask.pixels, 0, (SIZE_T)mask.width * mask.height * 4);
-  draw_annotation(mask.dc, kind, x, y, w, h, 0xffffff, stroke, text, length, font, 1, -left, -top);
+  draw_annotation(mask.dc, kind, x, y, w, h, 0xffffff, stroke, text, length, font, 1, -left, -top, shape);
   GdiFlush();
   BYTE rgb[3] = {(BYTE)color, (BYTE)(color >> 8), (BYTE)(color >> 16)};
   for (int row = 0; row < mask.height; row++)
@@ -230,7 +245,8 @@ static BOOL render_image(void) {
           moving ? draft.bottom - draft.top : image_session_value(capture.session, i, 4),
           (int)image_session_value(capture.session, i, 5), image_session_value(capture.session, i, 6),
           (const wchar_t *)text, text ? Moonbit_array_length(text) : 0, font_size,
-          image_session_value(capture.session, i, 8));
+          image_session_value(capture.session, i, 8),
+          (int)image_session_value(capture.session, i, 9), (int)image_session_value(capture.session, i, 10));
       if (text)
         moonbit_decref(text);
       if (!painted)
@@ -244,20 +260,20 @@ static BOOL render_image(void) {
         RECT r = capture.draft;
         BOOL painted =
             blend_annotation(TOOL_TEXT, r.left, r.top, r.right - r.left, r.bottom - r.top, capture.color,
-                             capture.stroke, text, length, capture.font_size, capture.opacity);
+                             capture.stroke, text, length, capture.font_size, capture.opacity, 0, 12);
         free(text);
         if (!painted)
           return FALSE;
       }
     }
-    if (capture.dragging && capture.drag_mode == 0 && ((capture.tool == TOOL_REDACT) == (pass == 1))) {
-      RECT b = mc_selection_normalize(capture.start, capture.end);
-      if (!blend_annotation(capture.tool, capture.tool == TOOL_ARROW ? capture.start.x : b.left,
-                            capture.tool == TOOL_ARROW ? capture.start.y : b.top,
-                            capture.tool == TOOL_ARROW ? capture.end.x - capture.start.x : b.right - b.left,
-                            capture.tool == TOOL_ARROW ? capture.end.y - capture.start.y : b.bottom - b.top,
-                            capture.color, capture.stroke, NULL, 0, capture.font_size, capture.opacity))
-        return FALSE;
+    if (capture.dragging && capture.drag_mode == 0) {
+      int kind = (int)image_session_preview_value(capture.session, 0);
+      if (kind && (kind == TOOL_REDACT) == (pass == 1)) {
+        double r[10];
+        for (int field = 0; field < 10; field++) r[field] = image_session_preview_value(capture.session, field + 1);
+        if (!blend_annotation(kind, r[0], r[1], r[2], r[3], (int)r[4], r[5], NULL, 0,
+                              r[6], r[7], (int)r[8], (int)r[9])) return FALSE;
+      }
     }
   }
   GdiFlush();
@@ -324,17 +340,17 @@ static BOOL copy_image(void) {
 
 /* Style context follows an active text draft/selection before the current drawing tool. */
 static int style_context(void) {
-  if (capture.editing != -2 ||
-      (capture.selected >= 0 && (int)image_session_value(capture.session, capture.selected, 0) == TOOL_TEXT))
-    return TOOL_TEXT;
+  if (capture.editing != -2) return TOOL_TEXT;
+  if (capture.selected >= 0) return (int)image_session_value(capture.session, capture.selected, 0);
   return capture.tool;
 }
 static void sync_style_controls(void) {
   MCStyleControlsModel model = {0};
-  model.mask = (unsigned)editor_style_property_mask(style_context());
+  model.tool = style_context();
+  model.mask = (unsigned)editor_style_visible_mask(model.tool, capture.shape);
   model.enabled = !capture.composing;
-  const double values[] = {capture.color, capture.opacity, capture.stroke, capture.font_size};
-  for (int field = 0; field < 4; field++)
+  const double values[] = {capture.color, capture.opacity, capture.stroke, capture.font_size, capture.shape, capture.block};
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
     model.property[field] = (MCStyleProperty){values[field], editor_style_min(field),
         editor_style_max(field), editor_style_step(field)};
   mc_style_controls_update(capture.style_controls, &model);
@@ -344,6 +360,8 @@ static void load_tool_style(int tool) {
   capture.opacity = editor_style_get(capture.style_bank, tool, MC_STYLE_OPACITY);
   capture.stroke = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_STROKE));
   capture.font_size = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_FONT));
+  capture.shape = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_SHAPE));
+  capture.block = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_BLOCK));
   sync_style_controls();
 }
 static void load_annotation_style(int index) {
@@ -351,10 +369,13 @@ static void load_annotation_style(int index) {
   capture.opacity = image_session_value(capture.session, index, 8);
   capture.stroke = rounded(image_session_value(capture.session, index, 6));
   capture.font_size = rounded(image_session_value(capture.session, index, 7));
+  capture.shape = rounded(image_session_value(capture.session, index, 9));
+  capture.block = rounded(image_session_value(capture.session, index, 10));
   sync_style_controls();
 }
 static void changed(void) {
   sync_style_controls();
+  if (capture.editor) layout_editor(capture.editor);
   capture.dirty = TRUE;
   if (capture.editor)
     InvalidateRect(capture.editor, NULL, FALSE);
@@ -387,31 +408,29 @@ static void preserve_text(int index) {
 static void layout_editor(HWND window) {
   RECT client;
   GetClientRect(window, &client);
-  int width = dpi_px(window, 500), height = dpi_px(window, 92), gap = dpi_px(window, 10);
-  int x = bounded(capture.viewport.left, 6, maximum(6, client.right - width - 6)),
-      y = capture.viewport.bottom + gap;
-  if (y + height > client.bottom - 6)
-    y = capture.viewport.top - height - gap;
-  y = bounded(y, 6, maximum(6, client.bottom - height - 6));
-  SetRect(&capture.toolbar, x, y, x + width, y + height);
-  int size = dpi_px(window, 32);
-  for (int i = 0; i < 5; i++)
-    MoveWindow(capture.buttons[i], x + dpi_px(window, 12 + i * 36), y + dpi_px(window, 8), size, size, TRUE);
-  for (int i = 10; i < 12; i++) {
-    int left = x + dpi_px(window, 208 + (i - 10) * 36), top = y + dpi_px(window, 8);
-    MoveWindow(capture.buttons[i], left, top, size, size, TRUE);
-    TOOLINFOW tip = {sizeof(tip)};
-    tip.hwnd = window;
-    tip.uId = i == 10 ? ID_OCR : ID_TRANSLATE;
-    SetRect(&tip.rect, left, top, left + size, top + size);
-    SendMessageW(capture.tooltip, TTM_NEWTOOLRECTW, 0, (LPARAM)&tip);
+  sync_style_controls();
+  double scale = (double)GetDpiForWindow(window) / 96;
+  double *frame = capture_ui_toolbar_frame(client.right / scale, client.bottom / scale,
+    capture.viewport.left / scale, capture.viewport.top / scale,
+    (capture.viewport.right - capture.viewport.left) / scale,
+    (capture.viewport.bottom - capture.viewport.top) / scale, 368, mc_style_controls_width(capture.style_controls));
+  int x = rounded(frame[0] * scale), y = rounded(frame[1] * scale);
+  SetRect(&capture.toolbar, x, y, x + rounded(frame[2] * scale), y + rounded(frame[3] * scale));
+  moonbit_decref(frame);
+  const int order[] = {0, 1, 2, 3, 4, 10, 11, 5, 6, 7, 8, 9};
+  int left = 6;
+  for (int position = 0; position < 12; position++) {
+    if (position == 9) left += 8;
+    int i = order[position], bx = x + dpi_px(window, left), by = y + dpi_px(window, 6);
+    MoveWindow(capture.buttons[i], bx, by, dpi_px(window, 28), dpi_px(window, 28), TRUE);
+    left += 30;
+    if (i >= 10) {
+      TOOLINFOW tip = {sizeof(tip)}; tip.hwnd = window; tip.uId = i == 10 ? ID_OCR : ID_TRANSLATE;
+      SetRect(&tip.rect, bx, by, bx + dpi_px(window, 28), by + dpi_px(window, 28));
+      SendMessageW(capture.tooltip, TTM_NEWTOOLRECTW, 0, (LPARAM)&tip);
+    }
   }
-  MoveWindow(capture.buttons[5], x + dpi_px(window, 296), y + dpi_px(window, 8), size, size, TRUE);
-  MoveWindow(capture.buttons[6], x + dpi_px(window, 332), y + dpi_px(window, 8), size, size, TRUE);
-  for (int i = 7; i < 10; i++)
-    MoveWindow(capture.buttons[i], x + dpi_px(window, 384 + (i - 7) * 36), y + dpi_px(window, 8), size, size,
-               TRUE);
-  mc_style_controls_layout(capture.style_controls, x + dpi_px(window, 12), y + dpi_px(window, 52));
+  mc_style_controls_layout(capture.style_controls, x + dpi_px(window, 6), y + dpi_px(window, 40));
   capture.canvas = capture.viewport;
   capture.zoom = 1;
   sync_style_controls();
@@ -491,7 +510,9 @@ static void style_text(void) {
   for (int i = 0; i < image_session_count(capture.session); i++)
     if ((int)image_session_value(capture.session, i, 0) == TOOL_REDACT) {
       RECT mask = annotation_rect(i);
-      clip = CreateRectRgn(mask.left - r.left, mask.top - r.top, mask.right - r.left, mask.bottom - r.top);
+      clip = (int)image_session_value(capture.session, i, 9) == 1
+        ? CreateEllipticRgn(mask.left - r.left, mask.top - r.top, mask.right - r.left, mask.bottom - r.top)
+        : CreateRectRgn(mask.left - r.left, mask.top - r.top, mask.right - r.left, mask.bottom - r.top);
       CombineRgn(region, region, clip, RGN_DIFF);
       DeleteObject(clip);
     }
@@ -645,17 +666,7 @@ static HWND hud_button(HWND parent, int id, const wchar_t *label) {
   return button;
 }
 static BOOL add_shape(void) {
-  RECT b = mc_selection_normalize(capture.start, capture.end);
-  if (capture.tool == TOOL_ARROW)
-    return abs(capture.end.x - capture.start.x) + abs(capture.end.y - capture.start.y) >= 3 &&
-           image_session_add_rgba(capture.session, capture.tool, capture.start.x, capture.start.y,
-                                  capture.end.x - capture.start.x, capture.end.y - capture.start.y,
-                                  capture.color, capture.stroke, capture.font_size, capture.opacity) == 1;
-  if (b.right - b.left < 2 || b.bottom - b.top < 2)
-    return FALSE;
-  return image_session_add_rgba(capture.session, capture.tool, b.left, b.top, b.right - b.left,
-                                b.bottom - b.top, capture.color, capture.stroke, capture.font_size,
-                                capture.opacity) == 1;
+  return image_session_shape_event(capture.session, 1, capture.end.x, capture.end.y) == 1;
 }
 static void editor_command(int command) {
   if (command == ID_OCR || command == ID_TRANSLATE)
@@ -668,6 +679,7 @@ static void editor_command(int command) {
     capture.tool = command - ID_SELECT;
     capture.selected = -1;
     load_tool_style(capture.tool);
+    layout_editor(capture.editor);
     changed();
     for (int i = 0; i < 5; i++)
       InvalidateRect(capture.buttons[i], NULL, FALSE);
@@ -724,18 +736,24 @@ static BOOL style_changed(void *context, int field, double value) {
   if (defaults && !editor_style_set(capture.style_bank, style_context(), field, value))
     return FALSE;
   int color = capture.color, stroke = capture.stroke, font = capture.font_size;
+  int shape = capture.shape, block = capture.block;
   double opacity = capture.opacity;
   if (field == MC_STYLE_COLOR) capture.color = rounded(value);
   else if (field == MC_STYLE_OPACITY) capture.opacity = value;
   else if (field == MC_STYLE_STROKE) capture.stroke = rounded(value);
   else if (field == MC_STYLE_FONT) capture.font_size = rounded(value);
+  else if (field == MC_STYLE_SHAPE) capture.shape = rounded(value);
+  else if (field == MC_STYLE_BLOCK) capture.block = rounded(value);
   else return FALSE;
-  BOOL ok = apply_style();
+  BOOL ok = field >= MC_STYLE_SHAPE
+    ? (defaults || image_session_set_variant(capture.session, capture.selected, field, value)) : apply_style();
+  if (ok && !defaults && field >= MC_STYLE_SHAPE) load_annotation_style(capture.selected);
   if (!ok) {
     capture.color = color; capture.opacity = opacity;
     capture.stroke = stroke; capture.font_size = font;
+    capture.shape = shape; capture.block = block;
   }
-  sync_style_controls();
+  layout_editor(capture.editor);
   changed();
   return ok;
 }
@@ -769,9 +787,7 @@ static void paint_editor(HDC dc) {
     frame(dc, v, TRUE);
     region_label(dc, v);
   }
-  int context = style_context();
-  mc_hud_card(dc, &capture.toolbar, (float)GetDpiForWindow(capture.editor) / 96,
-              context == TOOL_SELECT ? L"选择标注以调整样式" : L"");
+  mc_hud_card(dc, &capture.toolbar, (float)GetDpiForWindow(capture.editor) / 96, L"");
 }
 static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
   switch (message) {
@@ -922,7 +938,8 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       changed();
       return 0;
     } else {
-      int index = hit_text(p);
+      int index = capture.tool == TOOL_SELECT
+        ? image_session_hit(capture.session, p.x, p.y, 5, 0) : hit_text(p);
       if (index >= 0 && (capture.tool == TOOL_SELECT || capture.tool == TOOL_TEXT)) {
         capture.selected = index;
         load_annotation_style(index);
@@ -942,6 +959,11 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     }
     if (capture.selected < 0 && capture.editing == -2)
       load_tool_style(capture.tool);
+    if (capture.drag_mode == 0) {
+      image_session_shape_event(capture.session, 2, 0, 0);
+      if (!image_session_shape_begin(capture.session, capture.tool, p.x, p.y,
+          capture.color, capture.stroke, capture.opacity, capture.shape, capture.block)) return 0;
+    }
     capture.dragging = TRUE;
     SetCapture(window);
     changed();
@@ -957,12 +979,15 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
         if (capture.drag_mode == 2)
           capture.viewport = capture.draft;
       }
+      if (!capture.drag_mode) image_session_shape_event(capture.session, 0, capture.end.x, capture.end.y);
       capture.dirty = TRUE;
       InvalidateRect(window, NULL, FALSE);
     }
     return 0;
   case WM_LBUTTONUP:
     if (capture.dragging) {
+      capture.end.x = bounded(GET_X_LPARAM(lp), 0, capture.image.width);
+      capture.end.y = bounded(GET_Y_LPARAM(lp), 0, capture.image.height);
       capture.dragging = FALSE;
       ReleaseCapture();
       if (capture.drag_mode == 1 && capture.selected >= 0) {
@@ -991,6 +1016,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
   case WM_CAPTURECHANGED:
     if (capture.dragging) {
       capture.dragging = FALSE;
+      image_session_shape_event(capture.session, 2, 0, 0);
       sync_viewport();
       changed();
     }
@@ -1166,7 +1192,6 @@ bool mc_capture_start(HINSTANCE instance, HWND owner, const MCCaptureHost *servi
   capture.owner = owner;
   if (services)
     capture.host = *services;
-  set_pins_hidden(TRUE);
   int x = GetSystemMetrics(SM_XVIRTUALSCREEN), y = GetSystemMetrics(SM_YVIRTUALSCREEN),
       w = GetSystemMetrics(SM_CXVIRTUALSCREEN), h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
   SetRect(&capture.desktop_bounds, x, y, x + w, y + h);
@@ -1183,6 +1208,7 @@ bool mc_capture_start(HINSTANCE instance, HWND owner, const MCCaptureHost *servi
     return false;
   }
   ReleaseDC(NULL, desktop);
+  set_pins_hidden(TRUE);
   dim_desktop();
   if (!show_selection()) {
     mc_capture_close();
@@ -1429,8 +1455,8 @@ static BOOL context_toolbar_smoke(void) {
   // Restore the drawing defaults before the existing geometry/export fixture.
   for (int tool = TOOL_RECT; tool <= TOOL_REDACT; tool++) {
     editor_command(ID_SELECT + tool);
-    unsigned mask = (unsigned)editor_style_property_mask(tool);
-    for (int field = 0; field < 4; field++)
+    unsigned mask = (unsigned)editor_style_visible_mask(tool, 0);
+    for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
       if ((mask & (1u << field)) && !choose_style(field,
           tool == TOOL_REDACT && field == MC_STYLE_COLOR ? 0x111111 : editor_style_default(field)))
         return FALSE;
@@ -1513,6 +1539,45 @@ static BOOL independent_text_style_smoke(void) {
   editor_command(ID_SELECT);
   return image_session_count(capture.session) == 0;
 }
+static BOOL shape_variants_smoke(void) {
+  int original_session = capture.session, original_bank = capture.style_bank;
+  capture.session = image_session_create_viewport(capture.image.width, capture.image.height, 10, 20, 320, 200);
+  capture.style_bank = editor_style_create();
+  BOOL ok = TRUE;
+  for (int tool = TOOL_RECT; tool <= TOOL_REDACT; tool += 3) {
+    for (int shape = 0; shape < editor_style_shape_count(tool); shape++) {
+      editor_command(ID_SELECT + tool);
+      ok = choose_style(MC_STYLE_SHAPE, shape) && ok;
+      if (shape == 2) ok = choose_style(MC_STYLE_BLOCK, 16) && !choose_style(MC_STYLE_OPACITY, .5) && ok;
+      int count = image_session_count(capture.session);
+      SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(100, 100));
+      SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(180, 160));
+      ok = image_session_count(capture.session) == count && render_image() && ok;
+      SendMessageW(capture.editor, WM_LBUTTONUP, 0, MAKELPARAM(180, 160));
+      ok = image_session_count(capture.session) == count + 1 &&
+        (int)image_session_value(capture.session, count, 9) == shape && render_image() && ok;
+      if (tool == TOOL_REDACT && shape == 1) {
+        const BYTE *corner = capture.rendered.pixels + ((SIZE_T)100 * capture.image.width + 100) * 4;
+        const BYTE *source = capture.image.pixels + ((SIZE_T)100 * capture.image.width + 100) * 4;
+        const BYTE *center = capture.rendered.pixels + ((SIZE_T)130 * capture.image.width + 140) * 4;
+        ok = memcmp(corner, source, 3) == 0 && center[0] == 17 && center[1] == 17 && center[2] == 17 && ok;
+      }
+      if (shape == 2) {
+        ok = image_session_value(capture.session, count, 10) == 16 && ok;
+        const BYTE *a = capture.rendered.pixels + ((SIZE_T)120 * capture.image.width + 120) * 4;
+        const BYTE *b = a + 4;
+        ok = memcmp(a, b, 3) == 0 && ok;
+      }
+      editor_command(ID_UNDO);
+      ok = image_session_count(capture.session) == count && ok;
+    }
+  }
+  image_session_dispose(capture.session); editor_style_dispose(capture.style_bank);
+  capture.session = original_session; capture.style_bank = original_bank;
+  editor_command(ID_SELECT); changed();
+  printf("Windows shape variants smoke %s: native input, shared gesture commit, ellipse pixels, mosaic, undo.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
 typedef struct {
   BOOL accept, valid_image, enabled;
   int attempts, accepted, hidden, restored, x, y, width, height;
@@ -1574,7 +1639,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   if (!capture.editor || capture.viewport.left != 10 || capture.viewport.top != 20 ||
       (GetWindowLongPtrW(capture.editor, GWL_STYLE) & WS_CAPTION))
     goto cleanup;
-  if (!mc_style_controls_smoke(instance) || !context_toolbar_smoke() || !independent_text_style_smoke())
+  if (!mc_style_controls_smoke(instance) || !context_toolbar_smoke() || !independent_text_style_smoke() || !shape_variants_smoke())
     goto cleanup;
   if (image_session_add(capture.session, TOOL_REDACT, 40, 60, 80, 60, 0, 4) != 1)
     goto cleanup;
