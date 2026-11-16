@@ -21,6 +21,7 @@
 @property (readonly) BOOL hasCaptureRegion;
 @property (readonly) NSSegmentedControl *tools;
 @property (readonly) NSStackView *toolbar;
+@property (readonly) NSButton *pinButton;
 @property (readonly) NSStackView *properties;
 @property (readonly) NSStackView *colorGroup;
 @property (readonly) NSStackView *fontGroup;
@@ -225,8 +226,8 @@ static BOOL exercise(CGFloat scale) {
     NSInteger pinSegment = -1;
     for (NSInteger index = 0; index < editor.tools.segmentCount; index++)
         if ([editor.tools tagForSegment:index] == 100) pinSegment = index;
-    CHECK(pinSegment >= 0 && ![editor.tools isEnabledForSegment:pinSegment],
-          "removing pin capability disables the real action segment");
+    CHECK(pinSegment == -1 && !editor.pinButton.enabled,
+          "removing pin capability disables its workflow action without an annotation segment");
     editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; pinnedFrame = weakEditor.pinScreenFrame; return YES; };
     [editor pinImage:nil];
     CHECK(pinned.length > 0 && editor.window == nil, "pin receives the final crop and finishes the capture");
@@ -394,14 +395,14 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     [editor applyToolConfiguration:overlayConfiguration([NSSet setWithArray:@[@2,@3,@4,@100]],0)];
     CGFloat reduced = NSWidth(editor.floatingToolbar.frame);
     CHECK(reduced < defaultWidth - 50, "disabling tools removes their actual width from the floating panel");
-    [editor applyToolConfiguration:overlayConfiguration([NSSet set],2)];
-    CGFloat twoPlugins = NSWidth(editor.floatingToolbar.frame);
-    CHECK(twoPlugins > defaultWidth && twoPlugins <= NSWidth(editor.window.contentView.bounds)-24,
+    [editor applyToolConfiguration:overlayConfiguration([NSSet set],3)];
+    CGFloat threePlugins = NSWidth(editor.floatingToolbar.frame);
+    CHECK(threePlugins > defaultWidth && threePlugins <= NSWidth(editor.window.contentView.bounds)-24,
           "adding two plugin actions expands only to their measured content");
     [editor applyToolConfiguration:overlayConfiguration([NSSet set],16)];
     CGFloat manyPlugins = NSWidth(editor.floatingToolbar.frame);
     NSScrollView *toolsScroll = editor.tools.enclosingScrollView;
-    CHECK(manyPlugins <= twoPlugins + 1 && toolsScroll.documentVisibleRect.size.width < editor.tools.frame.size.width,
+    CHECK(manyPlugins <= threePlugins + 1 && toolsScroll.documentVisibleRect.size.width < editor.tools.frame.size.width,
           "extra plugins use bounded horizontal overflow instead of widening the panel indefinitely");
     [editor.tools scrollRectToVisible:NSMakeRect(NSMaxX(editor.tools.bounds)-30,0,30,28)];
     CHECK(NSMaxX(toolsScroll.documentVisibleRect) >= NSMaxX(editor.tools.bounds)-1, "last plugin is reachable through the bounded tool scroller");
@@ -433,8 +434,8 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     cursors = canvasCursors(canvas); hud = [canvas convertRect:editor.floatingToolbar.bounds fromView:editor.floatingToolbar];
     for (NSDictionary *record in cursors)
         CHECK(NSIsEmptyRect(NSIntersectionRect([record[@"rect"] rectValue],hud)), "resizing the overlay recalculates cursor exclusion");
-    printf("overlay %.1fx widths: default=%.0f reduced=%.0f twoPlugins=%.0f manyPlugins=%.0f cover=%.0f shape=%.0f text=%.0f contentActions=%.0f\n",
-           scale,defaultWidth,reduced,twoPlugins,manyPlugins,cover,shape,text,withContentActions);
+    printf("overlay %.1fx widths: default=%.0f reduced=%.0f threePlugins=%.0f manyPlugins=%.0f cover=%.0f shape=%.0f text=%.0f contentActions=%.0f\n",
+           scale,defaultWidth,reduced,threePlugins,manyPlugins,cover,shape,text,withContentActions);
     [editor cancel:nil]; return passed;
 }
 static BOOL contentSnapshots(void) {

@@ -1,4 +1,5 @@
 import {
+  "moojicut/core/internal/capture_ui",
   "moojicut/core/internal/desktop",
   "moojicut/core/internal/editor_style" @style,
   "moojicut/core/internal/feature_runtime",

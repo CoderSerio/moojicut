@@ -33,7 +33,7 @@ Agent 直接提交与 UI 相同的命令，不用模拟点击。图中 Agent 是
 
 | 范围 | 已有共享实现 | 仍需平台实现或迁移 |
 | --- | --- | --- |
-| 图片文档、选区几何、工具配置 | `src/internal/image`、`selection`、`tool_registry` | 截图工具栏布局、属性面板和部分交互仍分散在原生 UI |
+| 图片文档、选区几何、工具配置 | `src/internal/image`、`selection`、`tool_registry`；`capture_ui` 负责矩形/箭头/遮挡草稿与浮动工具栏定位 | macOS 已接入上述共享交互；工具栏控件绘制、属性面板、文字输入和窗口命中仍需继续迁移 |
 | 录屏选区 | macOS 截图与录屏共用 `components/selection` 和 `desktop_capture` | 这两个是 macOS 组件；录屏 hover/准备/倒计时 UI 尚未成为三端共享 MoonBit UI |
 | 视频编辑 | `video_project` 管文档与命令；`video_ui` 管布局、图标、时间轴、手势、tooltip 和语义 | macOS 正式编辑器已接入；Windows 仍有旧编辑器，Linux 尚未接入同等录屏/编辑功能 |
 | 音频波形 | `video_ui/waveform.mbt` 管源时间映射、峰值查询和绘制 | `components/media_analysis/macos` 负责解码音频、异步生成包络，另外两端尚未接入 |
@@ -48,7 +48,7 @@ Agent 直接提交与 UI 相同的命令，不用模拟点击。图中 Agent 是
 | 目录 | 职责 |
 | --- | --- |
 | `src/internal/{image,selection,video,video_project,...}` | 无平台依赖的模型、几何、策略、命令和时间映射 |
-| `src/internal/video_ui`，后续 `capture_ui`、`recording_ui` | 共享复杂组件，输入事件生成绘制/语义及明确效果请求 |
+| `src/internal/video_ui`、`capture_ui`，后续 `recording_ui` | 共享复杂组件，输入事件生成绘制/语义及明确效果请求；`capture_ui` 当前先覆盖形状草稿和浮层定位 |
 | `components/shared_canvas/<platform>` | 通用绘图、事件坐标、焦点、输入法、无障碍和 tooltip 的系统桥接；不解释业务动作 ID |
 | `components/{desktop_capture,media_analysis,...}/<platform>` | 可被多个功能复用的系统能力，不拥有编辑文档或工具栏 |
 | `plugins/feature/<feature>/<platform>` | 薄宿主：功能接线、窗口生命周期、任务取消；逐步迁出其中的业务 UI |
@@ -74,9 +74,26 @@ Agent 直接提交与 UI 相同的命令，不用模拟点击。图中 Agent 是
 
 ## 后续按依赖推进
 
+### 已落地：三个截图交互案例
+
+`capture_ui` 的矩形、箭头、遮挡现在接入真实 macOS 编辑画布。按下时冻结工具、
+样式与稳定 ID；移动只返回预览；松开返回一次 `image_apply` 可直接消费的 `add`
+命令；Esc、切换工具、停用当前工具会取消草稿。反向拖拽、水平/竖直箭头、
+源图边界和小范围误触的规则统一在 MoonBit，文档与撤销仍由 `image` 唯一管理。
+Agent 可以直接提交相同命令，不需要模拟手势。
+
+浮动工具栏的右下对齐、避让屏幕边缘、属性行高度与内容宽度也由 MoonBit 决定。
+macOS 负责坐标转换、控件测量和绘制。工具栏只有两个视觉组：左侧标注、用户
+工具、OCR/翻译和撤销/重做；右侧贴图、取消、完成。贴图开关仍来自原注册表，
+历史排序配置保留，但不会把贴图插回左侧。其余用户工具保持相对顺序。
+
+这只是第一批迁移案例，不等同于截图 UI 已完全共享。`capture_ui` 的同一事件
+回放已在 native 和 JS 目标验证；Windows/Linux 的旧截图宿主尚未接入这些新入口。
+控件绘制、输入法适配和平台窗口验收仍按下列顺序继续。
+
 ### 1. 共享选区和录屏准备 UI
 
-将 `MCRecordingSelectionView` 和截图的选区/工具栏交互迁到 MoonBit `capture_ui`
+继续将 `MCRecordingSelectionView` 和截图的选区/工具栏交互迁到 MoonBit `capture_ui`
 和 `recording_ui`。共用坐标、命中、窗口 hover、手势取消、焦点、主题、提示和
 无障碍语义；宿主只回报屏幕/窗口列表、冻结底图和输入事件。先替换 macOS 并
 对照现有行为，再接第二个平台。验收包含首击、透明区域不漏鼠标、跨屏切换、
@@ -109,4 +126,6 @@ CLI/MCP。自动化编辑与人工编辑得到同一文档和导出计划，呈�
 `scripts/check-shared-video-ui.py` 覆盖共享核心、真实媒体与波形解码、共享画布。
 `test/native/capture-permission.m` 验证窗口过滤与生命周期；
 `test/native/recording-experience.m` 验证真实编辑宿主、波形接线、草稿和导出。
+`capture_ui` 的白盒测试验证草稿/命令/布局；`test/native/tool-layout.m` 和
+`capture-overlay.m` 验证正式截图画布、两组工具栏、插件开关、IME、缩放及导出。
 这些是自动化范围，不能代替三端的真实窗口、权限和键鼠回归。

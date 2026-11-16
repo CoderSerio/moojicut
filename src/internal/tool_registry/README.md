@@ -20,6 +20,12 @@ to `builtin.pin`. Selection and workflow controls remain host controls. The
 and annotation kinds remain stable when display order changes. Loading an older
 four-tool layout appends pin, enabled, after all saved entries.
 
+The macOS screenshot toolbar presents two semantic groups. Annotation and user
+tools retain their saved relative order on the left, with OCR/translation and
+history actions. Pin appears once on the right, before cancel/confirm; its saved
+position does not move it across that boundary. Its enable switch still applies.
+The persisted catalog is unchanged, so older hosts can continue reading it.
+
 Installed user tools enter the same layout through `tool_registry_resolve`.
 Their validated identities use `user.<pluginId>/<toolId>`, and their descriptors
 have `type:"action"`, `action:"run"`, and a package-local `toolId`, with no

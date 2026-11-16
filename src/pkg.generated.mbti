@@ -2,6 +2,14 @@
 package "moojicut/core"
 
 // Values
+pub fn capture_ui_close(Int32) -> Unit
+
+pub fn capture_ui_event(String) -> String
+
+pub fn capture_ui_open(Double, Double) -> Int32
+
+pub fn capture_ui_toolbar_frame(Double, Double, Double, Double, Double, Double, Double, Double) -> FixedArray[Double]
+
 pub fn crop_rect(String) -> String
 
 pub fn edit_plan(String) -> String

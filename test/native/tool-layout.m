@@ -10,6 +10,7 @@
 @property NSTextView *textView;
 @property NSMutableDictionary *textDraft;
 @property NSString *selectedID;
+@property NSDictionary *pending;
 - (NSRect)imageFrame;
 - (BOOL)finishTextEditing:(BOOL)commit;
 @end
@@ -22,6 +23,10 @@
 @property (readonly) NSButton *pinButton;
 @property (readonly) NSButton *ocrButton;
 @property (readonly) NSButton *undoButton;
+@property (readonly) NSButton *redoButton;
+@property (readonly) NSButton *cancelButton;
+@property (readonly) NSButton *confirmButton;
+@property (readonly) NSView *workflowDivider;
 @property (readonly) NSView *floatingToolbar;
 - (void)prepareWindow;
 - (void)chooseTool:(id)sender;
@@ -62,6 +67,7 @@ static NSInteger segment(MCImageEditorController *editor, NSInteger kind) {
     return -1;
 }
 static void choose(MCImageEditorController *editor, NSInteger kind) {
+    if (kind == 100) { [editor.pinButton sendAction:editor.pinButton.action to:editor.pinButton.target]; return; }
     editor.tools.selectedSegment = segment(editor, kind);
     [editor.tools sendAction:editor.tools.action to:editor.tools.target];
 }
@@ -218,13 +224,12 @@ static BOOL pinAction(void) {
     MCStyleValues values = e.properties.values;
     NSDictionary *before = e.document;
     NSArray *orders = @[@[@100,@1,@2,@3,@4], @[@1,@2,@100,@3,@4], @[@1,@2,@3,@4,@100]];
-    NSArray *positions = @[@1,@3,@5];
     for (NSUInteger index = 0; index < orders.count; index++) {
         NSDictionary *candidate = configuration(orders[index], [NSSet set]);
         CHECK([e canApplyToolConfiguration:candidate error:NULL], "pin action contract preflights without annotation kind");
         [e applyToolConfiguration:candidate];
-        CHECK(segment(e, 100) == [positions[index] integerValue] && [e.tools isEnabledForSegment:segment(e, 100)],
-              "pin occupies its configured first, middle or final position");
+        CHECK(segment(e, 100) == -1 && !e.pinButton.hidden && e.pinButton.enabled,
+              "saved pin ordering never moves the terminal action into the editing group");
         choose(e, 100);
         CHECK(e.activeTool == 2 && [e.tools tagForSegment:e.tools.selectedSegment] == 2 && calls == (NSInteger)index + 1 &&
               [e.document isEqual:before] && e.window != nil, "failed pin is momentary and retains the editor and current annotation tool");
@@ -233,14 +238,13 @@ static BOOL pinAction(void) {
     }
     NSBitmapImageRep *rendered = [NSBitmapImageRep imageRepWithData:result];
     CHECK(rendered.pixelsWide == 800 && rendered.pixelsHigh == 500, "pin still uses the real PNG rendering transaction");
-    CHECK(!e.pinButton.superview && ![e.toolbar.arrangedSubviews containsObject:e.pinButton], "the toolbar has no duplicate trailing pin button");
+    CHECK(e.pinButton.superview == e.toolbar && segment(e,100) == -1, "the workflow group owns the only pin button");
     e.onPinPNGData = nil;
-    CHECK(![e.tools isEnabledForSegment:segment(e,100)] && !e.pinButton.enabled &&
-          [[e.tools toolTipForSegment:segment(e,100)] containsString:@"已关闭"], "removing the shared pin gate immediately disables the real segment");
+    CHECK(!e.pinButton.enabled && [e.pinButton.toolTip containsString:@"已关闭"], "removing the shared pin gate immediately disables the workflow button");
     choose(e,100);
     CHECK(calls == 3 && e.activeTool == 2 && [e.document isEqual:before], "direct action dispatch cannot bypass a missing pin gate");
     e.onPinPNGData = pin;
-    CHECK([e.tools isEnabledForSegment:segment(e,100)] && e.pinButton.enabled, "restoring the gate enables pin without rebuilding the editor");
+    CHECK(segment(e,100) == -1 && e.pinButton.enabled, "restoring the gate enables pin without rebuilding the editor");
     choose(e,3);
     [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(50,220))];
     [e.canvas.textView setMarkedText:@"zhongwen" selectedRange:NSMakeRange(8,0) replacementRange:NSMakeRange(NSNotFound,0)];
@@ -249,11 +253,11 @@ static BOOL pinAction(void) {
     CHECK([e canApplyToolConfiguration:hidden error:NULL], "managing pin is independent of the active text transaction");
     [e applyToolConfiguration:hidden];
     e.onPinPNGData = nil;
-    CHECK(segment(e,100) == -1 && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder &&
+    CHECK(e.pinButton.hidden && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder &&
           e.activeTool == 3 && [e.document isEqual:before], "hiding pin and changing its gate never consume background IME composition");
     NSDictionary *shown = configuration(@[@1,@100,@3,@2,@4], [NSSet set]);
     [e applyToolConfiguration:shown]; e.onPinPNGData = pin;
-    CHECK(segment(e,100) == 2 && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder,
+    CHECK(!e.pinButton.hidden && segment(e,100) == -1 && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder,
           "reenabling and moving pin preserves IME and the chosen text tool");
     NSString *composed = e.canvas.textView.string;
     NSTextView *textView = e.canvas.textView;
@@ -318,7 +322,7 @@ static BOOL userActions(void) {
     NSDictionary *candidate = @{@"ok":@YES,@"layout":@{},@"groups":@{@"screenshot":entries,@"recording":@[],@"videoEditing":@[]}};
     CHECK([e canApplyToolConfiguration:candidate error:NULL], "user action catalog is accepted alongside all built-ins");
     [e applyToolConfiguration:candidate];
-    CHECK(e.tools.segmentCount == 22 && ![e.tools isEnabledForSegment:1], "user tools need a host callback before invocation");
+    CHECK(e.tools.segmentCount == 21 && ![e.tools isEnabledForSegment:1], "user tools need a host callback before invocation");
     choose(e, 2);
     CHECK(e.activeTool == 2, "user action insertion does not remap annotation kinds");
     NSDictionary *before = e.document;
@@ -486,6 +490,16 @@ static BOOL toolbarAppearance(void) {
     [e setCaptureRegion:NSMakeRect(20,20,760,460)];
     e.onOCR = ^(__unused MCImageEditorController *source) {};
     choose(e, 1);
+    NSArray *items = e.toolbar.arrangedSubviews;
+    NSUInteger divider = [items indexOfObject:e.workflowDivider];
+    NSUInteger separatorCount = 0;
+    for (NSView *view in items) for (NSView *child in view.subviews)
+        if ([child isKindOfClass:NSBox.class] && ((NSBox *)child).boxType == NSBoxSeparator) separatorCount++;
+    CHECK(separatorCount == 1 && [items indexOfObject:e.ocrButton] < divider &&
+          [items indexOfObject:e.undoButton] < divider && [items indexOfObject:e.redoButton] < divider &&
+          [items indexOfObject:e.pinButton] == divider + 1 && [items indexOfObject:e.cancelButton] == divider + 2 &&
+          [items indexOfObject:e.confirmButton] == divider + 3,
+          "exactly two groups: editing/OCR/history, then pin/cancel/confirm");
     for (NSString *mode in @[@"light", @"dark"]) {
         e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
         NSPoint hoverPoint = [e.tools convertPoint:NSMakePoint(2*30+15,14) toView:nil];
@@ -530,6 +544,81 @@ static BOOL toolbarAppearance(void) {
     }
     [e cancel:nil]; return passed;
 }
+
+// These are production canvas events and exported pixels, not a mock toolbar.
+static BOOL sharedGestureCases(void) {
+    BOOL passed = YES;
+    NSBitmapImageRep *source = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:800 pixelsHigh:500
+        bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:3200 bitsPerPixel:32];
+    [NSGraphicsContext saveGraphicsState];
+    NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithBitmapImageRep:source];
+    [[NSColor colorWithWhite:.96 alpha:1] setFill]; NSRectFill(NSMakeRect(0,0,800,500));
+    [@"Screenshot tools" drawAtPoint:NSMakePoint(50,425) withAttributes:@{
+        NSFontAttributeName:[NSFont systemFontOfSize:27 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.blackColor}];
+    [@"Rectangle, arrow and cover — shared gesture examples" drawAtPoint:NSMakePoint(50,402)
+        withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13], NSForegroundColorAttributeName:NSColor.darkGrayColor}];
+    NSArray *names = @[@"01  Rectangle", @"02  Arrow", @"03  Cover"];
+    for (NSUInteger index = 0; index < 3; index++) {
+        CGFloat x = 50 + index * 245;
+        [NSColor.whiteColor setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x,175,210,165) xRadius:12 yRadius:12] fill];
+        [names[index] drawAtPoint:NSMakePoint(x+16,311) withAttributes:@{
+            NSFontAttributeName:[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.blackColor}];
+    }
+    [@"Private account" drawAtPoint:NSMakePoint(556,273) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12], NSForegroundColorAttributeName:NSColor.darkGrayColor}];
+    [@"demo@example.com" drawAtPoint:NSMakePoint(556,245) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:14], NSForegroundColorAttributeName:NSColor.blackColor}];
+    [NSGraphicsContext restoreGraphicsState];
+    MCImageEditorController *e = [[MCImageEditorController alloc]
+        initWithPNGData:[source representationUsingType:NSBitmapImageFileTypePNG properties:@{}] error:NULL];
+    [e prepareOverlayInFrame:NSMakeRect(0,0,800,500)];
+    [e setCaptureRegion:NSMakeRect(28,28,744,320)];
+    e.onOCR = ^(__unused MCImageEditorController *editor) {};
+    e.onPinPNGData = ^BOOL(__unused NSData *png) { return NO; };
+    NSArray *kinds = @[@1,@2,@4];
+    NSArray *starts = @[[NSValue valueWithPoint:NSMakePoint(244,310)], [NSValue valueWithPoint:NSMakePoint(486,292)], [NSValue valueWithPoint:NSMakePoint(553,239)]];
+    NSArray *ends = @[[NSValue valueWithPoint:NSMakePoint(66,205)], [NSValue valueWithPoint:NSMakePoint(330,209)], [NSValue valueWithPoint:NSMakePoint(731,263)]];
+    for (NSUInteger index = 0; index < kinds.count; index++) {
+        choose(e, [kinds[index] integerValue]);
+        NSDictionary *before = e.document;
+        NSPoint start = [starts[index] pointValue], end = [ends[index] pointValue];
+        [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, start)];
+        [e.canvas mouseDragged:mouse(e.canvas, NSEventTypeLeftMouseDragged, end)];
+        NSDictionary *preview = e.canvas.pending;
+        CHECK(preview && [e.document isEqual:before], "shared shape preview leaves the authoritative document and history unchanged");
+        [e.canvas mouseDragged:mouse(e.canvas, NSEventTypeLeftMouseDragged, end)];
+        CHECK([e.canvas.pending[@"id"] isEqual:preview[@"id"]], "a gesture retains one stable annotation identity during preview");
+        [e.canvas mouseUp:mouse(e.canvas, NSEventTypeLeftMouseUp, end)];
+        CHECK([[e.document[@"annotations"] lastObject] isEqual:preview] && [e.document[@"undo"] count] == index + 1,
+              "the final native event applies exactly the shared preview through one image command");
+        NSDictionary *committed = e.document;
+        [e.canvas mouseUp:mouse(e.canvas, NSEventTypeLeftMouseUp, end)];
+        CHECK([e.document isEqual:committed], "a repeated release cannot commit twice");
+    }
+    choose(e,1);
+    NSDictionary *before = e.document;
+    [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(80,100))];
+    [e.canvas mouseDragged:mouse(e.canvas, NSEventTypeLeftMouseDragged, NSMakePoint(160,140))];
+    NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+        windowNumber:e.window.windowNumber context:nil characters:@"\e" charactersIgnoringModifiers:@"\e" isARepeat:NO keyCode:53];
+    [e.canvas keyDown:escape];
+    [e.canvas mouseUp:mouse(e.canvas, NSEventTypeLeftMouseUp, NSMakePoint(160,140))];
+    CHECK([e.document isEqual:before] && !e.canvas.pending && e.window != nil,
+          "Escape cancels the shared draft; a late release cannot add it or close the editor");
+    choose(e,0);
+    NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];
+    if (directory.length) for (NSString *mode in @[@"light",@"dark"]) {
+        e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        (void)toolbarPixels(e);
+        NSView *root = e.window.contentView;
+        [root layoutSubtreeIfNeeded];
+        NSBitmapImageRep *bitmap = [root bitmapImageRepForCachingDisplayInRect:root.bounds];
+        [e.window.effectiveAppearance performAsCurrentDrawingAppearance:^{ [root cacheDisplayInRect:root.bounds toBitmapImageRep:bitmap]; }];
+        [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+            writeToFile:[directory stringByAppendingPathComponent:[NSString stringWithFormat:@"capture-cases-%@.png",mode]] atomically:YES];
+    }
+    [e cancel:nil];
+    return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
@@ -539,6 +628,7 @@ int main(void) {
         passed = objectSelection(.5) && passed;
         passed = objectSelection(1.5) && passed;
         passed = toolbarAppearance() && passed;
+        passed = sharedGestureCases() && passed;
         puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME, pin/user actions, overflow and capture fanout" : "FAIL tool layout");
         return passed ? 0 : 1;
     }

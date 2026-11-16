@@ -5,6 +5,7 @@
 #import "components/selection/macos/MCSelectionSurface.h"
 #include "moonbit.h"
 #include "native/shared/image_session.h"
+#include "native/shared/capture_ui.h"
 #include <math.h>
 
 extern moonbit_string_t image_create(moonbit_string_t);
@@ -129,7 +130,7 @@ static void MCDrawToolBackground(NSRect frame, BOOL enabled, BOOL selected, BOOL
 static NSError *MCEditorError(NSString *message) {
     return [NSError errorWithDomain:@"dev.moojicut.image-editor" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
 }
-static NSDictionary *MCCallImage(moonbit_string_t (*function)(moonbit_string_t), NSDictionary *request, NSError **error) {
+static NSDictionary *MCCallCore(moonbit_string_t (*function)(moonbit_string_t), NSDictionary *request, NSError **error) {
     NSData *bytes = [NSJSONSerialization dataWithJSONObject:request options:0 error:error];
     if (!bytes) return nil;
     NSString *json = [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
@@ -145,7 +146,10 @@ static NSDictionary *MCCallImage(moonbit_string_t (*function)(moonbit_string_t),
         if (error) *error = MCEditorError([value isKindOfClass:NSDictionary.class] ? (value[@"error"][@"message"] ?: @"MoonBit 无法应用标注。") : @"无法读取编辑结果。");
         return nil;
     }
-    return value[@"document"];
+    return value;
+}
+static NSDictionary *MCCallImage(moonbit_string_t (*function)(moonbit_string_t), NSDictionary *request, NSError **error) {
+    return MCCallCore(function, request, error)[@"document"];
 }
 static NSColor *MCAnnotationColor(NSDictionary *annotation) {
     unsigned int rgb = 0;
@@ -248,7 +252,6 @@ static void MCDrawImage(NSImage *image, NSDictionary *document, NSDictionary *pe
 }
 
 typedef NS_ENUM(NSInteger, MCImageTool) { MCSelectTool, MCRectTool, MCArrowTool, MCTextTool, MCRedactTool };
-static const NSInteger MCPinActionTag = 100;
 static NSArray<NSDictionary *> *MCImageToolDescriptors(NSDictionary *configuration) {
     return configuration ? configuration[@"groups"][@"screenshot"] : @[
         @{@"id":@"builtin.image.rectangle", @"type":@"annotation", @"kind":@1, @"title":@"矩形", @"enabled":@YES},
@@ -317,9 +320,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property NSStackView *toolbar;
 @property NSScrollView *toolbarScroll;
 @property NSScrollView *propertiesScroll;
-@property NSView *contentActionDivider;
+@property NSView *workflowDivider;
 @property MCStylePropertiesView *properties;
 @property int32_t styleHandle;
+@property int32_t captureUIHandle;
 @property (readonly) NSStackView *colorGroup;
 @property (readonly) NSStackView *fontGroup;
 @property (readonly) NSStackView *strokeGroup;
@@ -356,7 +360,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (BOOL)setCaptureRegion:(NSRect)rect;
 - (void)pinImage:(id)sender;
 - (void)chooseTool:(id)sender;
-- (NSDictionary *)annotationFrom:(NSPoint)start to:(NSPoint)end;
+- (NSDictionary *)shapeEvent:(NSString *)phase point:(NSPoint)point;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)confirm:(id)sender;
 @end
@@ -735,7 +739,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [self.editor syncTextControls];
     if (self.editor.activeTool == MCTextTool) { [self.editor addTextAtPoint:self.start]; return; }
     if (self.editor.activeTool == MCSelectTool) { self.needsDisplay = YES; return; }
-    self.dragging = YES;
+    NSDictionary *begun = [self.editor shapeEvent:@"begin" point:self.start];
+    self.dragging = [begun[@"active"] boolValue];
 }
 - (NSDictionary *)transformedAnnotationAt:(NSPoint)point {
     if (self.resizeHandle < 0 || ![self.transformOriginal[@"type"] isEqual:@"text"]) {
@@ -793,7 +798,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if (self.transformOriginal) {
         self.transformPreview = [self transformedAnnotationAt:[self imagePoint:event]];
         [self.editor syncTextControls];
-    } else self.pending = [self.editor annotationFrom:self.start to:[self imagePoint:event]];
+    } else {
+        id preview = [self.editor shapeEvent:@"move" point:[self imagePoint:event]][@"preview"];
+        self.pending = [preview isKindOfClass:NSDictionary.class] ? preview : nil;
+    }
     self.needsDisplay = YES;
 }
 - (void)mouseUp:(NSEvent *)event {
@@ -813,12 +821,13 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         [self updateTextFrame]; [self.editor syncTextControls];
         return;
     }
-    NSDictionary *annotation = [self.editor annotationFrom:self.start to:[self imagePoint:event]];
+    id command = [self.editor shapeEvent:@"end" point:[self imagePoint:event]][@"command"];
     self.pending = nil;
-    if (annotation) [self.editor applyAnnotation:annotation];
+    if ([command isKindOfClass:NSDictionary.class]) [self.editor applyCommand:command];
     self.needsDisplay = YES;
 }
 - (void)cancelGesture {
+    [self.editor shapeEvent:@"cancel" point:NSZeroPoint];
     self.dragging = NO; self.pending = nil; self.transformOriginal = nil; self.transformPreview = nil;
     [self cancelRegion];
     [self.editor positionFloatingToolbar];
@@ -858,13 +867,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     BOOL enabled = [self isPinActionConfigured] && self.onPinPNGData != nil;
     NSString *hint = enabled ? @"贴图置顶" : @"贴图已关闭，可在设置中启用";
     self.pinButton.enabled = enabled;
+    self.pinButton.hidden = ![self isPinActionConfigured];
     self.pinButton.toolTip = hint;
-    for (NSInteger index = 0; index < self.tools.segmentCount; index++) {
-        if ([self.tools tagForSegment:index] == MCPinActionTag) {
-            [self.tools setEnabled:enabled forSegment:index];
-            [self.tools setToolTip:hint forSegment:index];
-        }
-    }
 }
 
 - (void)selectActiveToolSegment {
@@ -876,22 +880,21 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if (!self.tools) return;
     NSMutableArray *visible = [NSMutableArray arrayWithObject:@{@"kind":@0, @"title":@"选择"}];
     for (NSDictionary *entry in MCImageToolDescriptors(self.toolConfiguration))
-        if ([entry[@"enabled"] boolValue]) [visible addObject:entry];
+        if ([entry[@"enabled"] boolValue] && ![entry[@"id"] isEqual:@"builtin.image.pin"]) [visible addObject:entry];
     self.visibleTools = visible;
     self.tools.segmentCount = visible.count;
     const MCIcon icons[] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT, MC_ICON_REDACT};
     for (NSUInteger index = 0; index < visible.count; index++) {
         NSDictionary *entry = visible[index];
-        BOOL pin = [entry[@"id"] isEqual:@"builtin.image.pin"];
         NSInteger kind = [entry[@"kind"] integerValue];
         NSString *title = entry[@"title"];
         BOOL userAction = [entry[@"action"] isEqual:@"run"];
-        NSImage *icon = userAction ? (self.pluginIcons[entry[@"id"]] ?: [NSImage imageWithSystemSymbolName:@"puzzlepiece.extension" accessibilityDescription:title]) : MCIconImage(pin ? MC_ICON_PIN : icons[kind], title);
+        NSImage *icon = userAction ? (self.pluginIcons[entry[@"id"]] ?: [NSImage imageWithSystemSymbolName:@"puzzlepiece.extension" accessibilityDescription:title]) : MCIconImage(icons[kind], title);
         icon = [icon copy];
         CGFloat extent = MAX(icon.size.width, icon.size.height);
         if (extent > 0) icon.size = NSMakeSize(icon.size.width * 18 / extent, icon.size.height * 18 / extent);
         icon.accessibilityDescription = title;
-        [self.tools setTag:userAction ? (NSInteger)(1000 + index) : pin ? MCPinActionTag : kind forSegment:index];
+        [self.tools setTag:userAction ? (NSInteger)(1000 + index) : kind forSegment:index];
         [self.tools setEnabled:!userAction || self.onUserTool != nil forSegment:index];
         [self.tools setToolTip:title forSegment:index];
         [self.tools setImage:icon forSegment:index];
@@ -1027,7 +1030,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     _pluginContextIdentifier = NSUUID.UUID.UUIDString;
     _pluginIcons = @{};
     _styleHandle = editor_style_create();
-    if (!_styleHandle) {
+    _captureUIHandle = capture_ui_open(bitmap.pixelsWide, bitmap.pixelsHigh);
+    if (!_styleHandle || !_captureUIHandle) {
         if (error) *error = MCEditorError(@"无法创建标注样式，请关闭其他编辑窗口后重试。");
         return nil;
     }
@@ -1035,7 +1039,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [_image addRepresentation:bitmap];
     return self;
 }
-- (void)dealloc { editor_style_dispose(_styleHandle); }
+- (void)dealloc { editor_style_dispose(_styleHandle); capture_ui_close(_captureUIHandle); }
 - (NSColorWell *)color { return self.properties.colorControl.well; }
 - (NSTextField *)fontSize { return self.properties.fontControl.field; }
 - (NSStepper *)fontStepper { return self.properties.fontControl.stepper; }
@@ -1090,6 +1094,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)prepareWindow {
     if (!self.window) {
+        if (!self.captureUIHandle) self.captureUIHandle = capture_ui_open([self.document[@"width"] doubleValue], [self.document[@"height"] doubleValue]);
         NSScreen *screen = NSScreen.mainScreen ?: NSScreen.screens.firstObject;
         CGFloat width = MIN(1100, screen.visibleFrame.size.width - 80), height = MIN(760, screen.visibleFrame.size.height - 100);
         self.window = [[MCSelectionWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
@@ -1141,10 +1146,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.toolScroll.scrollerStyle = NSScrollerStyleOverlay; self.toolScroll.documentView = self.tools;
         self.toolScrollWidth = [self.toolScroll.widthAnchor constraintEqualToConstant:MIN(8 * MCEditorToolWidth, NSWidth(self.tools.frame))];
         self.toolScrollWidth.active = YES; [self.toolScroll.heightAnchor constraintEqualToConstant:MCEditorToolHeight].active = YES;
-        self.contentActionDivider = [self toolbarDivider];
-        self.toolbar = [NSStackView stackViewWithViews:@[self.toolScroll, self.contentActionDivider, self.ocrButton,
-            self.translateButton, self.scrollCaptureButton, [self toolbarDivider], self.undoButton, self.redoButton, spacer,
-            self.cancelButton, self.confirmButton]];
+        self.workflowDivider = [self toolbarDivider];
+        self.toolbar = [NSStackView stackViewWithViews:@[self.toolScroll, self.ocrButton,
+            self.translateButton, self.scrollCaptureButton, self.undoButton, self.redoButton, spacer,
+            self.workflowDivider, self.pinButton, self.cancelButton, self.confirmButton]];
         self.toolbar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
         self.toolbar.alignment = NSLayoutAttributeCenterY;
         self.toolbar.detachesHiddenViews = YES;
@@ -1240,19 +1245,12 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     BOOL hasProperties = NO;
     for (NSView *view in self.properties.arrangedSubviews) if (!view.hidden) { hasProperties = YES; break; }
     CGFloat propertiesWidth = hasProperties ? ceil(self.properties.fittingSize.width) : 0;
-    CGFloat rowHeight = MCEditorToolHeight, gap = 4, padding = 6, selectionGap = 6;
-    CGFloat width = MIN(available, MAX(rowWidth, propertiesWidth) + 2 * inset);
-    CGFloat verticalMargin = MIN(8, NSHeight(root.bounds) / 8);
-    CGFloat height = MIN(NSHeight(root.bounds) - 2 * verticalMargin,
-                        rowHeight + 2 * padding + (hasProperties ? rowHeight + gap : 0));
-    // Keep the trailing edge stable when switching tools or loading plugins.
-    CGFloat x = MAX(margin, MIN(NSMaxX(region) - width, NSWidth(root.bounds) - width - margin));
-    CGFloat y = NSMinY(region) - height - selectionGap;
-    if (y < verticalMargin) {
-        CGFloat above = NSMaxY(region) + selectionGap;
-        y = above + height <= NSHeight(root.bounds) - verticalMargin ? above : NSMinY(region) + selectionGap;
-    }
-    y = MAX(verticalMargin, MIN(y, NSHeight(root.bounds) - height - verticalMargin));
+    CGFloat rowHeight = MCEditorToolHeight, padding = 6;
+    double *frame = capture_ui_toolbar_frame(NSWidth(root.bounds), NSHeight(root.bounds),
+        NSMinX(region), NSHeight(root.bounds) - NSMaxY(region), NSWidth(region), NSHeight(region), rowWidth, propertiesWidth);
+    CGFloat x = frame[0], width = frame[2], height = frame[3];
+    CGFloat y = NSHeight(root.bounds) - frame[1] - height;
+    moonbit_decref(frame);
     self.floatingToolbar.frame = NSMakeRect(x, y, width, height);
     CGFloat viewportWidth = MAX(1, width - 2 * inset);
     self.toolbarScroll.frame = NSMakeRect(inset, height - padding - rowHeight, viewportWidth, rowHeight);
@@ -1331,7 +1329,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.translateButton.hidden = YES; // Translation is a page in the same text window.
     self.scrollCaptureButton.enabled = self.onScrollCapture != nil;
     self.scrollCaptureButton.hidden = !self.overlayMode || !self.onScrollCapture;
-    self.contentActionDivider.hidden = self.ocrButton.hidden && self.translateButton.hidden && self.scrollCaptureButton.hidden;
     self.ocrButton.target = self; self.ocrButton.action = @selector(runOCR:);
     self.translateButton.target = self; self.translateButton.action = @selector(runTranslate:);
     self.scrollCaptureButton.target = self; self.scrollCaptureButton.action = @selector(runScrollCapture:);
@@ -1351,6 +1348,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (void)setOnPinPNGData:(BOOL (^)(NSData *))handler {
     _onPinPNGData = [handler copy];
     [self syncPinAction];
+    [self positionFloatingToolbar];
 }
 - (void)showError:(NSError *)error {
     [self.properties showMessage:error.localizedDescription];
@@ -1429,13 +1427,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         if (self.onUserTool && self.pluginCaptureMetadata) self.onUserTool(self, entry[@"id"]);
         return;
     }
-    if (tag == MCPinActionTag) {
-        // Pin is a momentary action: it never becomes an annotation tool or a
-        // style-bank key. The explicit click uses the existing pin transaction.
-        [self selectActiveToolSegment];
-        [self pinImage:nil];
-        return;
-    }
     if (self.canvas.textView.hasMarkedText) {
         [self selectActiveToolSegment];
         return;
@@ -1449,18 +1440,15 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [self syncTextControls];
     [self.window makeFirstResponder:self.canvas];
 }
-- (NSDictionary *)annotationFrom:(NSPoint)start to:(NSPoint)end {
-    if (hypot(end.x - start.x, end.y - start.y) < 3) return nil;
-    if (![self isToolEnabled:self.activeTool] || self.activeTool == MCSelectTool || self.activeTool == MCTextTool) return nil;
-    BOOL arrow = self.activeTool == MCArrowTool, redact = self.activeTool == MCRedactTool;
-    if (!arrow && (fabs(end.x - start.x) < 2 || fabs(end.y - start.y) < 2)) return nil;
-    NSMutableDictionary *annotation = [@{
-        @"id":NSUUID.UUID.UUIDString, @"type":arrow ? @"arrow" : redact ? @"redact" : @"rect",
-        @"x":@(arrow ? start.x : MIN(start.x,end.x)), @"y":@(arrow ? start.y : MIN(start.y,end.y)),
-        @"width":@(MAX(1,fabs(end.x-start.x))), @"height":@(MAX(1,fabs(end.y-start.y))),
-        @"stroke":@(self.strokeControl.value), @"opacity":@(self.color.color.alphaComponent), @"color":[self colorHex] } mutableCopy];
-    if (arrow) { annotation[@"x2"] = @(end.x); annotation[@"y2"] = @(end.y); }
-    return annotation;
+- (NSDictionary *)shapeEvent:(NSString *)phase point:(NSPoint)point {
+    NSMutableDictionary *request = [@{@"session":@(self.captureUIHandle), @"type":phase,
+        @"x":@(point.x), @"y":@(point.y)} mutableCopy];
+    if ([phase isEqual:@"begin"]) {
+        if (![self isToolEnabled:self.activeTool] || self.activeTool == MCSelectTool || self.activeTool == MCTextTool) return nil;
+        [request addEntriesFromDictionary:@{@"id":NSUUID.UUID.UUIDString, @"kind":@(self.activeTool),
+            @"stroke":@(self.strokeControl.value), @"opacity":@(self.color.color.alphaComponent), @"color":[self colorHex]}];
+    }
+    return MCCallCore(capture_ui_event, request, NULL);
 }
 - (void)addTextAtPoint:(NSPoint)point {
     if (![self isToolEnabled:MCTextTool]) return;
@@ -1590,6 +1578,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (void)cancel:(id)sender { (void)sender; [self.canvas finishTextEditing:NO]; [self.window close]; }
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
+    capture_ui_close(self.captureUIHandle);
+    self.captureUIHandle = 0;
     void (^closed)(void) = self.onClose;
     self.onClose = nil;
     if (self.onPluginContextClosed) self.onPluginContextClosed(self.pluginContextIdentifier);
