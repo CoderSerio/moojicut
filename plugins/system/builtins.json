@@ -60,8 +60,8 @@
         "requires": ["component.shared_canvas"]
       },
       "feature.recording": {
-        "sources": ["plugins/feature/recording/macos/MCMacRecordingController.m"],
-        "requires": ["feature.video_editor"]
+        "sources": ["plugins/feature/recording/macos/MCMacRecordingController.m", "plugins/feature/recording/macos/MCRecordingSelectionView.m"],
+        "requires": ["feature.video_editor", "feature.select"]
       }
     },
     "windows": {

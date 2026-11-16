@@ -369,7 +369,8 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
         default: break;
     }
     BOOL mod = (event.modifierFlags & NSEventModifierFlagCommand) != 0;
-    if (mod && [event.charactersIgnoringModifiers.lowercaseString isEqualToString:@"z"]) key = @"z";
+    NSString *character = event.charactersIgnoringModifiers.lowercaseString;
+    if (mod && [@[@"z", @"+", @"=", @"-", @"0"] containsObject:character]) key = character;
     if (!key) return nil;
     return @{ @"type":@"key", @"key":key, @"mod":mod ? @YES : @NO,
         @"shift":(event.modifierFlags & NSEventModifierFlagShift) ? @YES : @NO };
@@ -383,7 +384,7 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 }
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     NSDictionary *input = [self keyEvent:event];
-    if ([input[@"key"] isEqual:@"z"] && [input[@"mod"] boolValue]) {
+    if ([input[@"mod"] boolValue] && [@[@"z", @"+", @"=", @"-", @"0"] containsObject:input[@"key"]]) {
         self.inputActive = YES; [self emitEvent:input]; return YES;
     }
     return [super performKeyEquivalent:event];

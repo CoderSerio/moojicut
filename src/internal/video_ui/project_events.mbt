@@ -298,7 +298,7 @@ fn project_pointer(
               "sourceEndTicks": Json(s.clip_trim_end),
               "ripple": Json(project_ripple(c)),
             })
-            seek(s, effects, c.start / 90, false)
+            seek(s, effects, s.source_time, false)
           }
         None => ()
       }
@@ -324,6 +324,21 @@ fn project_keyboard(
 ) -> Bool {
   if s.crop_mode {
     project_crop_key(s, effects, key, shift)
+    return true
+  }
+  if modifier && (key == "+" || key == "=" || key == "-" || key == "0") {
+    if !s.rate_menu && !s.clip_speed_menu {
+      project_zoom_action(
+        s,
+        if key == "0" {
+          "project-zoom-fit"
+        } else if key == "-" {
+          "project-zoom-out"
+        } else {
+          "project-zoom-in"
+        },
+      )
+    }
     return true
   }
   if key == "Escape" {
@@ -395,7 +410,7 @@ fn project_keyboard(
         "sourceEndTicks": Json(s.clip_trim_end),
         "ripple": Json(project_ripple(c)),
       })
-      seek(s, effects, c.start / 90, false)
+      seek(s, effects, s.source_time, false)
     }
     project_sync_selection(s)
     return true

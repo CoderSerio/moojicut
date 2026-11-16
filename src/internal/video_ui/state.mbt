@@ -48,6 +48,7 @@ priv struct UI {
   mut preview_rate : Double
   mut rate_menu : Bool
   mut viewport_start : Double
+  mut viewport_extent : Double
   mut viewport_span : Double
   mut viewport_fit : Bool
   mut selected_gap : String
@@ -268,6 +269,7 @@ pub fn open(snapshot : String) -> Int32 {
     preview_rate: 1,
     rate_menu: false,
     viewport_start: 0,
+    viewport_extent: 0,
     viewport_span: 0,
     viewport_fit: true,
     selected_gap: "",

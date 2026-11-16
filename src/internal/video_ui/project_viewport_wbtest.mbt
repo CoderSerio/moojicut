@@ -114,15 +114,9 @@ test "viewport zoom pan clipping and minimum granularity do not edit the project
           _ => abort("semantic")
         }
       }
-      let left = node(ui, "project-zoom-out", width, height)
-      let middle = node(ui, "project-zoom-in", width, height)
-      let right = node(ui, "project-zoom-fit", width, height)
-      assert_true(
-        number(left, "x") + number(left, "width") < number(middle, "x"),
-      )
-      assert_true(
-        number(middle, "x") + number(middle, "width") < number(right, "x"),
-      )
+      for id in ["project-zoom-out", "project-zoom-in", "project-zoom-fit"] {
+        assert_true(!project_has_node(ui, id))
+      }
     }
   }
   // Explicit transport navigation follows a paused playhead as well.
@@ -291,4 +285,86 @@ test "v1 safely ignores project scrolling and deletion keys" {
   assert_eq(@video.video_snapshot(core), snapshot)
   close(ui)
   @video.video_dispose(core)
+}
+
+///|
+test "trim preserves ruler and playhead and can restore the full source with a second drag" {
+  let (ui, core) = project_fixture()
+  let s = sessions[ui]
+  project_clock(ui, 3000)
+  let before = @project_core.snapshot(core)
+  let row = project_track(s, "video")
+  let right = control_rect(s, "project-trim-end")
+  let x = right.x + right.width / 2
+  let y = right.y + right.height / 2
+  ignore(point_event(ui, "pointerDown", x, y))
+  ignore(point_event(ui, "pointerMove", x - row.width / 2, y))
+  assert_eq(@project_core.snapshot(core), before)
+  ignore(
+    project_apply(ui, core, point_event(ui, "pointerUp", x - row.width / 2, y)),
+  )
+  assert_eq(s.snapshot.duration, 6000)
+  assert_eq(s.viewport_span, 12000)
+  assert_eq(s.source_time, 3000)
+  let trimmed = control_rect(s, "project-trim-end")
+  assert_true(trimmed.x < right.x - row.width / 3)
+  let tx = trimmed.x + trimmed.width / 2
+  ignore(point_event(ui, "pointerDown", tx, y))
+  ignore(point_event(ui, "pointerMove", tx + row.width / 2, y))
+  ignore(
+    project_apply(ui, core, point_event(ui, "pointerUp", tx + row.width / 2, y)),
+  )
+  assert_eq(s.snapshot.duration, 12000)
+  assert_eq(project_selected(s).unwrap().source_end, 1080000)
+  assert_eq(s.viewport_span, 12000)
+  // A fitted short output can pan into retained source space; explicit
+  // navigation must still bring the playhead back into the viewport.
+  ignore(point_event(ui, "pointerDown", x, y))
+  ignore(project_apply(ui, core, point_event(ui, "pointerUp", x - row.width / 2, y)))
+  ignore(activate_event(ui, "project-zoom-fit"))
+  assert_eq(s.viewport_span, 6000)
+  ignore(project_scroll_event(ui, row.x + 100, row.y, -row.width, 0, false, true))
+  assert_true(s.viewport_start > 0)
+  ignore(key_event(ui, "Home"))
+  assert_true(project_visible(s, 0))
+  close(ui)
+  @project_core.close(core)
+}
+
+///|
+test "timeline keyboard zoom is transient and zoom buttons are absent" {
+  let (ui, core) = project_fixture()
+  let s = sessions[ui]
+  let before = @project_core.snapshot(core)
+  for
+    (key, span) in [("=", 6000.0), ("+", 3000.0), ("-", 6000.0), ("0", 12000.0)] {
+    let response = event(
+      ui,
+      Json::object({
+        "type": Json("key"),
+        "key": Json(key),
+        "mod": Json(true),
+        "shift": Json(false),
+      }).stringify(),
+    )
+    assert_eq(command_effects(response).length(), 0)
+    assert_eq(s.viewport_span, span)
+  }
+  ignore(key_event(ui, "="))
+  assert_eq(s.viewport_span, 12000)
+  for id in ["project-zoom-in", "project-zoom-out", "project-zoom-fit"] {
+    assert_true(!project_has_node(ui, id))
+  }
+  let commands = @test_support.model_test_items(
+    fields(frame(ui, 1040, 700))["commands"],
+  )
+  assert_true(
+    !commands.any(item => {
+      item
+      is Object({ "type": String("text"), "text": String("视频编辑"), .. })
+    }),
+  )
+  assert_eq(@project_core.snapshot(core), before)
+  close(ui)
+  @project_core.close(core)
 }

@@ -214,7 +214,7 @@ test "v2 output transport source-rate trim and small-window menus share geometry
   // 500ms off a 3x output edge removes 1500ms of source, not 500ms.
   let delta = project_track(sessions[ui], "video").width *
     500 /
-    sessions[ui].snapshot.duration
+    sessions[ui].viewport_span
   ignore(point_event(ui, "pointerMove", x - delta, y))
   let trimmed = point_event(ui, "pointerUp", x - delta, y)
   assert_eq(number(project_op(trimmed), "sourceEndTicks"), 10500 * 90)

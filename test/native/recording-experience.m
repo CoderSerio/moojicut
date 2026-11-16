@@ -4,6 +4,7 @@
 #import "components/shared_canvas/macos/MCSharedCanvas.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import "plugins/feature/recording/macos/MCMacRecordingController.h"
+#import "plugins/feature/recording/macos/MCRecordingSelectionView.h"
 #import "plugins/feature/video_editor/macos/MCVideoEditor.h"
 #include "moonbit.h"
 #include <assert.h>
@@ -19,10 +20,12 @@
 - (void)tick;
 - (BOOL)confirmCancelExport;
 - (NSURL *)chooseExportDestination;
+- (NSString *)defaultExportName;
 @end
 @interface MCMacRecordingController (RecordingExperienceFixture)
 - (BOOL)transition:(NSString *)event;
 - (void)countdownTick;
+- (BOOL)countingDown;
 - (void)beginCaptureWithFilter:(SCContentFilter *)filter;
 - (void)openDraft:(NSURL *)directory;
 - (void)captureStarted:(SCStream *)stream error:(NSError *)error;
@@ -31,6 +34,8 @@
 - (NSURL *)draftsDirectory;
 - (MCVideoEditor *)latestRecoverableDraftWithError:(NSError **)error;
 - (void)presentEditor:(MCVideoEditor *)editor;
+- (void)selectFilter:(SCContentFilter *)filter;
+- (SCStreamConfiguration *)streamConfiguration;
 @end
 @interface FixtureStream : NSObject
 @property NSUInteger stops;
@@ -49,8 +54,14 @@
 @implementation FixtureRecorder
 - (void)beginCaptureWithFilter:(__unused SCContentFilter *)filter { self.starts++; }
 - (void)openDraft:(__unused NSURL *)directory { self.openedDrafts++; }
-// No picker interaction, windows, permissions or screen capture in this fixture.
-- (void)endPicker {}
+// Keep the lifecycle/plan real, without opening a countdown or capturing screens.
+- (void)showCountdown {}
+@end
+@interface FixtureFilter : NSObject
+@end
+@implementation FixtureFilter
+- (CGRect)contentRect { return CGRectMake(0,0,1920,1080); }
+- (float)pointPixelScale { return 2; }
 @end
 @interface FixtureDraftRecorder : MCMacRecordingController
 @property NSURL *fixtureDirectory;
@@ -104,9 +115,75 @@ static void Click(MCVideoEditor *editor,NSString *identifier) {
     Canvas(editor).onEvent(@{@"type":@"pointerDown",@"x":@(x),@"y":@(y)});
     Canvas(editor).onEvent(@{@"type":@"pointerUp",@"x":@(x),@"y":@(y)});
 }
+static void SelectionMouse(MCRecordingSelectionView *view, NSEventType type, NSPoint point) {
+    NSEvent *event = [NSEvent mouseEventWithType:type location:[view convertPoint:point toView:nil] modifierFlags:0
+        timestamp:0 windowNumber:view.window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1];
+    if (type == NSEventTypeMouseMoved) [view mouseMoved:event];
+    else if (type == NSEventTypeLeftMouseDown) [view mouseDown:event];
+    else if (type == NSEventTypeLeftMouseDragged) [view mouseDragged:event];
+    else [view mouseUp:event];
+}
+static void SaveView(NSView *view, NSString *name) {
+    NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_RECORDING_PREVIEW_DIR"];
+    if (!directory) return;
+    [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+    [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+    assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[directory stringByAppendingPathComponent:name] atomically:YES]);
+}
+static void CheckSelection(void) {
+    NSPanel *panel = [[MCRecordingOverlayPanel alloc] initWithContentRect:NSMakeRect(0,0,800,600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    panel.releasedWhenClosed = NO;
+    MCRecordingSelectionView *view = [[MCRecordingSelectionView alloc] initWithFrame:NSMakeRect(0,0,800,600)]; panel.contentView = view;
+    view.windowCandidates = @[@{@"windowID":@42, @"rect":[NSValue valueWithRect:NSMakeRect(80,70,300,220)]},
+                             @{@"windowID":@43, @"rect":[NSValue valueWithRect:NSMakeRect(50,50,500,400)]}];
+    __block NSUInteger confirms=0, cancels=0; __block NSNumber *windowID=nil; __block NSRect selected; __block BOOL expectedAudio=YES;
+    view.onConfirm = ^(NSRect rect, NSNumber *identifier, BOOL audio) { confirms++; selected=rect; windowID=identifier; assert(audio==expectedAudio); };
+    view.onCancel = ^{ cancels++; };
+    NSEvent *enter = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:panel.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
+    SelectionMouse(view,NSEventTypeMouseMoved,NSMakePoint(120,100));
+    SaveView(view,@"recording-hover.png");
+    SelectionMouse(view,NSEventTypeLeftMouseDown,NSMakePoint(120,100)); SelectionMouse(view,NSEventTypeLeftMouseUp,NSMakePoint(120,100));
+    [view keyDown:enter]; assert(confirms==1 && [windowID isEqual:@42] && NSEqualRects(selected,NSMakeRect(80,70,300,220)));
+    expectedAudio=NO; [[view valueForKey:@"audioButton"] performClick:nil];
+    [view resetSelection];
+    SelectionMouse(view,NSEventTypeLeftMouseDown,NSMakePoint(150,100)); SelectionMouse(view,NSEventTypeLeftMouseDragged,NSMakePoint(650,400)); SelectionMouse(view,NSEventTypeLeftMouseUp,NSMakePoint(650,400));
+    [view keyDown:enter]; assert(confirms==2 && !windowID && NSEqualRects(selected,NSMakeRect(150,100,500,300)));
+    SaveView(view,@"recording-region.png");
+    // Reuse screenshot resize geometry, then switch back to a window selection.
+    SelectionMouse(view,NSEventTypeLeftMouseDown,NSMakePoint(650,250)); SelectionMouse(view,NSEventTypeLeftMouseDragged,NSMakePoint(750,250)); SelectionMouse(view,NSEventTypeLeftMouseUp,NSMakePoint(750,250));
+    assert(view.selection.size.width==600 && !view.selectedWindowID);
+    [view resetSelection];
+    SelectionMouse(view,NSEventTypeLeftMouseDown,NSMakePoint(790,590)); SelectionMouse(view,NSEventTypeLeftMouseUp,NSMakePoint(790,590));
+    [view keyDown:enter]; assert(confirms==3 && !windowID && NSEqualRects(selected,view.bounds));
+    NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:panel.windowNumber context:nil characters:@"\e" charactersIgnoringModifiers:@"\e" isARepeat:NO keyCode:53];
+    [view keyDown:escape]; assert(cancels==1);
+    MCRecordingCountdownView *countdown = [[MCRecordingCountdownView alloc] initWithFrame:NSMakeRect(0,0,200,212)];
+    countdown.onCancel = ^{ cancels++; }; countdown.remaining=2.5;
+    [panel setContentSize:countdown.frame.size]; panel.contentView=countdown;
+    SaveView(countdown,@"recording-countdown.png"); [countdown keyDown:escape]; assert(cancels==2);
+    [(NSButton *)countdown.subviews.firstObject performClick:nil]; assert(cancels==3);
+    [panel close];
+}
 static void CheckLifecycle(void) {
     FixtureRecorder *recorder = [FixtureRecorder new];
     assert(!recorder.busy && !recorder.canStop);
+    assert([recorder transition:@"start"]);
+    NSRect region=NSMakeRect(200,100,320,240);
+    [recorder setValue:[NSValue valueWithRect:region] forKey:@"captureRegion"];
+    [recorder setValue:@YES forKey:@"captureAudio"];
+    [recorder selectFilter:(SCContentFilter *)[FixtureFilter new]];
+    assert(recorder.countingDown);
+    SCStreamConfiguration *configuration = [recorder streamConfiguration];
+    assert(NSEqualRects(configuration.sourceRect,region)); // Points, not Retina pixels.
+    assert(configuration.width==640 && configuration.height==480 && configuration.capturesAudio);
+    [recorder stopRecording]; assert(!recorder.busy);
+    assert([recorder transition:@"start"]);
+    [recorder setValue:[NSValue valueWithRect:NSZeroRect] forKey:@"captureRegion"];
+    [recorder selectFilter:(SCContentFilter *)[FixtureFilter new]];
+    configuration = [recorder streamConfiguration];
+    assert(NSIsEmptyRect(configuration.sourceRect) && configuration.width==3840 && configuration.height==2160);
+    [recorder stopRecording]; assert(!recorder.busy);
     assert([recorder transition:@"start"] && recorder.busy && recorder.canStop && !recorder.recording);
     assert([recorder transition:@"selected"]);
     [recorder setValue:@(NSProcessInfo.processInfo.systemUptime-1) forKey:@"countdownDeadline"];
@@ -198,7 +275,7 @@ static void CheckProductionEditor(NSURL *directory) {
     FixtureVideoEditor *editor=[[FixtureVideoEditor alloc] initWithDraftDirectory:directory error:&error];assert(editor);
     [editor buildWindow];NSWindow *window=[editor valueForKey:@"window"];
     assert([window.contentView isKindOfClass:MCSharedCanvasView.class] && !window.visible);
-    for(NSString *identifier in @[@"play",@"project-split",@"project-mute",@"project-crop",@"project-zoom-in",@"export"]) {
+    for(NSString *identifier in @[@"play",@"project-split",@"project-mute",@"project-crop",@"export"]) {
         NSDictionary *node=Node(editor,identifier);
         NSRect rect=NSMakeRect([node[@"x"] doubleValue],[node[@"y"] doubleValue],[node[@"width"] doubleValue],[node[@"height"] doubleValue]);
         assert(NSContainsRect(NSInsetRect(window.contentView.bounds,-1,-1),rect));
@@ -212,6 +289,27 @@ static void CheckProductionEditor(NSURL *directory) {
     assert(media.currentOutputMilliseconds>1900);
     Click(editor,@"start");assert(Wait(^BOOL{return ![[editor valueForKey:@"pendingSeek"] boolValue];},10));
     assert(media.currentOutputMilliseconds<1);
+    NSString *exportName = editor.defaultExportName;
+    NSRegularExpression *pattern = [NSRegularExpression regularExpressionWithPattern:@"^moojicut_[0-9]{8}_[0-9]{6}\\.mp4$" options:0 error:NULL];
+    assert([pattern numberOfMatchesInString:exportName options:0 range:NSMakeRange(0,exportName.length)]==1);
+    double originalDuration = media.outputDurationMilliseconds;
+    double rulerSpan = [Canvas(editor).frameDescription[@"viewport"][@"spanMs"] doubleValue];
+    NSDictionary *right = Node(editor,@"project-trim-end");
+    double hx=[right[@"x"] doubleValue]+[right[@"width"] doubleValue]/2, hy=[right[@"y"] doubleValue]+15;
+    NSDictionary *left = Node(editor,@"project-trim-start");
+    double originalRight = hx;
+    double drag = (hx-[left[@"x"] doubleValue]-[left[@"width"] doubleValue]/2)/2;
+    for (NSString *type in @[@"pointerDown",@"pointerMove",@"pointerUp"])
+        Canvas(editor).onEvent(@{@"type":type,@"x":@([type isEqual:@"pointerDown"] ? hx : hx-drag),@"y":@(hy)});
+    assert(media.outputDurationMilliseconds < originalDuration && !editor.exporting);
+    assert([Canvas(editor).frameDescription[@"viewport"][@"spanMs"] doubleValue]==rulerSpan);
+    assert([[NSData dataWithContentsOfURL:sourceURL] isEqual:source]);
+    assert(Wait(^BOOL{return media.player.currentItem.status==AVPlayerItemStatusReadyToPlay && ![[editor valueForKey:@"pendingSeek"] boolValue];},10));
+    right=Node(editor,@"project-trim-end"); hx=[right[@"x"] doubleValue]+[right[@"width"] doubleValue]/2;
+    for (NSString *type in @[@"pointerDown",@"pointerMove",@"pointerUp"])
+        Canvas(editor).onEvent(@{@"type":type,@"x":@([type isEqual:@"pointerDown"] ? hx : originalRight),@"y":@(hy)});
+    assert(fabs(media.outputDurationMilliseconds-originalDuration)<1 && !editor.exporting);
+    assert([[NSData dataWithContentsOfURL:sourceURL] isEqual:source]);
     NSDictionary *planBefore=State(editor)[@"plan"];
     editor.rejectNextPlan=YES;Click(editor,@"project-mute");
     assert(![[editor valueForKey:@"mediaSynchronized"] boolValue] && !media.playbackRequested);
@@ -299,7 +397,7 @@ static void CheckProductionEditor(NSURL *directory) {
 }
 int main(int argc,const char *argv[]) {
     @autoreleasepool {
-        assert(argc==2);moonbit_init();[NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];CheckLifecycle();
+        assert(argc==2);moonbit_init();[NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];CheckLifecycle();CheckSelection();
         NSURL *directory=[NSURL fileURLWithPath:@(argv[1]) isDirectory:YES];NSError *error=nil;
         if(![MCVideoEditor runSmokeInDirectory:directory error:&error]){NSLog(@"Production media smoke: %@",error);return 1;}
         CheckDraftRecovery(directory);CheckProductionEditor(directory);

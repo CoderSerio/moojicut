@@ -407,16 +407,6 @@ pub fn frame(id : Int32, width : Double, height : Double) -> String {
       p.background,
       "",
     )
-    draw_text(
-      commands,
-      s,
-      { x: 24, y: 24, width: s.width - 196, height: 36, },
-      "视频编辑",
-      p.text,
-      22,
-      "bold",
-      "left",
-    )
     draw_button(commands, semantics, s, "undo", false)
     draw_button(commands, semantics, s, "redo", false)
     draw_button(commands, semantics, s, "export", true)

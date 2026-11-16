@@ -248,16 +248,6 @@ fn project_frame(s : UI) -> Json {
     p.background,
     "",
   )
-  draw_text(
-    commands,
-    s,
-    { x: 24, y: 24, width: s.width - 196, height: 36, },
-    "视频编辑",
-    p.text,
-    22,
-    "bold",
-    "left",
-  )
   for id in ["undo", "redo"] {
     draw_button(commands, semantics, s, id, false)
   }
@@ -454,9 +444,6 @@ fn project_frame(s : UI) -> Json {
     "regular",
     "right",
   )
-  for id in ["project-zoom-out", "project-zoom-in", "project-zoom-fit"] {
-    project_draw_button(commands, semantics, s, id)
-  }
   if s.rate_menu {
     draw_rate_menu(commands, semantics, s)
   }

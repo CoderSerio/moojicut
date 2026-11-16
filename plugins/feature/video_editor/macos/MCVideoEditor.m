@@ -276,10 +276,18 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
     [self sendUIEvent:@{@"type":@"exportStatus", @"busy":busy ? @YES : @NO,
         @"message":statusError.localizedDescription ?: message ?: @"", @"error":statusError ? @YES : @NO}];
 }
+- (NSString *)defaultExportName {
+    NSDate *created = nil;
+    [[self.directory URLByAppendingPathComponent:@"source.mp4"] getResourceValue:&created forKey:NSURLCreationDateKey error:NULL];
+    NSDateFormatter *format = [NSDateFormatter new];
+    format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    format.dateFormat = @"yyyyMMdd_HHmmss";
+    return [NSString stringWithFormat:@"moojicut_%@.mp4",[format stringFromDate:created ?: NSDate.date]];
+}
 - (NSURL *)chooseExportDestination {
     NSSavePanel *panel = NSSavePanel.savePanel;
     panel.allowedContentTypes = @[UTTypeMPEG4Movie]; panel.canCreateDirectories = YES;
-    panel.nameFieldStringValue = @"MoojiCut.mp4"; panel.prompt = @"保存视频";
+    panel.nameFieldStringValue = self.defaultExportName; panel.prompt = @"保存视频";
     return [panel runModal] == NSModalResponseOK ? panel.URL : nil;
 }
 - (void)saveAs:(__unused id)sender {

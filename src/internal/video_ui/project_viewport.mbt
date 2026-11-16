@@ -49,16 +49,28 @@ fn project_min_span(s : UI) -> Double {
 ///|
 fn project_viewport_sync(s : UI) -> Unit {
   let total = s.snapshot.duration
-  if s.viewport_fit || s.viewport_span <= 0 {
+  // Editing changes the output, not the ruler scale. Keep room to extend a
+  // trimmed clip back into its source, including after a slow-motion edit.
+  s.viewport_extent = @protocol.larger(
+    s.viewport_extent,
+    @protocol.larger(total, project(s).source_duration / 90),
+  )
+  if s.viewport_span <= 0 {
     s.viewport_start = 0
     s.viewport_span = total
-  } else {
-    s.viewport_span = clamp(s.viewport_span, project_min_span(s), total)
-    s.viewport_start = clamp(s.viewport_start, 0, total - s.viewport_span)
-    if s.viewport_span == total {
-      s.viewport_fit = true
-    }
+  } else if s.viewport_fit {
+    s.viewport_span = @protocol.larger(s.viewport_span, total)
   }
+  s.viewport_span = clamp(
+    s.viewport_span,
+    project_min_span(s),
+    s.viewport_extent,
+  )
+  s.viewport_start = clamp(
+    s.viewport_start,
+    0,
+    s.viewport_extent - s.viewport_span,
+  )
 }
 
 ///|
@@ -72,15 +84,15 @@ fn project_zoom(s : UI, factor : Double, anchor : Double) -> Unit {
     return
   }
   let old = s.viewport_span
-  let span = clamp(old * factor, project_min_span(s), s.snapshot.duration)
+  let span = clamp(old * factor, project_min_span(s), s.viewport_extent)
   let fraction = clamp((anchor - s.viewport_start) / old, 0, 1)
   s.viewport_span = span
   s.viewport_start = clamp(
     anchor - fraction * span,
     0,
-    s.snapshot.duration - span,
+    s.viewport_extent - span,
   )
-  s.viewport_fit = span == s.snapshot.duration
+  s.viewport_fit = span >= s.snapshot.duration && s.viewport_start == 0
   s.hover = ""
 }
 
@@ -91,6 +103,8 @@ fn project_zoom_action(s : UI, id : String) -> Unit {
   }
   if id == "project-zoom-fit" {
     s.viewport_fit = true
+    s.viewport_start = 0
+    s.viewport_span = s.snapshot.duration
     project_viewport_sync(s)
   } else {
     let anchor = if project_visible(s, s.source_time) {
@@ -110,7 +124,7 @@ fn project_follow_playhead(s : UI) -> Unit {
   s.viewport_start = clamp(
     s.source_time - s.viewport_span * 0.15,
     0,
-    s.snapshot.duration - s.viewport_span,
+    s.viewport_extent - s.viewport_span,
   )
 }
 
@@ -157,11 +171,12 @@ fn project_scroll(
       project_zoom(s, if delta > 0 { 0.8 } else { 1.25 }, project_time(s, x))
     }
   } else {
+    s.viewport_fit = false
     let pixels = delta * (if precise { 1.0 } else { 24.0 }) / s.scale
     s.viewport_start = clamp(
       s.viewport_start - pixels / row.width * s.viewport_span,
       0,
-      s.snapshot.duration - s.viewport_span,
+      s.viewport_extent - s.viewport_span,
     )
     s.hover = ""
   }

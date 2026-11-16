@@ -322,6 +322,12 @@ static void Key(SharedVideoHarness *host, NSString *characters, unsigned short k
         characters:characters charactersIgnoringModifiers:characters isARepeat:NO keyCode:keyCode];
     [host.canvas keyDown:event];
 }
+static void ZoomKey(SharedVideoHarness *host, NSString *character, unsigned short keyCode) {
+    NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
+        timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:host.window.windowNumber context:nil
+        characters:character charactersIgnoringModifiers:character isARepeat:NO keyCode:keyCode];
+    NSCAssert([host.canvas performKeyEquivalent:event], @"Timeline shortcut reaches the MoonBit UI");
+}
 static void Click(SharedVideoHarness *host, NSString *identifier) {
     NSPoint point = Center(Semantic(host, identifier));
     Mouse(host, NSEventTypeLeftMouseDown, point);
@@ -567,7 +573,7 @@ static void ProjectSmoke(SharedVideoHarness *host, NSURL *directory) {
     NSCAssert(fabs(host.media.outputDurationMilliseconds-editedDuration)<1,@"Undo restores retimed clip trim");
     NSUInteger beforeView=host.commands;
     NSDictionary *beforeViewDocument=host.snapshot[@"document"];
-    Click(host,@"project-zoom-in");
+    ZoomKey(host,@"=",24);
     NSDictionary *viewport=host.canvas.frameDescription[@"viewport"];
     NSCAssert([viewport[@"spanMs"] doubleValue]>0 && [viewport[@"spanMs"] doubleValue]<editedDuration,
               @"Timeline zoom changes the visible time granularity");
@@ -581,7 +587,7 @@ static void ProjectSmoke(SharedVideoHarness *host, NSURL *directory) {
               @"Zoom and pan do not edit the document or its undo history");
     [host send:@{@"type":@"appearance",@"mode":@"dark"}];
     SaveLayout(host,[directory URLByAppendingPathComponent:@"project-editor-zoom.png"]);
-    Click(host,@"project-zoom-fit");
+    ZoomKey(host,@"0",29);
     NSCAssert(fabs([host.canvas.frameDescription[@"viewport"][@"spanMs"] doubleValue]-editedDuration)<1,
               @"Fit restores the whole output timeline");
     SelectClip(host,third); Click(host,@"project-remove"); ProjectSettle(host);

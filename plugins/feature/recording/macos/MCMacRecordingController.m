@@ -1,4 +1,5 @@
 #import "MCMacRecordingController.h"
+#import "MCRecordingSelectionView.h"
 #import "plugins/feature/video_editor/macos/MCVideoEditor.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -28,7 +29,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     alert.informativeText = error.localizedDescription ?: @"请重试。";
     [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
 }
-@interface MCMacRecordingController () <SCContentSharingPickerObserver, SCStreamDelegate, SCRecordingOutputDelegate>
+@interface MCMacRecordingController () <SCStreamDelegate, SCRecordingOutputDelegate>
 @property NSString *phase;
 @property NSDictionary *stateCapabilities;
 @property BOOL captureAudio, discardOnFinish;
@@ -39,7 +40,10 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 @property NSURL *draft;
 @property MCVideoEditor *editor;
 @property NSPanel *countdownPanel;
-@property NSTextField *countdownLabel;
+@property MCRecordingCountdownView *countdownView;
+@property NSArray<NSPanel *> *selectionPanels;
+@property NSScreen *selectionScreen;
+@property NSRect captureRegion;
 @property NSTimer *timer;
 @property NSTimeInterval countdownDeadline;
 @property NSUInteger generation;
@@ -47,7 +51,17 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 @property NSRunningApplication *previousApplication;
 @end
 @implementation MCMacRecordingController
-- (instancetype)init { if ((self = [super init])) { _phase = @"idle"; [self updateCapabilities]; } return self; }
+- (instancetype)init {
+    if ((self = [super init])) {
+        _phase = @"idle"; [self updateCapabilities];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenParametersChanged:)
+            name:NSApplicationDidChangeScreenParametersNotification object:nil];
+    }
+    return self;
+}
+- (void)screenParametersChanged:(__unused NSNotification *)notification {
+    if (self.selecting || self.countingDown) [self stopRecording];
+}
 - (BOOL)selecting { return [self.phase isEqual:@"requesting"]; }
 - (BOOL)starting { return [self.phase isEqual:@"starting"]; }
 - (BOOL)stopping { return [self.phase isEqual:@"stopping"]; }
@@ -81,7 +95,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     return @"";
 }
 - (NSString *)statusText {
-    if (self.selecting) return @"请选择要录制的显示器或窗口";
+    if (self.selecting) return @"拖拽框选或单击窗口，回车开始录制";
     if (self.countingDown) return [NSString stringWithFormat:@"%ld 秒后开始录屏", (long)MAX(1, ceil(self.countdownDeadline - NSProcessInfo.processInfo.systemUptime))];
     if (self.starting) return @"正在开始录屏…";
     if (self.stopping) return @"正在保存录屏，请稍候…";
@@ -102,13 +116,13 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     self.stateCapabilities = MCRecordingDecode(recording_status(input)); moonbit_decref(input);
 }
 - (void)changed { if (self.onStateChange) self.onStateChange(); }
-- (void)endPicker {
-    [SCContentSharingPicker.sharedPicker removeObserver:self];
-    SCContentSharingPicker.sharedPicker.active = NO;
+- (void)closeSelection {
+    for (NSPanel *panel in self.selectionPanels) { [panel orderOut:nil]; [panel close]; }
+    self.selectionPanels = nil;
 }
 - (void)closeCountdown {
     [self.timer invalidate]; self.timer = nil;
-    [self.countdownPanel orderOut:nil]; [self.countdownPanel close]; self.countdownPanel = nil; self.countdownLabel = nil;
+    [self.countdownPanel orderOut:nil]; [self.countdownPanel close]; self.countdownPanel = nil; self.countdownView = nil;
 }
 - (void)hideOrdinaryWindows {
     self.hiddenWindows = [NSHashTable weakObjectsHashTable];
@@ -185,70 +199,119 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     if (![self transition:@"start"]) return;
     self.previousApplication = NSWorkspace.sharedWorkspace.frontmostApplication;
     self.generation++; self.discardOnFinish = NO; [self changed];
-    NSAlert *options = [NSAlert new]; options.messageText = @"录制显示器或窗口";
-    options.informativeText = @"下一步在系统界面选择一个完整显示器或窗口，3 秒倒计时后开始。菜单栏会显示录制时长；点击“停止录屏并编辑”结束。麦克风不会录入。";
-    [options addButtonWithTitle:@"选择画面"]; [options addButtonWithTitle:@"取消"];
-    NSButton *audio = [NSButton checkboxWithTitle:@"录制系统声音" target:nil action:nil];
-    audio.state = NSControlStateValueOn; audio.frame = NSMakeRect(0, 0, 280, 24); options.accessoryView = audio;
-    [NSApp activateIgnoringOtherApps:YES];
-    NSModalResponse response = [options runModal];
-    if (!self.selecting) return;
-    if (response != NSAlertFirstButtonReturn) { [self transition:@"cancel"]; self.previousApplication = nil; [self changed]; return; }
-    self.captureAudio = audio.state == NSControlStateValueOn;
+    self.captureAudio = YES; self.captureRegion = NSZeroRect; self.selectionScreen = nil;
     [self hideOrdinaryWindows];
-    SCContentSharingPicker *picker = SCContentSharingPicker.sharedPicker;
-    SCContentSharingPickerConfiguration *configuration = [SCContentSharingPickerConfiguration new];
-    configuration.allowedPickerModes = SCContentSharingPickerModeSingleDisplay | SCContentSharingPickerModeSingleWindow;
-    configuration.allowsChangingSelectedContent = NO;
-    if (NSBundle.mainBundle.bundleIdentifier) configuration.excludedBundleIDs = @[NSBundle.mainBundle.bundleIdentifier];
-    picker.defaultConfiguration = configuration; picker.maximumStreamCount = @1;
-    [picker addObserver:self]; picker.active = YES; [picker present];
-}
-- (void)contentSharingPicker:(__unused SCContentSharingPicker *)picker didCancelForStream:(__unused SCStream *)stream {
     NSUInteger generation = self.generation;
-    dispatch_async(dispatch_get_main_queue(), ^{ if (self.generation == generation && self.selecting) { [self transition:@"cancel"]; [self endPicker]; [self restoreOrdinaryWindows]; [self changed]; } });
+    [SCShareableContent getShareableContentExcludingDesktopWindows:YES onScreenWindowsOnly:YES
+        completionHandler:^(SCShareableContent *content, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.generation != generation || !self.selecting) return;
+            if (!content || error) { [self fail:error ?: MCRecordingError(@"无法读取桌面内容。")]; return; }
+            [self showSelectionWithContent:content];
+        });
+    }];
 }
-- (void)contentSharingPickerStartDidFailWithError:(NSError *)error {
+- (void)showSelectionWithContent:(SCShareableContent *)content {
+    NSMutableDictionary<NSNumber *, SCWindow *> *windows = [NSMutableDictionary dictionary];
+    for (SCWindow *window in content.windows) windows[@(window.windowID)] = window;
+    // CGWindowList is front-to-back; shareable content doesn't guarantee z-order.
+    NSArray *ordered = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+    NSMutableArray<NSPanel *> *panels = [NSMutableArray array];
+    __weak MCMacRecordingController *weakSelf = self;
     NSUInteger generation = self.generation;
-    dispatch_async(dispatch_get_main_queue(), ^{ if (self.generation == generation && self.selecting) [self fail:error]; });
-}
-- (void)contentSharingPicker:(__unused SCContentSharingPicker *)picker didUpdateWithFilter:(SCContentFilter *)filter forStream:(SCStream *)stream {
-    NSUInteger generation = self.generation;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.generation != generation || !self.selecting || stream || self.stream) return;
-        CGSize size = filter.contentRect.size; CGFloat pixels = filter.pointPixelScale;
-        if (!isfinite(size.width) || !isfinite(size.height) || !isfinite(pixels) || pixels <= 0 || size.width <= 0 || size.height <= 0 || size.width*pixels > 32768 || size.height*pixels > 32768) {
-            [self fail:MCRecordingError(@"所选内容没有可录制的画面，请重新选择。")]; return;
+    for (NSScreen *screen in NSScreen.screens) {
+        SCDisplay *display = nil;
+        for (SCDisplay *candidate in content.displays)
+            if (candidate.displayID == [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue]) { display = candidate; break; }
+        if (!display) continue;
+        NSMutableArray *candidates = [NSMutableArray array];
+        for (NSDictionary *info in ordered) {
+            SCWindow *window = windows[info[(NSString *)kCGWindowNumber]];
+            if (!window || window.windowLayer != 0 || window.owningApplication.processID == NSProcessInfo.processInfo.processIdentifier) continue;
+            NSRect intersection = NSIntersectionRect(window.frame, display.frame);
+            if (intersection.size.width < 2 || intersection.size.height < 2) continue;
+            intersection.origin.x -= display.frame.origin.x; intersection.origin.y -= display.frame.origin.y;
+            [candidates addObject:@{@"windowID":@(window.windowID), @"rect":[NSValue valueWithRect:intersection]}];
         }
-        NSDictionary *input = @{@"width":@(floor(size.width*pixels)), @"height":@(floor(size.height*pixels)), @"systemAudio":@(self.captureAudio)};
-        NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:input options:0 error:NULL] encoding:NSUTF8StringEncoding];
-        moonbit_string_t request = MCRecordingString(json); self.capturePlan = MCRecordingDecode(recording_plan(request)); moonbit_decref(request);
-        if (![self.capturePlan[@"ok"] boolValue]) { [self fail:MCRecordingError(@"所选画面太小或尺寸无效，请重新选择。")]; return; }
-        [self transition:@"selected"]; self.pendingFilter = filter;
-        self.countdownDeadline = NSProcessInfo.processInfo.systemUptime + [self.capturePlan[@"countdownSeconds"] doubleValue];
-        [self showCountdown]; [self changed];
-        __weak MCMacRecordingController *weakSelf = self;
-        self.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(__unused NSTimer *timer) { [weakSelf countdownTick]; }];
-        [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
-    });
+        MCRecordingOverlayPanel *panel = [[MCRecordingOverlayPanel alloc] initWithContentRect:screen.frame
+            styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+        panel.opaque = NO; panel.backgroundColor = NSColor.clearColor; panel.hasShadow = NO;
+        panel.level = NSScreenSaverWindowLevel; panel.releasedWhenClosed = NO; panel.acceptsMouseMovedEvents = YES;
+        panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+        MCRecordingSelectionView *view = [[MCRecordingSelectionView alloc] initWithFrame:NSMakeRect(0,0,screen.frame.size.width,screen.frame.size.height)];
+        view.windowCandidates = candidates;
+        view.onCancel = ^{ [weakSelf stopRecording]; };
+        __weak MCRecordingSelectionView *weakView = view;
+        view.onBeginSelection = ^{
+            for (NSPanel *other in weakSelf.selectionPanels)
+                if (other.contentView != weakView) [(MCRecordingSelectionView *)other.contentView resetSelection];
+        };
+        view.onConfirm = ^(NSRect region, NSNumber *windowID, BOOL audio) {
+            MCMacRecordingController *owner = weakSelf;
+            if (!owner || owner.generation != generation || !owner.selecting) return;
+            owner.captureAudio = audio; owner.selectionScreen = screen;
+            SCWindow *window = windowID ? windows[windowID] : nil;
+            SCContentFilter *filter;
+            if (window) {
+                // A desktop-independent stream follows the window when it moves.
+                owner.captureRegion = NSZeroRect;
+                filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:window];
+            } else {
+                owner.captureRegion = region;
+                filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
+            }
+            [owner closeSelection]; [owner selectFilter:filter];
+        };
+        panel.contentView = view; [panels addObject:panel];
+    }
+    self.selectionPanels = panels;
+    if (!panels.count) { [self fail:MCRecordingError(@"没有可录制的显示器。")]; return; }
+    [NSApp activateIgnoringOtherApps:YES];
+    for (NSPanel *panel in panels) {
+        [panel orderFrontRegardless];
+        if (NSPointInRect(NSEvent.mouseLocation,panel.frame)) { [panel makeKeyWindow]; [panel makeFirstResponder:panel.contentView]; }
+    }
+}
+- (void)selectFilter:(SCContentFilter *)filter {
+    if (!self.selecting || self.stream) return;
+    CGSize size = NSIsEmptyRect(self.captureRegion) ? filter.contentRect.size : self.captureRegion.size;
+    CGFloat pixels = filter.pointPixelScale;
+    if (!isfinite(size.width) || !isfinite(size.height) || !isfinite(pixels) || pixels <= 0 || size.width <= 0 || size.height <= 0 || size.width*pixels > 32768 || size.height*pixels > 32768) {
+        [self fail:MCRecordingError(@"所选内容没有可录制的画面，请重新选择。")]; return;
+    }
+    NSDictionary *input = @{@"width":@(floor(size.width*pixels)), @"height":@(floor(size.height*pixels)), @"systemAudio":@(self.captureAudio)};
+    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:input options:0 error:NULL] encoding:NSUTF8StringEncoding];
+    moonbit_string_t request = MCRecordingString(json); self.capturePlan = MCRecordingDecode(recording_plan(request)); moonbit_decref(request);
+    if (![self.capturePlan[@"ok"] boolValue]) { [self fail:MCRecordingError(@"所选画面太小或尺寸无效，请重新选择。")]; return; }
+    [self transition:@"selected"]; self.pendingFilter = filter;
+    self.countdownDeadline = NSProcessInfo.processInfo.systemUptime + [self.capturePlan[@"countdownSeconds"] doubleValue];
+    [self showCountdown]; [self changed];
+    __weak MCMacRecordingController *weakSelf = self;
+    self.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(__unused NSTimer *timer) { [weakSelf countdownTick]; }];
+    [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
 }
 - (void)showCountdown {
-    self.countdownPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,300,110)
-        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
-    self.countdownPanel.title = @"准备录屏"; self.countdownPanel.releasedWhenClosed = NO; self.countdownPanel.level = NSFloatingWindowLevel;
-    self.countdownLabel = [NSTextField labelWithString:self.statusText]; self.countdownLabel.font = [NSFont boldSystemFontOfSize:20];
-    self.countdownLabel.frame = NSMakeRect(20,65,260,28); [self.countdownPanel.contentView addSubview:self.countdownLabel];
-    NSTextField *hint = [NSTextField labelWithString:@"开始后从菜单栏停止并编辑"];
-    hint.frame = NSMakeRect(20,40,260,20); hint.textColor = NSColor.secondaryLabelColor; [self.countdownPanel.contentView addSubview:hint];
-    NSButton *cancel = [NSButton buttonWithTitle:@"取消录屏" target:self action:@selector(stopRecording)];
-    cancel.frame = NSMakeRect(195,8,90,28); cancel.keyEquivalent = @"\e"; [self.countdownPanel.contentView addSubview:cancel];
-    [self.countdownPanel center]; [self.countdownPanel orderFrontRegardless];
+    self.countdownPanel = [[MCRecordingOverlayPanel alloc] initWithContentRect:NSMakeRect(0,0,200,212)
+        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    self.countdownPanel.releasedWhenClosed = NO; self.countdownPanel.level = NSScreenSaverWindowLevel;
+    self.countdownPanel.backgroundColor = NSColor.clearColor; self.countdownPanel.opaque = NO; self.countdownPanel.hasShadow = NO;
+    self.countdownPanel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+    self.countdownView = [[MCRecordingCountdownView alloc] initWithFrame:NSMakeRect(0,0,200,212)];
+    self.countdownView.duration = [self.capturePlan[@"countdownSeconds"] doubleValue];
+    self.countdownView.remaining = self.countdownView.duration;
+    __weak MCMacRecordingController *weakSelf = self;
+    self.countdownView.onCancel = ^{ [weakSelf stopRecording]; };
+    self.countdownPanel.contentView = self.countdownView;
+    NSRect screen = (self.selectionScreen ?: NSScreen.mainScreen).frame;
+    [self.countdownPanel setFrameOrigin:NSMakePoint(NSMidX(screen)-100,NSMidY(screen)-106)];
+    [self.countdownPanel makeKeyAndOrderFront:nil]; [self.countdownPanel makeFirstResponder:self.countdownView];
 }
 - (void)countdownTick {
     if (!self.countingDown) return;
     if (NSProcessInfo.processInfo.systemUptime < self.countdownDeadline) {
-        NSString *text = self.statusText;
-        if (![self.countdownLabel.stringValue isEqual:text]) { self.countdownLabel.stringValue = text; [self changed]; }
+        double remaining = self.countdownDeadline - NSProcessInfo.processInfo.systemUptime;
+        if (ceil(self.countdownView.remaining) != ceil(remaining)) [self changed];
+        self.countdownView.remaining = remaining; self.countdownView.needsDisplay = YES;
         return;
     }
     [self closeCountdown]; [self transition:@"countdown_finished"]; [self changed];
@@ -259,17 +322,22 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
         if (self.generation == generation && self.starting) [self beginCaptureWithFilter:self.pendingFilter];
     });
 }
+- (SCStreamConfiguration *)streamConfiguration {
+    SCStreamConfiguration *config = [SCStreamConfiguration new];
+    config.width = [self.capturePlan[@"width"] unsignedIntegerValue]; config.height = [self.capturePlan[@"height"] unsignedIntegerValue];
+    config.minimumFrameInterval = CMTimeMake(1, [self.capturePlan[@"framesPerSecond"] intValue]); config.showsCursor = YES;
+    if (!NSIsEmptyRect(self.captureRegion)) config.sourceRect = self.captureRegion;
+    config.scalesToFit = YES; config.preservesAspectRatio = YES;
+    config.capturesAudio = self.captureAudio; config.captureMicrophone = NO;
+    config.excludesCurrentProcessAudio = YES; config.streamName = @"Mooji Cut 录屏";
+    return config;
+}
 - (void)beginCaptureWithFilter:(SCContentFilter *)filter {
     self.pendingFilter = nil;
     self.draft = [self.draftsDirectory URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
     NSError *error = nil;
     if (![NSFileManager.defaultManager createDirectoryAtURL:self.draft withIntermediateDirectories:YES attributes:nil error:&error]) { [self fail:error]; return; }
-    SCStreamConfiguration *config = [SCStreamConfiguration new];
-    config.width = [self.capturePlan[@"width"] unsignedIntegerValue]; config.height = [self.capturePlan[@"height"] unsignedIntegerValue];
-    config.minimumFrameInterval = CMTimeMake(1, [self.capturePlan[@"framesPerSecond"] intValue]); config.showsCursor = YES;
-    config.scalesToFit = YES; config.preservesAspectRatio = YES;
-    config.capturesAudio = self.captureAudio; config.captureMicrophone = NO;
-    config.excludesCurrentProcessAudio = YES; config.streamName = @"Mooji Cut 录屏";
+    SCStreamConfiguration *config = [self streamConfiguration];
     self.stream = [[SCStream alloc] initWithFilter:filter configuration:config delegate:self];
     SCRecordingOutputConfiguration *recording = [SCRecordingOutputConfiguration new];
     recording.outputURL = [self.draft URLByAppendingPathComponent:@"source.mp4"];
@@ -304,9 +372,8 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     if (self.selecting || self.countingDown || (self.starting && !self.stream)) {
         if (self.starting) { [self transition:@"stop"]; [self transition:@"complete"]; }
         else [self transition:@"cancel"];
-        self.generation++; self.pendingFilter = nil; [self closeCountdown]; [self endPicker];
+        self.generation++; self.pendingFilter = nil; [self closeCountdown]; [self closeSelection];
         [self restoreOrdinaryWindows];
-        if (NSApp.modalWindow) [NSApp abortModal];
         [self changed]; return;
     }
     if (!self.stream || !self.canStop) return;
@@ -328,7 +395,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
         if (self.output != output) return;
         NSURL *draft = self.draft; BOOL discard = self.discardOnFinish;
         if (!self.stopping) [self transition:@"stop"];
-        [self transition:@"complete"]; [self endPicker]; [self closeCountdown];
+        [self transition:@"complete"]; [self closeSelection]; [self closeCountdown];
         self.stream = nil; self.output = nil; self.draft = nil; self.capturePlan = nil;
         [self restoreOrdinaryWindows];
         // A cancellation while starting must not unexpectedly open an editor.
@@ -356,7 +423,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     BOOL cancelled = self.discardOnFinish;
     SCStream *stream = self.stream; self.stream = nil; self.output = nil;
     self.generation++; self.pendingFilter = nil; [self transition:@"fail"];
-    [stream stopCaptureWithCompletionHandler:nil]; [self endPicker]; [self closeCountdown];
+    [stream stopCaptureWithCompletionHandler:nil]; [self closeSelection]; [self closeCountdown];
     if (self.draft && ![NSFileManager.defaultManager fileExistsAtPath:[self.draft URLByAppendingPathComponent:@"source.mp4"].path])
         [NSFileManager.defaultManager removeItemAtURL:self.draft error:NULL];
     self.draft = nil; [self changed];
@@ -367,6 +434,6 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
         message = @"未获得屏幕录制权限。请在系统设置的“隐私与安全性 → 屏幕与系统音频录制”允许当前应用，按系统提示重新打开后再试。";
     MCRecordingAlert(@"录屏未能完成", MCRecordingError(message));
 }
-- (void)dealloc { [self.timer invalidate]; [SCContentSharingPicker.sharedPicker removeObserver:self]; }
+- (void)dealloc { [self.timer invalidate]; [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 + (BOOL)runSmokeInDirectory:(NSURL *)directory error:(NSError **)error { return [MCVideoEditor runSmokeInDirectory:directory error:error]; }
 @end

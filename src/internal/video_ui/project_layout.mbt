@@ -175,7 +175,9 @@ fn project_enabled(s : UI, id : String) -> Bool {
     | "preview-rate" => s.media_ready
     "project-audio-toggle" => !project_clips(s, "audio").is_empty()
     "project-zoom-in" => s.viewport_span > project_min_span(s)
-    "project-zoom-out" | "project-zoom-fit" => !s.viewport_fit
+    "project-zoom-out" => s.viewport_span < s.viewport_extent
+    "project-zoom-fit" =>
+      s.viewport_start != 0 || s.viewport_span != s.snapshot.duration
     _ if rate_index(id) >= 0 => s.media_ready && s.rate_menu
     _ if clip_rate_index(id) >= 0 =>
       project_editable(s) &&
@@ -283,9 +285,6 @@ fn project_focus_targets(s : UI) -> Array[String] {
   for id in project_toolbar(s) {
     targets.push(id)
   }
-  for id in ["project-zoom-out", "project-zoom-in", "project-zoom-fit"] {
-    targets.push(id)
-  }
   for g in project_gaps(s) {
     targets.push(project_gap_id(g))
   }
@@ -335,11 +334,6 @@ fn project_hit(s : UI, x : Double, y : Double) -> String {
     }
   }
   for id in project_toolbar(s) {
-    if enabled(s, id) && contains(control_rect(s, id), x, y) {
-      return id
-    }
-  }
-  for id in ["project-zoom-out", "project-zoom-in", "project-zoom-fit"] {
     if enabled(s, id) && contains(control_rect(s, id), x, y) {
       return id
     }
