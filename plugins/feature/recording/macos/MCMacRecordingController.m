@@ -1,5 +1,6 @@
 #import "MCMacRecordingController.h"
 #import "MCRecordingSelectionView.h"
+#import "components/desktop_capture/macos/MCDesktopSnapshot.h"
 #import "plugins/feature/video_editor/macos/MCVideoEditor.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -41,7 +42,8 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 @property MCVideoEditor *editor;
 @property NSPanel *countdownPanel;
 @property MCRecordingCountdownView *countdownView;
-@property NSArray<NSPanel *> *selectionPanels;
+@property NSArray<NSWindow *> *selectionPanels;
+@property BOOL selectionPreparing;
 @property NSScreen *selectionScreen;
 @property NSRect captureRegion;
 @property NSTimer *timer;
@@ -117,8 +119,8 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 }
 - (void)changed { if (self.onStateChange) self.onStateChange(); }
 - (void)closeSelection {
-    for (NSPanel *panel in self.selectionPanels) { [panel orderOut:nil]; [panel close]; }
-    self.selectionPanels = nil;
+    for (NSWindow *panel in self.selectionPanels) { [panel orderOut:nil]; [panel close]; }
+    self.selectionPanels = nil; self.selectionPreparing = NO;
 }
 - (void)closeCountdown {
     [self.timer invalidate]; self.timer = nil;
@@ -201,29 +203,53 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     self.generation++; self.discardOnFinish = NO; [self changed];
     self.captureAudio = YES; self.captureRegion = NSZeroRect; self.selectionScreen = nil;
     [self hideOrdinaryWindows];
+    self.selectionPreparing = YES;
     NSUInteger generation = self.generation;
-    [SCShareableContent getShareableContentExcludingDesktopWindows:YES onScreenWindowsOnly:YES
-        completionHandler:^(SCShareableContent *content, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.generation != generation || !self.selecting) return;
-            if (!content || error) { [self fail:error ?: MCRecordingError(@"无法读取桌面内容。")]; return; }
-            [self showSelectionWithContent:content];
-        });
-    }];
+    __weak MCMacRecordingController *weakSelf = self;
+    MCSelectionWhenKeysReleased(0, ^BOOL{ return weakSelf.generation == generation && weakSelf.selecting; },
+        ^NSEventModifierFlags{ return [weakSelf selectionModifierFlags]; }, ^(BOOL released) {
+        MCMacRecordingController *owner = weakSelf;
+        if (!released) { [owner fail:MCRecordingError(@"请松开快捷键后再试一次。")]; return; }
+        [owner requestSelectionContent:^(SCShareableContent *content, NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                MCMacRecordingController *current = weakSelf;
+                if (current.generation != generation || !current.selecting) return;
+                if (!content || error) { [current fail:error ?: MCRecordingError(@"无法读取桌面内容。")]; return; }
+                [current showSelectionWithContent:content];
+            });
+        }];
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,15*NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        MCMacRecordingController *owner = weakSelf;
+        if (owner.generation == generation && owner.selecting && owner.selectionPreparing)
+            [owner fail:MCRecordingError(@"读取屏幕超时，请重新录屏。")];
+    });
 }
+- (NSEventModifierFlags)selectionModifierFlags { return NSEvent.modifierFlags; }
+- (void)requestSelectionContent:(void (^)(SCShareableContent *, NSError *))completion {
+    [SCShareableContent getShareableContentExcludingDesktopWindows:YES onScreenWindowsOnly:YES completionHandler:completion];
+}
+- (void)snapshotDisplay:(SCDisplay *)display completion:(void (^)(NSData *, NSError *))completion {
+    MCDesktopSnapshot(display,@[],@[],completion);
+}
+- (NSArray<NSScreen *> *)selectionScreens { return NSScreen.screens; }
 - (void)showSelectionWithContent:(SCShareableContent *)content {
     NSMutableDictionary<NSNumber *, SCWindow *> *windows = [NSMutableDictionary dictionary];
     for (SCWindow *window in content.windows) windows[@(window.windowID)] = window;
     // CGWindowList is front-to-back; shareable content doesn't guarantee z-order.
     NSArray *ordered = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
-    NSMutableArray<NSPanel *> *panels = [NSMutableArray array];
+    NSMutableArray<NSWindow *> *panels = [NSMutableArray array];
+    NSMutableArray<SCDisplay *> *displays = [NSMutableArray array];
     __weak MCMacRecordingController *weakSelf = self;
     NSUInteger generation = self.generation;
-    for (NSScreen *screen in NSScreen.screens) {
+    for (NSScreen *screen in self.selectionScreens) {
         SCDisplay *display = nil;
         for (SCDisplay *candidate in content.displays)
             if (candidate.displayID == [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue]) { display = candidate; break; }
-        if (!display) continue;
+        if (!display) {
+            self.selectionPanels = panels;
+            [self fail:MCRecordingError(@"显示器已断开或暂时无法采集，请重新录屏。")]; return;
+        }
         NSMutableArray *candidates = [NSMutableArray array];
         for (NSDictionary *info in ordered) {
             SCWindow *window = windows[info[(NSString *)kCGWindowNumber]];
@@ -233,17 +259,15 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
             intersection.origin.x -= display.frame.origin.x; intersection.origin.y -= display.frame.origin.y;
             [candidates addObject:@{@"windowID":@(window.windowID), @"rect":[NSValue valueWithRect:intersection]}];
         }
-        MCRecordingOverlayPanel *panel = [[MCRecordingOverlayPanel alloc] initWithContentRect:screen.frame
+        MCSelectionWindow *panel = [[MCSelectionWindow alloc] initWithContentRect:screen.frame
             styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
-        panel.opaque = NO; panel.backgroundColor = NSColor.clearColor; panel.hasShadow = NO;
-        panel.level = NSScreenSaverWindowLevel; panel.releasedWhenClosed = NO; panel.acceptsMouseMovedEvents = YES;
-        panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+        panel.releasedWhenClosed = NO; [panel configureForScreenFrame:screen.frame];
         MCRecordingSelectionView *view = [[MCRecordingSelectionView alloc] initWithFrame:NSMakeRect(0,0,screen.frame.size.width,screen.frame.size.height)];
         view.windowCandidates = candidates;
         view.onCancel = ^{ [weakSelf stopRecording]; };
         __weak MCRecordingSelectionView *weakView = view;
         view.onBeginSelection = ^{
-            for (NSPanel *other in weakSelf.selectionPanels)
+            for (NSWindow *other in weakSelf.selectionPanels)
                 if (other.contentView != weakView) [(MCRecordingSelectionView *)other.contentView resetSelection];
         };
         view.onConfirm = ^(NSRect region, NSNumber *windowID, BOOL audio) {
@@ -262,12 +286,29 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
             }
             [owner closeSelection]; [owner selectFilter:filter];
         };
-        panel.contentView = view; [panels addObject:panel];
+        panel.contentView = view; [panels addObject:panel]; [displays addObject:display];
     }
     self.selectionPanels = panels;
     if (!panels.count) { [self fail:MCRecordingError(@"没有可录制的显示器。")]; return; }
+    __block NSUInteger remaining = panels.count;
+    for (NSUInteger index=0;index<panels.count;index++) {
+        [self snapshotDisplay:displays[index] completion:^(NSData *png, NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                MCMacRecordingController *owner = weakSelf;
+                if (owner.generation != generation || !owner.selecting || owner.selectionPanels != panels) return;
+                NSImage *image = png ? [[NSImage alloc] initWithData:png] : nil;
+                if (!image || error) { [owner fail:error ?: MCRecordingError(@"无法生成桌面选区，请重试。")]; return; }
+                MCRecordingSelectionView *view = (MCRecordingSelectionView *)panels[index].contentView;
+                if (view.backdrop) return;
+                view.backdrop = image;
+                if (--remaining == 0) { owner.selectionPreparing = NO; [owner presentSelection]; }
+            });
+        }];
+    }
+}
+- (void)presentSelection {
     [NSApp activateIgnoringOtherApps:YES];
-    for (NSPanel *panel in panels) {
+    for (NSWindow *panel in self.selectionPanels) {
         [panel orderFrontRegardless];
         if (NSPointInRect(NSEvent.mouseLocation,panel.frame)) { [panel makeKeyWindow]; [panel makeFirstResponder:panel.contentView]; }
     }

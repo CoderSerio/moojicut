@@ -2,7 +2,7 @@
 #import "components/theme/macos/MCChromeTheme.h"
 #import "components/icons/macos/MCIcon.h"
 #import "components/style_controls/macos/MCStylePropertiesView.h"
-#import "plugins/feature/select/macos/MCSelection.h"
+#import "components/selection/macos/MCSelectionSurface.h"
 #include "moonbit.h"
 #include "native/shared/image_session.h"
 #include <math.h>
@@ -296,11 +296,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if (!valid && error) *error = MCEditorError(@"无法读取截图工具配置。");
     return valid;
 }
-@interface MCImageEditorWindow : NSWindow
-@end
-@implementation MCImageEditorWindow
-- (BOOL)canBecomeKeyWindow { return YES; }
-@end
 @class MCImageCanvas;
 @interface MCImageEditorController ()
 @property (nonatomic, readwrite) NSWindow *window;
@@ -371,7 +366,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property NSUndoManager *textUndo;
 @end
 
-@interface MCImageCanvas : NSView <NSTextViewDelegate>
+@interface MCImageCanvas : MCSelectionSurface <NSTextViewDelegate>
 @property (weak) MCImageEditorController *editor;
 @property NSPoint start;
 @property NSDictionary *pending;
@@ -383,8 +378,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property NSDictionary *transformOriginal;
 @property NSDictionary *transformPreview;
 @property NSInteger resizeHandle;
-@property MCSelectionGesture regionGesture;
-@property (readonly) BOOL regionDragging;
 - (NSPoint)imagePoint:(NSEvent *)event;
 - (NSRect)imageFrame;
 - (NSDictionary *)selectedAnnotation;
@@ -444,9 +437,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @end
 
 @implementation MCImageCanvas
-- (BOOL)isFlipped { return YES; }
-- (BOOL)acceptsFirstResponder { return YES; }
-- (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
 - (NSRect)imageFrame {
     if (self.editor.overlayMode) return self.bounds;
     CGFloat width = [self.editor.document[@"width"] doubleValue], height = [self.editor.document[@"height"] doubleValue];
@@ -454,24 +444,14 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     scale = MAX(0.01, scale);
     return NSMakeRect((self.bounds.size.width - width * scale) / 2, (self.bounds.size.height - height * scale) / 2, width * scale, height * scale);
 }
-- (BOOL)regionDragging { return self.regionGesture.active; }
 - (NSRect)captureRect {
     if (self.regionDragging) return self.regionGesture.preview;
     return self.editor.hasCaptureRegion ? MCAnnotationRect(self.editor.document[@"viewport"]) : NSZeroRect;
 }
-- (NSRect)viewRectForImageRect:(NSRect)rect {
-    NSRect image = [self imageFrame];
-    CGFloat scale = image.size.width / [self.editor.document[@"width"] doubleValue];
-    return NSMakeRect(image.origin.x + rect.origin.x * scale, image.origin.y + rect.origin.y * scale,
-                      rect.size.width * scale, rect.size.height * scale);
-}
-- (NSPoint)imagePoint:(NSEvent *)event {
-    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect frame = [self imageFrame];
-    CGFloat scale = frame.size.width / [self.editor.document[@"width"] doubleValue];
-    return NSMakePoint(MAX(0, MIN([self.editor.document[@"width"] doubleValue], (point.x - frame.origin.x) / scale)),
-                       MAX(0, MIN([self.editor.document[@"height"] doubleValue], (point.y - frame.origin.y) / scale)));
-}
+- (NSRect)selectionContentFrame { return self.imageFrame; }
+- (NSSize)selectionContentSize { return NSMakeSize([self.editor.document[@"width"] doubleValue],[self.editor.document[@"height"] doubleValue]); }
+- (NSRect)viewRectForImageRect:(NSRect)rect { return [self selectionViewRect:rect]; }
+- (NSPoint)imagePoint:(NSEvent *)event { return [self selectionPointForEvent:event]; }
 - (NSDictionary *)selectedAnnotation {
     if (self.transformPreview) return self.transformPreview;
     if (self.textDraft) return self.textDraft;
@@ -690,36 +670,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [NSGraphicsContext restoreGraphicsState];
     if (self.editor.overlayMode) {
         NSRect region = [self viewRectForImageRect:[self captureRect]];
-        NSBezierPath *shade = [NSBezierPath bezierPathWithRect:self.bounds];
-        if (!NSIsEmptyRect(region)) [shade appendBezierPathWithRect:region];
-        shade.windingRule = NSWindingRuleEvenOdd;
-        [[NSColor colorWithWhite:0 alpha:0.48] setFill]; [shade fill];
-        if (NSIsEmptyRect(region)) {
-            NSString *hint = @"拖动框选截图范围 · Esc 取消";
-            NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:17 weight:NSFontWeightMedium],
-                NSForegroundColorAttributeName:NSColor.whiteColor};
-            NSSize size = [hint sizeWithAttributes:attributes];
-            [hint drawAtPoint:NSMakePoint((NSWidth(self.bounds) - size.width) / 2, MAX(30, NSHeight(self.bounds) * .12)) withAttributes:attributes];
-        } else {
-            NSBezierPath *border = [NSBezierPath bezierPathWithRect:region];
-            [MCSelectionContrastColor() setStroke]; border.lineWidth = 3.5; [border stroke];
-            [MCSelectionColor() setStroke]; border.lineWidth = 1.5; [border stroke];
-            for (NSInteger handle = 0; handle < 8; handle++) {
-                NSPoint center = [self handlePoint:handle inRect:region];
-                NSBezierPath *dot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 3, center.y - 3, 6, 6)];
-                [MCSelectionHandleColor() setFill]; [dot fill]; [MCSelectionContrastColor() setStroke]; [dot stroke];
-            }
-            NSRect pixels = [self captureRect];
-            NSString *dimensions = [NSString stringWithFormat:@"%.0f × %.0f px", pixels.size.width, pixels.size.height];
-            NSDictionary *attributes = @{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium],
-                NSForegroundColorAttributeName:NSColor.whiteColor};
-            NSSize size = [dimensions sizeWithAttributes:attributes];
-            NSRect label = NSMakeRect(MAX(4, MIN(region.origin.x, NSWidth(self.bounds) - size.width - 16)),
-                MAX(4, region.origin.y - 27), size.width + 12, 22);
-            [[NSColor colorWithWhite:.1 alpha:.9] setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:label xRadius:5 yRadius:5] fill];
-            [dimensions drawAtPoint:NSMakePoint(label.origin.x + 6, label.origin.y + 3) withAttributes:attributes];
-        }
+        [self drawRegion:region dimensions:[self captureRect].size handles:YES hint:@"拖动框选截图范围 · Esc 取消"];
     }
     if ([self selectedAnnotation]) {
         NSRect selection = [self selectionFrame];
@@ -773,9 +724,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSInteger operation = self.editor.overlayMode ? MCSelectionHitTest(self.editor.hasCaptureRegion,
         region, [self viewRectForImageRect:region], self.start, local) : MCSelectionNone;
     if (operation != MCSelectionNone) {
-        NSSize imageSize = NSMakeSize([self.editor.document[@"width"] doubleValue],
-                                     [self.editor.document[@"height"] doubleValue]);
-        if (MCSelectionBegin(&_regionGesture, operation, self.start, region, imageSize)) {
+        if ([self beginRegion:operation event:event rect:region]) {
             self.selectedID = nil;
             [self.editor positionFloatingToolbar];
             self.needsDisplay = YES;
@@ -835,7 +784,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)mouseDragged:(NSEvent *)event {
     if (self.regionDragging) {
-        MCSelectionUpdate(&_regionGesture, [self imagePoint:event]);
+        [self updateRegion:event];
         self.needsDisplay = YES;
         [self.window invalidateCursorRectsForView:self];
         return;
@@ -850,7 +799,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (void)mouseUp:(NSEvent *)event {
     if (self.regionDragging) {
         NSRect rect;
-        if (MCSelectionFinish(&_regionGesture, [self imagePoint:event], &rect)) [self.editor setCaptureRegion:rect];
+        if ([self finishRegion:event rect:&rect]) [self.editor setCaptureRegion:rect];
         [self.editor positionFloatingToolbar]; [self updateTextFrame];
         return;
     }
@@ -871,7 +820,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)cancelGesture {
     self.dragging = NO; self.pending = nil; self.transformOriginal = nil; self.transformPreview = nil;
-    MCSelectionCancel(&_regionGesture);
+    [self cancelRegion];
     [self.editor positionFloatingToolbar];
     [self updateTextFrame]; [self.editor syncTextControls];
 }
@@ -1143,7 +1092,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     if (!self.window) {
         NSScreen *screen = NSScreen.mainScreen ?: NSScreen.screens.firstObject;
         CGFloat width = MIN(1100, screen.visibleFrame.size.width - 80), height = MIN(760, screen.visibleFrame.size.height - 100);
-        self.window = [[MCImageEditorWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
+        self.window = [[MCSelectionWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
         self.window.releasedWhenClosed = NO;
         self.window.delegate = self;
@@ -1215,12 +1164,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [self prepareWindow];
     self.overlayMode = YES;
     self.hasCaptureRegion = NO;
-    self.window.styleMask = NSWindowStyleMaskBorderless;
-    self.window.minSize = NSZeroSize;
-    self.window.level = NSScreenSaverWindowLevel;
-    self.window.hasShadow = NO;
-    self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
-    [self.window setFrame:screenFrame display:NO];
+    [(MCSelectionWindow *)self.window configureForScreenFrame:screenFrame];
     NSView *root = self.window.contentView;
     self.canvas.frame = root.bounds;
     self.canvas.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;

@@ -272,7 +272,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.startRecordingButton.imagePosition = NSImageLeading;
     self.startRecordingButton.bezelStyle = NSBezelStyleRounded;
     self.startRecordingButton.enabled = self.onStartRecording != nil;
-    self.startRecordingButton.toolTip = @"选择一个显示器或窗口；系统声音可选，不录麦克风";
+    self.startRecordingButton.toolTip = @"拖拽框选或单击窗口；系统声音可选，不录麦克风";
     NSView *recordingSpacer = [NSView new];
     [recordingSpacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSStackView *recordingHeading = MCStack(@[MCHeading(@"录屏"), recordingSpacer, self.startRecordingButton], NSUserInterfaceLayoutOrientationHorizontal, 8);

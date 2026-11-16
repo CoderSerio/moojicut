@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 
-// Image-pixel geometry only. The editor owns the document, drawing, focus and
+// Content geometry only: image pixels or display points. The host owns drawing, focus and
 // event routing; a gesture owns no views, callbacks or system resources.
 typedef NS_ENUM(NSInteger, MCSelectionOperation) {
     MCSelectionNone = -3,

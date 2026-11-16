@@ -424,7 +424,7 @@ class NativeBuild:
         selection = shortcuts / "selection"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
                  ROOT / "test/native/selection.m", *native_sources("macos", "feature.select"), archive,
-                 "-framework", "Foundation", "-o", selection)
+                 "-framework", "AppKit", "-o", selection)
         self.run(selection)
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
                  "-I", ROOT, "-I", ROOT / "native/macos", "-DCGPreflightScreenCaptureAccess=MCFakePreflight",

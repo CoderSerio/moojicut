@@ -36,6 +36,12 @@
 - (void)presentEditor:(MCVideoEditor *)editor;
 - (void)selectFilter:(SCContentFilter *)filter;
 - (SCStreamConfiguration *)streamConfiguration;
+- (NSEventModifierFlags)selectionModifierFlags;
+- (void)requestSelectionContent:(void (^)(SCShareableContent *, NSError *))completion;
+- (NSArray<NSScreen *> *)selectionScreens;
+- (void)snapshotDisplay:(SCDisplay *)display completion:(void (^)(NSData *, NSError *))completion;
+- (void)showSelectionWithContent:(SCShareableContent *)content;
+- (void)presentSelection;
 @end
 @interface FixtureStream : NSObject
 @property NSUInteger stops;
@@ -119,9 +125,17 @@ static void SelectionMouse(MCRecordingSelectionView *view, NSEventType type, NSP
     NSEvent *event = [NSEvent mouseEventWithType:type location:[view convertPoint:point toView:nil] modifierFlags:0
         timestamp:0 windowNumber:view.window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1];
     if (type == NSEventTypeMouseMoved) [view mouseMoved:event];
-    else if (type == NSEventTypeLeftMouseDown) [view mouseDown:event];
-    else if (type == NSEventTypeLeftMouseDragged) [view mouseDragged:event];
-    else [view mouseUp:event];
+    else {
+        // Include AppKit hit testing while keeping this automated fixture hidden.
+        // Real WindowServer/global-hotkey delivery is a separate interactive check.
+        static __weak NSView *recipient;
+        if (type == NSEventTypeLeftMouseDown) {
+            recipient=[view.superview hitTest:[view.superview convertPoint:event.locationInWindow fromView:nil]];
+            assert(recipient==view && [recipient acceptsFirstMouse:event]);
+            [recipient mouseDown:event];
+        } else if (type == NSEventTypeLeftMouseDragged) [recipient mouseDragged:event];
+        else { [recipient mouseUp:event]; recipient=nil; }
+    }
 }
 static void SaveView(NSView *view, NSString *name) {
     NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_RECORDING_PREVIEW_DIR"];
@@ -132,9 +146,11 @@ static void SaveView(NSView *view, NSString *name) {
     assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[directory stringByAppendingPathComponent:name] atomically:YES]);
 }
 static void CheckSelection(void) {
-    NSPanel *panel = [[MCRecordingOverlayPanel alloc] initWithContentRect:NSMakeRect(0,0,800,600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
-    panel.releasedWhenClosed = NO;
+    MCSelectionWindow *panel = [[MCSelectionWindow alloc] initWithContentRect:NSMakeRect(0,0,800,600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    panel.releasedWhenClosed = NO; [panel configureForScreenFrame:panel.frame];
+    assert(panel.opaque && !panel.ignoresMouseEvents && panel.canBecomeKeyWindow);
     MCRecordingSelectionView *view = [[MCRecordingSelectionView alloc] initWithFrame:NSMakeRect(0,0,800,600)]; panel.contentView = view;
+    assert([view acceptsFirstMouse:nil]);
     view.windowCandidates = @[@{@"windowID":@42, @"rect":[NSValue valueWithRect:NSMakeRect(80,70,300,220)]},
                              @{@"windowID":@43, @"rect":[NSValue valueWithRect:NSMakeRect(50,50,500,400)]}];
     __block NSUInteger confirms=0, cancels=0; __block NSNumber *windowID=nil; __block NSRect selected; __block BOOL expectedAudio=YES;
@@ -150,6 +166,10 @@ static void CheckSelection(void) {
     SelectionMouse(view,NSEventTypeLeftMouseDown,NSMakePoint(150,100)); SelectionMouse(view,NSEventTypeLeftMouseDragged,NSMakePoint(650,400)); SelectionMouse(view,NSEventTypeLeftMouseUp,NSMakePoint(650,400));
     [view keyDown:enter]; assert(confirms==2 && !windowID && NSEqualRects(selected,NSMakeRect(150,100,500,300)));
     SaveView(view,@"recording-region.png");
+    NSBitmapImageRep *pixels = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+    [view cacheDisplayInRect:view.bounds toBitmapImageRep:pixels];
+    assert([pixels colorAtX:200 y:200].alphaComponent==1); // No clear hole inside the selected region.
+
     // Reuse screenshot resize geometry, then switch back to a window selection.
     SelectionMouse(view,NSEventTypeLeftMouseDown,NSMakePoint(650,250)); SelectionMouse(view,NSEventTypeLeftMouseDragged,NSMakePoint(750,250)); SelectionMouse(view,NSEventTypeLeftMouseUp,NSMakePoint(750,250));
     assert(view.selection.size.width==600 && !view.selectedWindowID);
@@ -164,6 +184,73 @@ static void CheckSelection(void) {
     SaveView(countdown,@"recording-countdown.png"); [countdown keyDown:escape]; assert(cancels==2);
     [(NSButton *)countdown.subviews.firstObject performClick:nil]; assert(cancels==3);
     [panel close];
+}
+@interface FixtureSelectionScreen : NSObject
+@property NSRect frame;
+@property NSDictionary *deviceDescription;
+@end
+@implementation FixtureSelectionScreen
+@end
+@interface FixtureSelectionDisplay : NSObject
+@property CGRect frame;
+@property CGDirectDisplayID displayID;
+@end
+@implementation FixtureSelectionDisplay
+@end
+@interface FixtureSelectionContent : NSObject
+@property NSArray *displays, *windows;
+@end
+@implementation FixtureSelectionContent
+@end
+@interface FixtureSelectionRecorder : FixtureRecorder
+@property NSEventModifierFlags heldModifiers;
+@property NSUInteger contentRequests, presentations;
+@property NSArray *fixtureScreens;
+@property (copy) void (^contentReply)(SCShareableContent *, NSError *);
+@property NSMutableArray *snapshotReplies;
+@end
+@implementation FixtureSelectionRecorder
+- (NSEventModifierFlags)selectionModifierFlags { return self.heldModifiers; }
+- (NSArray *)selectionScreens { return self.fixtureScreens; }
+- (void)requestSelectionContent:(void (^)(SCShareableContent *, NSError *))completion { self.contentRequests++; self.contentReply=completion; }
+- (void)snapshotDisplay:(__unused SCDisplay *)display completion:(void (^)(NSData *, NSError *))completion {
+    if (!self.snapshotReplies) self.snapshotReplies=[NSMutableArray array];
+    [self.snapshotReplies addObject:[completion copy]];
+}
+- (void)presentSelection {
+    self.presentations++;
+    for (NSWindow *window in [self valueForKey:@"selectionPanels"])
+        assert(window.opaque && !window.visible && [(MCRecordingSelectionView *)window.contentView backdrop]);
+}
+@end
+static void CheckSelectionEntry(void) {
+    FixtureSelectionRecorder *recorder=[FixtureSelectionRecorder new];
+    NSMutableArray *screens=[NSMutableArray array],*displays=[NSMutableArray array];
+    for (int i=0;i<2;i++) {
+        FixtureSelectionScreen *screen=[FixtureSelectionScreen new];
+        screen.frame=NSMakeRect(i ? 0 : -320,0,320,240);screen.deviceDescription=@{@"NSScreenNumber":@(900+i)};[screens addObject:screen];
+        FixtureSelectionDisplay *display=[FixtureSelectionDisplay new];display.frame=screen.frame;display.displayID=900+i;[displays addObject:display];
+    }
+    FixtureSelectionContent *content=[FixtureSelectionContent new];content.displays=displays;content.windows=@[];
+    recorder.fixtureScreens=screens;
+    NSBitmapImageRep *bitmap=[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:2 pixelsHigh:2 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:8 bitsPerPixel:32];
+    memset(bitmap.bitmapData,255,16);NSData *png=[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    recorder.heldModifiers=NSEventModifierFlagCommand;[recorder startRecording];assert(recorder.contentRequests==0);
+    recorder.heldModifiers=0;assert(Wait(^BOOL{return recorder.contentRequests==1;},1));
+    recorder.contentReply((SCShareableContent *)content,nil);
+    assert(Wait(^BOOL{return recorder.snapshotReplies.count==2;},1));
+    void (^first)(NSData *,NSError *)=recorder.snapshotReplies[0],(^second)(NSData *,NSError *)=recorder.snapshotReplies[1];
+    second(png,nil);Wait(^BOOL{return recorder.presentations>0;},0.03);assert(recorder.presentations==0);
+    first(png,nil);assert(Wait(^BOOL{return recorder.presentations==1;},1));
+    assert([[recorder valueForKey:@"selectionPanels"] count]==2);
+    [recorder stopRecording];assert(!recorder.busy && ![recorder valueForKey:@"selectionPanels"]);
+    [recorder.snapshotReplies removeAllObjects];[recorder startRecording];assert(recorder.contentRequests==2);
+    recorder.contentReply((SCShareableContent *)content,nil);assert(Wait(^BOOL{return recorder.snapshotReplies.count==2;},1));
+    first=recorder.snapshotReplies[0];second=recorder.snapshotReplies[1];first(png,nil);
+    [recorder stopRecording];second(png,nil);Wait(^BOOL{return recorder.presentations>1;},0.1);
+    assert(recorder.presentations==1 && !recorder.busy && ![recorder valueForKey:@"selectionPanels"]);
+    recorder.heldModifiers=NSEventModifierFlagCommand;[recorder startRecording];[recorder stopRecording];recorder.heldModifiers=0;
+    Wait(^BOOL{return recorder.contentRequests>2;},0.15);assert(recorder.contentRequests==2);
 }
 static void CheckLifecycle(void) {
     FixtureRecorder *recorder = [FixtureRecorder new];
@@ -397,7 +484,7 @@ static void CheckProductionEditor(NSURL *directory) {
 }
 int main(int argc,const char *argv[]) {
     @autoreleasepool {
-        assert(argc==2);moonbit_init();[NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];CheckLifecycle();CheckSelection();
+        assert(argc==2);moonbit_init();[NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];CheckLifecycle();CheckSelection();CheckSelectionEntry();
         NSURL *directory=[NSURL fileURLWithPath:@(argv[1]) isDirectory:YES];NSError *error=nil;
         if(![MCVideoEditor runSmokeInDirectory:directory error:&error]){NSLog(@"Production media smoke: %@",error);return 1;}
         CheckDraftRecovery(directory);CheckProductionEditor(directory);

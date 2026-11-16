@@ -1,4 +1,4 @@
-#import "plugins/feature/select/macos/MCSelection.h"
+#import "components/selection/macos/MCSelection.h"
 #include <math.h>
 #include <stdio.h>
 #include "native/shared/selection.h"

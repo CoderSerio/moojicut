@@ -1,6 +1,6 @@
 #import "MCSelection.h"
 #include <math.h>
-#include "../../../../native/shared/selection.h"
+#include "native/shared/selection.h"
 
 static MCCoreRect CoreRect(NSRect rect) {
     return (MCCoreRect){rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};

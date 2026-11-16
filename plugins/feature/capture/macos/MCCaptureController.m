@@ -1,4 +1,6 @@
 #import "MCCaptureController.h"
+#import "components/desktop_capture/macos/MCDesktopSnapshot.h"
+#import "components/selection/macos/MCSelectionSurface.h"
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
 #import <CoreGraphics/CoreGraphics.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
@@ -258,30 +260,9 @@ static NSError *MCCaptureError(NSString *message) {
 - (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
         exceptingWindows:(NSArray<SCWindow *> *)windows
             completion:(void (^)(NSData *, NSError *))completion {
-    if (@available(macOS 14.0, *)) {
-        SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display
-            excludingApplications:applications exceptingWindows:windows];
-        SCStreamConfiguration *configuration = [SCStreamConfiguration new];
-        configuration.width = (size_t)llround(filter.contentRect.size.width * filter.pointPixelScale);
-        configuration.height = (size_t)llround(filter.contentRect.size.height * filter.pointPixelScale);
-        configuration.showsCursor = NO;
-        if (!configuration.width || !configuration.height || configuration.width > 32768 || configuration.height > 32768 ||
-            configuration.width * configuration.height > 80000000) {
-            completion(nil, MCCaptureError(@"屏幕尺寸无法处理，请调整显示器分辨率后重试。"));
-            return;
-        }
-        [SCScreenshotManager captureImageWithFilter:filter configuration:configuration
-            completionHandler:^(CGImageRef image, NSError *error) {
-                @autoreleasepool {
-                    NSData *png = image ? [[[NSBitmapImageRep alloc] initWithCGImage:image]
-                        representationUsingType:NSBitmapImageFileTypePNG properties:@{}] : nil;
-                    completion(png, error ?: (png ? nil : MCCaptureError(@"系统未能生成屏幕快照，请检查屏幕录制权限。")));
-                }
-            }];
-    } else {
-        completion(nil, MCCaptureError(@"原地截图需要 macOS 14 或更新版本。"));
-    }
+    MCDesktopSnapshot(display,applications,windows,completion);
 }
+
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error {
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:snapshot[@"png"] error:error];
     if (self.toolConfiguration) [editor applyToolConfiguration:self.toolConfiguration];
@@ -376,23 +357,14 @@ static NSError *MCCaptureError(NSString *message) {
 }
 - (NSEventModifierFlags)captureModifierFlags { return NSEvent.modifierFlags; }
 - (void)captureWhenKeysReleased:(NSString *)session attempts:(NSUInteger)attempts {
-    if (![self.captureSession isEqualToString:session]) return;
-    NSEventModifierFlags held = [self captureModifierFlags] & (NSEventModifierFlagCommand | NSEventModifierFlagShift |
-        NSEventModifierFlagControl | NSEventModifierFlagOption);
-    if (held) {
-        if (attempts >= 40) {
-            [self failSession:session error:MCCaptureError(@"请松开快捷键后再试一次。")];
-            return;
-        }
-        __weak MCCaptureController *weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-            [weakSelf captureWhenKeysReleased:session attempts:attempts + 1];
-        });
-        return;
-    }
-    // Filtering removes host controls without waiting for a hide animation.
-    [self captureDisplaysForSession:session];
+    __weak MCCaptureController *weakSelf = self;
+    MCSelectionWhenKeysReleased(attempts, ^BOOL{ return [weakSelf.captureSession isEqualToString:session]; },
+        ^NSEventModifierFlags{ return [weakSelf captureModifierFlags]; }, ^(BOOL released) {
+        if (released) [weakSelf captureDisplaysForSession:session];
+        else [weakSelf failSession:session error:MCCaptureError(@"请松开快捷键后再试一次。")];
+    });
 }
+
 - (void)capture {
     NSAssert(NSThread.isMainThread, @"Capture is a main-thread operation");
     if (self.editor) { [self.editor show]; return; }

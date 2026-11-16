@@ -31,9 +31,17 @@
         "sources": ["components/shared_canvas/macos/MCSharedCanvas.m"],
         "requires": []
       },
-      "feature.select": {
-        "sources": ["plugins/feature/select/macos/MCSelection.m"],
+      "component.selection": {
+        "sources": ["components/selection/macos/MCSelection.m", "components/selection/macos/MCSelectionSurface.m"],
         "requires": []
+      },
+      "component.desktop_capture": {
+        "sources": ["components/desktop_capture/macos/MCDesktopSnapshot.m"],
+        "requires": []
+      },
+      "feature.select": {
+        "sources": [],
+        "requires": ["component.selection"]
       },
       "feature.image_editor": {
         "sources": ["plugins/feature/image_editor/macos/MCImageEditorController.m"],
@@ -41,7 +49,7 @@
       },
       "feature.capture": {
         "sources": ["plugins/feature/capture/macos/MCCaptureController.m"],
-        "requires": ["feature.image_editor"]
+        "requires": ["feature.image_editor", "component.desktop_capture"]
       },
       "feature.capture_text": {
         "sources": ["plugins/feature/capture_text/macos/MCTextRecognitionService.m", "plugins/feature/capture_text/macos/MCTextToolsController.m", "plugins/feature/capture_text/macos/MCTranslationBridge.swift"],
@@ -61,7 +69,7 @@
       },
       "feature.recording": {
         "sources": ["plugins/feature/recording/macos/MCMacRecordingController.m", "plugins/feature/recording/macos/MCRecordingSelectionView.m"],
-        "requires": ["feature.video_editor", "feature.select"]
+        "requires": ["feature.video_editor", "component.selection", "component.desktop_capture"]
       }
     },
     "windows": {

@@ -1,5 +1,5 @@
 #import "MCRecordingSelectionView.h"
-#import "plugins/feature/select/macos/MCSelection.h"
+#import "components/selection/macos/MCSelection.h"
 #include <math.h>
 
 @implementation MCRecordingOverlayPanel
@@ -14,7 +14,6 @@
 @property NSNumber *hoverWindowID;
 @property BOOL selected, dragging, includesAudio;
 @property NSPoint anchor;
-@property MCSelectionGesture gesture;
 @property NSVisualEffectView *controls;
 @property NSButton *audioButton;
 @end
@@ -41,8 +40,7 @@
     }
     return self;
 }
-- (BOOL)isFlipped { return YES; }
-- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)isOpaque { return YES; }
 - (void)updateTrackingAreas {
     for (NSTrackingArea *area in self.trackingAreas.copy) [self removeTrackingArea:area];
     [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect owner:self userInfo:nil]];
@@ -95,25 +93,24 @@
     self.anchor = point; self.dragging = NO;
     NSInteger operation = self.selected ? MCSelectionHitTest(YES,self.selection,self.selection,point,point) : MCSelectionNone;
     if (operation == MCSelectionNone) operation = MCSelectionCreate;
-    MCSelectionGesture gesture = {0}; MCSelectionBegin(&gesture,operation,point,self.selection,self.bounds.size); self.gesture = gesture;
+    [self beginRegion:operation event:event rect:self.selection];
     if (operation == MCSelectionCreate) { [self resetSelection]; [self updateHover:point]; }
 }
 - (void)mouseDragged:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     if (!self.dragging && hypot(point.x-self.anchor.x,point.y-self.anchor.y) < 3) return;
     self.dragging = YES; self.selectedWindowID = nil;
-    MCSelectionGesture gesture = self.gesture; MCSelectionUpdate(&gesture,point); self.gesture = gesture;
-    self.selection = gesture.preview; self.selected = YES; self.controls.hidden = YES; self.needsDisplay = YES;
+    [self updateRegion:event];
+    self.selection = self.regionGesture.preview; self.selected = YES; self.controls.hidden = YES; self.needsDisplay = YES;
 }
 - (void)mouseUp:(NSEvent *)event {
     if (self.dragging) {
-        MCSelectionGesture gesture = self.gesture; NSRect rect = self.selection;
-        self.selected = MCSelectionFinish(&gesture,[self convertPoint:event.locationInWindow fromView:nil],&rect);
-        self.gesture = gesture; self.selection = rect;
+        NSRect rect = self.selection;
+        self.selected = [self finishRegion:event rect:&rect]; self.selection = rect;
     } else if (!self.selected) {
         self.selection = self.hoverRect; self.selectedWindowID = self.hoverWindowID; self.selected = !NSIsEmptyRect(self.selection);
     }
-    self.dragging = NO;
+    self.dragging = NO; [self cancelRegion];
     if (self.selected) {
         CGFloat x = MAX(6,MIN(NSMaxX(self.selection)-180,self.bounds.size.width-186));
         CGFloat y = NSMaxY(self.selection)+8;
@@ -123,18 +120,15 @@
     self.needsDisplay = YES; [self.window invalidateCursorRectsForView:self];
 }
 - (void)drawRect:(__unused NSRect)dirtyRect {
+    // Like screenshot selection, the whole surface contains frozen pixels.
+    // A transparent hover/selection hole must never expose the window beneath
+    // as a competing mouse target.
+    [NSColor.blackColor setFill]; NSRectFill(self.bounds);
+    [self.backdrop drawInRect:self.bounds fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
     NSRect rect = self.selected ? self.selection : self.hoverRect;
-    NSBezierPath *shade = [NSBezierPath bezierPathWithRect:self.bounds];
-    if (!NSIsEmptyRect(rect)) [shade appendBezierPathWithRect:rect];
-    shade.windingRule = NSWindingRuleEvenOdd; [[[NSColor blackColor] colorWithAlphaComponent:0.32] setFill]; [shade fill];
-    if (NSIsEmptyRect(rect)) return;
-    [NSColor.whiteColor setStroke]; NSBezierPath *border = [NSBezierPath bezierPathWithRect:NSInsetRect(rect,0.5,0.5)]; border.lineWidth = 1; [border stroke];
-    if (self.selected) for (NSInteger i=0;i<8;i++) {
-        NSPoint p = MCSelectionHandlePoint(i,rect); [NSColor.whiteColor setFill]; NSRectFill(NSMakeRect(p.x-2,p.y-2,4,4));
-    }
-    NSString *size = [NSString stringWithFormat:@"%.0f × %.0f",rect.size.width,rect.size.height];
-    NSDictionary *attributes = @{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium],NSForegroundColorAttributeName:NSColor.whiteColor,NSBackgroundColorAttributeName:[NSColor colorWithWhite:0.1 alpha:0.85]};
-    [size drawAtPoint:NSMakePoint(MAX(4,rect.origin.x+4),MAX(4,rect.origin.y-20)) withAttributes:attributes];
+    CGFloat scale = self.backdrop.size.width > 0 ? self.backdrop.size.width/NSWidth(self.bounds) : 1;
+    [self drawRegion:rect dimensions:NSMakeSize(rect.size.width*scale,rect.size.height*scale)
+        handles:self.selected hint:@"拖动框选录屏范围 · Esc 取消"];
 }
 @end
 
