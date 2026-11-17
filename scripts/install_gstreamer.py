@@ -113,11 +113,11 @@ def plugin_metadata(output, home, package):
     # Factory output starts with Factory Details, then Plugin Details. These
     # unlocalized field names are forced by the subprocess C locale.
     for key in ("Name", "Filename", "Version", "License", "Source module", "Binary package", "Origin URL"):
-        match = re.search(r"^\s+" + re.escape(key) + r"\s+(.+?)\s*$", output, re.M)
+        match = re.search(r"^[ \t]+" + re.escape(key) + r"[ \t]+([^\r\n]+)\r?$", output, re.M)
         if match:
-            fields[key] = match[1]
-    # The SHA-locked Windows SDK has GES 1.28.8.1 alongside GStreamer
-    # 1.28.8. Keep exact component versions; a shared prefix is not sufficient.
+            fields[key] = match[1].strip()
+    # Component versions in the SHA-locked SDK can differ from GStreamer.
+    # Keep exact versions; a shared prefix is not sufficient.
     version = package.get("component_versions", {}).get(fields.get("Source module"), package["version"])
     if fields.get("Version") != version or not fields.get("License") or not fields.get("Filename"):
         raise ValueError("SDK factory lacks the expected version/license/path: " + repr(fields))
@@ -188,35 +188,71 @@ def verify_sdk(home, package, execute=run):
     home = Path(home).resolve()
     if list(home.glob("unins*.exe")):
         raise ValueError("Unexpected uninstaller: the SDK must be installed in portable mode")
-    for relative in package["required_files"] + ["lib/" + name for name in package["link_libraries"]]:
-        require_private_file(home, relative)
+    errors, missing = [], set()
+    required = package["required_files"] + ["lib/" + name for name in package["link_libraries"]]
+    for relative in required:
+        try:
+            require_private_file(home, relative)
+        except ValueError as error:
+            errors.append(str(error))
+            missing.add(relative)
+    print("SDK required files:", len(required) - len(missing), "present; missing/unusable:",
+          ", ".join(sorted(missing)) or "none", flush=True)
+    license_root = home / "share/licenses"
+    actual_license_dirs = sorted(path.name for path in license_root.iterdir() if path.is_dir()) if license_root.is_dir() else []
+    print("SDK license directories:", ", ".join(actual_license_dirs) or "none", flush=True)
     for relative in package["required_license_dirs"]:
-        directory = home / "share/licenses" / relative
+        directory = license_root / relative
         if not directory.is_dir() or not any(path.is_file() for path in directory.rglob("*")):
-            raise ValueError("Missing SDK license inventory: " + str(directory))
+            errors.append("Missing SDK license inventory: " + str(directory))
     scratch = home / ".moojicut"
     scratch.mkdir(exist_ok=True)
     environment = sdk_environment(home)
     inspector = home / "bin/gst-inspect-1.0.exe"
-    version_output = execute([inspector, "--version"], env=environment)
-    if not re.search(r"\bGStreamer\s+" + re.escape(package["version"]) + r"(?:\s|$)", version_output):
-        raise ValueError("Unexpected private GStreamer version: " + version_output)
+    can_inspect = "bin/gst-inspect-1.0.exe" not in missing
+    if can_inspect:
+        try:
+            version_output = execute([inspector, "--version"], env=environment)
+            print("SDK inspector:\n" + version_output.rstrip(), flush=True)
+            if not re.search(r"\bGStreamer\s+" + re.escape(package["version"]) + r"(?:\s|$)", version_output):
+                errors.append("Unexpected private GStreamer version: " + version_output)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            errors.append("SDK inspector cannot run: " + str(error))
+            can_inspect = False
     factories = {}
+
+    def inspect_factory(factory, optional=False):
+        if not can_inspect:
+            return False
+        try:
+            text = execute([inspector, factory], env=environment)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            message = "SDK factory " + factory + " unavailable: " + str(error)
+            print(message, flush=True)
+            if not optional:
+                errors.append(message)
+            return False
+        try:
+            metadata = plugin_metadata(text, home, package)
+        except ValueError as error:
+            message = "SDK factory " + factory + ": " + str(error)
+            print(message, flush=True)
+            errors.append(message)
+            return False
+        print("SDK factory " + factory + ": " + json.dumps(metadata, sort_keys=True), flush=True)
+        factories[factory] = metadata
+        return True
+
     for factory in package["required_factories"]:
-        text = execute([inspector, factory], env=environment)
-        factories[factory] = plugin_metadata(text, home, package)
+        inspect_factory(factory)
     codecs = {}
     for codec, candidates in package["encoder_alternatives"].items():
         codecs[codec] = []
         for candidate in candidates:
-            try:
-                text = execute([inspector, candidate], env=environment)
-            except RuntimeError:
-                continue
-            factories[candidate] = plugin_metadata(text, home, package)
-            codecs[codec].append(candidate)
+            if inspect_factory(candidate, optional=True):
+                codecs[codec].append(candidate)
         if not codecs[codec]:
-            raise ValueError("No private SDK encoder available for " + codec)
+            errors.append("No private SDK encoder available for " + codec)
     source = scratch / "sdk-probe.c"
     source.write_text(PROBE, encoding="utf-8")
     executable = scratch / "sdk-probe.exe"
@@ -224,17 +260,27 @@ def verify_sdk(home, package, execute=run):
     # Use the developer shell only for compilation. Running the resulting EXE
     # uses the isolated runtime environment, so installed plugins cannot hide
     # missing files. Allocations are freed by the matching GLib/GStreamer APIs.
-    execute(["cl", "/nologo", "/std:c11", "/MD", "/W4", "/WX", *includes, source,
-             "/Fo" + str(scratch / "sdk-probe.obj"), "/Fe" + str(executable),
-             "/link", *libraries], cwd=scratch)
-    probe_output = execute([executable], env=environment)
-    ges_version = package["component_versions"]["gst-editing-services"]
-    if not re.search(r"^GES " + re.escape(ges_version) + r"\s*$", probe_output, re.M):
-        raise ValueError("Wrong GES ABI/runtime version: " + probe_output)
-    majors = package["libav"]["abi_majors"]
-    expected = "libav ABI " + " ".join(str(majors[name]) for name in ("avformat", "avcodec", "avutil"))
-    if expected + "; mov demux/mp4 mux available" not in probe_output:
-        raise ValueError("Expected private libav headers/import libraries/MP4 support unavailable: " + probe_output)
+    probe_output = ""
+    if not any(path.startswith("include/") or path.endswith(".lib") for path in missing):
+        try:
+            execute(["cl", "/nologo", "/std:c11", "/MD", "/W4", "/WX", *includes, source,
+                     "/Fo" + str(scratch / "sdk-probe.obj"), "/Fe" + str(executable),
+                     "/link", *libraries], cwd=scratch)
+            probe_output = execute([executable], env=environment)
+            print("SDK ABI probe:\n" + probe_output.rstrip(), flush=True)
+            ges_version = package["component_versions"]["gst-editing-services"]
+            if not re.search(r"^GES " + re.escape(ges_version) + r"\s*$", probe_output, re.M):
+                errors.append("Wrong GES ABI/runtime version: " + probe_output)
+            majors = package["libav"]["abi_majors"]
+            expected = "libav ABI " + " ".join(str(majors[name]) for name in ("avformat", "avcodec", "avutil"))
+            if expected + "; mov demux/mp4 mux available" not in probe_output:
+                errors.append("Expected private libav headers/import libraries/MP4 support unavailable: " + probe_output)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            errors.append("SDK ABI probe failed: " + str(error))
+    else:
+        print("SDK ABI probe unavailable: required headers/import libraries are missing", flush=True)
+    if errors:
+        raise ValueError("SDK verification failed:\n" + "\n".join(errors))
     licenses = []
     for path in sorted((home / "share/licenses").rglob("*")):
         if path.is_file():

@@ -319,6 +319,7 @@ class GStreamerRuntimeTest(unittest.TestCase):
         self.assertEqual(set(report["plugins"]), set(self.plugin_factories))
         self.assertEqual(report["plugins"]["nle"]["Version"], "1.28.8.1")
         self.assertEqual(report["plugins"]["ges"]["Version"], "1.28.8.1")
+        self.assertEqual(report["plugins"]["soundtouch"]["Version"], "1.28.8.1")
         self.assertEqual(set(report["factories"]),
                          {factory for factories in self.plugin_factories.values() for factory in factories})
         self.assertFalse(report["redistribution_approved"])

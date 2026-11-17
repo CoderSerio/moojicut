@@ -352,3 +352,5 @@ E0 媒体探针使用隔离的官方 GStreamer/GES 1.28.9，在 macOS arm64 实�
 - **本批尚未跑 Windows/Linux 目标 CI。** 两端窗口与录制交接已接线；macOS 仍用现有宿主会话。上节绿色 CI 不覆盖本批改动；发行包仍为 alpha.20。Linux 新媒体链暂按 Ubuntu 22.04 的 FFmpeg 58/58/56 ABI 构建，不能据 glibc 版本声称同包支持 Ubuntu 24.04；后者的构建/制品及更新选包仍待补齐，不能做 SONAME 软链接冒充兼容。
 
 下一交付边界是本批正式录后编辑流程与运行库合批通过目标 CI。截图完整共享属性 UI、用户插件 v2、独立 CLI、OCR/翻译、录屏音源/暂停、Ubuntu 24.04 交付及旧原生职责迁移继续保留为未完成项；用户后续组织实机效果验收。
+
+E1 首轮目标运行已经暴露实际差异，**目前仍未通过**：[429b14e 的 CI](https://github.com/CoderSerio/moojicut/actions/runs/44187534573) 中 Linux 严格编译成功，但 GES 1.20 下的 3× 视频时间映射、MP4 尾端音频共 6 项断言失败，取消释放另触发 GObject critical；Windows 暂停在官方 SDK 子组件精确版本校验，尚未进入本批媒体编译。后续运行收齐独立媒体 fixture 的结果，并保留取消栈与生成媒体作诊断；不关闭断言或放宽版本/资源校验来换取绿灯。

@@ -62,6 +62,11 @@ class MediaTests:
         self.runtime_env.update(G_DEBUG="fatal-criticals", GST_DEBUG="0", LC_ALL="C", LANG="C")
 
     def run(self, *command, runtime=False, log=None):
+        if runtime and self.system == "linux" and self.env.get("MOOJICUT_MEDIA_DEBUGGER") == "1":
+            command = ("gdb", "--batch", "--return-child-result",
+                       "-ex", "set pagination off", "-ex", "set debuginfod enabled off",
+                       "-ex", "handle SIGPIPE nostop noprint pass",
+                       "-ex", "run", "-ex", "thread apply all bt", "--args", *command)
         print("+", " ".join(map(str, command)), flush=True)
         try:
             result = subprocess.run(list(map(str, command)), cwd=ROOT,
@@ -94,7 +99,7 @@ class MediaTests:
                 self.run("cl", "/nologo", "/utf-8", "/MT", "/O2", "/W4", "/WX", "/std:c11",
                          "/I" + str(ROOT), *self.includes, "/Fo" + str(obj), "/c", unit)
             else:
-                self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                self.run("cc", "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror",
                          "-I", ROOT, *self.includes, "-c", unit, "-o", obj)
             objects.append(obj)
         self.fixtures = {}
@@ -109,7 +114,7 @@ class MediaTests:
                 self.run("cl", "/nologo", obj, *objects, "/Fe" + str(executable),
                          "/link", "/SUBSYSTEM:CONSOLE", *self.libraries)
             else:
-                self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                self.run("cc", "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror",
                          "-I", ROOT, *self.includes, fixture, *objects, *self.libraries, "-lm", "-o", executable)
             self.fixtures[name] = executable
 
@@ -130,7 +135,7 @@ class MediaTests:
                      "/link", "/SUBSYSTEM:CONSOLE", "/IMPLIB:" + str(self.directory / "host.lib"),
                      *self.libraries, "oldnames.lib", "advapi32.lib", "dbghelp.lib")
         else:
-            self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+            self.run("cc", "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
                      "-I", Path(moon_home) / "include", *self.includes, *sources, source, core_archive,
                      *self.libraries, "-lm", "-o", executable)
         self.run(executable, self.directory / "host-media", runtime=True, log="video-editor-host.log")
@@ -138,20 +143,38 @@ class MediaTests:
     def test(self, core_archive=None, moon_home=None):
         self.compile()
         media = self.directory / "media"
-        self.run(self.fixtures["gst-media"], media, runtime=True, log="gst-media.log")
-        # The mux test must receive the raw encoder intermediate, not an MP4
-        # whose priming has already been compensated.
-        self.run(self.fixtures["mp4-mux"], media / "identity-raw.mp4", self.directory / "mux",
-                 runtime=True, log="mp4-mux.log")
-        self.run(self.fixtures["media-worker"], self.directory / "worker", runtime=True, log="media-worker.log")
-        self.run(self.fixtures["media-waveform"], self.directory / "waveform", runtime=True, log="media-waveform.log")
+        checks, failures = [], {}
+
+        def attempt(name, action):
+            checks.append(name)
+            try:
+                action()
+            except (RuntimeError, subprocess.TimeoutExpired) as error:
+                # Each fixture owns a separate process and output directory.
+                # Preserve all independent evidence in one CI run; any failure
+                # still rejects the build after results/logs have been saved.
+                failures[name] = str(error)
+                print(f"FAILED {name}: {error}", file=sys.stderr, flush=True)
+
+        attempt("gst-media", lambda: self.run(self.fixtures["gst-media"], media, runtime=True, log="gst-media.log"))
+        # A failed later preview/cancel assertion may still leave this complete
+        # raw export. The mux fixture validates it independently. If absent or
+        # incomplete it fails too; never substitute an already corrected MP4.
+        attempt("mp4-mux", lambda: self.run(self.fixtures["mp4-mux"], media / "identity-raw.mp4",
+                self.directory / "mux", runtime=True, log="mp4-mux.log"))
+        attempt("media-worker", lambda: self.run(self.fixtures["media-worker"], self.directory / "worker",
+                runtime=True, log="media-worker.log"))
+        attempt("media-waveform", lambda: self.run(self.fixtures["media-waveform"], self.directory / "waveform",
+                runtime=True, log="media-waveform.log"))
         if core_archive is not None:
-            self.host_test(core_archive, moon_home)
-        checks = [*self.fixtures, *(["video-editor-host"] if core_archive is not None else [])]
-        result = {"platform": self.system, "checks": checks, "result": "passed",
+            attempt("video-editor-host", lambda: self.host_test(core_archive, moon_home))
+        result = {"platform": self.system, "checks": checks, "result": "failed" if failures else "passed",
+                  "failures": failures,
                   "runtime": "relocated private subset" if self.system == "windows" else "distribution packages",
                   "scope": "Actual media and worker behavior; GUI, capture devices and permissions are separate gates."}
         (self.directory / "results.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        if failures:
+            raise RuntimeError("Media checks failed: " + ", ".join(failures))
         return result
 
 

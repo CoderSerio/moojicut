@@ -3,8 +3,11 @@
   "purpose": "Private development SDK; this is not a redistributable runtime whitelist.",
   "windows-x86_64": {
     "version": "1.28.8",
-    "component_versions": {"gst-editing-services": "1.28.8.1"},
-    "component_version_evidence": "The SHA256-locked official Windows installer reports nle / gst-editing-services 1.28.8.1: https://github.com/CoderSerio/moojicut/actions/runs/44186536707/job/134404454630 . The SDK probe also requires the GES library and headers to agree exactly.",
+    "component_versions": {"gst-editing-services": "1.28.8.1", "gst-plugins-bad": "1.28.8.1"},
+    "component_version_evidence": [
+      "The SHA256-locked official Windows installer reports nle / gst-editing-services 1.28.8.1: https://github.com/CoderSerio/moojicut/actions/runs/44186536707/job/134404454630 . The SDK probe also requires the GES library and headers to agree exactly.",
+      "The same archive reports soundtouch / gst-plugins-bad 1.28.8.1: https://github.com/CoderSerio/moojicut/actions/runs/44187534573/job/134407951270 ."
+    ],
     "toolchain": "MSVC x86_64, VS 2022 Release CRT",
     "url": "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe",
     "checksum_url": "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe.sha256sum",

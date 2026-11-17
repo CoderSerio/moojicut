@@ -410,10 +410,21 @@ static void case_test(const char *directory, const char *source, const char *nam
 
 static gboolean edge_tone(const Decoded *decoded, double ms) {
     guint start = (guint)(ms * RATE / 1000.0), count = RATE / 100;
-    if (start + count > decoded->audio->len) return FALSE;
+    if (start + count > decoded->audio->len) {
+        g_snprintf(error_text, sizeof error_text,
+            "edge at %.3fms needs samples [%u,%u), decoded only %u samples (%.3fms)",
+            ms, start, start + count, decoded->audio->len,
+            (double)decoded->audio->len * 1000.0 / RATE);
+        return FALSE;
+    }
     double sum = 0;
     for (guint i = start; i < start + count; i++) {
-        if (!decoded->coverage->data[i]) return FALSE;
+        if (!decoded->coverage->data[i]) {
+            g_snprintf(error_text, sizeof error_text,
+                "edge at %.3fms has no decoded audio at sample %u (%.3fms); decoded extent %.3fms",
+                ms, i, (double)i * 1000.0 / RATE, (double)decoded->audio->len * 1000.0 / RATE);
+            return FALSE;
+        }
         double value = g_array_index(decoded->audio, float, i);
         sum += value * value;
     }
@@ -517,7 +528,9 @@ static void cancel_test(const char *directory, const char *source) {
         check(mc_gst_engine_render(engine, path, false, error_text, sizeof error_text), "cancelled render starts");
         check(mc_gst_engine_poll(engine, error_text, sizeof error_text) == MC_GST_RUNNING,
             "cancellation occurs before render EOS");
+        puts("INFO cancellation entering synchronous NULL/free barrier"); fflush(stdout);
         mc_gst_engine_free(engine); /* Synchronous NULL barrier, not an optimistic cancellation ACK. */
+        puts("INFO cancellation completed synchronous NULL/free barrier"); fflush(stdout);
         check(!g_file_test(path, G_FILE_TEST_EXISTS) || g_remove(path) == 0,
             "cancel NULL barrier releases the output file");
         engine = mc_gst_engine_new(source, &plan, error_text, sizeof error_text);
