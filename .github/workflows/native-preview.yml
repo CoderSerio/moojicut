@@ -31,6 +31,7 @@ on:
       - scripts/media_tests.py
       - scripts/install_linux_gstreamer.py
       - scripts/linux_media_runtime.py
+      - scripts/linux_package_check.py
       - scripts/generate_icons.py
       - assets/icons/**
       - assets/brand/mooji-cut/**
@@ -135,6 +136,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/gstreamer-archives
           key: gstreamer-msvc-x64-${{ hashFiles('build/gstreamer-sdk.json') }}
+          restore-keys: gstreamer-msvc-x64-
       - name: Install and validate private Windows media SDK
         if: runner.os == 'Windows'
         shell: pwsh
@@ -156,6 +158,7 @@ jobs:
         env:
           MOOJICUT_X11_INPUT_SMOKE: '1'
           MOOJICUT_MEDIA_DEBUGGER: '1'
+          MOOJICUT_COMPATIBILITY_KIT: '1'
         run: xvfb-run -a dbus-run-session -- python scripts/desktop.py release --release-version "$PREVIEW_VERSION"
       - name: Check generated interfaces match the checkout
         if: ${{ always() && steps.moon_install.outcome == 'success' }}
@@ -172,6 +175,14 @@ jobs:
           path: dist/releases/*
           if-no-files-found: error
           retention-days: 14
+      - name: Upload Linux compatibility fixtures
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-compatibility-fixtures
+          path: .artifacts/linux/compatibility/fixture-kit.tar.gz
+          if-no-files-found: error
+          retention-days: 7
       - name: Upload media diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -198,3 +209,43 @@ jobs:
             .artifacts/${{ matrix.platform }}/video-editor-*/*.bmp
           if-no-files-found: ignore
           retention-days: 14
+
+  linux-package-compatibility:
+    name: Ubuntu 24 same-package checks
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install desktop runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-0t64 libayatana-appindicator3-1 libcurl4t64 libportal-gtk3-1 libpulse0 libpipewire-0.3-0t64 xvfb dbus-x11 fonts-noto-cjk libxtst6
+      - uses: actions/download-artifact@v4
+        with:
+          name: preview-linux-x64
+          path: .artifacts/linux-compatibility/package
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-compatibility-fixtures
+          path: .artifacts/linux-compatibility/fixtures
+      - name: Check Ubuntu 22 package without rebuilding
+        run: |
+          xvfb-run -a dbus-run-session -- python scripts/linux_package_check.py \
+            --package .artifacts/linux-compatibility/package/moojicut-*-linux-x64.tar.gz \
+            --fixtures .artifacts/linux-compatibility/fixtures/fixture-kit.tar.gz \
+            --output .artifacts/linux-compatibility/results --commit "$GITHUB_SHA"
+      - name: Upload compatibility results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-ubuntu24-results
+          path: |
+            .artifacts/linux-compatibility/results/results.json
+            .artifacts/linux-compatibility/results/**/*.log
+            .artifacts/linux-compatibility/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 7

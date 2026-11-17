@@ -63,6 +63,15 @@
       "aac": ["avenc_aac"]
     },
     "required_license_dirs": ["gstreamer-1.0", "gst-editing-services-1.0", "soundtouch", "ffmpeg"],
+    "msvc_redist": {
+      "provider": "Active Visual Studio 2022 VC/Redist/MSVC/<version>/x64/Microsoft.VC143.CRT; release desktop x64 only",
+      "redistribution_list": "https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution#visual-c-runtime-files",
+      "deployment_evidence": "https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170#install-individual-redistributable-files",
+      "license_terms": "https://visualstudio.microsoft.com/license-terms/vs2022-ga-proenterprise/",
+      "license_document": "https://visualstudio.microsoft.com/wp-content/uploads/2021/11/Visual-Studio-2022-Enterprise-Professional-License-EN.docx",
+      "distribution_conditions": "VS2022 Enterprise/Professional Full-use section 5(b) requires protective terms agreed by distributors and external end users; section 8 requires preserving Microsoft and supplier notices. This provenance record does not satisfy or approve those distribution conditions.",
+      "scope": "Unmodified dependency-reachable DLLs beside the application EXE. Verify Microsoft Authenticode, file version >= active compiler, x64 PE and SHA256. Never copy debug_nonredist, System32 or arbitrary PATH files. Local deployment requires application updates to service these libraries; distribution remains subject to the applicable Visual Studio license terms."
+    },
     "libav": {
       "recipe_version": "7.1",
       "abi_majors": {"avformat": 61, "avcodec": 61, "avutil": 59},

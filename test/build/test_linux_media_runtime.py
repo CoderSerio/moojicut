@@ -105,6 +105,23 @@ class LinuxMediaRuntimeTest(unittest.TestCase):
         self.binary("lib/libavformat.so.61", [], "libavformat.so.60")
         with self.assertRaises(ValueError): runtime.dependency_closure(self.home, [seed], self.tools)
 
+    def test_unused_sdk_libraries_are_not_selected_but_referenced_abis_stay_strict(self):
+        seed = self.binary("bin/probe", ["libavformat.so.61"])
+        library = self.binary("lib/libavformat.so.61", [], "libavformat.so.61")
+        # FFmpeg installs avdevice even with --disable-devices. Its presence
+        # does not make it an application dependency or an approved runtime ABI.
+        for name in ("libavdevice.so.61", "libavcodec.so.58", "libx264.so.163"):
+            self.binary("lib/" + name, [], name)
+        closure, _ = runtime.dependency_closure(self.home, [seed], self.tools)
+        self.assertEqual({item[0] for item in closure.values()}, {seed, library})
+        for name in ("libavdevice.so.61", "libavcodec.so.58", "libx264.so.163"):
+            with self.subTest(name=name):
+                self.binary("bin/probe", [name])
+                with self.assertRaises(ValueError):
+                    runtime.dependency_closure(self.home, [seed], self.tools)
+                with self.assertRaises(ValueError):
+                    runtime.dependency_closure(self.home, [self.home / "lib" / name], self.tools)
+
     def test_orc_must_follow_the_private_simd_build_and_not_system_fallback(self):
         seed = self.binary("bin/probe", ["liborc-0.4.so.0"])
         with self.assertRaisesRegex(ValueError, "system fallback forbidden"):
@@ -179,6 +196,7 @@ class LinuxMediaRuntimeTest(unittest.TestCase):
         self.binary("lib/libgstreamer-1.0.so.0", ["libglib-2.0.so.0"], "libgstreamer-1.0.so.0")
         self.binary("lib/libavformat.so.61", ["libc.so.6"], "libavformat.so.61")
         self.binary("lib/libgstnet-1.0.so.0", ["libc.so.6"], "libgstnet-1.0.so.0")
+        self.binary("lib/libavdevice.so.61", ["libavformat.so.61"], "libavdevice.so.61")
         self.binary("lib/gstreamer-1.0/libgstcoreelements.so", ["libgstreamer-1.0.so.0"])
         self.binary("libexec/gstreamer-1.0/gst-plugin-scanner", ["libgstreamer-1.0.so.0"])
         self.binary("bin/gst-inspect-1.0", ["libgstreamer-1.0.so.0", "libgstnet-1.0.so.0"])
@@ -203,6 +221,7 @@ class LinuxMediaRuntimeTest(unittest.TestCase):
         self.assertTrue((destination / runtime.SCANNER).is_file())
         self.assertFalse((destination / runtime.INSPECTOR).exists())
         self.assertFalse((destination / runtime.LIB / "libgstnet-1.0.so.0").exists())
+        self.assertFalse((destination / runtime.LIB / "libavdevice.so.61").exists())
         self.assertEqual(len(self.tools.inspections), 2)
         self.assertEqual(json.loads((destination / "runtime/manifest.json").read_text()), manifest)
         for entry in manifest["files"]:

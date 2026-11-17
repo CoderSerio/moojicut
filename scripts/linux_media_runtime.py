@@ -115,9 +115,14 @@ def runtime_environment(bundle, registry_path, inherited=None):
     return environment
 
 
-def library_name(name):
+def library_basename(name):
     if not re.fullmatch(r"[A-Za-z0-9_+.-]+\.so(?:\.[0-9]+)*", name):
         raise ValueError("Invalid ELF dependency basename: " + repr(name))
+    return name
+
+
+def library_name(name):
+    library_basename(name)
     if any(x in name.lower() for x in ("x264", "x265", "fdk", "faac", "faad", "vo-aac", "voaac", "dvdcss")):
         raise ValueError("Unapproved codec dependency: " + name)
     match = re.fullmatch(r"lib(av\w+|swscale|swresample)\.so\.(\d+)", name)
@@ -170,7 +175,10 @@ def private_file(home, relative):
 def sdk_index(home):
     result = {}
     for path in (home / "lib").glob("*.so*"):
-        name = library_name(path.name)
+        # Index the verified SDK without approving every installed library for
+        # distribution. elf_info applies codec/ABI policy to actual roots and
+        # DT_NEEDED entries when the runtime closure selects them.
+        name = library_basename(path.name)
         if name in SYSTEM_LIBRARIES:
             raise ValueError("Private SDK must not replace desktop/system ABI: " + name)
         resolved = private_file(home, path.relative_to(home))

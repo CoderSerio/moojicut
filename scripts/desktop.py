@@ -306,6 +306,11 @@ class DesktopBuild:
                                GST_REGISTRY_UPDATE="no", GST_PLUGIN_FEATURE_RANK="openh264enc:NONE,avenc_aac:NONE",
                                GIO_MODULE_DIR=invalid, GIO_EXTRA_MODULES=invalid,
                                GSETTINGS_SCHEMA_DIR=invalid)
+        else:
+            # Prove the packaged app and window fixture cannot borrow an SDK
+            # helper through the inherited build PATH.
+            environment["PATH"] = "/usr/bin:/bin"
+            environment.pop("MOOJICUT_LINUX_MEDIA_SDK", None)
         return environment
 
     def smoke(self):
@@ -423,6 +428,14 @@ class DesktopBuild:
             (releases / (archive.name + ".sha256")).write_text(checksum + "  " + archive.name + "\n", encoding="utf-8")
             (releases / (stem + ".build.json")).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         print("Release:", releases / archive.name, flush=True)
+        if self.system == "linux" and self.env.get("MOOJICUT_COMPATIBILITY_KIT") == "1":
+            # CI reuses these exact Ubuntu 22 binaries against the same release
+            # runtime on Ubuntu 24. Test executables never enter the user bundle.
+            from linux_package_check import write_fixture_kit
+            kit = self.directory / "compatibility/fixture-kit.tar.gz"
+            if kit.exists():
+                kit.unlink()
+            write_fixture_kit(kit, releases / archive.name, self.metadata["commit"], self.media.executables)
 
 
 def main():

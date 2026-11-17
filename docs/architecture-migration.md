@@ -355,10 +355,14 @@ E0 媒体探针使用隔离的官方 GStreamer/GES 1.28.9，在 macOS arm64 实�
 
 E1 首轮目标运行已经暴露实际差异，**目前仍未通过**：[429b14e 的 CI](https://github.com/CoderSerio/moojicut/actions/runs/44187534573) 中 Linux 严格编译成功，但 GES 1.20 下的 3× 视频时间映射、MP4 尾端音频共 6 项断言失败，取消释放另触发 GObject critical；Windows 暂停在官方 SDK 子组件精确版本校验，尚未进入本批媒体编译。后续运行收齐独立媒体 fixture 的结果，并保留取消栈与生成媒体作诊断；不关闭断言或放宽版本/资源校验来换取绿灯。
 
-### Linux 私有媒体依赖（正在接入，目标 CI 待验）
+### Linux 私有媒体依赖（SDK 构建已验证，应用运行待验）
 
 [7793422 的诊断运行](https://github.com/CoderSerio/moojicut/actions/runs/44188745337) 收齐了独立媒体检查：Ubuntu 22 下的 MP4 包复制、波形及共享宿主回归通过，取消/导出 worker 和媒体综合检查仍失败。调用栈确认 GES 1.20.3 在 NLE 释放 `GstEvent` 时错误调用 GObject 释放函数，对应[上游修复 ef9962d](https://github.com/GStreamer/gstreamer/commit/ef9962d66aadf5ca32aa684bd8eb146af4c5af27)。末尾 AAC 包完整存在、时间戳正确；旧 qtdemux 重复计算 edit-list 偏移而提前 EOS，对应[上游修复 3d3d2ed](https://github.com/GStreamer/gstreamer/commit/3d3d2ed447cb98e2eb61bda650d363d5adf03677)。同一产物在新解码器中尾音完整，不能通过破坏正确 MP4 格式来兼容旧解码器。另有 1.5×/3× 真实尾段冻结，已增加预览及导出末段条码断言；Mac 隔离 SDK 下媒体检查增至 148 项并全部通过。
 
 当前实现将 Linux 的 GStreamer/GES 固定为 1.28.9，与固定的 FFmpeg、ORC 和 PipeWire 插件源码一起在私有前缀构建。源码、构建工具、配置及安装文件均校验；失败不发布可复用 SDK。Gst/FFmpeg/ORC 和所需编解码插件随包提供，系统 GLib/GTK、显示与音频服务仍共用桌面环境。X11 `ximagesrc`、Wayland `pipewiresrc` 与 PulseAudio 输出显式纳入清单，不能以重新扫描系统旧插件作为缺依赖兜底。
 
-运行库按 ELF 依赖闭包收集并记录来源/许可证，以执行文件相对路径加载；应用启动重建自己的媒体环境，测试使用移动后的包和独立 registry。私有 SDK 成功后缓存复用，后续应用代码修改无需重建底层依赖。新构建、ELF 实际加载、全媒体与窗口回归、完整包启动仍需下一轮目标 CI 证明，本节不表示已交付或 Ubuntu 24 实机通过。
+运行库按 ELF 依赖闭包收集并记录来源/许可证，以执行文件相对路径加载；应用启动重建自己的媒体环境，测试使用移动后的包和独立 registry。私有 SDK 成功后缓存复用，后续应用代码修改无需重建底层依赖。
+
+[17ce9ea 的目标运行](https://github.com/CoderSerio/moojicut/actions/runs/44194483533) 已在 Ubuntu 22 成功构建并校验整套 SDK，Windows 官方 SDK 的真实 MSVC ABI 校验也已通过；两端共享核心测试继续通过。应用打包尚未通过：Linux 在收集最小运行库时错误地拒绝了未使用的 SDK 库，Windows 遗漏了 SDK 程序所需的 Microsoft VC 运行库。下一批修正这两项来源与闭包接线，保留对实际依赖的 ABI、来源、许可证检查。
+
+Ubuntu 24 增加独立的同包验证任务：下载 Ubuntu 22 生成的发行包和单独保存的测试二进制，绑定提交与包哈希，不重新编译、不安装媒体 SDK；重新运行实际媒体、共享宿主、编辑窗口及应用 smoke。测试程序不进入用户下载包。此任务尚未运行成功，不能因此宣称 Ubuntu 24 已支持；真实 Wayland、DPI 和设备体验仍由实机验收补充。

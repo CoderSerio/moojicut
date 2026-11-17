@@ -163,6 +163,65 @@ class GStreamerRuntimeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.dependency_closure(self.home, [probe])
 
+    def test_closure_reports_every_reachable_missing_dependency_in_one_failure(self):
+        probe = self.binary("bin/probe.exe", ["missing-one.dll", "present.dll"], ["missing-two.dll"])
+        self.binary("bin/present.dll", ["missing-three.dll"])
+        with self.assertRaises(ValueError) as raised:
+            runtime.dependency_closure(self.home, [probe])
+        for name in ("missing-one.dll", "missing-two.dll", "missing-three.dll"):
+            self.assertIn(name, str(raised.exception))
+
+    def redist(self):
+        vc = self.root / "Visual Studio/VC"
+        tools = vc / "Tools/MSVC/14.44.35207"
+        tools.mkdir(parents=True)
+        marker = vc / "Auxiliary/Build/Microsoft.VCRedistVersion.default.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("14.44.35211\n", encoding="utf-8")
+        directory = vc / "Redist/MSVC/14.44.35211/x64/Microsoft.VC143.CRT"
+        directory.mkdir(parents=True)
+        (directory / "vcruntime140.dll").write_bytes(pe64(["kernel32.dll", "api-ms-win-crt-runtime-l1-1-0.dll"]))
+        (directory / "msvcp140.dll").write_bytes(pe64(["vcruntime140.dll"]))
+        (directory / "concrt140.dll").write_bytes(pe64(["kernel32.dll"]))
+        # A newer unselected version must not override the official default.
+        (vc / "Redist/MSVC/14.99.99999/x64/Microsoft.VC143.CRT").mkdir(parents=True)
+        environment = {"VCToolsInstallDir": str(tools), "SystemRoot": "C:/Windows", "PATH": "untrusted"}
+        return directory, environment
+
+    def signed_crt(self, command, **kwargs):
+        self.assertEqual(Path(command[0]).name, "powershell.exe")
+        self.assertEqual(command[1:4], ["-NoProfile", "-NonInteractive", "-Command"])
+        source = Path(kwargs["env"]["MOOJICUT_CRT_FILE"])
+        self.assertEqual(source.parent.name, "Microsoft.VC143.CRT")
+        self.assertEqual(source.parent.parent.name, "x64")
+        return json.dumps({"status": "Valid", "signer": "CN=Microsoft Corporation, O=Microsoft Corporation, C=US",
+                           "thumbprint": "0123456789ABCDEF", "company": "Microsoft Corporation", "version": "14.44.35211.0"})
+
+    def test_redist_uses_only_signed_versioned_x64_toolchain_files_and_rejects_tampering(self):
+        directory, environment = self.redist()
+        package = sdk.load_lock()
+        provider = runtime.MSVCRedist(package, self.signed_crt, environment)
+        probe = self.binary("bin/probe.exe", ["msvcp140.dll"])
+        result = runtime.dependency_closure(self.home, [probe], provider)
+        self.assertEqual(set(result), {"probe.exe", "msvcp140.dll", "vcruntime140.dll"})
+        self.assertEqual(result["vcruntime140.dll"], directory / "vcruntime140.dll")
+        self.assertNotIn("concrt140.dll", provider.records)
+        self.assertEqual(provider.records["msvcp140.dll"]["sha256"], sdk.digest(directory / "msvcp140.dll"))
+        self.assertFalse(runtime._system("vcruntime140.dll"))
+        with self.assertRaisesRegex(ValueError, "VCToolsInstallDir"):
+            runtime.dependency_closure(self.home, [probe], runtime.MSVCRedist(package, self.signed_crt, {"PATH": str(directory)}))
+        for changed in ({"status": "HashMismatch"}, {"signer": "CN=Other Company"},
+                        {"version": "14.30.10000.0"}, {"company": "Other Company"}):
+            def inspect(command, **kwargs):
+                return json.dumps(dict(json.loads(self.signed_crt(command, **kwargs)), **changed))
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "Unverified/outdated"):
+                runtime.dependency_closure(self.home, [probe], runtime.MSVCRedist(package, inspect, environment))
+        outside = self.root / "vcruntime140.dll"
+        outside.write_bytes(pe64())
+        (directory / "vcruntime140.dll").unlink()
+        (directory / "vcruntime140.dll").symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "Missing official VS"):
+            runtime.dependency_closure(self.home, [probe], runtime.MSVCRedist(package, self.signed_crt, environment))
     def test_closure_rejects_case_collisions_and_external_dependency_resolution(self):
         probe = self.binary("bin/probe.exe", ["libglib-2.0-0.dll"])
         library = self.binary("bin/libglib-2.0-0.dll")
@@ -353,6 +412,67 @@ class GStreamerRuntimeTest(unittest.TestCase):
             self.assertNotIn(str(stage), json.dumps(report))
             self.assertFalse(stage.exists())
         self.assertEqual(list(self.root.glob(".gstreamer-runtime-*")), [])
+
+    def test_packaging_includes_only_reachable_crt_with_signature_and_source_evidence(self):
+        package = self.fixture_sdk()
+        directory, environment = self.redist()
+        self.binary("bin/glib-2.0-0.dll", ["msvcp140.dll", "intl-8.dll"])
+        def execute(command, **kwargs):
+            if Path(command[0]).name == "powershell.exe":
+                return self.signed_crt(command, **kwargs)
+            return self.inspect(command, **kwargs)
+        destination = self.root / "app"
+        with patch.dict("os.environ", environment):
+            report = runtime.prepare_runtime(self.home, destination, package, execute=execute)
+        for name in ("msvcp140.dll", "vcruntime140.dll"):
+            record = next(item for item in report["files"] if item["path"] == name)
+            self.assertEqual(record["component"], runtime.CRT_COMPONENT)
+            self.assertEqual(record["origin"], "visual-studio-redist")
+            self.assertEqual(record["source_path"], str(directory / name))
+            self.assertEqual(record["sha256"], sdk.digest(destination / name))
+            self.assertEqual(record["status"], "Valid")
+            self.assertEqual(record["version"], "14.44.35211.0")
+            self.assertNotIn("sdk_path", record)
+        self.assertFalse((destination / "concrt140.dll").exists())
+        license_record = report["licenses"][runtime.CRT_COMPONENT]
+        self.assertEqual(license_record["redistribution_list"], package["msvc_redist"]["redistribution_list"])
+        notice = destination / license_record["files"][0]["path"]
+        self.assertEqual(sdk.digest(notice), license_record["files"][0]["sha256"])
+        self.assertEqual(set(json.loads(notice.read_text())["files"]), {"msvcp140.dll", "vcruntime140.dll"})
+
+    def test_crt_changed_after_verification_is_never_published(self):
+        package = self.fixture_sdk()
+        directory, environment = self.redist()
+        self.binary("bin/glib-2.0-0.dll", ["vcruntime140.dll"])
+        def execute(command, **kwargs):
+            if Path(command[0]).name == "powershell.exe":
+                return self.signed_crt(command, **kwargs)
+            return self.inspect(command, **kwargs)
+        original = runtime.shutil.copy2
+        def copy(source, target):
+            result = original(source, target)
+            if Path(source).parent == directory:
+                Path(target).write_bytes(b"changed while copying")
+            return result
+        destination = self.root / "app"
+        with patch.dict("os.environ", environment), patch.object(runtime.shutil, "copy2", copy):
+            with self.assertRaisesRegex(ValueError, "CRT changed"):
+                runtime.prepare_runtime(self.home, destination, package, execute=execute)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.root.glob(".gstreamer-runtime-*")), [])
+
+    def test_runtime_reports_all_missing_license_sources_in_one_failure(self):
+        package = self.fixture_sdk()
+        for component in ("soundtouch", "openh264"):
+            path = self.home / "share/licenses" / component
+            (path / "COPYING").unlink()
+            path.rmdir()
+        destination = self.root / "app"
+        with self.assertRaises(ValueError) as raised:
+            runtime.prepare_runtime(self.home, destination, package, execute=self.inspect)
+        self.assertIn("soundtouch", str(raised.exception))
+        self.assertIn("openh264", str(raised.exception))
+        self.assertFalse(destination.exists())
 
     def test_sdk_plugin_license_omissions_use_exact_verified_text_without_changing_source_ownership(self):
         package = self.fixture_sdk()

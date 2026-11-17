@@ -5,6 +5,7 @@ The output is a payload to merge beside the application EXE: every dependent
 DLL and the plugin scanner live at that level, so the Windows loader can find
 them before main(). Only selected plugins live in runtime/gstreamer/plugins.
 The application must set the equivalent runtime_environment before gst_init.
+MSVC CRT imports come only from the active VS toolchain's signed Redist files.
 No SDK-wide plugin scan, system DLL harvesting, dumpbin, or FFmpeg CLI is used.
 """
 import argparse
@@ -67,8 +68,8 @@ ROOT_DLLS = (
 )
 
 # Windows 10 OS components, not arbitrary DLLs installed on the build machine.
-# In particular, vcruntime/msvcp redistributables are NOT silently treated as OS
-# files: absent SDK-owned copies/license evidence cause a packaging failure.
+# In particular, vcruntime/msvcp redistributables are NOT OS files: the active
+# Visual Studio Redist directory is their only separately verified provider.
 SYSTEM_DLLS = frozenset("""
 advapi32.dll avrt.dll bcrypt.dll bcryptprimitives.dll cabinet.dll cfgmgr32.dll
 comctl32.dll comdlg32.dll crypt32.dll cryptbase.dll d2d1.dll d3d9.dll d3d11.dll
@@ -89,6 +90,97 @@ SHARED_GSTREAMER_LICENSE = "share/licenses/gstreamer-1.0/LGPL-2.0-or-later.txt"
 # plugin categories without that directory. Their recipes use the same
 # LGPLv2Plus enum/text as core. Preserve their source component in the report.
 SHARED_GSTREAMER_LICENSE_COMPONENTS = frozenset(("gst-plugins-good-1.0", "gst-libav-1.0"))
+CRT_DLLS = frozenset("""
+vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll
+msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll concrt140.dll
+""".split())
+CRT_COMPONENT = "microsoft-vc143-crt"
+
+
+class MSVCRedist:
+    """Lazy, bounded access to the build toolchain's official desktop x64 CRT.
+
+    No PATH/System32 search. Authenticode, numeric file version and SHA256 are
+    recorded before copying; only dependency-reachable files are distributed.
+    """
+    def __init__(self, package, execute=sdk.run, environment=None):
+        self.policy = package["msvc_redist"]
+        self.execute = execute
+        self.environment = dict(os.environ if environment is None else environment)
+        self.directory = None
+        self.records = {}
+        self.failure = None
+
+    def _directory(self):
+        if self.directory is not None:
+            return self.directory
+        if self.failure:
+            raise ValueError(self.failure)
+        try:
+            value = self.environment.get("VCToolsInstallDir")
+            if not value:
+                raise ValueError("VCToolsInstallDir is required to locate official VS Redist CRT files")
+            tools = Path(value).resolve()
+            if (not re.fullmatch(r"14\.\d+\.\d+(?:\.\d+)?", tools.name) or
+                    tools.parent.name.casefold() != "msvc" or tools.parent.parent.name.casefold() != "tools"):
+                raise ValueError("Unexpected Visual Studio C++ toolchain directory: " + str(tools))
+            vc = tools.parent.parent.parent
+            root = vc / "Redist/MSVC"
+            marker = vc / "Auxiliary/Build/Microsoft.VCRedistVersion.default.txt"
+            if marker.is_file():
+                version = marker.read_text(encoding="utf-8-sig").strip()
+                if not re.fullmatch(r"14\.\d+\.\d+(?:\.\d+)?", version):
+                    raise ValueError("Invalid Visual Studio default Redist version marker")
+                version_root = root / version
+            elif (root / "v143").is_dir():
+                version_root = root / "v143"
+            else:
+                versions = [p for p in root.iterdir() if p.is_dir() and re.fullmatch(r"14\.\d+\.\d+(?:\.\d+)?", p.name)]
+                if not versions:
+                    raise ValueError("No desktop VC143 redistributables in " + str(root))
+                version_root = max(versions, key=lambda p: tuple(map(int, p.name.split("."))))
+            directory = version_root / "x64/Microsoft.VC143.CRT"
+            if not directory.is_dir() or not directory.resolve().is_relative_to(root.resolve()):
+                raise ValueError("Missing or non-private VS desktop x64 CRT directory: " + str(directory))
+            self.directory = directory.resolve()
+            self.tool_version = tuple(map(int, tools.name.split(".")))
+            self.source_root = vc.resolve()
+            return self.directory
+        except (OSError, ValueError) as error:
+            self.failure = str(error)
+            raise ValueError(self.failure) from error
+
+    def resolve(self, name):
+        if name not in CRT_DLLS:
+            raise ValueError("Not an approved desktop CRT dependency: " + name)
+        directory = self._directory()
+        source = directory / name
+        if not source.is_file() or source.is_symlink() or source.resolve().parent != directory:
+            raise ValueError("Missing official VS Redist dependency: " + str(source))
+        if name not in self.records:
+            environment = dict(self.environment, MOOJICUT_CRT_FILE=str(source))
+            powershell = Path(environment.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+            script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+                      "$p=$env:MOOJICUT_CRT_FILE; $s=Get-AuthenticodeSignature -LiteralPath $p; "
+                      "$v=(Get-Item -LiteralPath $p).VersionInfo; "
+                      "@{status=$s.Status.ToString(); signer=$s.SignerCertificate.Subject; "
+                      "thumbprint=$s.SignerCertificate.Thumbprint; company=$v.CompanyName; copyright=$v.LegalCopyright; "
+                      "version=(@($v.FileMajorPart,$v.FileMinorPart,$v.FileBuildPart,$v.FilePrivatePart) -join '.')} "
+                      "| ConvertTo-Json -Compress")
+            metadata = json.loads(self.execute([powershell, "-NoProfile", "-NonInteractive", "-Command", script], env=environment))
+            version = metadata.get("version", "")
+            if (metadata.get("status") != "Valid" or metadata.get("company") != "Microsoft Corporation" or
+                    not re.search(r"(?:^|,\s*)CN=Microsoft Corporation(?:,|$)", metadata.get("signer", "")) or
+                    not metadata.get("thumbprint") or not re.fullmatch(r"14\.\d+\.\d+\.\d+", version) or
+                    tuple(map(int, version.split("."))) < self.tool_version):
+                raise ValueError("Unverified/outdated Microsoft CRT " + str(source) + ": " + repr(metadata))
+            self.records[name] = {"source_path": str(source),
+                                  "redist_path": source.relative_to(self.source_root).as_posix(),
+                                  "sha256": sdk.digest(source), **metadata}
+        return source
+
+    def owns(self, path):
+        return path.name.casefold() in self.records and Path(self.records[path.name.casefold()]["source_path"]) == path
 
 
 def _system(name):
@@ -201,18 +293,19 @@ def _bin_index(home):
     return found
 
 
-def dependency_closure(sdk_home, seeds):
-    """Only SDK/bin resolves non-system dependencies; never search PATH/System32."""
+def dependency_closure(sdk_home, seeds, redist=None):
+    """SDK/bin plus explicitly verified VS CRT; never search PATH/System32."""
     home = Path(sdk_home).resolve()
     index = _bin_index(home)
-    pending, result = list(seeds), {}
+    pending, result, problems = list(seeds), {}, set()
     while pending:
         path = Path(pending.pop())
-        try:
-            relative = (path.parent.resolve() / path.name).relative_to(home).as_posix()
-        except ValueError as error:
-            raise ValueError("Dependency is outside private SDK") from error
-        path = sdk.require_private_file(home, relative)
+        if not (redist and redist.owns(path)):
+            try:
+                relative = (path.parent.resolve() / path.name).relative_to(home).as_posix()
+            except ValueError as error:
+                raise ValueError("Dependency is outside private SDK or verified VS Redist") from error
+            path = sdk.require_private_file(home, relative)
         name = path.name.casefold()
         if path.suffix.casefold() == ".dll":
             _dll_name(path.name)
@@ -224,9 +317,18 @@ def dependency_closure(sdk_home, seeds):
         for dependency in sorted(pe_dependencies(path)):
             if _system(dependency):
                 continue
+            if dependency in CRT_DLLS and redist:
+                try:
+                    pending.append(redist.resolve(dependency))
+                except (OSError, ValueError) as error:
+                    problems.add(str(error) + " (required by " + path.name + ")")
+                continue
             if dependency not in index:
-                raise ValueError("Missing private SDK dependency " + dependency + " required by " + path.name)
+                problems.add("Missing private SDK dependency " + dependency + " required by " + path.name)
+                continue
             pending.append(index[dependency])
+    if problems:
+        raise ValueError("Runtime dependency closure failed:\n" + "\n".join(sorted(problems)))
     return result
 
 
@@ -403,8 +505,9 @@ def prepare_runtime(sdk_home, destination, package=None, execute=sdk.run):
     scanner = sdk.require_private_file(home, "libexec/gstreamer-1.0/" + SCANNER)
     inspector = sdk.require_private_file(home, "bin/" + INSPECTOR)
     seeds += [scanner, *selected.values()]
-    closure = dependency_closure(home, [*seeds, inspector])
-    final_closure = dependency_closure(home, seeds)
+    redist = MSVCRedist(package, execute)
+    closure = dependency_closure(home, [*seeds, inspector], redist)
+    final_closure = dependency_closure(home, seeds, redist)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".gstreamer-runtime-", dir=destination.parent) as temporary:
         stage = Path(temporary) / "payload"
@@ -416,6 +519,8 @@ def prepare_runtime(sdk_home, destination, package=None, execute=sdk.run):
         for name, source in closure.items():
             target = stage / PLUGIN_DIR / source.name if source in plugin_sources else stage / source.name
             shutil.copy2(source, target)
+            if redist.owns(source) and sdk.digest(target) != redist.records[name]["sha256"]:
+                raise ValueError("Microsoft CRT changed after signature verification: " + name)
             copied[name] = target
         registry = Path(temporary) / "registry.bin"
         environment = runtime_environment(stage, registry)
@@ -440,11 +545,45 @@ def prepare_runtime(sdk_home, destination, package=None, execute=sdk.run):
         for name in closure.keys() - final_closure.keys():
             copied[name].unlink()
         license_records = {item["path"]: item["sha256"] for item in verified["licenses"]}
+        source_licenses, license_problems = {}, []
+        for name, source in sorted(final_closure.items()):
+            if redist.owns(source):
+                continue
+            try:
+                plugin = next((plugins[key] for key, value in selected.items() if value == source), None)
+                record = _license_sources(home, _component(source, plugin), plugin)
+                component, license_sources, _ = record
+                if not license_sources:
+                    raise ValueError("Empty runtime license component: " + component)
+                for license_file in license_sources:
+                    relative = license_file.relative_to(home).as_posix()
+                    sdk.require_private_file(home, relative)
+                    if license_records.get(relative) != sdk.digest(license_file):
+                        raise ValueError("SDK license inventory changed or is unverified: " + relative)
+                source_licenses[name] = record
+            except (OSError, ValueError) as error:
+                license_problems.append(source.name + ": " + str(error))
+        if license_problems:
+            raise ValueError("Runtime license/source inventory failed:\n" + "\n".join(license_problems))
         licenses, files = {}, []
         for name, source in sorted(final_closure.items()):
-            plugin = next((plugins[key] for key, value in selected.items() if value == source), None)
-            candidates = _component(source, plugin)
-            component, license_sources, license_evidence = _license_sources(home, candidates, plugin)
+            if redist.owns(source):
+                if CRT_COMPONENT not in licenses:
+                    # Preserve the official provider/license references and
+                    # per-file provenance, without calling proprietary CRT LGPL.
+                    notice = stage / "runtime/licenses" / CRT_COMPONENT / "PROVENANCE.json"
+                    notice.parent.mkdir(parents=True)
+                    notice.write_text(json.dumps({**redist.policy,
+                        "files": {key: value for key, value in redist.records.items() if key in final_closure}}, indent=2) + "\n", encoding="utf-8")
+                    licenses[CRT_COMPONENT] = {**redist.policy, "files": [
+                        {"path": notice.relative_to(stage).as_posix(), "sha256": sdk.digest(notice)}]}
+                dependencies = sorted(pe_dependencies(source))
+                files.append({"path": copied[name].relative_to(stage).as_posix(),
+                              "component": CRT_COMPONENT, "origin": "visual-studio-redist",
+                              **redist.records[name], "imports": dependencies,
+                              "windows_system_imports": [item for item in dependencies if _system(item)]})
+                continue
+            component, license_sources, license_evidence = source_licenses[name]
             if component not in licenses:
                 inventory = []
                 for license_file in license_sources:
