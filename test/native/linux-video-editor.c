@@ -93,7 +93,8 @@ static char *matching_id(GtkWidget *window, const char *prefix, gboolean skip_fi
         }
         g_free(name);
     }
-    if (frame) ui_frame_close(frame); return result;
+    if (frame) ui_frame_close(frame);
+    return result;
 }
 static gboolean point(GtkWidget *window, const char *id, double *x, double *y, double *width) {
     int32_t frame = mc_linux_video_editor_frame_snapshot(window); int index = semantic(frame, id);
@@ -105,7 +106,8 @@ static gboolean point(GtkWidget *window, const char *id, double *x, double *y, d
             ui_frame_semantic_number(frame, index, MC_UI_SEM_HEIGHT) / 2;
         if (width) *width = w;
     }
-    if (frame) ui_frame_close(frame); return valid;
+    if (frame) ui_frame_close(frame);
+    return valid;
 }
 static GtkWidget *canvas(GtkWidget *window) { return gtk_bin_get_child(GTK_BIN(window)); }
 static void pointer(GtkWidget *window, GdkEventType type, double x, double y) {

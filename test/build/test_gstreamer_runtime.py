@@ -203,8 +203,10 @@ class GStreamerRuntimeTest(unittest.TestCase):
         source = Path(kwargs["env"]["MOOJICUT_CRT_FILE"])
         self.assertEqual(source.parent.name, "Microsoft.VC143.CRT")
         self.assertEqual(source.parent.parent.name, "x64")
-        return json.dumps({"status": "Valid", "signer": "CN=Microsoft Corporation, O=Microsoft Corporation, C=US",
-                           "thumbprint": "0123456789ABCDEF", "company": "Microsoft Corporation", "version": "14.44.35211.0"})
+        # Actual VS 2022 CRT signer returned Valid on the Windows CI runner.
+        return json.dumps({"status": "Valid", "signer": "CN=Microsoft Windows Software Compatibility Publisher, O=Microsoft Corporation, C=US",
+                           "thumbprint": "0123456789ABCDEF", "company": "Microsoft Corporation", "version": "14.44.35211.0",
+                           "copyright": "© Microsoft Corporation. All rights reserved."}, ensure_ascii=False)
 
     def test_redist_uses_only_signed_versioned_x64_toolchain_files_and_rejects_tampering(self):
         directory, environment = self.redist()
@@ -216,10 +218,18 @@ class GStreamerRuntimeTest(unittest.TestCase):
         self.assertEqual(result["vcruntime140.dll"], directory / "vcruntime140.dll")
         self.assertNotIn("concrt140.dll", provider.records)
         self.assertEqual(provider.records["msvcp140.dll"]["sha256"], sdk.digest(directory / "msvcp140.dll"))
+        def corporation_signature(command, **kwargs):
+            data = json.loads(self.signed_crt(command, **kwargs))
+            data["signer"] = "CN=Microsoft Corporation, O=Microsoft Corporation, C=US"
+            return json.dumps(data)
+        self.assertEqual(runtime.MSVCRedist(package, corporation_signature, environment).resolve("vcruntime140.dll"),
+                         directory / "vcruntime140.dll")
         self.assertFalse(runtime._system("vcruntime140.dll"))
         with self.assertRaisesRegex(ValueError, "VCToolsInstallDir"):
             runtime.dependency_closure(self.home, [probe], runtime.MSVCRedist(package, self.signed_crt, {"PATH": str(directory)}))
         for changed in ({"status": "HashMismatch"}, {"signer": "CN=Other Company"},
+                        {"signer": "CN=Microsoft Windows Software Compatibility Publisher, O=Other Company"},
+                        {"signer": "CN=Microsoft Corporation Extra, O=Microsoft Corporation"},
                         {"version": "14.30.10000.0"}, {"company": "Other Company"}):
             def inspect(command, **kwargs):
                 return json.dumps(dict(json.loads(self.signed_crt(command, **kwargs)), **changed))
@@ -312,9 +322,13 @@ class GStreamerRuntimeTest(unittest.TestCase):
         for name in runtime.ROOT_DLLS:
             imports = ["KERNEL32.dll"]
             if name == "glib-2.0-0.dll":
-                imports.append("intl-8.dll")
+                imports.extend(("intl-8.dll", "z-1.dll"))
+            elif name == "ges-1.0-0.dll":
+                imports.append("gstcheck-1.0-0.dll")
             self.binary("bin/" + name, imports)
         self.binary("bin/intl-8.dll", ["KERNEL32.dll"])
+        self.binary("bin/z-1.dll", ["KERNEL32.dll"])
+        self.binary("bin/gstcheck-1.0-0.dll", ["KERNEL32.dll"])
         for name in self.plugin_factories:
             imports = ["gstreamer-1.0-0.dll"]
             if name == "soundtouch":
@@ -332,7 +346,7 @@ class GStreamerRuntimeTest(unittest.TestCase):
         self.binary("bin/ffmpeg.exe", data=b"developer command line must never ship")
         components = ("gstreamer-1.0", "gst-editing-services-1.0", "gst-plugins-base-1.0",
                       "gst-plugins-good-1.0", "gst-plugins-bad-1.0", "gst-libav-1.0",
-                      "glib", "ffmpeg", "soundtouch", "openh264", "proxy-libintl")
+                      "glib", "ffmpeg", "soundtouch", "openh264", "proxy-libintl", "zlib")
         licenses = []
         for component in components:
             path = self.home / "share/licenses" / component / "COPYING"
@@ -419,6 +433,8 @@ class GStreamerRuntimeTest(unittest.TestCase):
         for component in ("soundtouch", "openh264", "ffmpeg", "glib", "proxy-libintl"):
             self.assertIn(component, report["licenses"])
         self.assertEqual(next(item for item in report["files"] if item["path"] == "intl-8.dll")["component"], "proxy-libintl")
+        self.assertEqual(next(item for item in report["files"] if item["path"] == "z-1.dll")["component"], "zlib")
+        self.assertEqual(next(item for item in report["files"] if item["path"] == "gstcheck-1.0-0.dll")["component"], "gstreamer-1.0")
         for stage in self.stage_roots:
             self.assertNotIn(str(stage), json.dumps(report))
             self.assertFalse(stage.exists())
@@ -443,6 +459,7 @@ class GStreamerRuntimeTest(unittest.TestCase):
             self.assertEqual(record["sha256"], sdk.digest(destination / name))
             self.assertEqual(record["status"], "Valid")
             self.assertEqual(record["version"], "14.44.35211.0")
+            self.assertEqual(record["copyright"], "© Microsoft Corporation. All rights reserved.")
             self.assertNotIn("sdk_path", record)
         self.assertFalse((destination / "concrt140.dll").exists())
         license_record = report["licenses"][runtime.CRT_COMPONENT]

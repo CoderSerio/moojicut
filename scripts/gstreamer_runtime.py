@@ -173,14 +173,16 @@ class MSVCRedist:
                       "Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop; "
                       "$p=$env:MOOJICUT_CRT_FILE; $s=Get-AuthenticodeSignature -LiteralPath $p; "
                       "$v=(Get-Item -LiteralPath $p).VersionInfo; "
-                      "@{status=$s.Status.ToString(); signer=$s.SignerCertificate.Subject; "
+                      "$metadata=@{status=$s.Status.ToString(); signer=$s.SignerCertificate.Subject; "
                       "thumbprint=$s.SignerCertificate.Thumbprint; company=$v.CompanyName; copyright=$v.LegalCopyright; "
-                      "version=(@($v.FileMajorPart,$v.FileMinorPart,$v.FileBuildPart,$v.FilePrivatePart) -join '.')} "
-                      "| ConvertTo-Json -Compress")
+                      "version=(@($v.FileMajorPart,$v.FileMinorPart,$v.FileBuildPart,$v.FilePrivatePart) -join '.')}; "
+                      "$json=$metadata | ConvertTo-Json -Compress; $bytes=[Text.Encoding]::UTF8.GetBytes($json); "
+                      "[Console]::OpenStandardOutput().Write($bytes,0,$bytes.Length)")
             metadata = json.loads(self.execute([powershell, "-NoProfile", "-NonInteractive", "-Command", script], env=environment))
             version = metadata.get("version", "")
             if (metadata.get("status") != "Valid" or metadata.get("company") != "Microsoft Corporation" or
-                    not re.search(r"(?:^|,\s*)CN=Microsoft Corporation(?:,|$)", metadata.get("signer", "")) or
+                    not re.search(r"(?:^|,\s*)CN=(?:Microsoft Corporation|Microsoft Windows Software Compatibility Publisher)(?:,|$)", metadata.get("signer", "")) or
+                    not re.search(r"(?:^|,\s*)O=Microsoft Corporation(?:,|$)", metadata.get("signer", "")) or
                     not metadata.get("thumbprint") or not re.fullmatch(r"14\.\d+\.\d+\.\d+", version) or
                     tuple(map(int, version.split("."))) < self.tool_version):
                 raise ValueError("Unverified/outdated Microsoft CRT " + str(source) + ": " + repr(metadata))
@@ -378,7 +380,7 @@ def _component(path, plugin_metadata=None):
     base = name.removeprefix("lib")
     if base == "ges-1.0-0.dll":
         return ("gst-editing-services-1.0",)
-    if re.fullmatch(r"(?:gstreamer|gstbase|gstcontroller|gstnet)-1\.0-0\.dll", base):
+    if re.fullmatch(r"(?:gstreamer|gstbase|gstcontroller|gstnet|gstcheck)-1\.0-0\.dll", base):
         return ("gstreamer-1.0",)
     if re.fullmatch(r"gst(?:app|pbutils|video|audio|tag|riff|rtp|rtsp|sdp|fft|allocators|gl)-1\.0-0\.dll", base):
         return ("gst-plugins-base-1.0",)
@@ -393,7 +395,7 @@ def _component(path, plugin_metadata=None):
     patterns = (
         (r"ffi(?:-\d+)?\.dll", ("libffi",)),
         (r"pcre2-[0-9-]+\.dll", ("pcre2",)),
-        (r"(?:z|zlib1)\.dll", ("zlib",)),
+        (r"(?:z|z-1|zlib1)\.dll", ("zlib",)),
         (r"bz2(?:-\d+)?\.dll", ("bzip2",)),
         (r"intl(?:-[0-9.]+)?\.dll", ("proxy-libintl",)),
         (r"(?:gettextlib|gettextsrc)(?:-[0-9.]+)?\.dll", ("gettext",)),
