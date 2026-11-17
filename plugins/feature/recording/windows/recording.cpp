@@ -986,12 +986,21 @@ void selectionFlowSmoke(HINSTANCE instance) {
     if(!state.selection||recording_flow_value(state.flow,MC_RECORDING_PHASE)!=MC_RECORDING_SELECTING)
         throw Failure{E_FAIL,L"过小选区错误启动倒计时"};
     SendMessageW(selection,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(10,10));
-    SendMessageW(selection,WM_CAPTURECHANGED,0,0);
+    // Change the actual Win32 owner; merely sending WM_CAPTURECHANGED leaves
+    // GetCapture() pointing at selection and creates an impossible loss state.
+    // The OS sends the notification synchronously to the previous owner.
+    if(SetCapture(state.host)!=selection||GetCapture()!=state.host)
+        throw Failure{E_FAIL,L"鼠标捕获未真正从选区转交到另一个窗口"};
     SendMessageW(selection,WM_LBUTTONUP,0,MAKELPARAM(300,200));
-    if(!state.selection)throw Failure{E_FAIL,L"失去鼠标捕获后仍提交了选区"};
+    if(!state.selection||state.panel||GetCapture()!=state.host||
+        recording_flow_value(state.flow,MC_RECORDING_PHASE)!=MC_RECORDING_SELECTING)
+        throw Failure{E_FAIL,L"失去鼠标捕获后仍提交了选区或干扰新窗口的捕获"};
     SendMessageW(selection,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(20,30));
+    if(GetCapture()!=selection)throw Failure{E_FAIL,L"新拖拽没有重新取得鼠标捕获"};
+    SendMessageW(selection,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(340,270));
     SendMessageW(selection,WM_LBUTTONUP,0,MAKELPARAM(340,270));
-    if(!state.panel)throw Failure{E_FAIL,L"第二次选区没有倒计时"};
+    if(!state.panel||GetCapture()!=nullptr||recording_flow_value(state.flow,MC_RECORDING_PHASE)!=MC_RECORDING_COUNTDOWN)
+        throw Failure{E_FAIL,L"第二次选区没有倒计时或未释放鼠标捕获"};
     SendMessageW(state.host,startedMessage,static_cast<WPARAM>(first),0);
     if(recording_flow_value(state.flow,MC_RECORDING_PHASE)!=MC_RECORDING_COUNTDOWN)
         throw Failure{E_FAIL,L"旧会话回调污染了当前选区"};
@@ -1182,6 +1191,7 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
         std::printf("Windows Media Foundation recording/edit/export smoke passed.\n");return 0;
     }catch(const Failure &error){if(session)native_video_close(session);std::fprintf(stderr,"Recording smoke failed: %s\n",utf8(description(error)).c_str());}
     catch(const std::exception &){if(session)native_video_close(session);std::fprintf(stderr,"Recording smoke failed: native exception.\n");}
+    if(GetCapture()==state.host)ReleaseCapture();
     // Even failed assertions must stop/finalize the real worker before a core
     // failure acknowledgement or teardown releases its session resources.
     if(state.kind==JobKind::Recording){
