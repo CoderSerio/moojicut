@@ -22,7 +22,7 @@
 @interface MCImageEditorController (MCInlineTextTest)
 @property (readonly) MCImageCanvas *canvas;
 @property (readonly) NSSegmentedControl *tools;
-@property (readonly) NSColorWell *color;
+@property (readonly) MCColorSwatch *color;
 @property (readonly) MCColorControl *colorControl;
 @property (readonly) NSTextField *fontSize;
 @property (readonly) NSButton *confirmButton;
@@ -269,7 +269,7 @@ static BOOL rgbaStyles(void) {
     MCImageCanvas *canvas = editor.canvas;
     selectTool(editor, 4);
     editor.colorControl.color = [NSColor colorWithSRGBRed:0 green:1 blue:0 alpha:1];
-    [editor.color sendAction:editor.color.action to:editor.color.target];
+    editor.colorControl.onChange(editor.colorControl.well);
     editor.colorControl.opacityControl.stepper.doubleValue = 25;
     NSStepper *opacityStepper = editor.colorControl.opacityControl.stepper;
     [opacityStepper sendAction:opacityStepper.action to:opacityStepper.target];
@@ -286,7 +286,7 @@ static BOOL rgbaStyles(void) {
           "export blends a 25 percent green cover over white instead of forcing black/opaque");
     selectTool(editor, 3);
     editor.colorControl.color = [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.5];
-    [editor.color sendAction:editor.color.action to:editor.color.target];
+    editor.colorControl.onChange(editor.colorControl.well);
     [editor addTextAtPoint:NSMakePoint(30, 30)];
     [canvas.textView insertText:@"A" replacementRange:NSMakeRange(NSNotFound, 0)];
     CHECK(near([canvas.textDraft[@"opacity"] doubleValue], .5), "new text uses the shared color alpha");
@@ -337,8 +337,8 @@ static BOOL colorPopoverInput(void) {
     CHECK(![delegate popoverShouldClose:color.popover] && window.firstResponder == input &&
           [editor.document[@"revision"] isEqual:revision], "invalid popover input stays editable instead of silently committing zero");
     NSStackView *swatches = ((NSStackView *)color.popover.contentViewController.view).arrangedSubviews[0];
-    NSColorWell *blue = swatches.arrangedSubviews[4];
-    [NSApp sendAction:blue.pulldownAction to:blue.pulldownTarget from:blue];
+    MCColorSwatch *blue = swatches.arrangedSubviews[4];
+    [blue performClick:nil];
     CHECK([input.string isEqual:@"invalid"] && [editor.canvas.textDraft[@"color"] isEqual:@"#ff0000"],
           "choosing a palette color cannot discard invalid percentage input");
     [input setMarkedText:@"25" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0,input.string.length)];
@@ -349,7 +349,7 @@ static BOOL colorPopoverInput(void) {
     CHECK([delegate popoverShouldClose:color.popover] && editor.canvas.textView != nil &&
           near([editor.canvas.textDraft[@"opacity"] doubleValue],.25) && [editor.document[@"revision"] isEqual:revision],
           "valid opacity input updates the pending text style while preserving its document transaction");
-    [NSApp sendAction:blue.pulldownAction to:blue.pulldownTarget from:blue];
+    [blue performClick:nil];
     CHECK([editor.canvas.textDraft[@"color"] isEqual:@"#3b82f6"] &&
           near([editor.canvas.textDraft[@"opacity"] doubleValue],.25) && [editor.document[@"revision"] isEqual:revision],
           "palette changes preserve alpha and stay inside the same live text transaction");

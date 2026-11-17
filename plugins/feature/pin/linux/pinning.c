@@ -1,6 +1,7 @@
 #include "pinning.h"
 #include "native/shared/feature_runtime.h"
 #include "native/shared/pin_policy.h"
+#include "moonbit.h"
 #include <dlfcn.h>
 #include <gdk/gdkx.h>
 #include <glib/gstdio.h>
@@ -16,6 +17,8 @@ typedef struct {
   GdkPixbuf *image;
   double scale, opacity;
   gboolean selected, hidden, passthrough;
+  int resize_handle, resize_x, resize_y;
+  double resize_mouse_x, resize_mouse_y, resize_scale;
 } Pin;
 static GtkApplication *application;
 static GSList *pins;
@@ -43,6 +46,11 @@ static void passthrough_action(void);
 static GdkFilterReturn global_filter(GdkXEvent *native, GdkEvent *event, gpointer data);
 static gboolean record_key(GtkWidget *widget, GdkEventKey *event, gpointer data);
 static void refresh(void);
+static void copy(GtkMenuItem *item, gpointer data);
+static void end_resize(Pin *pin) {
+  pin->resize_handle = 0;
+  if (gtk_widget_has_grab(pin->canvas)) gtk_grab_remove(pin->canvas);
+}
 gboolean mc_linux_pins_enabled(void) { return feature_can_invoke(feature_state) == 1; }
 static unsigned x_mods(GdkModifierType mods) {
   return ((mods & GDK_CONTROL_MASK) ? ControlMask : 0) | ((mods & GDK_SHIFT_MASK) ? ShiftMask : 0) |
@@ -109,6 +117,7 @@ static Pin *selected_pin(void) {
   return NULL;
 }
 static void show_pin(Pin *pin) {
+  if (pin->hidden || capture_hidden) end_resize(pin);
   if (pin->hidden || capture_hidden)
     gtk_widget_hide(pin->window);
   else
@@ -121,6 +130,7 @@ static gboolean set_passthrough(Pin *pin, gboolean active) {
     return FALSE;
   }
   pin->passthrough = active;
+  end_resize(pin);
   pin->selected = TRUE;
   gtk_window_set_accept_focus(GTK_WINDOW(pin->window), !active);
   cairo_region_t *empty = active ? cairo_region_create() : NULL;
@@ -345,6 +355,7 @@ static gboolean delete_request(GtkWidget *widget, GdkEvent *event, gpointer data
 static void destroyed(GtkWidget *widget, gpointer data) {
   (void)widget;
   Pin *pin = data;
+  end_resize(pin);
   pins = g_slist_remove(pins, pin);
   g_object_unref(pin->image);
   g_free(pin);
@@ -361,8 +372,10 @@ static gboolean focus(GtkWidget *widget, GdkEventFocus *event, gpointer data) {
       }
     }
     pin->selected = TRUE;
-  } else if (!pin->passthrough)
-    pin->selected = FALSE;
+  } else {
+    end_resize(pin);
+    if (!pin->passthrough) pin->selected = FALSE;
+  }
   gtk_widget_queue_draw(pin->canvas);
   return FALSE;
 }
@@ -382,6 +395,12 @@ static gboolean key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
   if (!pin->selected)
     return FALSE;
   Binding value = normalize(event->keyval, event->state);
+  if (value.key == GDK_KEY_c && value.mods == GDK_CONTROL_MASK) {
+    if (pin->passthrough || pin->hidden || capture_hidden || !mc_linux_pins_enabled()) return FALSE;
+    copy(NULL, pin);
+    return TRUE;
+  }
+  if (pin->hidden || capture_hidden || !mc_linux_pins_enabled()) return FALSE;
   if (pin->passthrough) {
     if (bindings[5].key && same(value, bindings[5]))
       set_passthrough(pin, FALSE);
@@ -406,7 +425,7 @@ static gboolean key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
 static void copy(GtkMenuItem *item, gpointer data) {
   (void)item;
   Pin *pin = data;
-  if (pin->passthrough)
+  if (pin->passthrough || pin->hidden || capture_hidden || !mc_linux_pins_enabled())
     return;
   GtkClipboard *clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
   gtk_clipboard_set_image(clip, pin->image);
@@ -431,7 +450,7 @@ static void close_pin(GtkMenuItem *item, gpointer data) {
 static gboolean press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
   (void)widget;
   Pin *pin = data;
-  if (pin->passthrough)
+  if (pin->passthrough || pin->hidden || capture_hidden || !mc_linux_pins_enabled())
     return TRUE;
   if (event->button == 1 && event->type == GDK_2BUTTON_PRESS) {
     gtk_widget_destroy(pin->window);
@@ -446,6 +465,14 @@ static gboolean press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
   gtk_window_present(GTK_WINDOW(pin->window));
   gtk_widget_queue_draw(pin->canvas);
   if (event->button == 1) {
+    pin->resize_handle = pin_hit_handle(gtk_widget_get_allocated_width(pin->canvas),
+        gtk_widget_get_allocated_height(pin->canvas), event->x, event->y, 6);
+    if (pin->resize_handle) {
+      gtk_window_get_position(GTK_WINDOW(pin->window), &pin->resize_x, &pin->resize_y);
+      pin->resize_mouse_x = event->x_root; pin->resize_mouse_y = event->y_root; pin->resize_scale = pin->scale;
+      gtk_grab_add(pin->canvas);
+      return TRUE;
+    }
     gtk_window_begin_move_drag(GTK_WINDOW(pin->window), 1, (int)event->x_root, (int)event->y_root,
                                event->time);
     return TRUE;
@@ -466,6 +493,52 @@ static gboolean press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
   }
   return FALSE;
 }
+static gboolean motion(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
+  (void)widget; Pin *pin = data;
+  if (pin->passthrough || pin->hidden || capture_hidden || !mc_linux_pins_enabled()) { end_resize(pin); return FALSE; }
+  if (pin->resize_handle) {
+    GdkMonitor *monitor = gdk_display_get_monitor_at_window(gtk_widget_get_display(pin->window), gtk_widget_get_window(pin->window));
+    GdkRectangle area = {0, 0, 1920, 1080};
+    if (monitor) gdk_monitor_get_workarea(monitor, &area);
+    double *frame = pin_resize_frame(MC_PIN_LINUX, pin->resize_x, pin->resize_y,
+        gdk_pixbuf_get_width(pin->image), gdk_pixbuf_get_height(pin->image), pin->resize_scale, pin->resize_handle,
+        event->x_root - pin->resize_mouse_x, event->y_root - pin->resize_mouse_y, area.x, area.y, area.width, area.height);
+    if (frame[4] > 0) {
+      pin->scale = frame[4];
+      int w = MAX(1, (int)round(frame[2])), h = MAX(1, (int)round(frame[3]));
+      gtk_widget_set_size_request(pin->canvas, w, h); gtk_window_resize(GTK_WINDOW(pin->window), w, h);
+      gtk_window_move(GTK_WINDOW(pin->window), (int)round(frame[0]), (int)round(frame[1]));
+      gtk_widget_queue_draw(pin->canvas);
+    }
+    moonbit_decref(frame);
+  } else {
+    int edge = pin_hit_handle(gtk_widget_get_allocated_width(pin->canvas), gtk_widget_get_allocated_height(pin->canvas), event->x, event->y, 6);
+    const char *name = edge == 5 || edge == 10 ? "nwse-resize" : edge == 6 || edge == 9 ? "nesw-resize" :
+        edge & 3 ? "ew-resize" : edge & 12 ? "ns-resize" : "grab";
+    GdkCursor *cursor = gdk_cursor_new_from_name(gtk_widget_get_display(pin->canvas), name);
+    gdk_window_set_cursor(gtk_widget_get_window(pin->canvas), cursor);
+    if (cursor) g_object_unref(cursor);
+  }
+  return TRUE;
+}
+static gboolean release(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+  (void)widget; if (event->button != 1) return FALSE;
+  Pin *pin = data; gboolean resizing = pin->resize_handle != 0; end_resize(pin); return resizing;
+}
+static gboolean grab_broken(GtkWidget *widget, GdkEventGrabBroken *event, gpointer data) {
+  (void)widget; (void)event; end_resize(data); return FALSE;
+}
+static gboolean scroll(GtkWidget *widget, GdkEventScroll *event, gpointer data) {
+  (void)widget; Pin *pin = data;
+  if (pin->passthrough || pin->hidden || capture_hidden || pin->resize_handle || !mc_linux_pins_enabled()) return FALSE;
+  double steps = event->direction == GDK_SCROLL_UP ? 1 : event->direction == GDK_SCROLL_DOWN ? -1 : 0;
+  if (event->direction == GDK_SCROLL_SMOOTH) { double x = 0, y = 0;
+    if (gdk_event_get_scroll_deltas((GdkEvent *)event, &x, &y)) steps = -y; }
+  if (!steps) return FALSE;
+  double requested = pin_scroll_scale(pin->scale, steps);
+  if (requested <= 0) return FALSE;
+  resize_pin(pin, requested); return TRUE;
+}
 void mc_linux_pin_image_at(GdkPixbuf *image, const GdkRectangle *bounds) {
   if (!mc_linux_pins_enabled())
     return;
@@ -484,10 +557,15 @@ void mc_linux_pin_image_at(GdkPixbuf *image, const GdkRectangle *bounds) {
   gtk_window_stick(GTK_WINDOW(pin->window));
   gtk_window_set_resizable(GTK_WINDOW(pin->window), FALSE);
   pin->canvas = gtk_drawing_area_new();
-  gtk_widget_add_events(pin->canvas, GDK_BUTTON_PRESS_MASK);
+  gtk_widget_add_events(pin->canvas, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
+      GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK);
   gtk_container_add(GTK_CONTAINER(pin->window), pin->canvas);
   g_signal_connect(pin->canvas, "draw", G_CALLBACK(draw), pin);
   g_signal_connect(pin->canvas, "button-press-event", G_CALLBACK(press), pin);
+  g_signal_connect(pin->canvas, "button-release-event", G_CALLBACK(release), pin);
+  g_signal_connect(pin->canvas, "motion-notify-event", G_CALLBACK(motion), pin);
+  g_signal_connect(pin->canvas, "grab-broken-event", G_CALLBACK(grab_broken), pin);
+  g_signal_connect(pin->canvas, "scroll-event", G_CALLBACK(scroll), pin);
   g_signal_connect(pin->window, "key-press-event", G_CALLBACK(key), pin);
   g_signal_connect(pin->window, "focus-in-event", G_CALLBACK(focus), pin);
   g_signal_connect(pin->window, "focus-out-event", G_CALLBACK(focus), pin);
@@ -736,6 +814,72 @@ static gboolean smoke_recover_key(Pin *pin) {
   dlclose(xtest);
   return !pin->passthrough;
 }
+static void flush_pin_events(void) {
+  gdk_display_sync(gdk_display_get_default());
+  while (gtk_events_pending()) gtk_main_iteration();
+}
+static gboolean pin_interaction_smoke(Pin *pin) {
+  double start = pin->scale;
+  GdkEventScroll wheel = {0}; wheel.type = GDK_SCROLL; wheel.direction = GDK_SCROLL_SMOOTH; wheel.delta_y = -.25;
+  wheel.window = gtk_widget_get_window(pin->canvas);
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(pin->canvas, "scroll-event", &wheel, &handled);
+  gboolean ok = handled && pin->scale > start && pin->scale < start * 1.1;
+  for (int i = 0; i < 3; i++) g_signal_emit_by_name(pin->canvas, "scroll-event", &wheel, &handled);
+  ok = fabs(pin->scale - start * 1.1) < .000001 && ok;
+  wheel.delta_y = 1; g_signal_emit_by_name(pin->canvas, "scroll-event", &wheel, &handled);
+  ok = fabs(pin->scale - start) < .000001 && ok;
+  flush_pin_events();
+  int x = 0, y = 0; gtk_window_get_position(GTK_WINDOW(pin->window), &x, &y);
+  GdkEventButton down = {0}; down.type = GDK_BUTTON_PRESS; down.button = 1;
+  down.window = gtk_widget_get_window(pin->canvas);
+  down.x = gtk_widget_get_allocated_width(pin->canvas) - 1;
+  down.y = gtk_widget_get_allocated_height(pin->canvas) / 2;
+  down.x_root = x + down.x; down.y_root = y + down.y;
+  g_signal_emit_by_name(pin->canvas, "button-press-event", &down, &handled);
+  ok = handled && pin->resize_handle == 2 && gtk_widget_has_grab(pin->canvas) && ok;
+  GdkEventMotion move = {0}; move.type = GDK_MOTION_NOTIFY; move.state = GDK_BUTTON1_MASK;
+  move.window = gtk_widget_get_window(pin->canvas);
+  move.x_root = down.x_root + 30; move.y_root = down.y_root;
+  g_signal_emit_by_name(pin->canvas, "motion-notify-event", &move, &handled);
+  GdkEventButton up = down; up.type = GDK_BUTTON_RELEASE;
+  g_signal_emit_by_name(pin->canvas, "button-release-event", &up, &handled);
+  flush_pin_events();
+  int next_x = 0, next_y = 0; gtk_window_get_position(GTK_WINDOW(pin->window), &next_x, &next_y);
+  ok = fabs(pin->scale - 1.25) < .000001 && gtk_widget_get_allocated_width(pin->canvas) == 150 &&
+      gtk_widget_get_allocated_height(pin->canvas) == 100 && !pin->resize_handle && !gtk_widget_has_grab(pin->canvas) && ok;
+  if (x11_available()) ok = next_x == x && next_y == y - 10 && ok;
+  down.x = 149; down.y = 50; down.x_root = next_x + down.x; down.y_root = next_y + down.y;
+  g_signal_emit_by_name(pin->canvas, "button-press-event", &down, &handled);
+  mc_linux_pins_hide(TRUE); mc_linux_pins_hide(FALSE);
+  double frozen = pin->scale;
+  g_signal_emit_by_name(pin->canvas, "motion-notify-event", &move, &handled);
+  ok = pin->scale == frozen && !pin->resize_handle && !gtk_widget_has_grab(pin->canvas) && ok;
+  pin->passthrough = TRUE;
+  g_signal_emit_by_name(pin->canvas, "scroll-event", &wheel, &handled);
+  ok = !handled && pin->scale == frozen && ok; pin->passthrough = FALSE;
+  if (g_strcmp0(g_getenv("CI"), "true") == 0) {
+    GdkEventKey event = {0}; event.type = GDK_KEY_PRESS; event.keyval = GDK_KEY_c; event.state = GDK_CONTROL_MASK;
+    event.window = gtk_widget_get_window(pin->window);
+    pin->selected = TRUE;
+    g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled);
+    GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    GdkPixbuf *copied = gtk_clipboard_wait_for_image(clipboard);
+    ok = handled && copied && gdk_pixbuf_get_width(copied) == gdk_pixbuf_get_width(pin->image) &&
+        gdk_pixbuf_get_height(copied) == gdk_pixbuf_get_height(pin->image) &&
+        memcmp(gdk_pixbuf_get_pixels(copied), gdk_pixbuf_get_pixels(pin->image), 3) == 0 && ok;
+    if (copied) g_object_unref(copied);
+    pin->selected = FALSE; g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled); ok = !handled && ok;
+    pin->selected = TRUE; pin->hidden = TRUE;
+    g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled); ok = !handled && ok;
+    pin->hidden = FALSE; pin->passthrough = TRUE;
+    g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled); ok = !handled && ok;
+    pin->passthrough = FALSE;
+  }
+  resize_pin(pin, start); flush_pin_events();
+  g_print("Linux pin interaction smoke %s: smooth wheel, proportional edge resize, cancel/grab cleanup, local copy guards.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
 gboolean mc_linux_pin_smoke(void) {
   GtkWidget *preferences = mc_linux_pin_preferences();
   g_object_ref_sink(preferences);
@@ -772,6 +916,7 @@ gboolean mc_linux_pin_smoke(void) {
   int x = 0, y = 0;
   gtk_window_get_position(GTK_WINDOW(pin->window), &x, &y);
   gboolean ok = !GDK_IS_X11_DISPLAY(gdk_display_get_default()) || (x == anchor.x && y == anchor.y);
+  ok = pin_interaction_smoke(pin) && ok;
   double old = pin->scale;
   GdkEventKey event = {0};
   event.keyval = GDK_KEY_equal;

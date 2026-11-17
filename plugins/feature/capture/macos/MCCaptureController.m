@@ -21,6 +21,7 @@ static NSError *MCCaptureError(NSString *message) {
 @property BOOL overlaysSuspended;
 @property (weak) MCImageEditorController *suspendedEditor;
 @property NSSet<NSNumber *> *captureWindowNumbers;
+@property NSHashTable<NSMenu *> *trackingMenus;
 @property (nonatomic, copy, readwrite) NSDictionary *toolConfiguration;
 @end
 
@@ -29,9 +30,16 @@ static NSError *MCCaptureError(NSString *message) {
     if ((self = [super init])) {
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenParametersChanged:)
             name:NSApplicationDidChangeScreenParametersNotification object:nil];
+        _trackingMenus = [NSHashTable weakObjectsHashTable];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(menuTrackingBegan:) name:NSMenuDidBeginTrackingNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(menuTrackingEnded:) name:NSMenuDidEndTrackingNotification object:nil];
     }
     return self;
 }
+- (void)menuTrackingBegan:(NSNotification *)notification {
+    if ([notification.object isKindOfClass:NSMenu.class]) [self.trackingMenus addObject:notification.object];
+}
+- (void)menuTrackingEnded:(NSNotification *)notification { [self.trackingMenus removeObject:notification.object]; }
 - (BOOL)busy { return self.captureSession != nil || self.editor != nil; }
 - (NSArray<MCImageEditorController *> *)toolConfigurationEditors {
     NSMutableOrderedSet *editors = [NSMutableOrderedSet orderedSetWithArray:self.overlayEditors ?: @[]];
@@ -294,6 +302,10 @@ static NSError *MCCaptureError(NSString *message) {
     }
     self.overlayEditors = editors;
     self.snapshotsPending = NO;
+    // Only this process posts these notifications. Release our own menu's
+    // mouse tracking after pixels are frozen; never dismiss another app's menu
+    // before capture. Otherwise the menu can consume the overlay's first drag.
+    for (NSMenu *menu in self.trackingMenus.allObjects) [menu cancelTrackingWithoutAnimation];
     // No overlay is presented until every screen's frozen pixels are ready.
     for (MCImageEditorController *editor in editors) if (editor != focused) [editor show];
     [focused show];
@@ -305,7 +317,7 @@ static NSError *MCCaptureError(NSString *message) {
     if (!screens.count) { [self failSession:session error:MCCaptureError(@"没有可用的显示器。")]; return; }
     __weak MCCaptureController *weakSelf = self;
     [self requestShareableContent:^(SCShareableContent *content, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
+        MCSelectionPerformOnMain(^{
             MCCaptureController *owner = weakSelf;
             if (![owner.captureSession isEqualToString:session]) return;
             if (!content || error) {
@@ -337,7 +349,7 @@ static NSError *MCCaptureError(NSString *message) {
             [displays enumerateObjectsUsingBlock:^(SCDisplay *display, NSUInteger index, BOOL *stop) {
                 (void)stop;
                 [owner captureDisplay:display excludingApplications:excluded exceptingWindows:includedWindows completion:^(NSData *png, NSError *captureError) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
+                    MCSelectionPerformOnMain(^{
                         MCCaptureController *current = weakSelf;
                         if (![current.captureSession isEqualToString:session]) return;
                         if (!png || captureError) {
@@ -355,7 +367,7 @@ static NSError *MCCaptureError(NSString *message) {
         });
     }];
 }
-- (NSEventModifierFlags)captureModifierFlags { return NSEvent.modifierFlags; }
+- (NSEventModifierFlags)captureModifierFlags { return MCSelectionCurrentModifiers(); }
 - (void)captureWhenKeysReleased:(NSString *)session attempts:(NSUInteger)attempts {
     __weak MCCaptureController *weakSelf = self;
     MCSelectionWhenKeysReleased(attempts, ^BOOL{ return [weakSelf.captureSession isEqualToString:session]; },
@@ -405,7 +417,7 @@ static NSError *MCCaptureError(NSString *message) {
     [self prepareCaptureFocus];
     [self captureWhenKeysReleased:session attempts:0];
     __weak MCCaptureController *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    MCSelectionAfter(15, ^{
         MCCaptureController *owner = weakSelf;
         if (owner.snapshotsPending && [owner.captureSession isEqualToString:session]) {
             [owner failSession:session error:MCCaptureError(@"读取屏幕超时，请重新截图。")];

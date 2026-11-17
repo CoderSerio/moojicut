@@ -2,6 +2,18 @@
 // internal/features/capture; keep the exported names and signatures stable.
 
 ///|
+#export_name("editor_style_group_gap")
+pub fn editor_style_group_gap() -> Int {
+  @capture_ui.editor_style_group_gap()
+}
+
+///|
+#export_name("editor_style_swatch_size")
+pub fn editor_style_swatch_size() -> Int {
+  @capture_ui.editor_style_swatch_size()
+}
+
+///|
 #export_name("editor_style_visible_mask")
 pub fn editor_style_visible_mask(tool : Int, shape : Int) -> Int {
   @capture_ui.editor_style_visible_mask(tool, shape)

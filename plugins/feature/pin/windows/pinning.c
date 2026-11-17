@@ -8,6 +8,7 @@
 #include "pinning.h"
 #include "native/shared/feature_runtime.h"
 #include "native/shared/pin_policy.h"
+#include "moonbit.h"
 #include <commctrl.h>
 #include <math.h>
 #include <stdlib.h>
@@ -23,6 +24,10 @@ typedef struct Pin {
   double zoom;
   BYTE opacity;
   BOOL selected, hidden, passthrough;
+  int resize_handle;
+  RECT resize_start;
+  POINT resize_mouse;
+  double resize_scale;
   BOOL retiring;
   unsigned references;
   struct Pin *next;
@@ -69,6 +74,10 @@ static BOOL has_passthrough(void) {
   return FALSE;
 }
 static void show_pin(Pin *pin) {
+  if (capture_hidden || pin->hidden) {
+    pin->resize_handle = 0;
+    if (GetCapture() == pin->window) ReleaseCapture();
+  }
   ShowWindow(pin->window, capture_hidden || pin->hidden ? SW_HIDE : SW_SHOWNOACTIVATE);
 }
 BOOL mc_pin_capture_conflicts(const WORD proposed[3]) {
@@ -267,6 +276,8 @@ static BOOL toggle_passthrough(Pin *pin) {
   if (!pin->passthrough && !global_registered[1])
     return FALSE;
   pin->passthrough = !pin->passthrough;
+  pin->resize_handle = 0;
+  if (GetCapture() == pin->window) ReleaseCapture();
   pin->selected = TRUE;
   LONG_PTR style = GetWindowLongPtrW(pin->window, GWL_EXSTYLE);
   if (pin->passthrough)
@@ -304,6 +315,7 @@ static void pin_action(Pin *pin, int action) {
   }
 }
 static BOOL copy_pin(Pin *pin) {
+  if (!mc_pin_enabled() || pin->passthrough || pin->hidden || capture_hidden) return FALSE;
   SIZE_T size = GlobalSize(pin->dib);
   HGLOBAL copy = GlobalAlloc(GMEM_MOVEABLE, size);
   if (!copy)
@@ -387,6 +399,7 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
     DestroyWindow(window);
     return 0;
   case WM_LBUTTONDOWN:
+    if (pin->hidden || capture_hidden || !mc_pin_enabled()) return 0;
     if (has_passthrough())
       return 0;
     for (Pin *other = pins; other; other = other->next)
@@ -395,17 +408,81 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
     SetFocus(window);
     pin->selected = TRUE;
     InvalidateRect(window, NULL, FALSE);
+    RECT client;
+    GetClientRect(window, &client);
+    pin->resize_handle = pin_hit_handle(client.right, client.bottom, GET_X_LPARAM(lp), GET_Y_LPARAM(lp),
+        MulDiv(6, (int)GetDpiForWindow(window), 96));
+    if (pin->resize_handle) {
+      GetWindowRect(window, &pin->resize_start);
+      pin->resize_mouse = (POINT){GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+      ClientToScreen(window, &pin->resize_mouse);
+      pin->resize_scale = pin->zoom;
+      SetCapture(window);
+      return 0;
+    }
     ReleaseCapture();
     POINT pointer;
     GetCursorPos(&pointer);
     SendMessageW(window, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(pointer.x, pointer.y));
     return 0;
+  case WM_MOUSEMOVE:
+    if (pin->resize_handle && !pin->hidden && !capture_hidden) {
+      POINT point = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+      ClientToScreen(window, &point);
+      MONITORINFO monitor = {0}; monitor.cbSize = sizeof(monitor);
+      GetMonitorInfoW(MonitorFromRect(&pin->resize_start, MONITOR_DEFAULTTONEAREST), &monitor);
+      double *frame = pin_resize_frame(MC_PIN_WINDOWS, pin->resize_start.left, pin->resize_start.top,
+          pin->width, pin->height, pin->resize_scale, pin->resize_handle,
+          point.x - pin->resize_mouse.x, point.y - pin->resize_mouse.y,
+          monitor.rcWork.left, monitor.rcWork.top, monitor.rcWork.right - monitor.rcWork.left,
+          monitor.rcWork.bottom - monitor.rcWork.top);
+      if (frame[4] > 0) {
+        pin->zoom = frame[4];
+        SetWindowPos(window, NULL, (int)round(frame[0]), (int)round(frame[1]),
+            (int)fmax(1, round(frame[2])), (int)fmax(1, round(frame[3])), SWP_NOZORDER | SWP_NOACTIVATE);
+        InvalidateRect(window, NULL, FALSE);
+      }
+      moonbit_decref(frame);
+    }
+    return 0;
+  case WM_LBUTTONUP:
+    pin->resize_handle = 0;
+    if (GetCapture() == window) ReleaseCapture();
+    return 0;
+  case WM_CAPTURECHANGED:
+    pin->resize_handle = 0;
+    return 0;
+  case WM_CANCELMODE:
+    pin->resize_handle = 0;
+    if (GetCapture() == window) ReleaseCapture();
+    return 0;
+  case WM_MOUSEWHEEL:
+    if (!pin->hidden && !capture_hidden && !pin->resize_handle && mc_pin_enabled()) {
+      double requested = pin_scroll_scale(pin->zoom, GET_WHEEL_DELTA_WPARAM(wp) / (double)WHEEL_DELTA);
+      if (requested > 0) resize_pin(pin, requested);
+    }
+    return 0;
+  case WM_SETCURSOR:
+    if (LOWORD(lp) == HTCLIENT && !pin->hidden && !capture_hidden) {
+      POINT point; RECT bounds;
+      GetCursorPos(&point); ScreenToClient(window, &point); GetClientRect(window, &bounds);
+      int edge = pin_hit_handle(bounds.right, bounds.bottom, point.x, point.y, MulDiv(6, (int)GetDpiForWindow(window), 96));
+      LPCWSTR cursor = edge == 5 || edge == 10 ? IDC_SIZENWSE : edge == 6 || edge == 9 ? IDC_SIZENESW :
+          edge & 3 ? IDC_SIZEWE : edge & 12 ? IDC_SIZENS : IDC_SIZEALL;
+      SetCursor(LoadCursorW(NULL, cursor)); return TRUE;
+    }
+    break;
   case WM_ACTIVATE:
+    if (LOWORD(wp) == WA_INACTIVE) {
+      pin->resize_handle = 0;
+      if (GetCapture() == window) ReleaseCapture();
+    }
     pin->selected = !has_passthrough() && LOWORD(wp) != WA_INACTIVE;
     InvalidateRect(window, NULL, FALSE);
     return 0;
   case WM_KEYDOWN:
   case WM_SYSKEYDOWN: {
+    if (pin->hidden || capture_hidden || !mc_pin_enabled()) return 0;
     if (wp == VK_ESCAPE) {
       if (pin->selected)
         DestroyWindow(window);
@@ -417,7 +494,8 @@ static LRESULT CALLBACK pin_proc(HWND window, UINT message, WPARAM wp, LPARAM lp
       DestroyWindow(window);
       return 0;
     }
-    if (wp == 'C' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+    if (wp == 'C' && (GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+        !(GetKeyState(VK_SHIFT) & 0x8000) && GetForegroundWindow() == window) {
       copy_pin(pin);
       return 0;
     }
@@ -663,6 +741,67 @@ static BOOL pin_menu_disable_smoke(HWND window) {
   return !watchdog.expired && state.menu_entered && state.disabled && state.enable_rejected &&
       !IsWindow(window) && !pins && !hotkey_host && !menu_leases && feature_state == MC_FEATURE_DISABLED;
 }
+static BOOL pin_interaction_smoke(Pin *pin) {
+  resize_pin(pin, .5);
+  double start = pin->zoom;
+  SendMessageW(pin->window, WM_MOUSEWHEEL, MAKEWPARAM(0, 30), 0);
+  BOOL ok = pin->zoom > start && pin->zoom < start * 1.1;
+  for (int i = 0; i < 3; i++) SendMessageW(pin->window, WM_MOUSEWHEEL, MAKEWPARAM(0, 30), 0);
+  ok = ok && fabs(pin->zoom - start * 1.1) < .000001;
+  SendMessageW(pin->window, WM_MOUSEWHEEL, MAKEWPARAM(0, (WORD)-120), 0);
+  ok = ok && fabs(pin->zoom - start) < .000001;
+  RECT before, after; GetWindowRect(pin->window, &before);
+  int x = before.right - before.left - 1, y = (before.bottom - before.top) / 2;
+  SendMessageW(pin->window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+  ok = ok && pin->resize_handle == 2 && GetCapture() == pin->window;
+  SendMessageW(pin->window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x + 32, y));
+  SendMessageW(pin->window, WM_LBUTTONUP, 0, MAKELPARAM(x + 32, y));
+  GetWindowRect(pin->window, &after);
+  ok = ok && after.left == before.left && after.right - after.left == 192 && after.bottom - after.top == 120 &&
+      !pin->resize_handle && GetCapture() != pin->window;
+  SendMessageW(pin->window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(191, 60));
+  ReleaseCapture(); // Real cancellation must revoke the gesture, not just a fake message.
+  SendMessageW(pin->window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(220, 60));
+  GetWindowRect(pin->window, &before);
+  ok = ok && !pin->resize_handle && EqualRect(&before, &after);
+  SendMessageW(pin->window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(191, 60));
+  ok = ok && GetCapture() == pin->window;
+  SendMessageW(pin->window, WM_CANCELMODE, 0, 0);
+  SendMessageW(pin->window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(220, 60));
+  GetWindowRect(pin->window, &before);
+  ok = ok && !pin->resize_handle && GetCapture() != pin->window && EqualRect(&before, &after);
+  double frozen = pin->zoom; pin->hidden = TRUE;
+  SendMessageW(pin->window, WM_MOUSEWHEEL, MAKEWPARAM(0, 120), 0);
+  ok = ok && pin->zoom == frozen; pin->hidden = FALSE;
+  // CI owns an isolated desktop. Exercise the real Ctrl+C dispatch/clipboard
+  // there without changing a developer's clipboard during local smoke runs.
+  wchar_t ci[16]; DWORD length = GetEnvironmentVariableW(L"CI", ci, 16);
+  if (length && length < 16 && _wcsicmp(ci, L"true") == 0) {
+    ShowWindow(pin->window, SW_SHOWNORMAL); SetForegroundWindow(pin->window); SetFocus(pin->window); pin->selected = TRUE;
+    BYTE saved[256], keyboard[256] = {0}; GetKeyboardState(saved); keyboard[VK_CONTROL] = 0x80; SetKeyboardState(keyboard);
+    SendMessageW(pin->window, WM_KEYDOWN, 'C', 0);
+    BOOL copied = FALSE;
+    if (OpenClipboard(pin->window)) {
+      HGLOBAL data = GetClipboardData(CF_DIB);
+      if (data && GlobalSize(data) == GlobalSize(pin->dib)) {
+        void *actual = GlobalLock(data), *expected = GlobalLock(pin->dib);
+        copied = actual && expected && memcmp(actual, expected, GlobalSize(pin->dib)) == 0;
+        if (actual) GlobalUnlock(data); if (expected) GlobalUnlock(pin->dib);
+      }
+      CloseClipboard();
+    }
+    ok = ok && copied;
+    DWORD sequence = GetClipboardSequenceNumber();
+    pin->selected = FALSE; SendMessageW(pin->window, WM_KEYDOWN, 'C', 0);
+    pin->selected = TRUE; pin->hidden = TRUE; SendMessageW(pin->window, WM_KEYDOWN, 'C', 0);
+    pin->hidden = FALSE; pin->passthrough = TRUE; SendMessageW(pin->window, WM_KEYDOWN, 'C', 0);
+    ok = ok && sequence == GetClipboardSequenceNumber(); pin->passthrough = FALSE;
+    SetKeyboardState(saved); ShowWindow(pin->window, SW_HIDE);
+  }
+  resize_pin(pin, .5);
+  printf("Windows pin interaction smoke %s: fractional wheel, proportional edge resize, capture cancellation, input guards.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
 BOOL mc_pin_smoke(HINSTANCE instance) {
   if (!mc_pin_set_enabled(TRUE))
     return FALSE;
@@ -691,6 +830,7 @@ BOOL mc_pin_smoke(HINSTANCE instance) {
   RECT rect;
   GetWindowRect(pin->window, &rect);
   BOOL ok = rect.right - rect.left == 160 && rect.bottom - rect.top == 100;
+  ok = pin_interaction_smoke(pin) && ok;
   WORD saved[6];
   memcpy(saved, keys, sizeof(keys));
   keys[0] = MAKEWORD(VK_F8, HOTKEYF_ALT);

@@ -11,9 +11,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)syncFromSender:(id)sender;
 @end
 
+// Draws a circular swatch at the shared UI size; AppKit retains button keyboard
+// and accessibility behavior without a system color well's minimum geometry.
+@interface MCColorSwatch : NSButton
+@property (nonatomic) NSColor *color;
+@end
+
 // One RGBA value feeds every annotation tool, its swatch and the native panel.
 @interface MCColorControl : NSStackView
-@property (nonatomic, readonly) NSColorWell *well;
+@property (nonatomic, readonly) MCColorSwatch *well;
 @property (nonatomic, readonly) MCNumberControl *opacityControl;
 @property (nonatomic, readonly) NSPopover *popover;
 @property (nonatomic) NSColor *color;

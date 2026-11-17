@@ -25,3 +25,10 @@
 // Both entry points must wait before presenting a mouse-editable desktop.
 void MCSelectionWhenKeysReleased(NSUInteger attempts, BOOL (^isCurrent)(void),
     NSEventModifierFlags (^modifiers)(void), void (^completion)(BOOL released));
+
+// Main-thread capture work must also progress inside NSMenu tracking loops.
+// The asynchronous callback may be submitted from any thread; timers are
+// created on the main thread and retain the caller's session/generation guard.
+void MCSelectionPerformOnMain(void (^action)(void));
+void MCSelectionAfter(NSTimeInterval seconds, void (^action)(void));
+NSEventModifierFlags MCSelectionCurrentModifiers(void);

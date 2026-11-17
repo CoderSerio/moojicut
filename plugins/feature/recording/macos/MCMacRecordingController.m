@@ -212,7 +212,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
         MCMacRecordingController *owner = weakSelf;
         if (!released) { [owner fail:MCRecordingError(@"请松开快捷键后再试一次。")]; return; }
         [owner requestSelectionContent:^(SCShareableContent *content, NSError *error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
+            MCSelectionPerformOnMain(^{
                 MCMacRecordingController *current = weakSelf;
                 if (current.generation != generation || !current.selecting) return;
                 if (!content || error) { [current fail:error ?: MCRecordingError(@"无法读取桌面内容。")]; return; }
@@ -220,13 +220,13 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
             });
         }];
     });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,15*NSEC_PER_SEC),dispatch_get_main_queue(),^{
+    MCSelectionAfter(15, ^{
         MCMacRecordingController *owner = weakSelf;
         if (owner.generation == generation && owner.selecting && owner.selectionPreparing)
             [owner fail:MCRecordingError(@"读取屏幕超时，请重新录屏。")];
     });
 }
-- (NSEventModifierFlags)selectionModifierFlags { return NSEvent.modifierFlags; }
+- (NSEventModifierFlags)selectionModifierFlags { return MCSelectionCurrentModifiers(); }
 - (void)requestSelectionContent:(void (^)(SCShareableContent *, NSError *))completion {
     [SCShareableContent getShareableContentExcludingDesktopWindows:YES onScreenWindowsOnly:YES completionHandler:completion];
 }
@@ -294,7 +294,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     __block NSUInteger remaining = panels.count;
     for (NSUInteger index=0;index<panels.count;index++) {
         [self snapshotDisplay:displays[index] completion:^(NSData *png, NSError *error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
+            MCSelectionPerformOnMain(^{
                 MCMacRecordingController *owner = weakSelf;
                 if (owner.generation != generation || !owner.selecting || owner.selectionPanels != panels) return;
                 NSImage *image = png ? [[NSImage alloc] initWithData:png] : nil;

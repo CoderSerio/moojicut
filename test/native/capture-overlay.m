@@ -28,7 +28,7 @@
 @property (readonly) NSStackView *strokeGroup;
 @property (readonly) NSTextField *lineWidth;
 @property (readonly) NSStepper *strokeStepper;
-@property (readonly) NSColorWell *color;
+@property (readonly) MCColorSwatch *color;
 @property (readonly) NSTextField *fontSize;
 @property (readonly) NSStepper *fontStepper;
 @property (readonly) NSButton *ocrButton;
@@ -248,7 +248,7 @@ static BOOL independentToolStyles(void) {
         MCStyleValues values = properties.values;
         values.rgb = colors[tool]; values.opacity = tool * .2;
         properties.values = values;
-        [editor.color sendAction:editor.color.action to:editor.color.target];
+        properties.colorControl.onChange(properties.colorControl.well);
         if (tool <= 2) {
             editor.strokeStepper.doubleValue = 3 * tool;
             [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
@@ -272,7 +272,7 @@ static BOOL independentToolStyles(void) {
     CHECK([editor.canvas finishTextEditing:YES], "new styled text commits through the normal inline editor");
     NSUInteger history = [editor.document[@"undo"] count];
     properties.colorControl.color = [NSColor colorWithSRGBRed:1 green:1 blue:0 alpha:.9];
-    [editor.color sendAction:editor.color.action to:editor.color.target];
+    properties.colorControl.onChange(properties.colorControl.well);
     NSDictionary *changed = [editor.document[@"annotations"] firstObject];
     CHECK([changed[@"color"] isEqual:@"#ffff00"] && fabs([changed[@"opacity"] doubleValue] - .9) < .001 &&
           [editor.document[@"undo"] count] == history + 1,

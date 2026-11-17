@@ -18,7 +18,7 @@
         self.orientation = NSUserInterfaceLayoutOrientationHorizontal;
         self.alignment = NSLayoutAttributeCenterY;
         self.distribution = NSStackViewDistributionGravityAreas;
-        self.spacing = 8;
+        self.spacing = editor_style_group_gap();
         self.detachesHiddenViews = YES;
         self.colorControl = [[MCColorControl alloc] initWithFrame:NSZeroRect];
         self.fontControl = [self numberForProperty:MC_STYLE_FONT label:@"字号"];

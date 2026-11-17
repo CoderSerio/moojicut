@@ -7,6 +7,7 @@
 #import "native/macos/preferences/MCToolRegistryStore.h"
 #import <Carbon/Carbon.h>
 #include <stdlib.h>
+#import <objc/runtime.h>
 
 static BOOL registrationFails;
 static NSUInteger registrations, unregistrations;
@@ -34,6 +35,7 @@ OSStatus MCTestUnregisterPinHotKey(EventHotKeyRef reference) { free(reference); 
 - (BOOL)handleKeyEvent:(NSEvent *)event;
 - (void)applyAction:(NSString *)action;
 - (BOOL)copyToPasteboard:(NSPasteboard *)pasteboard;
+- (void)copyImage:(id)sender;
 - (void)close:(id)sender;
 - (void)reset:(id)sender;
 @end
@@ -50,9 +52,11 @@ OSStatus MCTestUnregisterPinHotKey(EventHotKeyRef reference) { free(reference); 
 @property BOOL testVisible;
 @property NSUInteger keyRequests;
 @property NSUInteger frontRequests;
+@property BOOL testKey;
 @end
 @implementation MCPinTestPanel
 - (BOOL)isVisible { return self.testVisible; }
+- (BOOL)isKeyWindow { return self.testKey; }
 - (void)orderFront:(id)sender { (void)sender; self.testVisible = YES; self.frontRequests++; }
 - (void)orderOut:(id)sender { (void)sender; self.testVisible = NO; }
 - (void)makeKeyWindow { self.keyRequests++; }
@@ -90,12 +94,22 @@ static NSData *fixture(void) {
 static NSEvent *key(unsigned short code, NSEventModifierFlags flags) {
     return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
         timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:0 context:nil
-        characters:code == 27 ? @"-" : @"+" charactersIgnoringModifiers:code == 27 ? @"-" : @"="
+        characters:code == 8 ? @"c" : code == 27 ? @"-" : @"+" charactersIgnoringModifiers:code == 8 ? @"c" : code == 27 ? @"-" : @"="
         isARepeat:NO keyCode:code];
 }
 static NSEvent *mouse(NSWindow *window, NSEventType type, NSPoint screenPoint) {
     return [NSEvent mouseEventWithType:type location:[window convertPointFromScreen:screenPoint] modifierFlags:0
         timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+}
+static NSEvent *wheel(int pixels) {
+    CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitPixel, 1, pixels);
+    NSEvent *result = [NSEvent eventWithCGEvent:event]; CFRelease(event); return result;
+}
+static NSPasteboard *keyClipboard;
+static NSUInteger copyRequests;
+static void copyToFixture(id target, SEL selector, id sender) {
+    (void)selector; (void)sender; copyRequests++;
+    [(MCPinnedImage *)target copyToPasteboard:keyClipboard];
 }
 static OSStatus recoveryEvent(MCPinnedImageController *controller, UInt32 action) {
     EventRef event = NULL;
@@ -184,6 +198,53 @@ int main(void) {
         CHECK(near(second.panel.frame.origin.x, beforeDrag.origin.x + 35) &&
               near(second.panel.frame.origin.y, beforeDrag.origin.y - 25), "drag moves the existing panel using screen coordinates");
         CHECK(secondPanel.keyRequests == 1 && second.selected && !first.selected, "single click selects rather than creating a window");
+        // Edge motion uses the same MoonBit geometry on all hosts. The middle
+        // remains a move gesture; resizing never changes the retained PNG.
+        NSRect beforeResize = second.panel.frame;
+        NSPoint edge = NSMakePoint(NSMaxX(beforeResize) - 1, NSMidY(beforeResize));
+        NSPoint enlarged = NSMakePoint(edge.x + 60, edge.y);
+        [second.view mouseDown:mouse(second.panel, NSEventTypeLeftMouseDown, edge)];
+        [second.view mouseDragged:mouse(second.panel, NSEventTypeLeftMouseDragged, enlarged)];
+        [second.view mouseUp:mouse(second.panel, NSEventTypeLeftMouseUp, enlarged)];
+        CHECK(near(NSMinX(second.panel.frame), NSMinX(beforeResize)) && near(second.panel.frame.size.width, beforeResize.size.width + 60) &&
+              near(second.panel.frame.size.width / second.panel.frame.size.height, 1.5), "edge drag resizes proportionally with the opposite edge fixed");
+        [second reset:nil];
+        CGFloat wheelStart = second.scale;
+        CHECK(wheel(10).hasPreciseScrollingDeltas, "wheel fixture preserves precise scrolling deltas");
+        [second.view scrollWheel:wheel(10)];
+        CHECK(second.scale > wheelStart && second.scale < wheelStart * 1.1, "fractional touchpad input is not rounded to a full zoom step");
+        for (int i = 0; i < 3; i++) [second.view scrollWheel:wheel(10)];
+        CHECK(near(second.scale, wheelStart * 1.1), "four small wheel deltas compose into one step");
+        [second.view scrollWheel:wheel(-40)];
+        CHECK(near(second.scale, wheelStart), "wheel zoom reverses without quantization drift");
+        // Disabling interaction mid-gesture revokes the old drag before input
+        // resumes; a late mouseDragged must not resize or move the window.
+        beforeResize = second.panel.frame;
+        edge = NSMakePoint(NSMaxX(beforeResize) - 1, NSMidY(beforeResize));
+        [second.view mouseDown:mouse(second.panel, NSEventTypeLeftMouseDown, edge)];
+        [controller setCaptureActive:YES]; [controller setCaptureActive:NO];
+        [second.view mouseDragged:mouse(second.panel, NSEventTypeLeftMouseDragged, NSMakePoint(edge.x + 60, edge.y))];
+        CHECK(NSEqualRects(beforeResize, second.panel.frame), "capture cancellation revokes an in-flight resize");
+
+        keyClipboard = [NSPasteboard pasteboardWithUniqueName];
+        Method copyMethod = class_getInstanceMethod(NSClassFromString(@"MCPinnedImage"), @selector(copyImage:));
+        IMP originalCopy = method_setImplementation(copyMethod, (IMP)copyToFixture);
+        secondPanel.testKey = YES;
+        CHECK([second.view performKeyEquivalent:key(8, NSEventModifierFlagCommand)] && copyRequests == 1 &&
+              [[keyClipboard dataForType:NSPasteboardTypePNG] isEqualToData:png], "Cmd+C reaches the selected pin and copies original PNG bytes");
+        CHECK(![first handleKeyEvent:key(8, NSEventModifierFlagCommand)] && copyRequests == 1, "unselected pin does not claim copy");
+        secondPanel.testKey = NO;
+        CHECK(![second handleKeyEvent:key(8, NSEventModifierFlagCommand)] && copyRequests == 1, "logical selection without key focus does not claim another application's copy");
+        secondPanel.testKey = YES; second.userHidden = YES;
+        CHECK(![second handleKeyEvent:key(8, NSEventModifierFlagCommand)] && copyRequests == 1, "hidden pin leaves copy untouched");
+        second.userHidden = NO; second.clickThrough = YES;
+        [second.view scrollWheel:wheel(40)];
+        CHECK(![second handleKeyEvent:key(8, NSEventModifierFlagCommand)] && copyRequests == 1 && near(second.scale, wheelStart), "pass-through pin leaves copy and wheel input untouched");
+        second.clickThrough = NO; [controller setCaptureActive:YES];
+        CHECK(![second handleKeyEvent:key(8, NSEventModifierFlagCommand)] && copyRequests == 1, "capture suspension cannot copy a retained selection");
+        [controller setCaptureActive:NO];
+        method_setImplementation(copyMethod, originalCopy);
+        [keyClipboard releaseGlobally]; keyClipboard = nil;
         MCPinnedImage *escaped = [controller createPinPNGData:png display:NO error:&error];
         spyPanel(escaped);
         [controller selectPin:escaped focus:NO];

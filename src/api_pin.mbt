@@ -1,5 +1,46 @@
-// Scalar native ABI: pure sizing, opacity and visibility rules only. Hosts own
+// Numeric native ABI: pure sizing, opacity and visibility rules only. Hosts own
 // windows, selection/focus events, image buffers and global key registration.
+
+///|
+#export_name("pin_scroll_scale")
+pub fn pin_scroll_scale(value : Double, steps : Double) -> Double {
+  @pin.scroll_scale(value, steps)
+}
+
+///|
+#export_name("pin_hit_handle")
+pub fn pin_hit_handle(
+  width : Double,
+  height : Double,
+  x : Double,
+  y : Double,
+  margin : Double,
+) -> Int32 {
+  @pin.hit_handle(width, height, x, y, margin)
+}
+
+///|
+#export_name("pin_resize_frame")
+pub fn pin_resize_frame(
+  platform : Int32,
+  x : Double,
+  y : Double,
+  source_width : Double,
+  source_height : Double,
+  start_scale : Double,
+  handle : Int32,
+  dx : Double,
+  dy : Double,
+  work_x : Double,
+  work_y : Double,
+  work_width : Double,
+  work_height : Double,
+) -> FixedArray[Double] {
+  @pin.resize_frame(
+    platform, x, y, source_width, source_height, start_scale, handle, dx, dy, work_x,
+    work_y, work_width, work_height,
+  )
+}
 
 ///|
 #export_name("pin_scale")

@@ -346,7 +346,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property NSLayoutConstraint *toolScrollWidth;
 @property NSArray<NSDictionary *> *visibleTools;
 @property (nonatomic, copy, readwrite) NSString *pluginContextIdentifier;
-@property (readonly) NSColorWell *color;
+@property (readonly) MCColorSwatch *color;
 @property NSButton *undoButton;
 @property NSButton *redoButton;
 @property NSButton *confirmButton;
@@ -1090,7 +1090,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     return self;
 }
 - (void)dealloc { editor_style_dispose(_styleHandle); capture_ui_close(_captureUIHandle); }
-- (NSColorWell *)color { return self.properties.colorControl.well; }
+- (MCColorSwatch *)color { return self.properties.colorControl.well; }
 - (NSTextField *)fontSize { return self.properties.fontControl.field; }
 - (NSStepper *)fontStepper { return self.properties.fontControl.stepper; }
 - (NSStackView *)colorGroup { return self.properties.colorControl; }
@@ -1229,7 +1229,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.floatingToolbar.state = NSVisualEffectStateActive;
     self.floatingToolbar.wantsLayer = YES;
     self.floatingToolbar.layer.cornerRadius = 8;
-    self.properties.spacing = 8;
+    self.properties.spacing = editor_style_group_gap();
     self.floatingToolbar.layer.masksToBounds = YES;
     self.floatingToolbar.hidden = YES;
     for (NSView *view in @[self.toolbar, self.properties]) {
@@ -1652,7 +1652,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     self.window = nil;
     self.canvas = nil;
     [self.colorControl closePopover];
-    [self.color deactivate];
     [NSColorPanel.sharedColorPanel orderOut:nil];
     NSColorPanel.sharedColorPanel.level = NSFloatingWindowLevel;
     if (closed) closed();

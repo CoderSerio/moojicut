@@ -147,6 +147,15 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @end
 @implementation MCFakeRunningApplication
 @end
+@interface MCFakeTrackingMenu : NSMenu
+@property NSUInteger cancellations;
+@end
+@implementation MCFakeTrackingMenu
+- (void)cancelTrackingWithoutAnimation {
+    self.cancellations++;
+    [NSNotificationCenter.defaultCenter postNotificationName:NSMenuDidEndTrackingNotification object:self];
+}
+@end
 @interface MCFakeOverlay : MCImageEditorController
 @property NSUInteger shows;
 @property NSUInteger cancellations;
@@ -174,6 +183,7 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @property NSArray<SCWindow *> *includedWindows;
 @property NSArray *fakeWindows;
 @property BOOL realFocusPreparation, realKeyReleaseCheck;
+@property NSEventModifierFlags heldModifiers;
 @property BOOL realEditors;
 @property NSMutableArray<MCImageEditorController *> *realCreatedEditors;
 @property NSRunningApplication *fakeFrontmost;
@@ -197,7 +207,7 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 }
 - (NSRunningApplication *)frontmostApplication { return self.fakeFrontmost; }
 - (NSArray<NSWindow *> *)captureWindows { return self.fakeWindows ?: @[]; }
-- (NSEventModifierFlags)captureModifierFlags { return 0; }
+- (NSEventModifierFlags)captureModifierFlags { return self.heldModifiers; }
 - (void)prepareCaptureFocus {
     if (self.realFocusPreparation) [super prepareCaptureFocus];
     [self.focusEvents addObject:@"prepare"];
@@ -548,6 +558,54 @@ static BOOL exerciseSuspendedCapture(void) {
     return passed;
 }
 
+// NSMenu runs a nested tracking loop. Enter it from a queued main-thread
+// action as well, so the regression cannot accidentally drain main GCD work.
+static BOOL trackUntil(BOOL (^done)(void)) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.4];
+    while (!done() && deadline.timeIntervalSinceNow > 0)
+        [NSRunLoop.currentRunLoop runMode:NSEventTrackingRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.005]];
+    return done();
+}
+static BOOL captureWhileTracking(void) {
+    __block BOOL passed = YES, finished = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MCPermissionCapture *controller = [MCPermissionCapture new];
+        controller.realKeyReleaseCheck = YES;
+        controller.heldModifiers = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+        MCFakeTrackingMenu *menu = [MCFakeTrackingMenu new];
+        [NSNotificationCenter.defaultCenter postNotificationName:NSMenuDidBeginTrackingNotification object:menu];
+        [controller capture];
+        CHECK(menu.cancellations == 0, "menu is not dismissed before pixels are frozen");
+        NSTimer *release = [NSTimer timerWithTimeInterval:0.02 repeats:NO block:^(__unused NSTimer *timer) {
+            controller.heldModifiers = 0;
+        }];
+        [NSRunLoop.currentRunLoop addTimer:release forMode:NSEventTrackingRunLoopMode];
+        CHECK(trackUntil(^BOOL{ return controller.pendingContent != nil; }), "held keys release during nested menu tracking without closing the menu");
+        if (controller.pendingContent) {
+            void (^content)(SCShareableContent *, NSError *) = controller.pendingContent;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{ content(fakeContent(@[@27,@14]), nil); });
+            CHECK(trackUntil(^BOOL{ return controller.imageCompletions.count == 2; }), "background source callback reaches main while menu tracks");
+            if (controller.imageCompletions.count == 2) {
+                void (^first)(NSData *, NSError *) = controller.imageCompletions[@14];
+                void (^second)(NSData *, NSError *) = controller.imageCompletions[@27];
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+                    second([@"menu pixels second screen" dataUsingEncoding:NSUTF8StringEncoding],nil);
+                    first([@"menu pixels first screen" dataUsingEncoding:NSUTF8StringEncoding],nil);
+                });
+                CHECK(trackUntil(^BOOL{ return controller.createdEditors.count == 2; }), "frozen menu snapshots reach overlays before leaving tracking mode");
+                CHECK(menu.cancellations == 1 && controller.createdEditors.count == 2 && controller.createdEditors[0].shows == 1,
+                    "own menu releases mouse tracking only after all frozen snapshots are ready");
+            }
+        }
+        [release invalidate];
+        [controller cancelCapture];
+        finished = YES;
+    });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+    while (!finished && deadline.timeIntervalSinceNow > 0) CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.01,false);
+    return finished && passed;
+}
+
 int main(void) {
     @autoreleasepool {
         moonbit_init();
@@ -620,6 +678,8 @@ int main(void) {
             [controller cancelCapture];
             CHECK(pin.visible && !hiddenPin.visible, "cancelling capture does not change pin visibility");
             controller = nil;
+            reset(true, false);
+            CHECK(captureWhileTracking(), "capture lifecycle progresses inside menu tracking mode");
             // Display enumeration order differs from NSScreen order; callbacks
             // complete out of order. Both snapshots must retain their own frame.
             reset(true, false);

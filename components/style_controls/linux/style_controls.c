@@ -112,6 +112,8 @@ void mc_style_hud_apply(GtkWidget *toolbar) {
       ".mc-capture-hud entry { background-color: #201e26; background-image:none; color:#ece8e2;"
       " border:1px solid #514b59; border-radius:5px; min-height:26px; padding:0 4px; font-size:12px; }"
       ".mc-capture-hud button.mc-step { min-width:18px; min-height:13px; border-radius:3px; }"
+      ".mc-capture-hud button.mc-color-swatch { min-width:0; min-height:0; border:0; padding:0;"
+      " background:none; box-shadow:none; border-radius:50%; }"
       ".mc-capture-hud .mc-property-label { color:#b8b1bf; font-size:11px; margin-right:4px; }"
       ".mc-capture-hud .mc-context-row { min-height:32px; }"
       ".mc-capture-hud .mc-hint { color: #aaa3b0; font-size: 10px; }"
@@ -214,7 +216,7 @@ MCNumericControl *mc_numeric_control_new(const char *label, double value, double
   g_object_set_data_full(G_OBJECT(control->group), "mc-numeric-control", control, g_free);
   GtkWidget *caption = gtk_label_new(label);
   gtk_style_context_add_class(gtk_widget_get_style_context(caption), "mc-property-label");
-  gtk_box_pack_start(GTK_BOX(control->group), caption, FALSE, FALSE, 4);
+  gtk_box_pack_start(GTK_BOX(control->group), caption, FALSE, FALSE, 0);
   control->entry = gtk_entry_new();
   gtk_entry_set_width_chars(GTK_ENTRY(control->entry), 3);
   gtk_entry_set_max_width_chars(GTK_ENTRY(control->entry), 3);
@@ -272,25 +274,36 @@ gboolean mc_color_control_set(MCColorControl *control, const GdkRGBA *value) {
 static gboolean swatch_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
   MCColorControl *control = data;
   double x = gtk_widget_get_allocated_width(widget) / 2.0, y = gtk_widget_get_allocated_height(widget) / 2.0;
-  cairo_arc(cr, x, y, 8, 0, 2 * G_PI);
+  gboolean focused = gtk_widget_has_focus(control->button);
+  double line_width = focused ? 2 : 1;
+  double diameter = editor_style_swatch_size(), radius = (diameter - line_width) / 2;
+  cairo_arc(cr, x, y, radius, 0, 2 * G_PI);
   cairo_save(cr);
   cairo_clip(cr);
   /* A small checkerboard makes alpha visible without a second color UI. */
-  for (int row = 0; row < 4; row++)
-    for (int col = 0; col < 4; col++) {
+  for (int row = 0; row < (int)ceil(diameter / 4); row++)
+    for (int col = 0; col < (int)ceil(diameter / 4); col++) {
       double gray = (row + col) % 2 ? .38 : .68;
       cairo_set_source_rgb(cr, gray, gray, gray);
-      cairo_rectangle(cr, x - 8 + col * 4, y - 8 + row * 4, 4, 4);
+      cairo_rectangle(cr, x - diameter / 2 + col * 4, y - diameter / 2 + row * 4, 4, 4);
       cairo_fill(cr);
     }
   gdk_cairo_set_source_rgba(cr, &control->value);
   cairo_paint(cr);
   cairo_restore(cr);
-  cairo_arc(cr, x, y, 8, 0, 2 * G_PI);
-  cairo_set_line_width(cr, 1);
-  cairo_set_source_rgb(cr, .68, .64, .71);
+  cairo_arc(cr, x, y, radius, 0, 2 * G_PI);
+  cairo_set_line_width(cr, line_width);
+  if (focused) cairo_set_source_rgb(cr, .76, .69, .95);
+  else cairo_set_source_rgb(cr, .68, .64, .71);
   cairo_stroke(cr);
   return FALSE;
+}
+static gboolean swatch_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+  (void)data;
+  double radius = editor_style_swatch_size() / 2.0;
+  double dx = event->x - gtk_widget_get_allocated_width(widget) / 2.0;
+  double dy = event->y - gtk_widget_get_allocated_height(widget) / 2.0;
+  return dx * dx + dy * dy > radius * radius;
 }
 static void color_dialog_destroyed(GtkWidget *dialog, gpointer data) {
   MCColorControl *control = data;
@@ -366,16 +379,19 @@ MCColorControl *mc_color_control_new(GtkWindow *parent, const GdkRGBA *value,
   gtk_style_context_add_class(gtk_widget_get_style_context(label), "mc-property-label");
   gtk_box_pack_start(GTK_BOX(control->group), label, FALSE, FALSE, 0);
   control->button = gtk_button_new();
-  gtk_widget_set_size_request(control->button, 28, 28);
+  gtk_style_context_add_class(gtk_widget_get_style_context(control->button), "mc-color-swatch");
+  gtk_widget_set_size_request(control->button, editor_style_swatch_size(), editor_style_swatch_size());
+  gtk_widget_set_valign(control->button, GTK_ALIGN_CENTER);
   gtk_widget_set_focus_on_click(control->button, FALSE);
   GtkWidget *swatch = gtk_drawing_area_new();
   gtk_widget_set_has_window(swatch, FALSE);
-  gtk_widget_set_size_request(swatch, 18, 18);
+  gtk_widget_set_size_request(swatch, editor_style_swatch_size(), editor_style_swatch_size());
   g_signal_connect(swatch, "draw", G_CALLBACK(swatch_draw), control);
   gtk_container_add(GTK_CONTAINER(control->button), swatch);
   gtk_widget_set_tooltip_text(control->button, "选择标注颜色与透明度");
   atk_object_set_name(gtk_widget_get_accessible(control->button), "标注颜色与透明度");
   g_signal_connect(control->button, "clicked", G_CALLBACK(choose_color), control);
+  g_signal_connect(control->button, "button-press-event", G_CALLBACK(swatch_press), control);
   gtk_box_pack_start(GTK_BOX(control->group), control->button, FALSE, FALSE, 0);
   return control;
 }
@@ -452,13 +468,13 @@ MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ran
   controls->on_change = on_change;
   controls->on_finish = on_finish;
   controls->data = data;
-  controls->row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+  controls->row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, editor_style_group_gap());
   g_object_set_data_full(G_OBJECT(controls->row), "mc-style-controls", controls, g_free);
   gtk_style_context_add_class(gtk_widget_get_style_context(controls->row), "mc-context-row");
   controls->hint = gtk_label_new("选择标注以调整样式");
   gtk_label_set_xalign(GTK_LABEL(controls->hint), 0);
   gtk_style_context_add_class(gtk_widget_get_style_context(controls->hint), "mc-property-label");
-  gtk_box_pack_start(GTK_BOX(controls->row), controls->hint, FALSE, FALSE, 3);
+  gtk_box_pack_start(GTK_BOX(controls->row), controls->hint, FALSE, FALSE, 0);
   controls->shapes = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
   GtkWidget *label = gtk_label_new("形状");
   gtk_style_context_add_class(gtk_widget_get_style_context(label), "mc-property-label");
@@ -480,10 +496,10 @@ MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ran
     gtk_container_add(GTK_CONTAINER(button), glyph);
     gtk_box_pack_start(GTK_BOX(controls->shapes), button, FALSE, FALSE, 0);
   }
-  gtk_box_pack_start(GTK_BOX(controls->row), controls->shapes, FALSE, FALSE, 3);
+  gtk_box_pack_start(GTK_BOX(controls->row), controls->shapes, FALSE, FALSE, 0);
   GdkRGBA color = style_rgba(controls->values);
   controls->color = mc_color_control_new(parent, &color, style_color_changed, style_finished, controls);
-  gtk_box_pack_start(GTK_BOX(controls->row), mc_color_control_widget(controls->color), FALSE, FALSE, 3);
+  gtk_box_pack_start(GTK_BOX(controls->row), mc_color_control_widget(controls->color), FALSE, FALSE, 0);
   const int fields[] = {MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_OPACITY, MC_STYLE_BLOCK};
   const char *labels[] = {"字号", "线宽", "不透明度 %", "颗粒"};
   for (unsigned i = 0; i < G_N_ELEMENTS(fields); i++) {
@@ -496,7 +512,7 @@ MCStyleControls *mc_style_controls_new(GtkWindow *parent, const MCStyleRange ran
     number->data = number;
     g_object_set_data(G_OBJECT(number->group), "mc-style-owner", controls);
     g_object_set_data(G_OBJECT(number->group), "mc-style-field", GINT_TO_POINTER(field));
-    gtk_box_pack_start(GTK_BOX(controls->row), number->group, FALSE, FALSE, 3);
+    gtk_box_pack_start(GTK_BOX(controls->row), number->group, FALSE, FALSE, 0);
   }
   gtk_widget_show_all(controls->row);
   gtk_widget_set_no_show_all(controls->row, TRUE);
@@ -578,6 +594,54 @@ static void smoke_dialog_destroyed(GtkWidget *widget, gpointer data) {
   (void)widget;
   *(gboolean *)data = TRUE;
 }
+static gboolean smoke_property_spacing(MCStyleControls *controls, const double *values) {
+  const int tools[] = {MC_STYLE_TOOL_RECTANGLE, MC_STYLE_TOOL_ARROW, MC_STYLE_TOOL_TEXT,
+                       MC_STYLE_TOOL_COVER, MC_STYLE_TOOL_COVER};
+  const int shapes[] = {0, 0, 0, 0, 2};
+  gboolean ok = TRUE;
+  for (unsigned test = 0; test < G_N_ELEMENTS(tools); test++) {
+    double current[MC_STYLE_PROPERTY_COUNT];
+    memcpy(current, values, sizeof(current));
+    current[MC_STYLE_SHAPE] = shapes[test];
+    mc_style_controls_set_tool(controls, tools[test]);
+    mc_style_controls_sync(controls, editor_style_visible_mask(tools[test], shapes[test]), current);
+    GtkRequisition natural;
+    gtk_widget_get_preferred_size(controls->row, NULL, &natural);
+    GtkAllocation allocation = {0, 0, natural.width, natural.height};
+    gtk_widget_size_allocate(controls->row, &allocation);
+    if (gtk_widget_get_visible(controls->color->group)) {
+      GtkWidget *button = controls->color->button;
+      ok = ok && gtk_widget_get_allocated_width(button) == editor_style_swatch_size() &&
+        gtk_widget_get_allocated_height(button) == editor_style_swatch_size();
+      GdkEventButton event = {0};
+      event.x = event.y = editor_style_swatch_size() / 2.0;
+      ok = ok && !swatch_press(button, &event, NULL);
+      event.x = event.y = .5;
+      ok = ok && swatch_press(button, &event, NULL);
+    }
+    GList *groups = gtk_container_get_children(GTK_CONTAINER(controls->row));
+    int right = 0, count = 0;
+    for (GList *item = groups; item; item = item->next) {
+      GtkWidget *group = item->data;
+      if (!gtk_widget_get_visible(group)) continue;
+      GtkAllocation frame;
+      gtk_widget_get_allocation(group, &frame);
+      ok = ok && frame.x - right == (count ? editor_style_group_gap() : 0);
+      if (GTK_IS_BOX(group)) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(group));
+        int label_x = -1, label_y = -1;
+        ok = children && gtk_widget_translate_coordinates(children->data, group, 0, 0,
+          &label_x, &label_y) && label_x == 0 && ok;
+        g_list_free(children);
+      }
+      right = frame.x + frame.width;
+      count++;
+    }
+    ok = ok && count > 0 && right == natural.width;
+    g_list_free(groups);
+  }
+  return ok;
+}
 gboolean mc_style_controls_smoke(void) {
   MCStyleRange ranges[MC_STYLE_PROPERTY_COUNT] = {{0, 16777215, 1, 0xF26769, 1}, {0, 1, .01, 1, 100},
                            {1, 96, 1, 4, 1}, {8, 128, 1, 32, 1}, {0, 2, 1, 0, 1}, {4, 48, 1, 12, 1}};
@@ -640,12 +704,20 @@ gboolean mc_style_controls_smoke(void) {
   mc_style_controls_sync(first, editor_style_visible_mask(MC_STYLE_TOOL_RECTANGLE, 0), initial);
   gtk_button_clicked(GTK_BUTTON(first->shape_buttons[2]));
   ok = a.calls == 4 && !gtk_widget_get_visible(first->shape_buttons[2]) && ok;
+  // Allocate real GTK children: label packing must not add hidden leading space
+  // and switching to mosaic must not retain gaps for detached color controls.
+  gtk_widget_show_all(window);
+  gtk_style_context_add_class(gtk_widget_get_style_context(window), "mc-capture-hud");
+  mc_style_hud_apply(window);
+  ok = smoke_property_spacing(first, initial) && ok;
+  mc_style_controls_set_tool(first, MC_STYLE_TOOL_RECTANGLE);
+  mc_style_controls_sync(first, editor_style_visible_mask(MC_STYLE_TOOL_RECTANGLE, 0), initial);
   choose_color(NULL, first->color);
   gboolean closed = FALSE;
   g_signal_connect(first->color->dialog, "destroy", G_CALLBACK(smoke_dialog_destroyed), &closed);
   gtk_widget_destroy(window);
   ok = closed && ok;
-  g_print("Linux style controls smoke %s: isolated callbacks, invalid numbers, RGBA/cancel, dialog lifetime.\n",
+  g_print("Linux style controls smoke %s: isolated callbacks, invalid numbers, RGBA/cancel, dialog lifetime, property group geometry.\n",
            ok ? "passed" : "FAILED");
   return ok;
 }

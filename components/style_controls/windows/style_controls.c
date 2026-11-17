@@ -15,7 +15,7 @@
 #include <wchar.h>
 
 struct MCStyleControls {
-  HWND parent, tooltip, buttons[MC_STYLE_CONTROL_COUNT];
+  HWND parent, tooltip, color_label, buttons[MC_STYLE_CONTROL_COUNT];
   int first_id;
   unsigned references;
   BOOL retiring;
@@ -88,6 +88,9 @@ MCStyleControls *mc_style_controls_create(HWND parent, HINSTANCE instance, int f
     tip.lpszText = (LPWSTR)labels[i];
     SendMessageW(controls->tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
   }
+  controls->color_label = CreateWindowW(L"STATIC", L"颜色", WS_CHILD | SS_OWNERDRAW,
+      0, 0, 1, 1, parent, NULL, instance, NULL);
+  if (!controls->color_label) goto failed;
   return controls;
 failed:
   mc_style_controls_destroy(controls);
@@ -99,6 +102,7 @@ void mc_style_controls_destroy(MCStyleControls *controls) {
   controls->retiring = TRUE;
   if (IsWindow(controls->tooltip))
     DestroyWindow(controls->tooltip);
+  if (IsWindow(controls->color_label)) DestroyWindow(controls->color_label);
   for (int i = 0; i < MC_STYLE_CONTROL_COUNT; i++)
     if (IsWindow(controls->buttons[i]))
       DestroyWindow(controls->buttons[i]);
@@ -112,6 +116,8 @@ void mc_style_controls_update(MCStyleControls *controls, const MCStyleControlsMo
   if (!controls || controls->retiring || !model)
     return;
   controls->model = *model;
+  ShowWindow(controls->color_label, visible(controls, MC_STYLE_COLOR) ? SW_SHOWNA : SW_HIDE);
+  EnableWindow(controls->color_label, model->enabled);
   for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++) {
     HWND button = controls->buttons[field];
     wchar_t label[96];
@@ -143,33 +149,53 @@ void mc_style_controls_update(MCStyleControls *controls, const MCStyleControlsMo
 }
 static int control_width(int field) {
   const int widths[] = {76, 112, 76, 76, 84, 76};
-  return widths[field];
+  return field == MC_STYLE_COLOR ? editor_style_swatch_size() : widths[field];
+}
+static int group_width(const MCStyleControls *controls, int field) {
+  // The 4-point input/stepper space belongs inside the numeric group.
+  return control_width(field) + (field == MC_STYLE_COLOR ? 24 + 4 :
+    (field == numeric_property(controls) ? 4 + 20 : 0));
 }
 int mc_style_controls_width(const MCStyleControls *controls) {
   if (!controls || !controls->model.mask) return 0;
-  int width = 0;
-  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
-    if (visible(controls, field)) width += control_width(field) + 4;
-  if (visible(controls, numeric_property(controls))) width += 24;
-  return width - 4;
+  int width = 0, count = 0;
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++) {
+    if (!visible(controls, field)) continue;
+    if (count++) width += editor_style_group_gap();
+    width += group_width(controls, field);
+  }
+  return width;
 }
 void mc_style_controls_layout(MCStyleControls *controls, int x, int y) {
   if (!controls || controls->retiring) return;
   HWND parent = controls->parent;
   const int order[] = {MC_STYLE_SHAPE, MC_STYLE_COLOR, MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_BLOCK, MC_STYLE_OPACITY};
-  int left = 0;
+  int left = 0, count = 0;
   for (int i = 0; i < MC_STYLE_PROPERTY_COUNT; i++) {
     int field = order[i];
     if (!visible(controls, field)) continue;
-    MoveWindow(controls->buttons[field], x + pixels(parent, left), y,
-        pixels(parent, control_width(field)), pixels(parent, 28), TRUE);
-    left += control_width(field) + 4;
-    if (field == numeric_property(controls)) {
-      for (int j = 0; j < 2; j++)
-        MoveWindow(controls->buttons[MC_STYLE_CONTROL_INCREASE + j], x + pixels(parent, left),
-          y + pixels(parent, j * 14), pixels(parent, 20), pixels(parent, 14), TRUE);
-      left += 24;
+    if (count++) left += editor_style_group_gap();
+    int button_left = left, button_y = y, button_height = 28;
+    if (field == MC_STYLE_COLOR) {
+      MoveWindow(controls->color_label, x + pixels(parent, left), y, pixels(parent, 24), pixels(parent, 28), TRUE);
+      button_left += 24 + 4;
+      button_height = editor_style_swatch_size();
+      button_y += pixels(parent, (28 - button_height) / 2);
     }
+    MoveWindow(controls->buttons[field], x + pixels(parent, button_left), button_y,
+        pixels(parent, control_width(field)), pixels(parent, button_height), TRUE);
+    if (field == MC_STYLE_COLOR) {
+      int diameter = pixels(parent, editor_style_swatch_size());
+      HRGN circle = CreateEllipticRgn(0, 0, diameter, diameter);
+      if (circle && !SetWindowRgn(controls->buttons[field], circle, TRUE)) DeleteObject(circle);
+    }
+    if (field == numeric_property(controls)) {
+      int step_left = left + control_width(field) + 4;
+      for (int j = 0; j < 2; j++)
+        MoveWindow(controls->buttons[MC_STYLE_CONTROL_INCREASE + j], x + pixels(parent, step_left),
+          y + pixels(parent, j * 14), pixels(parent, 20), pixels(parent, 14), TRUE);
+    }
+    left += group_width(controls, field);
   }
 }
 BOOL mc_style_controls_choose(MCStyleControls *controls, int field, double value) {
@@ -268,6 +294,11 @@ BOOL mc_style_controls_command(MCStyleControls *controls, WPARAM wp, LPARAM lp) 
 BOOL mc_style_controls_draw(MCStyleControls *controls, const DRAWITEMSTRUCT *item) {
   if (!controls || controls->retiring || !item)
     return FALSE;
+  if (item->hwndItem == controls->color_label) {
+    mc_hud_button(item->hDC, &item->rcItem, MC_HUD_COLOR_LABEL, 0, FALSE, FALSE, FALSE, FALSE,
+      !controls->model.enabled, (float)GetDpiForWindow(controls->parent) / 96);
+    return TRUE;
+  }
   int control = (int)item->CtlID - controls->first_id;
   if (control < 0 || control >= MC_STYLE_CONTROL_COUNT || item->hwndItem != controls->buttons[control])
     return FALSE;
@@ -394,6 +425,64 @@ static BOOL menu_retirement_smoke(HINSTANCE instance) {
   }
   return ok;
 }
+static BOOL layout_smoke(HWND parent, HINSTANCE instance) {
+  Smoke state = {0};
+  state.controls = mc_style_controls_create(parent, instance, 400, smoke_change, &state);
+  if (!state.controls) return FALSE;
+  state.model.enabled = TRUE;
+  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
+    state.model.property[field] = (MCStyleProperty){editor_style_default(field), editor_style_min(field),
+      editor_style_max(field), editor_style_step(field)};
+  const int tools[] = {MC_STYLE_TOOL_RECTANGLE, MC_STYLE_TOOL_ARROW, MC_STYLE_TOOL_TEXT,
+                       MC_STYLE_TOOL_COVER, MC_STYLE_TOOL_COVER};
+  const int shapes[] = {0, 0, 0, 0, 2};
+  const int order[] = {MC_STYLE_SHAPE, MC_STYLE_COLOR, MC_STYLE_FONT, MC_STYLE_STROKE,
+                       MC_STYLE_BLOCK, MC_STYLE_OPACITY};
+  BOOL ok = TRUE;
+  for (unsigned test = 0; test < ARRAYSIZE(tools); test++) {
+    state.model.tool = tools[test];
+    state.model.mask = editor_style_visible_mask(tools[test], shapes[test]);
+    state.model.property[MC_STYLE_SHAPE].value = shapes[test];
+    mc_style_controls_update(state.controls, &state.model);
+    mc_style_controls_layout(state.controls, 8, 8);
+    int right = 8, count = 0;
+    for (unsigned i = 0; i < ARRAYSIZE(order); i++) {
+      int field = order[i];
+      RECT rect;
+      if (!visible(state.controls, field)) continue;
+      GetWindowRect(field == MC_STYLE_COLOR ? state.controls->color_label : state.controls->buttons[field], &rect);
+      MapWindowPoints(HWND_DESKTOP, parent, (POINT *)&rect, 2);
+      int gap = rect.left - right;
+      ok = ok && (count ? abs(gap - pixels(parent, editor_style_group_gap())) <= 1 : gap == 0);
+      right = rect.right;
+      if (field == MC_STYLE_COLOR) {
+        GetWindowRect(state.controls->buttons[field], &rect);
+        MapWindowPoints(HWND_DESKTOP, parent, (POINT *)&rect, 2);
+        int size = pixels(parent, editor_style_swatch_size());
+        ok = ok && abs(rect.left - right - pixels(parent, 4)) <= 1 &&
+          rect.right - rect.left == size && rect.bottom - rect.top == size;
+        HRGN region = CreateRectRgn(0, 0, 0, 0);
+        ok = ok && GetWindowRgn(state.controls->buttons[field], region) != ERROR &&
+          PtInRegion(region, size / 2, size / 2) && !PtInRegion(region, 0, 0);
+        DeleteObject(region);
+        right = rect.right;
+      }
+      if (field == numeric_property(state.controls)) {
+        GetWindowRect(state.controls->buttons[MC_STYLE_CONTROL_INCREASE], &rect);
+        MapWindowPoints(HWND_DESKTOP, parent, (POINT *)&rect, 2);
+        ok = ok && abs(rect.left - right - pixels(parent, 4)) <= 1;
+        right = rect.right;
+      }
+      count++;
+    }
+    ok = ok && count > 0 && abs(right - 8 - pixels(parent, mc_style_controls_width(state.controls))) <= 1;
+  }
+  state.model.mask = 0;
+  mc_style_controls_update(state.controls, &state.model);
+  ok = ok && mc_style_controls_width(state.controls) == 0;
+  mc_style_controls_destroy(state.controls);
+  return ok;
+}
 BOOL mc_style_controls_smoke(HINSTANCE instance) {
   HWND parent = CreateWindowW(L"STATIC", L"Style controls fixture", WS_POPUP, 0, 0, 500, 120,
       NULL, NULL, instance, NULL);
@@ -401,6 +490,7 @@ BOOL mc_style_controls_smoke(HINSTANCE instance) {
   BOOL ok = FALSE;
   if (!parent)
     return FALSE;
+  if (!layout_smoke(parent, instance)) goto cleanup;
   a.controls = mc_style_controls_create(parent, instance, 200, smoke_change, &a);
   b.controls = mc_style_controls_create(parent, instance, 220, smoke_change, &b);
   if (!a.controls || !b.controls)
@@ -439,7 +529,7 @@ cleanup:
   mc_style_controls_destroy(b.controls);
   DestroyWindow(parent);
   printf("Windows style controls smoke: %s (independent callbacks, native commands, supplied ranges, "
-      "callback disposal, nested menu owner disposal).\n",
+      "callback disposal, nested menu owner disposal, property group geometry).\n",
       ok ? "passed" : "FAILED");
   return ok;
 }

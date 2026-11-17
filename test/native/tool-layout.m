@@ -5,6 +5,7 @@
 #import "components/icons/macos/MCIcon.h"
 #include "moonbit.h"
 #include <math.h>
+#import <objc/runtime.h>
 
 // Hidden synthetic windows only: no real capture, system clipboard or events.
 @interface MCImageCanvas : NSView
@@ -35,6 +36,10 @@
 @end
 @interface MCCaptureController (MCToolLayoutTest)
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error;
+@end
+@interface MCColorControl (MCColorPanelTest)
+- (void)showColorPanel:(id)sender;
+- (void)panelColorChanged:(NSColorPanel *)panel;
 @end
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL tool layout: %s\n", message); passed = NO; } } while (0)
 
@@ -95,8 +100,8 @@ static void draw(MCImageEditorController *editor, NSPoint from, NSPoint to) {
 }
 static void color(MCImageEditorController *editor, NSColor *color) {
     editor.properties.colorControl.color = color;
-    NSColorWell *well = editor.properties.colorControl.well;
-    [well sendAction:well.action to:well.target];
+    MCColorControl *control = editor.properties.colorControl;
+    if (control.onChange) control.onChange(control.well);
 }
 static BOOL interactions(void) {
     BOOL passed = YES;
@@ -687,12 +692,9 @@ static BOOL shapeVariants(void) {
     choose(e,1);
     CHECK(e.properties.shapeControl.selectedSegment==1, "editing an existing shape preserves the remembered creation default");
     [e.window.contentView layoutSubtreeIfNeeded];
-    NSArray *controls=@[e.properties.shapeControl,e.properties.colorControl,e.properties.strokeControl];
-    for (NSUInteger i=1;i<controls.count;i++) {
-        NSView *before=controls[i-1], *after=controls[i];
-        CGFloat gap=NSMinX([after convertRect:after.bounds toView:e.properties])-NSMaxX([before convertRect:before.bounds toView:e.properties]);
-        CHECK(gap>=4 && gap<=12, "secondary controls remain compact and ordered from the left");
-    }
+    MCColorSwatch *well = e.properties.colorControl.well;
+    CHECK(NSWidth(well.frame) == editor_style_swatch_size() && NSHeight(well.frame) == editor_style_swatch_size(),
+          "color control uses the shared circular size instead of a compressed system well");
     NSString *directory=NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];
     if (directory.length) for (NSString *mode in @[@"light",@"dark"]) {
         e.window.appearance=[NSAppearance appearanceNamed:[mode isEqual:@"dark"]?NSAppearanceNameDarkAqua:NSAppearanceNameAqua];
@@ -703,6 +705,119 @@ static BOOL shapeVariants(void) {
         }
     }
     [e cancel:nil]; return passed;
+}
+static BOOL propertySpacing(void) {
+    BOOL passed = YES;
+    MCImageEditorController *e = editor();
+    const NSInteger tools[] = {1, 1, 2, 3, 4, 4, 4};
+    const NSInteger shapes[] = {0, 1, 0, 0, 0, 1, 2};
+    NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];
+    for (NSString *mode in @[@"light", @"dark"]) {
+        e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        for (NSUInteger i = 0; i < sizeof(tools) / sizeof(tools[0]); i++) {
+            choose(e, tools[i]);
+            if (tools[i] == 1 || tools[i] == 4) variant(e, shapes[i]);
+            [e.window.contentView layoutSubtreeIfNeeded];
+            NSView *previous = nil;
+            for (NSView *group in e.properties.arrangedSubviews) {
+                if (group.hidden) continue;
+                if (previous) {
+                    CGFloat gap = NSMinX(group.frame) - NSMaxX(previous.frame);
+                    CHECK(fabs(gap - editor_style_group_gap()) < .01,
+                          "visible property groups keep the reference spacing after hidden groups detach");
+                }
+                if ([group isKindOfClass:NSStackView.class]) {
+                    NSView *label = ((NSStackView *)group).arrangedSubviews.firstObject;
+                    CHECK(fabs(NSMinX([label alignmentRectForFrame:label.frame])) < .01,
+                          "property labels start at their group boundary without extra leading padding");
+                }
+                previous = group;
+            }
+            MCColorSwatch *well = e.properties.colorControl.well;
+            if (!e.properties.colorControl.hidden) {
+                CHECK(NSWidth(well.frame) == editor_style_swatch_size() && NSHeight(well.frame) == editor_style_swatch_size(),
+                      "light and dark swatches share a square drawing and input container");
+                CHECK([well hitTest:NSMakePoint(NSMidX(well.frame), NSMidY(well.frame))] == well &&
+                      [well hitTest:NSMakePoint(NSMinX(well.frame) + .5, NSMinY(well.frame) + .5)] == nil,
+                      "the round color swatch accepts its center without an invisible corner hit area");
+            }
+            CHECK(previous && NSMaxX(previous.frame) <= NSWidth(e.properties.bounds) + .01,
+                  "the last property fits the measured document width without a trailing gap");
+            if (directory.length) {
+                NSData *png = [toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+                [png writeToFile:[directory stringByAppendingPathComponent:
+                    [NSString stringWithFormat:@"properties-%@-%lu.png", mode, (unsigned long)i]] atomically:YES];
+            }
+        }
+    }
+    [e cancel:nil];
+    return passed;
+}
+static __weak id observedColorTarget;
+static void (*originalColorTarget)(id, SEL, id);
+static void observeColorTarget(id panel, SEL selector, id target) {
+    observedColorTarget = target;
+    originalColorTarget(panel, selector, target);
+}
+static void keepColorPanelHidden(id panel, SEL selector, id sender) {
+    (void)panel; (void)selector; (void)sender;
+}
+static BOOL colorPanelLifetime(void) {
+    BOOL passed = YES;
+    // Exercise the real shared NSColorPanel binding, but prevent a visible
+    // panel from interrupting the user while this isolated fixture runs.
+    Method targetMethod = class_getInstanceMethod(NSColorPanel.class, @selector(setTarget:));
+    originalColorTarget = (void (*)(id, SEL, id))method_setImplementation(targetMethod, (IMP)observeColorTarget);
+    Method frontMethod = class_getInstanceMethod(NSColorPanel.class, @selector(orderFront:));
+    IMP originalFront = method_getImplementation(frontMethod);
+    const char *frontTypes = method_getTypeEncoding(frontMethod);
+    class_replaceMethod(NSColorPanel.class, @selector(orderFront:), (IMP)keepColorPanelHidden, frontTypes);
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,500,100)
+        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    MCColorControl *first = [[MCColorControl alloc] initWithFrame:NSZeroRect];
+    MCColorControl *second = [[MCColorControl alloc] initWithFrame:NSZeroRect];
+    [window.contentView addSubview:first]; [window.contentView addSubview:second];
+    __block NSUInteger firstChanges = 0, secondChanges = 0;
+    first.onChange = ^(__unused id sender) { firstChanges++; };
+    second.onChange = ^(__unused id sender) { secondChanges++; };
+    [first showColorPanel:nil];
+    NSColorPanel *panel = NSColorPanel.sharedColorPanel;
+    CHECK(observedColorTarget == first && firstChanges == 0, "opening the system panel binds without changing a style");
+    [second showColorPanel:nil];
+    second.color = [NSColor colorWithSRGBRed:.1 green:.8 blue:.2 alpha:.6];
+    NSColor *rebound = [panel.color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CHECK(secondChanges == 0 && observedColorTarget == second && fabs(rebound.greenComponent - .8) < .001 &&
+          fabs(rebound.alphaComponent - .6) < .001, "rebinding an open color panel stays synchronized without creating an edit");
+    panel.color = [NSColor colorWithSRGBRed:.2 green:.4 blue:.8 alpha:.35];
+    [first panelColorChanged:panel];
+    CHECK(firstChanges == 0 && observedColorTarget == second, "a former panel owner ignores a late color action");
+    // NSColorPanel's color setter dispatches its real target/action. Do not
+    // manually invoke the current owner and accidentally count the event twice.
+    CHECK(secondChanges == 1 && fabs(second.color.alphaComponent - .35) < .001,
+          "the current panel owner receives RGBA through its normal change callback");
+    [first closePopover];
+    CHECK(observedColorTarget == second, "closing a former owner does not detach the active panel owner");
+    [second removeFromSuperview];
+    CHECK(observedColorTarget == nil, "removing a property view detaches the system panel target");
+    [second panelColorChanged:panel];
+    CHECK(secondChanges == 1, "a removed property view rejects a queued panel action");
+    __weak MCColorControl *released;
+    @autoreleasepool {
+        MCColorControl *temporary = [[MCColorControl alloc] initWithFrame:NSZeroRect];
+        [temporary showColorPanel:nil]; released = temporary;
+        CHECK(observedColorTarget == temporary, "a standalone color component can own the panel");
+    }
+    CHECK(released == nil && observedColorTarget == nil, "component deallocation clears its panel target without retaining it");
+    NSStackView *content = (NSStackView *)first.popover.contentViewController.view;
+    NSStackView *presets = (NSStackView *)content.arrangedSubviews.firstObject;
+    MCColorSwatch *preset = (MCColorSwatch *)presets.arrangedSubviews.firstObject;
+    [preset performClick:nil];
+    CHECK(firstChanges == 1 && [preset.accessibilityRole isEqual:NSAccessibilityButtonRole] &&
+          preset.accessibilityLabel.length > 0, "round palette buttons retain activation, accessibility and the change callback");
+    [first closePopover]; [second closePopover];
+    method_setImplementation(targetMethod, (IMP)originalColorTarget);
+    class_replaceMethod(NSColorPanel.class, @selector(orderFront:), originalFront, frontTypes);
+    return passed;
 }
 int main(void) {
     @autoreleasepool {
@@ -715,6 +830,8 @@ int main(void) {
         passed = toolbarAppearance() && passed;
         passed = sharedGestureCases() && passed;
         passed = shapeVariants() && passed;
+        passed = propertySpacing() && passed;
+        passed = colorPanelLifetime() && passed;
         puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME, pin/user actions, overflow and capture fanout" : "FAIL tool layout");
         return passed ? 0 : 1;
     }

@@ -9,7 +9,7 @@ static BOOL sendHotKey(UInt32 signature, UInt32 action) {
   if (status != noErr) return NO;
   EventHotKeyID identifier = {signature, action};
   status = SetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, sizeof(identifier), &identifier);
-  if (status == noErr) status = SendEventToEventTarget(event, GetApplicationEventTarget());
+  if (status == noErr) status = SendEventToEventTarget(event, GetEventDispatcherTarget());
   ReleaseEvent(event);
   return status == noErr;
 }

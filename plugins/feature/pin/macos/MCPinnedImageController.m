@@ -7,6 +7,7 @@
 #import "native/macos/preferences/MCSystemShortcutCheck.h"
 #include "native/shared/feature_runtime.h"
 #include "native/shared/pin_policy.h"
+#include "moonbit.h"
 
 @class MCPinnedImage;
 @interface MCPinnedPanel : NSPanel
@@ -21,6 +22,9 @@
 @property BOOL dragging;
 @property NSPoint dragOrigin;
 @property NSPoint dragMouse;
+@property NSRect dragFrame;
+@property CGFloat dragScale;
+@property int32_t resizeHandle;
 @end
 
 @interface MCPinnedImageController () {
@@ -67,6 +71,7 @@
 - (BOOL)copyToPasteboard:(NSPasteboard *)pasteboard;
 - (BOOL)handleKeyEvent:(NSEvent *)event;
 - (void)constrainPosition;
+- (void)setScaleAroundCenter:(CGFloat)scale;
 @end
 
 static NSScreen *MCPinScreenForRect(NSRect rect) {
@@ -98,6 +103,22 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
 - (void)resetCursorRects {
     [super resetCursorRects];
     [self addCursorRect:self.bounds cursor:NSCursor.openHandCursor];
+    if (self.pin.clickThrough || self.pin.userHidden || self.pin.owner.captureActive) return;
+    CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+    CGFloat mx = MIN(6, w / 3), my = MIN(6, h / 3);
+    [self addCursorRect:NSMakeRect(0, 0, mx, h) cursor:NSCursor.resizeLeftRightCursor];
+    [self addCursorRect:NSMakeRect(w - mx, 0, mx, h) cursor:NSCursor.resizeLeftRightCursor];
+    [self addCursorRect:NSMakeRect(0, 0, w, my) cursor:NSCursor.resizeUpDownCursor];
+    [self addCursorRect:NSMakeRect(0, h - my, w, my) cursor:NSCursor.resizeUpDownCursor];
+    for (NSNumber *x in @[@0, @(w - mx)]) for (NSNumber *y in @[@0, @(h - my)]) {
+        NSCursor *cursor = NSCursor.resizeLeftRightCursor;
+        if (@available(macOS 15.0, *)) {
+            NSCursorFrameResizePosition position = (x.doubleValue == 0 ? NSCursorFrameResizePositionLeft : NSCursorFrameResizePositionRight) |
+                (y.doubleValue == 0 ? NSCursorFrameResizePositionBottom : NSCursorFrameResizePositionTop);
+            cursor = [NSCursor frameResizeCursorFromPosition:position inDirections:NSCursorFrameResizeDirectionsAll];
+        }
+        [self addCursorRect:NSMakeRect(x.doubleValue, y.doubleValue, mx, my) cursor:cursor];
+    }
 }
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
@@ -116,10 +137,30 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     self.dragging = YES;
     self.dragOrigin = self.window.frame.origin;
     self.dragMouse = [self.window convertPointToScreen:event.locationInWindow];
+    self.dragFrame = self.window.frame;
+    self.dragScale = self.pin.scale;
+    NSPoint local = [self convertPoint:event.locationInWindow fromView:nil];
+    self.resizeHandle = pin_hit_handle(self.bounds.size.width, self.bounds.size.height,
+        local.x, self.bounds.size.height - local.y, 6);
 }
 - (void)mouseDragged:(NSEvent *)event {
     if (!self.dragging || self.pin.clickThrough || self.pin.userHidden || self.pin.owner.captureActive) return;
     NSPoint point = [self.window convertPointToScreen:event.locationInWindow];
+    if (self.resizeHandle) {
+        NSRect screen = MCPinVisibleFrame(self.dragFrame);
+        double *frame = pin_resize_frame(MC_PIN_MACOS, NSMinX(self.dragFrame), -NSMaxY(self.dragFrame),
+            self.pin.sourceSize.width, self.pin.sourceSize.height, self.dragScale, self.resizeHandle,
+            point.x - self.dragMouse.x, self.dragMouse.y - point.y,
+            NSMinX(screen), -NSMaxY(screen), screen.size.width, screen.size.height);
+        if (frame[4] > 0) {
+            self.pin.scale = frame[4];
+            [self.window setFrame:NSMakeRect(frame[0], -frame[1] - frame[3], frame[2], frame[3]) display:YES];
+            [self.pin updateTooltip];
+            [self.window invalidateCursorRectsForView:self];
+        }
+        moonbit_decref(frame);
+        return;
+    }
     [self.window setFrameOrigin:NSMakePoint(self.dragOrigin.x + point.x - self.dragMouse.x,
                                            self.dragOrigin.y + point.y - self.dragMouse.y)];
 }
@@ -127,7 +168,17 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     (void)event;
     if (self.pin.clickThrough || self.pin.userHidden || self.pin.owner.captureActive) return;
     self.dragging = NO;
+    self.resizeHandle = 0;
     [self.pin constrainPosition];
+}
+- (void)scrollWheel:(NSEvent *)event {
+    if (self.pin.clickThrough || self.pin.userHidden || self.pin.owner.captureActive || self.dragging) return;
+    double requested = pin_scroll_scale(self.pin.scale, event.scrollingDeltaY / (event.hasPreciseScrollingDeltas ? 40.0 : 1.0));
+    if (requested > 0) [self.pin setScaleAroundCenter:requested];
+}
+- (void)copy:(id)sender {
+    if (self.pin.selected && self.window.isKeyWindow && !self.pin.clickThrough &&
+        !self.pin.userHidden && !self.pin.owner.captureActive) [self.pin copyImage:sender];
 }
 - (void)keyDown:(NSEvent *)event {
     if (![self.pin handleKeyEvent:event]) [super keyDown:event];
@@ -149,6 +200,7 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     ]) {
         NSMenuItem *entry = [[NSMenuItem alloc] initWithTitle:item[@"title"] action:NSSelectorFromString(item[@"action"]) keyEquivalent:@""];
         entry.target = self.pin;
+        if ([item[@"action"] isEqual:NSStringFromSelector(@selector(copyImage:))]) entry.keyEquivalent = @"c";
         [menu addItem:entry];
     }
     return menu;
@@ -162,7 +214,7 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
         return [MCPinShortcutStore displayStringForShortcut:[store shortcutForAction:action]];
     };
     self.view.toolTip = [NSString stringWithFormat:
-        @"拖动移动 · 单击选中\n%@ / %@ 缩放 · %@ / %@ 调整不透明度\n%@ 隐藏/恢复 · %@ 鼠标穿透\n双击或 Esc 关闭 · 右键更多操作\n缩放 %.0f%% · 不透明度 %.0f%%",
+        @"拖动移动 · 滚轮或边缘拖动缩放 · ⌘C 复制\n%@ / %@ 缩放 · %@ / %@ 调整不透明度\n%@ 隐藏/恢复 · %@ 鼠标穿透\n双击或 Esc 关闭 · 右键更多操作\n缩放 %.0f%% · 不透明度 %.0f%%",
         label(@"zoomIn"), label(@"zoomOut"), label(@"opacityUp"), label(@"opacityDown"),
         label(@"visibilityToggle"), label(@"clickThroughToggle"), self.scale * 100, self.opacity * 100];
     self.view.accessibilityLabel = [NSString stringWithFormat:@"贴图，缩放 %.0f%%，不透明度 %.0f%%", self.scale * 100, self.opacity * 100];
@@ -186,6 +238,7 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     NSSize size = NSMakeSize(self.sourceSize.width * _scale, self.sourceSize.height * _scale);
     NSRect frame = NSMakeRect(NSMidX(old) - size.width / 2, NSMidY(old) - size.height / 2, size.width, size.height);
     [self.panel setFrame:MCPinConstrainFrame(frame, screen) display:YES];
+    [self.panel invalidateCursorRectsForView:self.view];
     [self updateTooltip];
 }
 - (void)constrainPosition {
@@ -203,6 +256,13 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
 }
 - (BOOL)handleKeyEvent:(NSEvent *)event {
     if (!self.selected || self.owner.captureActive || event.type != NSEventTypeKeyDown) return NO;
+    NSEventModifierFlags copyFlags = event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
+        NSEventModifierFlagOption | NSEventModifierFlagShift);
+    if (copyFlags == NSEventModifierFlagCommand && [event.charactersIgnoringModifiers.lowercaseString isEqual:@"c"]) {
+        if (self.clickThrough || self.userHidden || !self.panel.isKeyWindow) return NO;
+        [self copyImage:nil];
+        return YES;
+    }
     NSString *action = [self.owner.shortcuts actionForEvent:event];
     if (action) { [self applyAction:action]; return YES; }
     NSEventModifierFlags flags = event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
@@ -223,7 +283,7 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
     [self setScaleAroundCenter:1];
 }
 - (BOOL)copyToPasteboard:(NSPasteboard *)pasteboard {
-    if (self.clickThrough || self.userHidden) return NO;
+    if (!self.owner.enabled || self.clickThrough || self.userHidden || self.owner.captureActive) return NO;
     NSPasteboardItem *item = [NSPasteboardItem new];
     [item setData:self.png forType:NSPasteboardTypePNG];
     NSData *tiff = self.image.TIFFRepresentation;
@@ -242,6 +302,8 @@ static NSRect MCPinConstrainFrame(NSRect frame, NSRect screen) {
 }
 - (void)windowDidResignKey:(NSNotification *)notification {
     (void)notification;
+    self.view.dragging = NO;
+    self.view.resizeHandle = 0;
     if (!self.clickThrough && !self.userHidden && !self.owner.captureActive) self.selected = NO;
 }
 - (void)windowWillClose:(NSNotification *)notification {
@@ -432,6 +494,11 @@ static OSStatus MCPinHotKeyHandler(__unused EventHandlerCallRef next, EventRef e
     // Re-registering on every capture could fail and reveal user-hidden pins.
 }
 - (void)applyVisibility:(MCPinnedImage *)pin {
+    if (pin.userHidden || pin.clickThrough || self.captureActive) {
+        pin.view.dragging = NO;
+        pin.view.resizeHandle = 0;
+    }
+    [pin.panel invalidateCursorRectsForView:pin.view];
     pin.panel.alphaValue = pin.userHidden ? 0 : pin.opacity;
     pin.panel.ignoresMouseEvents = self.captureActive || pin.clickThrough || pin.userHidden;
     if (pin.userHidden || (self.captureActive && pin.pendingSelection)) [pin.panel orderOut:nil];

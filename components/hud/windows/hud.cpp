@@ -7,6 +7,7 @@
 #define NOMINMAX
 #include "hud.h"
 #include "components/icons/shared/mc_icons.h"
+#include "native/shared/editor_style.h"
 #include <objidl.h>
 
 #include <cwchar>
@@ -146,13 +147,15 @@ extern "C" void mc_hud_button(HDC dc, const RECT *bounds, int kind, int value, B
     icon(graphics, (MCIcon)kind, rect, scale, disabled);
   else if (kind == MC_HUD_COLOR) {
     SolidBrush swatch(Color(255, (BYTE)(value >> 16), (BYTE)(value >> 8), (BYTE)value));
-    REAL diameter = 16 * scale;
-    RectF circle(rect.X + 8 * scale, rect.Y + (rect.Height - diameter) / 2, diameter, diameter);
+    REAL edge_width = focused && !disabled ? 2 * scale : scale;
+    REAL diameter = editor_style_swatch_size() * scale - edge_width;
+    RectF circle(rect.X + (rect.Width - diameter) / 2, rect.Y + (rect.Height - diameter) / 2, diameter, diameter);
     graphics.FillEllipse(&swatch, circle);
-    Pen edge(Color(90, 255, 255, 255), scale);
+    Pen edge(focused && !disabled ? Color(255, 194, 176, 242) : Color(90, 255, 255, 255), edge_width);
     graphics.DrawEllipse(&edge, circle);
-    text(graphics, L"颜色", RectF(rect.X + 32 * scale, rect.Y, 48 * scale, rect.Height), 12 * scale,
-         Color(255, 222, 217, 228), StringAlignmentNear);
+  } else if (kind == MC_HUD_COLOR_LABEL) {
+    text(graphics, L"颜色", rect, 11 * scale,
+         disabled ? Color(255, 111, 105, 120) : Color(255, 184, 177, 191), StringAlignmentNear);
   } else if (kind == MC_HUD_STROKE) {
     wchar_t label[32];
     swprintf_s(label, 32, L"线宽  %d px", value);

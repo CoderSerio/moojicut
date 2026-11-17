@@ -68,7 +68,7 @@ static OSStatus MCHotKeyHandler(__unused EventHandlerCallRef next, EventRef even
         if (flags & NSEventModifierFlagShift) modifiers |= shiftKey;
         EventHotKeyID identifier = {MCCaptureHotKeySignature, (UInt32)index + 1};
         EventHotKeyRef reference = NULL;
-        OSStatus status = RegisterEventHotKey(code, modifiers, identifier, GetApplicationEventTarget(), kEventHotKeyExclusive, &reference);
+        OSStatus status = RegisterEventHotKey(code, modifiers, identifier, GetEventDispatcherTarget(), kEventHotKeyExclusive, &reference);
         if (status != noErr) {
             if (reference) UnregisterEventHotKey(reference);
             [errors addObject:status == eventHotKeyExistsErr ?
@@ -93,9 +93,12 @@ static OSStatus MCHotKeyHandler(__unused EventHandlerCallRef next, EventRef even
     if (self.started) return;
     self.started = YES;
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(shortcutsChanged:) name:MCShortcutsDidChangeNotification object:self.defaults];
+    // Menu tracking consumes keyboard events before the application target.
+    // Register and handle only our hotkeys at the dispatcher so capture can
+    // freeze a still-open menu without stealing unrelated menu key events.
     EventTypeSpec spec = {kEventClassKeyboard, kEventHotKeyPressed};
     EventHandlerRef handler = NULL;
-    OSStatus status = InstallEventHandler(GetApplicationEventTarget(), MCHotKeyHandler, 1, &spec, (__bridge void *)self, &handler);
+    OSStatus status = InstallEventHandler(GetEventDispatcherTarget(), MCHotKeyHandler, 1, &spec, (__bridge void *)self, &handler);
     if (status != noErr) {
         [self publishError:[NSString stringWithFormat:@"无法启动全局快捷键监听（错误 %d）。", (int)status]];
         return;

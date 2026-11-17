@@ -79,7 +79,24 @@ void MCSelectionWhenKeysReleased(NSUInteger attempts, BOOL (^isCurrent)(void),
     NSEventModifierFlags held = modifiers() & (NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption);
     if (!held) { completion(YES); return; }
     if (attempts >= 40) { completion(NO); return; }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+    MCSelectionAfter(0.05, ^{
         MCSelectionWhenKeysReleased(attempts+1,isCurrent,modifiers,completion);
     });
+}
+
+void MCSelectionPerformOnMain(void (^action)(void)) {
+    // Main GCD work can be deferred by nested event-tracking loops. A common
+    // mode run-loop block retains main-thread ordering without closing menus.
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, action);
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+void MCSelectionAfter(NSTimeInterval seconds, void (^action)(void)) {
+    NSCAssert(NSThread.isMainThread, @"Selection timers belong to the main thread");
+    NSTimer *timer = [NSTimer timerWithTimeInterval:seconds repeats:NO block:^(__unused NSTimer *timer) { action(); }];
+    [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+}
+NSEventModifierFlags MCSelectionCurrentModifiers(void) {
+    // NSEvent.modifierFlags can still describe the triggering key event while
+    // another app or a menu consumes subsequent key-up events.
+    return (NSEventModifierFlags)CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState);
 }

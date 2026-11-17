@@ -31,6 +31,10 @@ enum {
 int32_t editor_style_property_mask(int32_t tool);
 int32_t editor_style_visible_mask(int32_t tool, int32_t shape);
 int32_t editor_style_shape_count(int32_t tool);
+/* Logical space between complete property groups, not between their children. */
+int32_t editor_style_group_gap(void);
+/* Circular color control diameter / input bounds in logical points. */
+int32_t editor_style_swatch_size(void);
 double editor_style_min(int32_t property);
 double editor_style_max(int32_t property);
 double editor_style_step(int32_t property);

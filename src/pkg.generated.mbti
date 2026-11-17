@@ -24,6 +24,8 @@ pub fn editor_style_dispose(Int32) -> Unit
 
 pub fn editor_style_get(Int32, Int32, Int32) -> Double
 
+pub fn editor_style_group_gap() -> Int32
+
 pub fn editor_style_max(Int32) -> Double
 
 pub fn editor_style_min(Int32) -> Double
@@ -35,6 +37,8 @@ pub fn editor_style_set(Int32, Int32, Int32, Double) -> Int32
 pub fn editor_style_shape_count(Int32) -> Int32
 
 pub fn editor_style_step(Int32) -> Double
+
+pub fn editor_style_swatch_size() -> Int32
 
 pub fn editor_style_visible_mask(Int32, Int32) -> Int32
 
@@ -140,11 +144,17 @@ pub fn native_video_undo(Int32) -> Int32
 
 pub fn pin_hidden_after(Int32, Int32, Int32, Int32, Int32) -> Int32
 
+pub fn pin_hit_handle(Double, Double, Double, Double, Double) -> Int32
+
 pub fn pin_initial_scale(Double, Double, Double, Double) -> Double
 
 pub fn pin_opacity(Int32, Double, Int32) -> Double
 
+pub fn pin_resize_frame(Int32, Double, Double, Double, Double, Double, Int32, Double, Double, Double, Double, Double, Double) -> FixedArray[Double]
+
 pub fn pin_scale(Int32, Double, Double, Double, Double, Double) -> Double
+
+pub fn pin_scroll_scale(Double, Double) -> Double
 
 pub fn pin_visibility_action(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
