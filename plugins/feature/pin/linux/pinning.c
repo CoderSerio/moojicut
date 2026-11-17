@@ -814,9 +814,39 @@ static gboolean smoke_recover_key(Pin *pin) {
   dlclose(xtest);
   return !pin->passthrough;
 }
-static void flush_pin_events(void) {
+static gboolean wait_pin_geometry(Pin *pin, int width, int height, gboolean position, int x, int y) {
+  // GTK resize/layout runs in a later frame-clock phase. Draining only events
+  // already pending can still leave the canvas at its pre-resize allocation.
+  // Wait for the real allocation/configure result; never allocate it ourselves.
+  gboolean expired = FALSE, ready = FALSE;
+  guint timer = g_timeout_add(1000, smoke_timer, &expired);
   gdk_display_sync(gdk_display_get_default());
-  while (gtk_events_pending()) gtk_main_iteration();
+  while (!expired) {
+    int actual_x = 0, actual_y = 0;
+    gtk_window_get_position(GTK_WINDOW(pin->window), &actual_x, &actual_y);
+    ready = gtk_widget_get_mapped(pin->canvas) &&
+        gtk_widget_get_allocated_width(pin->canvas) == width &&
+        gtk_widget_get_allocated_height(pin->canvas) == height &&
+        (!position || (actual_x == x && actual_y == y));
+    if (ready) break;
+    g_main_context_iteration(NULL, TRUE);
+  }
+  if (!expired) g_source_remove(timer);
+  if (!ready) {
+    int actual_x = 0, actual_y = 0;
+    gtk_window_get_position(GTK_WINDOW(pin->window), &actual_x, &actual_y);
+    g_printerr("Linux pin geometry timed out: got %dx%d at %d,%d; expected %dx%d%s at %d,%d.\n",
+        gtk_widget_get_allocated_width(pin->canvas), gtk_widget_get_allocated_height(pin->canvas),
+        actual_x, actual_y, width, height, position ? " with position" : "", x, y);
+  }
+  return ready;
+}
+static gboolean pin_smoke_check(gboolean condition, const char *step, Pin *pin) {
+  if (!condition)
+    g_printerr("Linux pin interaction failed at %s: scale=%g, allocation=%dx%d, handle=%d, grab=%d.\n",
+        step, pin->scale, gtk_widget_get_allocated_width(pin->canvas), gtk_widget_get_allocated_height(pin->canvas),
+        pin->resize_handle, gtk_widget_has_grab(pin->canvas));
+  return condition;
 }
 static gboolean pin_interaction_smoke(Pin *pin) {
   double start = pin->scale;
@@ -824,12 +854,12 @@ static gboolean pin_interaction_smoke(Pin *pin) {
   wheel.window = gtk_widget_get_window(pin->canvas);
   gboolean handled = FALSE;
   g_signal_emit_by_name(pin->canvas, "scroll-event", &wheel, &handled);
-  gboolean ok = handled && pin->scale > start && pin->scale < start * 1.1;
+  gboolean ok = pin_smoke_check(handled && pin->scale > start && pin->scale < start * 1.1, "fractional wheel", pin);
   for (int i = 0; i < 3; i++) g_signal_emit_by_name(pin->canvas, "scroll-event", &wheel, &handled);
-  ok = fabs(pin->scale - start * 1.1) < .000001 && ok;
+  ok = pin_smoke_check(fabs(pin->scale - start * 1.1) < .000001, "four fractional wheel deltas", pin) && ok;
   wheel.delta_y = 1; g_signal_emit_by_name(pin->canvas, "scroll-event", &wheel, &handled);
-  ok = fabs(pin->scale - start) < .000001 && ok;
-  flush_pin_events();
+  ok = pin_smoke_check(fabs(pin->scale - start) < .000001, "reverse wheel", pin) && ok;
+  ok = wait_pin_geometry(pin, 120, 80, FALSE, 0, 0) && ok;
   int x = 0, y = 0; gtk_window_get_position(GTK_WINDOW(pin->window), &x, &y);
   GdkEventButton down = {0}; down.type = GDK_BUTTON_PRESS; down.button = 1;
   down.window = gtk_widget_get_window(pin->canvas);
@@ -837,27 +867,29 @@ static gboolean pin_interaction_smoke(Pin *pin) {
   down.y = gtk_widget_get_allocated_height(pin->canvas) / 2;
   down.x_root = x + down.x; down.y_root = y + down.y;
   g_signal_emit_by_name(pin->canvas, "button-press-event", &down, &handled);
-  ok = handled && pin->resize_handle == 2 && gtk_widget_has_grab(pin->canvas) && ok;
+  ok = pin_smoke_check(handled && pin->resize_handle == 2 && gtk_widget_has_grab(pin->canvas), "edge press/grab", pin) && ok;
   GdkEventMotion move = {0}; move.type = GDK_MOTION_NOTIFY; move.state = GDK_BUTTON1_MASK;
   move.window = gtk_widget_get_window(pin->canvas);
   move.x_root = down.x_root + 30; move.y_root = down.y_root;
   g_signal_emit_by_name(pin->canvas, "motion-notify-event", &move, &handled);
   GdkEventButton up = down; up.type = GDK_BUTTON_RELEASE;
   g_signal_emit_by_name(pin->canvas, "button-release-event", &up, &handled);
-  flush_pin_events();
+  ok = wait_pin_geometry(pin, 150, 100, x11_available(), x, y - 10) && ok;
   int next_x = 0, next_y = 0; gtk_window_get_position(GTK_WINDOW(pin->window), &next_x, &next_y);
-  ok = fabs(pin->scale - 1.25) < .000001 && gtk_widget_get_allocated_width(pin->canvas) == 150 &&
-      gtk_widget_get_allocated_height(pin->canvas) == 100 && !pin->resize_handle && !gtk_widget_has_grab(pin->canvas) && ok;
-  if (x11_available()) ok = next_x == x && next_y == y - 10 && ok;
+  ok = pin_smoke_check(fabs(pin->scale - 1.25) < .000001 && gtk_widget_get_allocated_width(pin->canvas) == 150 &&
+      gtk_widget_get_allocated_height(pin->canvas) == 100 && !pin->resize_handle && !gtk_widget_has_grab(pin->canvas),
+      "edge resize/release", pin) && ok;
+  if (x11_available()) ok = pin_smoke_check(next_x == x && next_y == y - 10, "anchored edge position", pin) && ok;
   down.x = 149; down.y = 50; down.x_root = next_x + down.x; down.y_root = next_y + down.y;
   g_signal_emit_by_name(pin->canvas, "button-press-event", &down, &handled);
   mc_linux_pins_hide(TRUE); mc_linux_pins_hide(FALSE);
   double frozen = pin->scale;
   g_signal_emit_by_name(pin->canvas, "motion-notify-event", &move, &handled);
-  ok = pin->scale == frozen && !pin->resize_handle && !gtk_widget_has_grab(pin->canvas) && ok;
+  ok = pin_smoke_check(pin->scale == frozen && !pin->resize_handle && !gtk_widget_has_grab(pin->canvas),
+      "hide cancels resize/grab", pin) && ok;
   pin->passthrough = TRUE;
   g_signal_emit_by_name(pin->canvas, "scroll-event", &wheel, &handled);
-  ok = !handled && pin->scale == frozen && ok; pin->passthrough = FALSE;
+  ok = pin_smoke_check(!handled && pin->scale == frozen, "passthrough wheel guard", pin) && ok; pin->passthrough = FALSE;
   if (g_strcmp0(g_getenv("CI"), "true") == 0) {
     GdkEventKey event = {0}; event.type = GDK_KEY_PRESS; event.keyval = GDK_KEY_c; event.state = GDK_CONTROL_MASK;
     event.window = gtk_widget_get_window(pin->window);
@@ -865,18 +897,21 @@ static gboolean pin_interaction_smoke(Pin *pin) {
     g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled);
     GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
     GdkPixbuf *copied = gtk_clipboard_wait_for_image(clipboard);
-    ok = handled && copied && gdk_pixbuf_get_width(copied) == gdk_pixbuf_get_width(pin->image) &&
+    ok = pin_smoke_check(handled && copied && gdk_pixbuf_get_width(copied) == gdk_pixbuf_get_width(pin->image) &&
         gdk_pixbuf_get_height(copied) == gdk_pixbuf_get_height(pin->image) &&
-        memcmp(gdk_pixbuf_get_pixels(copied), gdk_pixbuf_get_pixels(pin->image), 3) == 0 && ok;
+        memcmp(gdk_pixbuf_get_pixels(copied), gdk_pixbuf_get_pixels(pin->image), 3) == 0, "Ctrl+C source pixels", pin) && ok;
     if (copied) g_object_unref(copied);
-    pin->selected = FALSE; g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled); ok = !handled && ok;
+    pin->selected = FALSE; g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled);
+    ok = pin_smoke_check(!handled, "unselected copy guard", pin) && ok;
     pin->selected = TRUE; pin->hidden = TRUE;
-    g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled); ok = !handled && ok;
+    g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled);
+    ok = pin_smoke_check(!handled, "hidden copy guard", pin) && ok;
     pin->hidden = FALSE; pin->passthrough = TRUE;
-    g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled); ok = !handled && ok;
+    g_signal_emit_by_name(pin->window, "key-press-event", &event, &handled);
+    ok = pin_smoke_check(!handled, "passthrough copy guard", pin) && ok;
     pin->passthrough = FALSE;
   }
-  resize_pin(pin, start); flush_pin_events();
+  resize_pin(pin, start); ok = wait_pin_geometry(pin, 120, 80, FALSE, 0, 0) && ok;
   g_print("Linux pin interaction smoke %s: smooth wheel, proportional edge resize, cancel/grab cleanup, local copy guards.\n", ok ? "passed" : "FAILED");
   return ok;
 }
@@ -910,13 +945,8 @@ gboolean mc_linux_pin_smoke(void) {
   if (!pins)
     return FALSE;
   Pin *pin = pins->data;
-  gdk_display_sync(gdk_display_get_default());
-  while (gtk_events_pending())
-    gtk_main_iteration();
-  int x = 0, y = 0;
-  gtk_window_get_position(GTK_WINDOW(pin->window), &x, &y);
-  gboolean ok = !GDK_IS_X11_DISPLAY(gdk_display_get_default()) || (x == anchor.x && y == anchor.y);
-  ok = pin_interaction_smoke(pin) && ok;
+  gboolean ok = wait_pin_geometry(pin, anchor.width, anchor.height, x11_available(), anchor.x, anchor.y);
+  gboolean interaction_ok = pin_interaction_smoke(pin);
   double old = pin->scale;
   GdkEventKey event = {0};
   event.keyval = GDK_KEY_equal;
@@ -1015,5 +1045,5 @@ gboolean mc_linux_pin_smoke(void) {
   g_object_unref(preferences);
   mc_linux_pins_close();
   g_print("Linux pin lifecycle smoke %s: release grabs/filter, terminate pass-through, reject disabled calls, retain bindings, re-enable recovery.\n", ok && saved ? "passed" : "FAILED");
-  return ok && saved;
+  return ok && saved && interaction_ok;
 }

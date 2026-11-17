@@ -611,13 +611,19 @@ static gboolean smoke_property_spacing(MCStyleControls *controls, const double *
     gtk_widget_size_allocate(controls->row, &allocation);
     if (gtk_widget_get_visible(controls->color->group)) {
       GtkWidget *button = controls->color->button;
-      ok = ok && gtk_widget_get_allocated_width(button) == editor_style_swatch_size() &&
-        gtk_widget_get_allocated_height(button) == editor_style_swatch_size();
+      int width = gtk_widget_get_allocated_width(button), height = gtk_widget_get_allocated_height(button);
+      gboolean sized = width == editor_style_swatch_size() && height == editor_style_swatch_size();
+      if (!sized) g_printerr("Style geometry tool=%d shape=%d: swatch=%dx%d expected=%d.\n",
+        tools[test], shapes[test], width, height, editor_style_swatch_size());
+      ok = sized && ok;
       GdkEventButton event = {0};
       event.x = event.y = editor_style_swatch_size() / 2.0;
-      ok = ok && !swatch_press(button, &event, NULL);
+      gboolean center = !swatch_press(button, &event, NULL);
       event.x = event.y = .5;
-      ok = ok && swatch_press(button, &event, NULL);
+      gboolean corner = swatch_press(button, &event, NULL);
+      if (!center || !corner) g_printerr("Style geometry tool=%d shape=%d: circle hit center=%d cornerRejected=%d.\n",
+        tools[test], shapes[test], center, corner);
+      ok = center && corner && ok;
     }
     GList *groups = gtk_container_get_children(GTK_CONTAINER(controls->row));
     int right = 0, count = 0;
@@ -626,18 +632,28 @@ static gboolean smoke_property_spacing(MCStyleControls *controls, const double *
       if (!gtk_widget_get_visible(group)) continue;
       GtkAllocation frame;
       gtk_widget_get_allocation(group, &frame);
-      ok = ok && frame.x - right == (count ? editor_style_group_gap() : 0);
+      int expected_gap = count ? editor_style_group_gap() : 0;
+      gboolean spaced = frame.x - right == expected_gap;
+      if (!spaced) g_printerr("Style geometry tool=%d shape=%d group=%d: frame=(%d,%d %dx%d), previousRight=%d gap=%d expected=%d row=%dx%d.\n",
+        tools[test], shapes[test], count, frame.x, frame.y, frame.width, frame.height,
+        right, frame.x - right, expected_gap, natural.width, natural.height);
+      ok = spaced && ok;
       if (GTK_IS_BOX(group)) {
         GList *children = gtk_container_get_children(GTK_CONTAINER(group));
         int label_x = -1, label_y = -1;
-        ok = children && gtk_widget_translate_coordinates(children->data, group, 0, 0,
-          &label_x, &label_y) && label_x == 0 && ok;
+        gboolean translated = children && gtk_widget_translate_coordinates(children->data, group, 0, 0,
+          &label_x, &label_y);
+        if (!translated || label_x != 0) g_printerr("Style geometry tool=%d shape=%d group=%d: label translated=%d origin=(%d,%d) expectedX=0.\n",
+          tools[test], shapes[test], count, translated, label_x, label_y);
+        ok = translated && label_x == 0 && ok;
         g_list_free(children);
       }
       right = frame.x + frame.width;
       count++;
     }
-    ok = ok && count > 0 && right == natural.width;
+    if (!count || right != natural.width) g_printerr("Style geometry tool=%d shape=%d: groups=%d lastRight=%d naturalWidth=%d.\n",
+      tools[test], shapes[test], count, right, natural.width);
+    ok = count > 0 && right == natural.width && ok;
     g_list_free(groups);
   }
   return ok;
@@ -706,6 +722,7 @@ gboolean mc_style_controls_smoke(void) {
   ok = a.calls == 4 && !gtk_widget_get_visible(first->shape_buttons[2]) && ok;
   // Allocate real GTK children: label packing must not add hidden leading space
   // and switching to mosaic must not retain gaps for detached color controls.
+  if (!ok) g_printerr("Style controls: interaction assertions failed before geometry.\n");
   gtk_widget_show_all(window);
   gtk_style_context_add_class(gtk_widget_get_style_context(window), "mc-capture-hud");
   mc_style_hud_apply(window);
@@ -716,6 +733,7 @@ gboolean mc_style_controls_smoke(void) {
   gboolean closed = FALSE;
   g_signal_connect(first->color->dialog, "destroy", G_CALLBACK(smoke_dialog_destroyed), &closed);
   gtk_widget_destroy(window);
+  if (!closed) g_printerr("Style controls: active color dialog survived owner destruction.\n");
   ok = closed && ok;
   g_print("Linux style controls smoke %s: isolated callbacks, invalid numbers, RGBA/cancel, dialog lifetime, property group geometry.\n",
            ok ? "passed" : "FAILED");
