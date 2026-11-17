@@ -1,0 +1,630 @@
+{
+  "schema_version": 1,
+  "platforms": {
+    "macos": {
+      "host": {
+        "sources": [
+          "native/macos/main.m",
+          "native/macos/preferences/MCPreferencesController.m",
+          "native/macos/preferences/MCToolRegistryStore.m",
+          "native/macos/preferences/MCPluginManagementController.m",
+          "native/macos/preferences/MCShortcutRecorder.m",
+          "native/macos/shortcuts/MCGlobalShortcutManager.m",
+          "native/macos/updates/MCUpdateController.m",
+          "native/macos/updates/MCReleaseSource.m"
+        ],
+        "requires": [
+          "system.shortcut_config",
+          "system.user_plugins",
+          "feature.capture",
+          "feature.capture_text",
+          "feature.scroll_capture",
+          "feature.pin",
+          "feature.recording"
+        ],
+        "files": [
+          "native/macos/preferences/MCPluginManagementController.h",
+          "native/macos/preferences/MCPreferencesController.h",
+          "native/macos/preferences/MCShortcutPolicy.h",
+          "native/macos/preferences/MCShortcutRecorder.h",
+          "native/macos/preferences/MCToolRegistryStore.h",
+          "native/macos/shortcuts/MCGlobalShortcutManager.h",
+          "native/macos/updates/MCReleaseSource.h",
+          "native/macos/updates/MCUpdateController.h",
+          "native/macos/updates/feed.json"
+        ],
+        "includes": [
+          "component.icons",
+          "feature.image_editor",
+          "shared.bindings",
+          "system.runtime_profile"
+        ]
+      },
+      "system.shortcut_config": {
+        "sources": [
+          "native/macos/preferences/MCShortcutStore.m",
+          "native/macos/preferences/MCPinShortcutStore.m",
+          "native/macos/preferences/MCSystemShortcutCheck.m"
+        ],
+        "requires": [],
+        "files": [
+          "native/macos/preferences/MCPinShortcutStore.h",
+          "native/macos/preferences/MCShortcutStore.h",
+          "native/macos/preferences/MCSystemShortcutCheck.h"
+        ],
+        "includes": [
+          "host"
+        ]
+      },
+      "system.user_plugins": {
+        "sources": [
+          "native/macos/plugins/MCPluginPackageStore.m",
+          "native/macos/plugins/MCPluginWorker.m",
+          "native/macos/plugins/MCUserPluginManager.m",
+          "native/macos/plugins/MCPluginResultController.m"
+        ],
+        "requires": [],
+        "files": [
+          "native/macos/plugins/MCPluginPackageStore.h",
+          "native/macos/plugins/MCPluginResultController.h",
+          "native/macos/plugins/MCPluginWorker.h",
+          "native/macos/plugins/MCUserPluginManager.h"
+        ],
+        "includes": [
+          "host",
+          "shared.bindings"
+        ]
+      },
+      "component.style_controls": {
+        "sources": [
+          "components/style_controls/macos/MCStyleControls.m",
+          "components/style_controls/macos/MCStylePropertiesView.m"
+        ],
+        "requires": [],
+        "files": [
+          "components/style_controls/macos/MCStyleControls.h",
+          "components/style_controls/macos/MCStylePropertiesView.h"
+        ],
+        "includes": [
+          "component.icons",
+          "shared.bindings"
+        ]
+      },
+      "component.shared_canvas": {
+        "sources": [
+          "components/shared_canvas/macos/MCSharedCanvas.m"
+        ],
+        "requires": [],
+        "files": [
+          "components/shared_canvas/macos/MCSharedCanvas.h"
+        ]
+      },
+      "component.selection": {
+        "sources": [
+          "components/selection/macos/MCSelection.m",
+          "components/selection/macos/MCSelectionSurface.m"
+        ],
+        "requires": [],
+        "files": [
+          "components/selection/macos/MCSelection.h",
+          "components/selection/macos/MCSelectionSurface.h"
+        ],
+        "includes": [
+          "component.theme",
+          "shared.bindings"
+        ]
+      },
+      "component.desktop_capture": {
+        "sources": [
+          "components/desktop_capture/macos/MCDesktopSnapshot.m"
+        ],
+        "requires": [],
+        "files": [
+          "components/desktop_capture/macos/MCDesktopSnapshot.h"
+        ]
+      },
+      "feature.select": {
+        "sources": [],
+        "requires": [
+          "component.selection"
+        ],
+        "files": []
+      },
+      "feature.image_editor": {
+        "sources": [
+          "plugins/feature/image_editor/macos/MCImageEditorController.m"
+        ],
+        "requires": [
+          "component.style_controls",
+          "component.image_effects",
+          "feature.select"
+        ],
+        "files": [
+          "plugins/feature/image_editor/macos/MCImageEditorController.h"
+        ],
+        "includes": [
+          "component.icons",
+          "component.selection",
+          "component.theme",
+          "shared.bindings"
+        ]
+      },
+      "component.image_effects": {
+        "sources": [
+          "components/image_effects/macos/MCPixelate.m"
+        ],
+        "requires": [],
+        "files": [
+          "components/image_effects/macos/MCPixelate.h"
+        ]
+      },
+      "feature.capture": {
+        "sources": [
+          "plugins/feature/capture/macos/MCCaptureController.m"
+        ],
+        "requires": [
+          "feature.image_editor",
+          "component.desktop_capture"
+        ],
+        "files": [
+          "plugins/feature/capture/macos/MCCaptureController.h"
+        ],
+        "includes": [
+          "component.selection"
+        ]
+      },
+      "feature.capture_text": {
+        "sources": [
+          "plugins/feature/capture_text/macos/MCTextRecognitionService.m",
+          "plugins/feature/capture_text/macos/MCTextToolsController.m",
+          "plugins/feature/capture_text/macos/MCTranslationBridge.swift"
+        ],
+        "requires": [],
+        "files": [
+          "plugins/feature/capture_text/macos/MCTextRecognitionService.h",
+          "plugins/feature/capture_text/macos/MCTextToolsController.h",
+          "plugins/feature/capture_text/macos/MCTranslationBridge.h"
+        ]
+      },
+      "feature.scroll_capture": {
+        "sources": [
+          "plugins/feature/scroll_capture/macos/MCScrollStitcher.m",
+          "plugins/feature/scroll_capture/macos/MCScrollCaptureController.m"
+        ],
+        "requires": [],
+        "files": [
+          "plugins/feature/scroll_capture/macos/MCScrollCaptureController.h",
+          "plugins/feature/scroll_capture/macos/MCScrollStitcher.h"
+        ]
+      },
+      "feature.pin": {
+        "sources": [
+          "plugins/feature/pin/macos/MCPinnedImageController.m"
+        ],
+        "requires": [
+          "system.shortcut_config"
+        ],
+        "files": [
+          "plugins/feature/pin/macos/MCPinnedImageController.h"
+        ],
+        "includes": [
+          "component.theme",
+          "shared.bindings"
+        ]
+      },
+      "feature.video_editor": {
+        "sources": [
+          "plugins/feature/video_editor/macos/MCVideoEditor.m",
+          "plugins/feature/video_editor/macos/MCVideoMedia.m"
+        ],
+        "requires": [
+          "component.shared_canvas",
+          "component.media_analysis"
+        ],
+        "files": [
+          "plugins/feature/video_editor/macos/MCVideoEditor.h",
+          "plugins/feature/video_editor/macos/MCVideoMedia.h"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "component.media_analysis": {
+        "sources": [
+          "components/media_analysis/macos/MCAudioWaveform.m"
+        ],
+        "requires": [],
+        "files": [
+          "components/media_analysis/macos/MCAudioWaveform.h"
+        ]
+      },
+      "feature.recording": {
+        "sources": [
+          "plugins/feature/recording/macos/MCMacRecordingController.m",
+          "plugins/feature/recording/macos/MCRecordingSelectionView.m"
+        ],
+        "requires": [
+          "feature.video_editor",
+          "component.selection",
+          "component.desktop_capture"
+        ],
+        "files": [
+          "plugins/feature/recording/macos/MCMacRecordingController.h",
+          "plugins/feature/recording/macos/MCRecordingSelectionView.h"
+        ],
+        "includes": [
+          "shared.bindings",
+          "system.runtime_profile"
+        ]
+      },
+      "component.icons": {
+        "sources": [],
+        "requires": [],
+        "files": [
+          "components/icons/macos/MCIcon.h"
+        ],
+        "includes": [
+          "shared.icons"
+        ]
+      },
+      "component.theme": {
+        "sources": [],
+        "requires": [],
+        "files": [
+          "components/theme/macos/MCChromeTheme.h"
+        ]
+      },
+      "system.runtime_profile": {
+        "sources": [],
+        "requires": [],
+        "files": [
+          "native/macos/runtime/MCRuntimeProfile.h"
+        ]
+      },
+      "tool.plugin_worker": {
+        "sources": [
+          "native/tools/plugin-worker.m"
+        ],
+        "files": [],
+        "requires": []
+      },
+      "tool.app_icon": {
+        "sources": [
+          "native/tools/generate-app-icon.m"
+        ],
+        "files": [],
+        "requires": []
+      }
+    },
+    "windows": {
+      "host": {
+        "sources": [
+          "native/windows/main.c",
+          "native/windows/updates.c"
+        ],
+        "requires": [
+          "feature.capture",
+          "feature.pin",
+          "feature.recording"
+        ],
+        "files": [
+          "native/windows/app.ico",
+          "native/windows/app.manifest",
+          "native/windows/resource.h",
+          "native/windows/resources.rc",
+          "native/windows/updates.h"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "component.style_controls": {
+        "sources": [
+          "components/style_controls/windows/style_controls.c"
+        ],
+        "requires": [
+          "component.hud"
+        ],
+        "files": [
+          "components/style_controls/windows/style_controls.h"
+        ],
+        "includes": [
+          "shared.bindings",
+          "shared.icons"
+        ]
+      },
+      "component.hud": {
+        "sources": [
+          "components/hud/windows/hud.cpp"
+        ],
+        "requires": [],
+        "files": [
+          "components/hud/windows/hud.h"
+        ],
+        "includes": [
+          "shared.bindings",
+          "shared.icons"
+        ]
+      },
+      "feature.select": {
+        "sources": [
+          "plugins/feature/select/windows/selection.c",
+          "plugins/feature/select/windows/surface.c"
+        ],
+        "requires": [],
+        "files": [
+          "plugins/feature/select/windows/selection.h",
+          "plugins/feature/select/windows/surface.h"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "feature.capture": {
+        "sources": [
+          "plugins/feature/capture/windows/capture.c"
+        ],
+        "requires": [
+          "component.style_controls",
+          "component.hud",
+          "feature.select"
+        ],
+        "files": [
+          "plugins/feature/capture/windows/capture.h"
+        ],
+        "includes": [
+          "shared.bindings",
+          "shared.icons",
+          "shared.image"
+        ]
+      },
+      "feature.pin": {
+        "sources": [
+          "plugins/feature/pin/windows/pinning.c"
+        ],
+        "requires": [],
+        "files": [
+          "plugins/feature/pin/windows/pinning.h"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "feature.recording": {
+        "sources": [
+          "plugins/feature/recording/windows/recording.cpp"
+        ],
+        "requires": [
+          "feature.select"
+        ],
+        "files": [
+          "plugins/feature/recording/windows/recording.h"
+        ],
+        "includes": [
+          "host",
+          "shared.bindings",
+          "shared.media"
+        ]
+      }
+    },
+    "linux": {
+      "host": {
+        "sources": [
+          "native/linux/main.c",
+          "native/linux/updates.c"
+        ],
+        "requires": [
+          "feature.capture",
+          "feature.pin",
+          "feature.recording",
+          "platform.input"
+        ],
+        "files": [
+          "native/linux/launch.sh",
+          "native/linux/moojicut.desktop.in",
+          "native/linux/updates.h"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "component.style_controls": {
+        "sources": [
+          "components/style_controls/linux/style_controls.c"
+        ],
+        "requires": [],
+        "files": [
+          "components/style_controls/linux/style_controls.h"
+        ],
+        "includes": [
+          "shared.bindings",
+          "shared.icons"
+        ]
+      },
+      "feature.select": {
+        "sources": [
+          "plugins/feature/select/linux/selection.c"
+        ],
+        "requires": [],
+        "files": [
+          "plugins/feature/select/linux/selection.h"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "feature.capture": {
+        "sources": [
+          "plugins/feature/capture/linux/capture.c"
+        ],
+        "requires": [
+          "component.style_controls",
+          "feature.select"
+        ],
+        "files": [
+          "plugins/feature/capture/linux/capture.h",
+          "plugins/feature/capture/linux/portal.inc"
+        ],
+        "includes": [
+          "shared.bindings",
+          "shared.icons",
+          "shared.image"
+        ]
+      },
+      "feature.pin": {
+        "sources": [
+          "plugins/feature/pin/linux/pinning.c"
+        ],
+        "requires": [],
+        "files": [
+          "plugins/feature/pin/linux/pinning.h"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "platform.recording": {
+        "sources": [
+          "platform/linux/recording/gstreamer_capture.c"
+        ],
+        "requires": [],
+        "files": [
+          "platform/linux/recording/gstreamer_capture.h"
+        ]
+      },
+      "feature.recording": {
+        "sources": [
+          "plugins/feature/recording/linux/recording.c"
+        ],
+        "requires": [
+          "platform.recording",
+          "feature.select"
+        ],
+        "files": [
+          "plugins/feature/recording/linux/recording.h"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "platform.input": {
+        "sources": [
+          "platform/linux/input/global_shortcuts.c",
+          "platform/linux/input/portal_shortcuts.c"
+        ],
+        "files": [
+          "platform/linux/input/global_shortcuts.h",
+          "platform/linux/input/portal_shortcuts.h"
+        ],
+        "requires": []
+      }
+    }
+  },
+  "shared": {
+    "shared.bindings": {
+      "sources": [],
+      "files": [
+        "bindings/c/capture_ui.h",
+        "bindings/c/editor_style.h",
+        "bindings/c/feature_runtime.h",
+        "bindings/c/image_session.h",
+        "bindings/c/pin_policy.h",
+        "bindings/c/plugin_protocol.h",
+        "bindings/c/recording_flow.h",
+        "bindings/c/recording_plan.h",
+        "bindings/c/selection.h",
+        "bindings/c/shortcut_bindings.h",
+        "bindings/c/tool_registry.h",
+        "bindings/c/update_release.h",
+        "bindings/c/video_project.h",
+        "bindings/c/video_timeline.h",
+        "bindings/c/video_ui.h"
+      ],
+      "requires": []
+    },
+    "shared.icons": {
+      "sources": [],
+      "files": [
+        "components/icons/shared/mc_icons.h"
+      ],
+      "requires": []
+    },
+    "shared.media": {
+      "sources": [],
+      "files": [
+        "platform/shared/media/output_file.h"
+      ],
+      "requires": []
+    },
+    "shared.image": {
+      "sources": [],
+      "files": [
+        "platform/shared/image/pixelate.h"
+      ],
+      "requires": []
+    }
+  },
+  "excluded_files": {},
+  "legacy_includes": [
+    {
+      "from": "plugins/feature/capture/linux/capture.c",
+      "to": "plugins/feature/select/linux/selection.h",
+      "reason": "B2/shared selection: the capture/recording host still imports the legacy platform selection surface; migrate to the shared selection adapter."
+    },
+    {
+      "from": "plugins/feature/capture/macos/MCCaptureController.m",
+      "to": "plugins/feature/image_editor/macos/MCImageEditorController.h",
+      "reason": "B2/capture session: screenshot host still creates the legacy native annotation editor; replace with the shared capture UI/session."
+    },
+    {
+      "from": "plugins/feature/capture/windows/capture.c",
+      "to": "plugins/feature/select/windows/selection.h",
+      "reason": "B2/shared selection: the capture/recording host still imports the legacy platform selection surface; migrate to the shared selection adapter."
+    },
+    {
+      "from": "plugins/feature/capture/windows/capture.c",
+      "to": "plugins/feature/select/windows/surface.h",
+      "reason": "B2/shared selection: the capture/recording host still imports the legacy platform selection surface; migrate to the shared selection adapter."
+    },
+    {
+      "from": "plugins/feature/pin/macos/MCPinnedImageController.m",
+      "to": "native/macos/preferences/MCPinShortcutStore.h",
+      "reason": "E3/input: pin adapter still consumes application shortcut settings; inject bindings from app when the input port is extracted."
+    },
+    {
+      "from": "plugins/feature/pin/macos/MCPinnedImageController.m",
+      "to": "native/macos/preferences/MCShortcutStore.h",
+      "reason": "E3/input: pin adapter still consumes application shortcut settings; inject bindings from app when the input port is extracted."
+    },
+    {
+      "from": "plugins/feature/pin/macos/MCPinnedImageController.m",
+      "to": "native/macos/preferences/MCSystemShortcutCheck.h",
+      "reason": "E3/input: pin adapter still consumes application shortcut settings; inject bindings from app when the input port is extracted."
+    },
+    {
+      "from": "plugins/feature/recording/linux/recording.c",
+      "to": "plugins/feature/select/linux/selection.h",
+      "reason": "B2/shared selection: the capture/recording host still imports the legacy platform selection surface; migrate to the shared selection adapter."
+    },
+    {
+      "from": "plugins/feature/recording/macos/MCMacRecordingController.m",
+      "to": "native/macos/runtime/MCRuntimeProfile.h",
+      "reason": "E3/storage: recorder still resolves draft storage through the macOS runtime profile; inject the location from the application coordinator."
+    },
+    {
+      "from": "plugins/feature/recording/macos/MCMacRecordingController.m",
+      "to": "plugins/feature/video_editor/macos/MCVideoEditor.h",
+      "reason": "E1/app coordination: recorder still owns the legacy editor handoff and recovery; move this ownership to app before removing the exception."
+    },
+    {
+      "from": "plugins/feature/recording/windows/recording.cpp",
+      "to": "native/windows/resource.h",
+      "reason": "E1/Windows editor: legacy recording/editor still consumes native application resource identifiers; remove with shared editor integration."
+    },
+    {
+      "from": "plugins/feature/recording/windows/recording.cpp",
+      "to": "plugins/feature/select/windows/surface.h",
+      "reason": "B2/shared selection: the capture/recording host still imports the legacy platform selection surface; migrate to the shared selection adapter."
+    }
+  ]
+}

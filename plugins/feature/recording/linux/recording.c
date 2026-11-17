@@ -1,6 +1,6 @@
 #include "recording.h"
-#include "native/shared/recording_flow.h"
-#include "native/shared/recording_plan.h"
+#include "bindings/c/recording_flow.h"
+#include "bindings/c/recording_plan.h"
 #include "plugins/feature/select/linux/selection.h"
 #include "platform/linux/recording/gstreamer_capture.h"
 #include <gdk/gdkx.h>

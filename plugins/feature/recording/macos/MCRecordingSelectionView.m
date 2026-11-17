@@ -1,4 +1,5 @@
 #import "MCRecordingSelectionView.h"
+#include "bindings/c/recording_flow.h"
 #import "components/selection/macos/MCSelection.h"
 #include <math.h>
 
@@ -134,33 +135,61 @@
 }
 @end
 
+@interface MCRecordingCountdownView ()
+@property NSButton *actionButton;
+@end
 @implementation MCRecordingCountdownView
 - (instancetype)initWithFrame:(NSRect)frame {
-    if ((self = [super initWithFrame:frame])) {
-        _duration = 3; _remaining = 3;
-        self.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-        NSButton *cancel = [NSButton buttonWithTitle:@"取消" target:self action:@selector(cancel:)];
-        cancel.frame = NSMakeRect(56,8,88,32); cancel.keyEquivalent = @"\e";
-        cancel.bordered = NO; cancel.wantsLayer = YES; cancel.layer.cornerRadius = 16;
-        cancel.toolTip = @"取消本次录屏（Esc）";
-        cancel.layer.backgroundColor = [NSColor colorWithWhite:0.12 alpha:0.94].CGColor;
-        cancel.attributedTitle = [[NSAttributedString alloc] initWithString:@"取消" attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium],NSForegroundColorAttributeName:NSColor.whiteColor}];
-        [self addSubview:cancel];
+    if ((self=[super initWithFrame:frame])) {
+        self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        self.actionButton=[NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"xmark" accessibilityDescription:@"取消录屏"]
+            target:self action:@selector(performAction:)];
+        self.actionButton.bordered=NO; self.actionButton.contentTintColor=NSColor.whiteColor;
+        self.actionButton.keyEquivalent=@"\e";
+        [self addSubview:self.actionButton];
     }
     return self;
 }
+- (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
-- (void)cancel:(__unused id)sender { if (self.onCancel) self.onCancel(); }
-- (void)keyDown:(NSEvent *)event { if (event.keyCode == 53) [self cancel:nil]; else [super keyDown:event]; }
+- (void)setFlowHandle:(int32_t)handle { _flowHandle=handle; [self refresh]; }
+- (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self refresh]; }
+- (void)refresh {
+    double *frame=recording_ui_frame(self.flowHandle,NSWidth(self.bounds),NSHeight(self.bounds));
+    self.actionButton.frame=NSMakeRect(frame[8],frame[9],frame[10],frame[11]);
+    self.actionButton.hidden=frame[13]==0;
+    BOOL cancel=(int32_t)frame[13]==MC_RECORDING_CANCEL;
+    NSString *label=cancel ? @"取消录屏" : @"停止录屏";
+    self.actionButton.image=[NSImage imageWithSystemSymbolName:cancel ? @"xmark" : @"stop.fill" accessibilityDescription:label];
+    self.actionButton.toolTip=[label stringByAppendingString:@"（Esc）"];
+    [self.actionButton setAccessibilityLabel:label];
+    moonbit_decref(frame); self.needsDisplay=YES;
+}
+- (void)performAction:(__unused id)sender {
+    NSRect button=self.actionButton.frame;
+    int32_t action=recording_ui_hit(self.flowHandle,NSMidX(button),NSMidY(button),NSWidth(self.bounds),NSHeight(self.bounds));
+    if (action && self.onAction) self.onAction(action);
+}
+- (void)mouseUp:(NSEvent *)event {
+    NSPoint point=[self convertPoint:event.locationInWindow fromView:nil];
+    int32_t action=recording_ui_hit(self.flowHandle,point.x,point.y,NSWidth(self.bounds),NSHeight(self.bounds));
+    if (action && self.onAction) self.onAction(action);
+}
+- (void)keyDown:(NSEvent *)event {
+    if (event.keyCode==53) [self performAction:nil]; else [super keyDown:event];
+}
 - (void)drawRect:(__unused NSRect)dirtyRect {
-    NSRect circle = NSMakeRect(30,58,140,140);
-    [[NSColor colorWithWhite:0.09 alpha:0.94] setFill]; [[NSBezierPath bezierPathWithOvalInRect:circle] fill];
-    [[NSColor colorWithWhite:1 alpha:0.15] setStroke]; NSBezierPath *ring = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(circle,5,5)]; ring.lineWidth=3; [ring stroke];
-    NSBezierPath *progress = [NSBezierPath bezierPath];
-    [progress appendBezierPathWithArcWithCenter:NSMakePoint(100,128) radius:65 startAngle:90 endAngle:90-360*MAX(0,MIN(1,self.remaining/MAX(1,self.duration))) clockwise:YES];
-    [NSColor.whiteColor setStroke]; progress.lineWidth=3; progress.lineCapStyle=NSLineCapStyleRound; [progress stroke];
-    NSString *number = [NSString stringWithFormat:@"%ld",(long)MAX(1,ceil(self.remaining))];
-    NSDictionary *attributes = @{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:64 weight:NSFontWeightMedium],NSForegroundColorAttributeName:NSColor.whiteColor};
-    NSSize size = [number sizeWithAttributes:attributes]; [number drawAtPoint:NSMakePoint(100-size.width/2,128-size.height/2) withAttributes:attributes];
+    double *frame=recording_ui_frame(self.flowHandle,NSWidth(self.bounds),NSHeight(self.bounds));
+    if (frame[2]<=0 || frame[3]<=0) { moonbit_decref(frame); return; }
+    [[NSColor colorWithWhite:0.09 alpha:0.94] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(frame[0],frame[1],frame[2],frame[3]) xRadius:20 yRadius:20] fill];
+    moonbit_string_t value=recording_ui_text(self.flowHandle);
+    NSString *text=[[NSString alloc] initWithCharacters:value length:Moonbit_array_length(value)]; moonbit_decref(value);
+    NSMutableParagraphStyle *paragraph=[NSMutableParagraphStyle new]; paragraph.alignment=NSTextAlignmentCenter;
+    NSDictionary *attributes=@{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:frame[12] weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName:NSColor.whiteColor,NSParagraphStyleAttributeName:paragraph};
+    NSSize size=[text sizeWithAttributes:attributes];
+    NSRect rect=NSMakeRect(frame[4],frame[5]+MAX(0,(frame[7]-size.height)/2),frame[6],MIN(size.height,frame[7]));
+    [text drawInRect:rect withAttributes:attributes]; moonbit_decref(frame);
 }
 @end

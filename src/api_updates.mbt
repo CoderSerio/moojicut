@@ -1,5 +1,5 @@
 // Native ABI entry points. Release parsing, selection, and handles live in
-// internal/updates. Inputs remain caller-owned; returned strings are owned.
+// internal/app/updates. Inputs remain caller-owned; returned strings are owned.
 
 ///|
 #export_name("update_version_compare")

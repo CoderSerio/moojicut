@@ -13,14 +13,15 @@ on:
     branches: [main]
     paths:
       - src/**
-      - native/windows/**
-      - native/linux/**
-      - native/shared/**
+      - native/**
+      - bindings/**
+      - build/**
       - platform/**
       - plugins/**
       - components/**
       - scripts/desktop.py
       - scripts/native_modules.py
+      - scripts/check_native_boundaries.py
       - scripts/check_module_boundaries.py
       - test/build/**
       - test/native/**

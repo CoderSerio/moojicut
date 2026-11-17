@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "selection.h"
-#include "../../../../native/shared/selection.h"
+#include "../../../../bindings/c/selection.h"
 #include <stdio.h>
 
 static int lower(int a, int b) { return a < b ? a : b; }

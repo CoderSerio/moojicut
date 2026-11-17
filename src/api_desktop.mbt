@@ -1,4 +1,4 @@
-// Stable native entry point; shortcut policy lives in internal/desktop.
+// Stable native entry point; shortcut policy lives in internal/app/shortcuts.
 
 ///|
 #export_name("shortcut_validate")

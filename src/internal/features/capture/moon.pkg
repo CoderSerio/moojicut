@@ -6,5 +6,5 @@ import {
 }
 
 import {
-  "moojicut/core/internal/test_support" @test_support,
+  "moojicut/core/internal/shared/test_support" @test_support,
 } for "wbtest"

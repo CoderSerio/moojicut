@@ -7,7 +7,7 @@
 #define NOMINMAX
 #include "hud.h"
 #include "components/icons/shared/mc_icons.h"
-#include "native/shared/editor_style.h"
+#include "bindings/c/editor_style.h"
 #include <objidl.h>
 
 #include <cwchar>

@@ -4,9 +4,9 @@
 #import <AVFoundation/AVFoundation.h>
 #import "components/shared_canvas/macos/MCSharedCanvas.h"
 #import "plugins/feature/video_editor/macos/MCVideoMedia.h"
-#include "native/shared/video_ui.h"
-#include "native/shared/video_timeline.h"
-#include "native/shared/video_project.h"
+#include "bindings/c/video_ui.h"
+#include "bindings/c/video_timeline.h"
+#include "bindings/c/video_project.h"
 
 extern moonbit_string_t video_open(moonbit_string_t, moonbit_string_t);
 extern moonbit_string_t video_command(int32_t, moonbit_string_t);

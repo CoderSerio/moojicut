@@ -6,8 +6,8 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include "pinning.h"
-#include "native/shared/feature_runtime.h"
-#include "native/shared/pin_policy.h"
+#include "bindings/c/feature_runtime.h"
+#include "bindings/c/pin_policy.h"
 #include "moonbit.h"
 #include <commctrl.h>
 #include <math.h>

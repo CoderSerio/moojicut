@@ -2,7 +2,7 @@
 #define MOOJICUT_WINDOWS_STYLE_CONTROLS_H
 
 #include <windows.h>
-#include "native/shared/editor_style.h"
+#include "bindings/c/editor_style.h"
 
 typedef struct MCStyleControls MCStyleControls;
 typedef struct {

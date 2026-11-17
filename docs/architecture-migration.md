@@ -1,6 +1,6 @@
 # 架构迁移台账与平台交付
 
-源码核对基线：`14bbbea`，2026-11-17。本文是[架构主文档](architecture.md)的实施台账，不另立一套架构。目标路径均是待实现归属，除明确标注外，不表示目录或功能已经存在。
+初始源码核对基线：`14bbbea`，2026-11-17；实施进度更新至 2026-11-18。本文是[架构主文档](architecture.md)的实施台账，不另立一套架构。目标路径均是待实现归属，除明确标注外，不表示目录或功能已经存在。
 
 ## 状态如何记录
 
@@ -8,9 +8,9 @@
 
 平台矩阵分 macOS、Windows、Linux/X11、Linux/Wayland。具体系统版本、显示服务、后端、输入法和运行证据随验收记录，不能只写一个 Linux 勾选框。功能的实际可用性包含后端支持、依赖是否安装、设备、权限、会话状态，不能只有操作系统名称。
 
-## 三端能力基线
+## 三端能力历史基线（14bbbea）
 
-以下为源码审计，不代表本轮实机通过。macOS 的既有自动回归与 Windows/Linux 历史 CI 只作为各自证据，未重新执行的环境不补勾。
+以下保留最初源码审计，**不是当前完成度**；后续已补区域录制等能力，见末尾实施记录。它不代表本轮实机通过。macOS 的既有自动回归与 Windows/Linux 历史 CI 只作为各自证据，未重新执行的环境不补勾。
 
 | 能力 | macOS | Windows | Linux / X11 | Linux / Wayland |
 | --- | --- | --- | --- | --- |
@@ -33,7 +33,7 @@
 | 更新安装 | Sparkle 自动替换链；旧固定 feed 另验 | 下载校验后手动换装 | 下载校验后手动换装 | 同左 |
 | 全局截图/录屏快捷键 | 已接 | 已接，仍需真实入口验证 | 配置可保存，截图/录屏全局执行未接 | 未接；按桌面能力实现 |
 
-主要代码依据：`scripts/desktop.py:163` 的发行范围；`plugins/system/builtins.json` 的三端构建入口；`plugins/feature/recording/windows/recording.cpp:603` 的主显示器来源、`:440` 的外部播放器；`plugins/feature/recording/macos/MCMacRecordingController.m:367` 的音源配置；`plugins/feature/capture/linux/portal.inc:97` 的 Screenshot 接口；`native/linux/main.c:340` 的快捷键与录屏现状。共享能力规则另见 `src/internal/features/recording/core/recording.mbt`，它目前只接 macOS/Windows 计划，不能宣称 Linux 后端已经存在。
+主要代码依据：`scripts/desktop.py:163` 的发行范围；`plugins/system/builtins.json` 的三端构建入口；`plugins/feature/recording/windows/recording.cpp:603` 的主显示器来源、`:440` 的外部播放器；`plugins/feature/recording/macos/MCMacRecordingController.m:367` 的音源配置；`plugins/feature/capture/linux/portal.inc:97` 的 Screenshot 接口；`native/linux/main.c:340` 的快捷键与录屏现状。该基线时共享能力规则只接 macOS/Windows 计划，不能据此宣称 Linux 后端存在；后续 Linux 实现见下方 C1/C2 记录。
 
 ## 旧原生功能逐项归属
 
@@ -44,7 +44,7 @@
 | `plugins/feature/capture` | 三端都有；Windows/Linux 同时含图片编辑、工具 UI 与采集，Linux 还含 Screenshot portal | `features/capture` 会话、core、ui；共用框选到 `shared/selection` | `platform/<os>/capture` 接采集，`windowing` 接浮层；截屏与标注分别验收，保留贴图和可见编辑器入画行为 |
 | `plugins/feature/image_editor` | 独立目录只有 macOS；另两端编辑器在 capture 中 | 标注、输入事务、工具条、属性栏归 capture 的共享会话/UI；插件结果应用经核心命令 | 原生文本输入桥、绘制及剪贴板到平台；不能只搬 macOS 文件而漏掉另两端嵌入代码 |
 | `plugins/feature/select` | Windows/Linux 有目录；macOS 在 components/selection | 几何到 `shared/geometry`，框选/hover/调整到 `shared/selection` | 窗口枚举、坐标/DPI、输入捕获到 `windowing`；Wayland 的系统选源单独处理 |
-| `plugins/feature/pin` | 三端有窗口实现；数值策略在 src/internal/pin | `capture/extensions/pin` 管贡献、命令、设置、生命周期 | `windowing` 管置顶、穿透和窗口资源，`graphics` 管图片；停用按既有窗口关闭/菜单退役策略释放，不能把资源回收解释为删除原始图片 |
+| `plugins/feature/pin` | 三端有窗口实现；MoonBit 数值/缩放规则已归 features/capture/extensions/pin | `capture/extensions/pin` 后续接贡献、命令、设置、生命周期 | `windowing` 管置顶、穿透和窗口资源，`graphics` 管图片；停用按既有窗口关闭/菜单退役策略释放，不能把资源回收解释为删除原始图片 |
 | `plugins/feature/capture_text` | macOS Vision OCR、Apple Translation、结果窗口与任务控制 | `capture/extensions/ocr`、`translation` 管工作流、输入输出、可编辑结果、取消；通用结果控件归 shared/ui | `platform/<os>/text_services` 执行 OCR/翻译；三端实现与模型资源待分别验证，不能在无后端时承诺同等可用 |
 | `plugins/feature/scroll_capture` | 仅 macOS 原型；默认关闭；采集、HUD、重叠拼接混合 | `capture/extensions/scroll_capture` 管会话/UI与拼接计划；重叠算法优先共享 MoonBit | 获取帧留 capture；实测若需底层像素计算，才提到 platform/shared/image；继续默认关闭，独立页面稳定性验收 |
 | `plugins/feature/recording` | macOS 采集/选区；Windows 同文件包含采集、编码、草稿、旧编辑器；Linux 缺失 | `recording/core` 已归位；会话/UI后续提取，编辑职责移到 video_editor | `recording`、`audio` 管采集和时间戳，媒体执行归 `media`；Windows 先拆责任再接共享选区，Linux 单独补录制流 |
@@ -59,7 +59,7 @@
 | `components/desktop_capture` | 捕获计划由所属功能提供 | `platform/macos/capture` 的桌面快照；Windows/Linux 对应实现从 capture 模块拆出 |
 | `components/hud` | 录制控制/状态布局进入 recording/ui，通用控件进入 shared/ui | Windows 窗口与渲染桥；并入相应 graphics/windowing 能力 |
 | `components/icons` | 图标身份/几何与生成资产供 shared/ui 消费 | `platform/shared/graphics` 可保留通用低层资产表示，macOS 适配只做绘制；输入 SVG 和许可证留 assets |
-| `components/image_effects` | 覆盖形状/马赛克粒度与作用区域由 capture 决定 | 像素执行到 graphics 或经验证的 platform/shared/image；同步 native/shared/pixelate.h |
+| `components/image_effects` | 覆盖形状/马赛克粒度与作用区域由 capture 决定 | 像素执行归 graphics；共享 pixelate.h 已由 native/shared 迁至 platform/shared/image |
 | `components/media_analysis` | 波形时间映射和 UI 在 video_editor；缓存身份/任务状态在会话 | `platform/<os>/media` 解码和采样，完成/取消回报给共享会话 |
 | `components/selection` | 三端共用几何、选区交互和语义 | `windowing` 输入/枚举/坐标；与 plugins/feature/select 一起迁移 |
 | `components/shared_canvas` | 描述协议、主题、语义在 shared/ui | `graphics` 绘制解释器、测量、视频表面；不能把时间线逻辑移回原生 |
@@ -79,11 +79,11 @@
 | `native/macos/plugins/*` | 包结构/策略/贡献/调用与迟到结果校验到 plugins/contracts/runtime，结果 UI 到 shared/ui；文件事务到 storage，worker/引擎桥到 plugin_host |
 | `native/tools/plugin-worker.m` | worker 独立可执行入口归平台 plugin_host，进程协议/限制尽量共用；Windows/Linux 执行宿主仍需补齐，不复制三套策略 |
 | `native/macos/updates/*`、`native/windows/updates.*`、`native/linux/updates.*` | 版本/资产选择到 app/updates；下载、验签与替换到 platform/updates；旧 feed、GitHub 发现、正式身份均单独验收 |
-| `native/shared/*.h` | ABI 声明与所有权到 bindings/c；其中 pixelate.h 是含实现的像素算法，执行部分分到 platform/shared/image，不能当普通头文件一概搬走 |
+| 原 `native/shared/*.h` | 已迁：15 个 ABI 声明在 bindings/c；pixelate.h 实现在 platform/shared/image。全部同仓 include 已更新，函数符号与所有权不变 |
 | `native/tools/generate-app-icon.m` | 构建工具留 scripts 的平台辅助目录，不成为运行时插件 |
 | `native/windows/app.ico`、`app.manifest`、`resource.h`、`resources.rc` | 平台打包资源归 platform/windows/app；图标源和生成规则在 assets/scripts，不重画三套图标 |
 | `native/linux/launch.sh`、`moojicut.desktop.in` | 平台发行入口与桌面集成归 platform/linux/app；同步打包路径与安装/卸载说明 |
-| `plugins/system/builtins.json` | `build/native-modules.json`，明确只管编译链接。同步 native_modules.py 的路径/归属规则与测试，不将其作为动态贡献注册表 |
+| 原 `plugins/system/builtins.json` | 已迁 `build/native-modules.json`，只管构建；全量原生文件、头、片段、资源及实际 include 已纳入检查，不作为动态贡献注册表 |
 | `plugins/user-runtime/README.md` | 作者规范归 plugins/spec；当前 v1 限制保留到替换发布，同步示例与打包脚本，不建设旧 v1 兼容层 |
 | `plugins/examples/*` | 留在根 plugins/examples；用真实导入/运行回归验证规范和实现一致，不只检查 ZIP 可解压 |
 
@@ -111,19 +111,19 @@
 | 当前包 | 目标与状态 |
 | --- | --- |
 | `features/capture`、core、ui、extensions/annotations | 第一批结构已迁；annotations 目前仅属性与默认值，固定工具分发和 ui→annotations 仍需泛化，不是完整插件化 |
-| `features/recording/core` | 已拆出；当前只是状态转换/参数策略，尚无统一资源会话与三端能力模型 |
-| `desktop` | app/shortcuts |
-| `pin` | capture/extensions/pin |
-| `selection` | shared/geometry；不要与新的共享框选 UI 混为一包 |
-| `updates` | app/updates |
-| `feature_runtime` | plugins/runtime；现在只是启停门控，不能计为通用取消、排空与版本租约实现 |
-| `tool_registry` | 通用贡献目录/配置到 plugins/runtime；固定内置描述迁到各功能 extensions，由 app 注入 |
-| `plugin_protocol` | 通用字段到 plugins/contracts，截图业务字段到 capture/core 契约；新协议一次替换旧插件 v1 |
-| `video` | video_editor/core 的旧草稿读取/转换及共用几何；拆掉旧编辑器后清理无调用 API。视频草稿保护与插件 v1 兼容是两件事 |
-| `video_project` | video_editor/core 文档、命令、RenderPlan；会话装配到功能根 |
-| `video_ui` | video_editor/ui；可复用绘制描述/图标/主题按真实消费者提到 shared/ui |
-| `protocol` | shared/protocol |
-| `test_support` | shared/test_support，仅测试导入 |
+| `features/recording/core`、ui | 已归位；live flow、静态能力/参数策略与倒计时面板已共享，完整资源会话及动态能力快照仍待做 |
+| `app/shortcuts`（原 desktop） | 规则已迁；平台全局注册/释放仍由宿主执行 |
+| `features/capture/extensions/pin`（原 pin） | 数值/缩放/可见性规则已迁；贡献接入与窗口资源提取另验 |
+| `shared/geometry`（原 selection） | 已迁；不要与新的共享框选 UI 混为一包 |
+| `app/updates`（原 updates） | 版本/资产规则已迁；平台下载/安装不在此包 |
+| `plugins/runtime/lifecycle`（原 feature_runtime） | 已迁；现在只是启停门控，不能计为通用取消、排空与版本租约实现 |
+| `plugins/runtime/catalog`（原 tool_registry） | 目录/配置已迁；固定内置描述仍需迁到各功能 extensions，由 app 注入 |
+| `plugins/contracts`（原 plugin_protocol） | 当前 v1 校验已迁；通用字段与截图业务契约后续拆分，新协议一次替换旧插件 v1 |
+| `features/video_editor/core/legacy_document`（原 video） | 已有旧草稿读取/转换、宿主 API 与时间线几何已迁；拆掉旧编辑器后清理无调用 API。视频草稿保护与插件 v1 兼容是两件事 |
+| `features/video_editor/core`（原 video_project） | 文档、命令、RenderPlan 已迁；会话装配后续到功能根 |
+| `features/video_editor/ui`（原 video_ui） | 已迁；可复用绘制描述/图标/主题按真实消费者提到 shared/ui |
+| `shared/protocol`（原 protocol） | 已迁 |
+| `shared/test_support`（原 test_support） | 已迁，仅测试导入 |
 | `src/api_*.mbt`、`moon.pkg`、`preview.mbt` | ABI 薄转发与启动自检；变动同步生成接口、bindings 和所有调用者，不以 alpha 为由留下悬空符号 |
 
 ## 构建与交付不能漏迁
@@ -201,7 +201,7 @@ B2 在扩大迁移之前先通过 macOS+Windows 的同一完整切片（声明�
 | M2、U-P1-02、P-P1-3 | B2 真实第二平台样板；文本/数字草稿、IME、焦点、语义、图像导出是验收项 | UI桥待技术验证，不把已有视频画布当完整文本客户端 |
 | M3、U-P1-05、P-P1-1 | 分开失败/排空/原片/派生产物；补资源 owner 表，Windows 原片问题列 R0 | R0 代码修复与便携文件故障测试已完成，Windows MF 实测仍待验；macOS 收尾竞态待注入验证 |
 | M4 | 固定独立 moojicut-cli(.exe)、可执行包/IPC/签名/产物/控制台验收 | 名称和方案已确定，CLI尚未实现 |
-| M5 | 源码/头/.inc/资源完整归属与原生导入约束；pixelate 实现、runtime worker 单列 | 现有检查仍是旧范围，扩展检查随对应迁移提交 |
+| M5 | 源码/头/.inc/资源完整归属与原生导入约束；pixelate 实现、runtime worker 单列 | 检查已扩展并接入构建；保留 12 对具名旧引用，未宣称混合职责已经全部拆除 |
 | M6、P-P2-3 | 四环境分层记录，更新 platform/bindings/build 触发；独立媒体fixture与受控mac验证入口 | 后续每包提供本次提交证据，本轮无三端实测 |
 | M7、P-P2-4 | 链接/运行库/helper/CLI/许可证/签名账本；更新按查询/下载/替换/重启分开 | Win/Linux自动替换仍未实现，mac旧固定feed风险保留 |
 | M8 | 修正 annotations 依赖箭头、历史路径、user-runtime实际位置；限定旧video退出批次 | 文档已修，alpha.9固定源事实保留；本地未受控旧README不作为基线缺陷 |
@@ -268,3 +268,17 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 - macOS 187 项共享核心、22 项构建/文件策略及完整原生回归通过，随后生成生产 ZIP。更新交付检查确认与现有 alpha.19 的证书、指定签名要求、bundle ID 与更新公钥一致。
 - 发布后匿名下载全部 10 项资产，大小与 SHA256 均匹配本地；重新验证公开 macOS feed 和 ZIP 的 Ed25519 签名。相同签名 feed 原样同步到旧固定地址。
 - 未安装或启动发布包，未重置权限；真实原位升级、TCC、Wayland 和用户设备交互仍待实机验收。macOS 尚未公证，Windows/Linux 仍是手动换装。
+
+### 2026-11-18：共享结构、录制流程与 Linux 快捷键（当前源码，尚未发布）
+
+本批在 `507772f` 基础上实施；本节描述当前源码，alpha.20 的下载包不自动获得这些改动。CI 与发布分别记录，不用历史绿灯替代本批验证。
+
+- MoonBit 现有包已按 `features/{capture,recording,video_editor}`、`app`、`plugins`、`shared` 归位；旧路径拒绝重引入。`legacy_document` 是旧视频草稿/宿主的过渡实现，不是外部插件 v1 兼容层；拆除旧编辑器后再清理无调用 API。根 ABI 保持不变，迁移前后 native/Wasm 各 197 项测试通过。
+- 15 个 C ABI 头移到 `bindings/c`；含实现的像素算法移到 `platform/shared/image/pixelate.h`。静态构建清单移至 `build/native-modules.json`，独立工具 worker 与图标生成器也有显式归属。
+- 构建前检查所有原生源、头、`.inc`、资源的登记与实际引用；编译单元不可藏在头文件清单里，宏计算 include 不接受。平台层不得导入功能层，shared 不导入平台；12 对历史文件引用单独登记理由和工作包，未登记的新耦合报错，过期例外也报错。原生混合职责并未因此全部完成迁移。
+- macOS 接入与 Windows/Linux 相同的 MoonBit recording flow 和倒计时 frame/text/hit；AppKit 负责绘制与系统事件。失败停止不会冒充资源已释放，收到真实 start/stop/writer 终态后才结束忙碌；失败保留原片。故障回归覆盖迟到 start、连续 stop 失败、writer 先完成与最终 didStop 等回执顺序。录制后直接打开旧编辑器的耦合仍列例外，交接与草稿/退出策略后续一起迁入 app。
+- Linux X11 使用独立连接登记全局截图/录屏/停止键，检测冲突，失败回滚，退出释放；Wayland 接 GlobalShortcuts portal，按用户设置操作申请，不提供无效的 X11 兜底。改绑申请中继续执行旧快捷键，未获准前保留旧会话；系统实际返回的按键描述用于显示。不支持的桌面明确提示，托盘/启动参数入口保留。
+
+剩余主线仍包括：共享截图工具栏/属性/输入与贡献描述、三端用户插件新契约和宿主、独立 CLI/IPC、Windows/Linux v2 视频编辑与媒体端口、OCR/翻译、音频/暂停及完整运行时能力。Linux 真实 Wayland 授权、混合 DPI、硬件音视频与用户设备体验由后续实机验收覆盖。
+
+本批本地验证：构建/归属/文件策略 33 项、MoonBit native 197 项及 macOS 完整原生回归通过；包括实际 AVFoundation 编辑/导出、插件 worker 与 Vision OCR。ScreenCaptureKit 回执乱序使用故障 fixture，Apple Translation fixture 不触发真实模型下载。Windows 全部 9 个生产单元严格交叉编译为 AMD64 COFF；这不代替 MSVC 链接/运行。Linux X11 真按键、私有 D-Bus portal fixture 与目标打包验证待本批 CI；真实 compositor 授权留实机。

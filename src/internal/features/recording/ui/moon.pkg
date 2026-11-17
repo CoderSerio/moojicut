@@ -1,4 +1,4 @@
 import {
   "moojicut/core/internal/features/recording/core" @recording,
-  "moojicut/core/internal/protocol",
+  "moojicut/core/internal/shared/protocol",
 }

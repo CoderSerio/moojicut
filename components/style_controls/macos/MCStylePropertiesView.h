@@ -1,5 +1,5 @@
 #import "MCStyleControls.h"
-#include "native/shared/editor_style.h"
+#include "bindings/c/editor_style.h"
 
 NS_ASSUME_NONNULL_BEGIN
 typedef struct {

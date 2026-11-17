@@ -5,11 +5,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <X11/Xlib.h>
+#include <gdk/gdkx.h>
 #include "moonbit.h"
 #include "plugins/feature/capture/linux/capture.h"
 #include "plugins/feature/pin/linux/pinning.h"
 #include "plugins/feature/recording/linux/recording.h"
 #include "updates.h"
+#include "platform/linux/input/global_shortcuts.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "development"
@@ -18,12 +20,16 @@
 extern int32_t preview_core_check(void);
 extern int32_t shortcut_validate(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
 
-typedef struct { int key; int mods; } Shortcut;
+typedef MCShortcutBinding Shortcut;
 typedef struct {
   GtkApplication *application;
   AppIndicator *indicator;
   GtkWidget *window, *notebook, *status, *recorders[3], *dark_toggle, *pin_toggle, *pin_menu[3];
   GtkWidget *record_start_menu, *record_stop_menu;
+  GtkWidget *shortcut_note, *shortcut_enable;
+  MCGlobalShortcuts *global_shortcuts;
+  char *shortcut_status, *shortcut_actual[3];
+  gboolean shortcuts_pending, shortcut_keyboard_grabbed;
   Shortcut shortcuts[3];
   gboolean prefer_dark, system_dark, smoke, activated, core_ok, pin_enabled, quitting;
   int recording, exit_code;
@@ -40,6 +46,9 @@ static void cancel_recording(void);
 static void menu_capture(GtkWidget *widget, gpointer data);
 static void menu_record(GtkWidget *widget, gpointer data);
 static void menu_stop(GtkWidget *widget, gpointer data);
+static gboolean save_settings(void);
+static void global_shortcut_action(unsigned index, gpointer data);
+static void global_shortcut_state(gboolean active, const char *message, const char *const labels[3], gpointer data);
 
 static int validate_shortcut(int index, Shortcut value) {
   Shortcut a = host.shortcuts[(index + 1) % 3];
@@ -66,10 +75,62 @@ static char *shortcut_label(Shortcut value) {
 static void refresh_shortcuts(void) {
   for (int i = 0; i < 3; i++) {
     if (!host.recorders[i]) continue;
-    char *label = shortcut_label(host.shortcuts[i]);
+    char *label = host.shortcut_actual[i] ? g_strdup(host.shortcut_actual[i]) : shortcut_label(host.shortcuts[i]);
     gtk_button_set_label(GTK_BUTTON(host.recorders[i]), i == host.recording ? "按下快捷键…" : label);
+    gtk_widget_set_sensitive(host.recorders[i], !host.shortcuts_pending);
     g_free(label);
   }
+}
+
+typedef struct { Shortcut candidate[3]; gboolean persist, inside_call, finished, success; } ShortcutChange;
+/* The smoke fixture can suspend this external authorization boundary without
+ * contacting the user's portal. All validation and host state remain real. */
+static void (*request_shortcuts)(MCGlobalShortcuts *, const MCShortcutBinding[3], const char *,
+    MCShortcutCommit, MCShortcutFinished, gpointer) = mc_global_shortcuts_replace;
+static gboolean commit_shortcuts(const MCShortcutBinding values[3], const char *const labels[3], gpointer data) {
+  (void)labels;
+  ShortcutChange *change = data;
+  if (host.quitting) return FALSE;
+  Shortcut previous[3]; memcpy(previous, host.shortcuts, sizeof(previous));
+  memcpy(host.shortcuts, values, sizeof(host.shortcuts));
+  if (change->persist && !save_settings()) {
+    memcpy(host.shortcuts, previous, sizeof(previous)); return FALSE;
+  }
+  cancel_recording();
+  return TRUE;
+}
+static void shortcut_change_finished(gboolean success, const char *message, gpointer data) {
+  ShortcutChange *change = data;
+  change->finished = TRUE; change->success = success;
+  host.shortcuts_pending = FALSE;
+  if (!host.quitting) {
+    g_free(host.shortcut_status); host.shortcut_status = g_strdup(message);
+    if (host.shortcut_note) gtk_label_set_text(GTK_LABEL(host.shortcut_note), message);
+    set_status(message); refresh_shortcuts();
+  }
+  if (!change->inside_call) g_free(change);
+}
+static gboolean replace_shortcuts(const Shortcut candidate[3], gboolean persist) {
+  if (host.shortcuts_pending || mc_global_shortcuts_busy(host.global_shortcuts)) {
+    set_status("请等待当前快捷键申请完成。"); return FALSE;
+  }
+  /* A valid candidate is no longer keyboard input. Waiting for portal consent
+   * must not leave recording>=0 and swallow the previous session's stop key. */
+  cancel_recording();
+  ShortcutChange *change = g_new0(ShortcutChange, 1);
+  memcpy(change->candidate, candidate, sizeof(change->candidate));
+  change->persist = persist; change->inside_call = TRUE;
+  host.shortcuts_pending = TRUE; refresh_shortcuts();
+  char *parent = NULL;
+  if (host.window && gtk_widget_get_realized(host.window) && GDK_IS_X11_DISPLAY(gtk_widget_get_display(host.window)))
+    parent = g_strdup_printf("x11:%lx", gdk_x11_window_get_xid(gtk_widget_get_window(host.window)));
+  request_shortcuts(host.global_shortcuts, change->candidate, parent ? parent : "",
+    commit_shortcuts, shortcut_change_finished, change);
+  g_free(parent);
+  gboolean accepted = !change->finished || change->success;
+  change->inside_call = FALSE;
+  if (change->finished) g_free(change);
+  return accepted;
 }
 
 static gboolean save_settings(void) {
@@ -130,24 +191,30 @@ static gboolean update_shortcut(int index, Shortcut value) {
       result == 2 ? "这个组合已用于另一个操作，请换一个。" : "支持字母、数字及 F1–F24 功能键。");
     return FALSE;
   }
-  Shortcut previous = host.shortcuts[index];
-  host.shortcuts[index] = value;
-  if (!save_settings()) {
-    host.shortcuts[index] = previous;
-    return FALSE;
-  }
-  cancel_recording();
-  set_status("已保存。全局采集动作将在后续版本接入。");
-  return TRUE;
+  Shortcut candidate[3]; memcpy(candidate, host.shortcuts, sizeof(candidate));
+  candidate[index] = value;
+  return replace_shortcuts(candidate, TRUE);
 }
 
 static void cancel_recording(void) {
+  if (host.shortcut_keyboard_grabbed) {
+    gdk_seat_ungrab(gdk_display_get_default_seat(gdk_display_get_default()));
+    host.shortcut_keyboard_grabbed = FALSE;
+  }
   host.recording = -1;
   refresh_shortcuts();
 }
 
 static void begin_recording(GtkButton *button, gpointer data) {
   (void)button;
+  if (host.shortcuts_pending) { set_status("请等待当前快捷键申请完成。"); return; }
+  cancel_recording();
+  if (host.window && GDK_IS_X11_DISPLAY(gtk_widget_get_display(host.window))) {
+    GdkGrabStatus result = gdk_seat_grab(gdk_display_get_default_seat(gtk_widget_get_display(host.window)),
+      gtk_widget_get_window(host.window), GDK_SEAT_CAPABILITY_KEYBOARD, TRUE, NULL, NULL, NULL, NULL);
+    if (result != GDK_GRAB_SUCCESS) { set_status("无法录入快捷键，请先结束其他输入操作。"); return; }
+    host.shortcut_keyboard_grabbed = TRUE;
+  }
   host.recording = GPOINTER_TO_INT(data);
   refresh_shortcuts();
   set_status("按下组合键；Esc 取消，Delete 清除。");
@@ -160,12 +227,12 @@ static void clear_shortcut(GtkButton *button, gpointer data) {
 
 static void reset_shortcuts(GtkButton *button, gpointer data) {
   (void)button; (void)data;
-  Shortcut previous[3];
-  memcpy(previous, host.shortcuts, sizeof(previous));
-  memcpy(host.shortcuts, defaults, sizeof(defaults));
-  if (!save_settings()) memcpy(host.shortcuts, previous, sizeof(previous));
-  else set_status("已恢复默认快捷键。");
-  cancel_recording();
+  replace_shortcuts(defaults, TRUE);
+}
+
+static void enable_shortcuts(GtkButton *button, gpointer data) {
+  (void)button; (void)data;
+  replace_shortcuts(host.shortcuts, TRUE);
 }
 
 static gboolean capture_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
@@ -263,14 +330,18 @@ static GtkWidget *page(void) {
 static void window_destroyed(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
   host.window = host.notebook = host.status = host.dark_toggle = host.pin_toggle = NULL;
+  host.shortcut_note = host.shortcut_enable = NULL;
   memset(host.recorders, 0, sizeof(host.recorders));
-  host.recording = -1;
+  cancel_recording();
 }
 
 static void quit_app(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
   if (host.quitting) return;
   host.quitting = TRUE;
+  MCGlobalShortcuts *shortcuts = host.global_shortcuts; host.global_shortcuts = NULL;
+  mc_global_shortcuts_close(shortcuts);
+  cancel_recording();
   mc_linux_recording_shutdown();
   mc_linux_capture_close();
   mc_linux_pins_set_enabled(FALSE);
@@ -352,7 +423,14 @@ static void show_preferences(void) {
   gtk_widget_set_halign(reset, GTK_ALIGN_END);
   g_signal_connect(reset, "clicked", G_CALLBACK(reset_shortcuts), NULL);
   gtk_box_pack_start(GTK_BOX(shortcuts), reset, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(shortcuts), label("配置自动保存；截图/录屏全局快捷键尚未接入，请从托盘菜单或通用设置启动、停止。贴图全局恢复键见“贴图按键”。", TRUE), FALSE, FALSE, 0);
+  host.shortcut_enable = gtk_button_new_with_label(mc_global_shortcuts_is_portal(host.global_shortcuts) ?
+    "通过系统门户启用 / 重新绑定…" : "重新注册全局快捷键");
+  gtk_widget_set_halign(host.shortcut_enable, GTK_ALIGN_START);
+  g_signal_connect(host.shortcut_enable, "clicked", G_CALLBACK(enable_shortcuts), NULL);
+  gtk_box_pack_start(GTK_BOX(shortcuts), host.shortcut_enable, FALSE, FALSE, 0);
+  host.shortcut_note = label(host.shortcut_status ? host.shortcut_status : "正在准备全局快捷键…", TRUE);
+  gtk_box_pack_start(GTK_BOX(shortcuts), host.shortcut_note, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(shortcuts), label("注册成功后才保存配置。X11 会检查其他应用和贴图按键的冲突；Wayland 的实际组合由系统门户确认，未提供此门户的桌面请使用托盘。", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), shortcuts, gtk_label_new("快捷键"));
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_pin_preferences(), gtk_label_new("贴图按键"));
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_update_preferences(), gtk_label_new("更新"));
@@ -436,6 +514,25 @@ static void menu_stop(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data; mc_linux_recording_stop();
 }
 
+static void global_shortcut_action(unsigned index, gpointer data) {
+  (void)data;
+  /* The previous session remains usable while the desktop authorizes a
+   * replacement, including its stop key for an ongoing recording. */
+  if (host.quitting || host.recording >= 0) return;
+  if (index == 0) menu_capture(NULL, NULL);
+  else if (index == 1) menu_record(NULL, NULL);
+  else if (index == 2) menu_stop(NULL, NULL);
+}
+static void global_shortcut_state(gboolean active, const char *message, const char *const labels[3], gpointer data) {
+  (void)data; (void)active;
+  g_free(host.shortcut_status); host.shortcut_status = g_strdup(message);
+  for (unsigned i = 0; i < 3; i++) {
+    g_free(host.shortcut_actual[i]); host.shortcut_actual[i] = labels ? g_strdup(labels[i]) : NULL;
+  }
+  if (host.shortcut_note) gtk_label_set_text(GTK_LABEL(host.shortcut_note), message);
+  refresh_shortcuts();
+}
+
 static gboolean save_smoke_screenshot(void) {
   const char *path = g_getenv("MOOJICUT_SMOKE_SCREENSHOT");
   if (!path || !*path) return TRUE;
@@ -454,6 +551,48 @@ static gboolean save_smoke_screenshot(void) {
   g_free(directory);
   g_object_unref(image);
   return ok;
+}
+
+static MCShortcutFinished smoke_pending_finished;
+static gpointer smoke_pending_data;
+static void smoke_hold_shortcut_request(MCGlobalShortcuts *manager, const MCShortcutBinding bindings[3],
+    const char *parent, MCShortcutCommit commit, MCShortcutFinished finished, gpointer data) {
+  (void)manager; (void)bindings; (void)parent; (void)commit;
+  smoke_pending_finished = finished; smoke_pending_data = data;
+}
+static gboolean smoke_shortcut_input_pending(void) {
+  /* Suspend only the external request. Exercise the real recorder/key handler,
+   * validation, transaction and old host actions without opening a portal. */
+  show_preferences();
+  gtk_notebook_set_current_page(GTK_NOTEBOOK(host.notebook), 1);
+  begin_recording(NULL, GINT_TO_POINTER(0));
+  gboolean passed = host.recording == 0;
+  Shortcut previous = host.shortcuts[0];
+  GdkEventKey key = {0}; key.keyval = GDK_KEY_8;
+  key.hardware_keycode = XKeysymToKeycode(gdk_x11_display_get_xdisplay(gdk_display_get_default()), GDK_KEY_8);
+  capture_key(host.window, &key, NULL);
+  passed = host.recording == 0 && !host.shortcuts_pending && passed; /* Invalid input keeps recording. */
+  request_shortcuts = smoke_hold_shortcut_request;
+  key.state = GDK_CONTROL_MASK | GDK_SHIFT_MASK;
+  capture_key(host.window, &key, NULL);
+  request_shortcuts = mc_global_shortcuts_replace;
+  passed = smoke_pending_finished && host.shortcuts_pending && host.recording == -1 &&
+    !host.shortcut_keyboard_grabbed && passed;
+  global_shortcut_action(1, NULL);
+  passed = mc_linux_recording_busy() && passed;
+  global_shortcut_action(2, NULL);
+  passed = !mc_linux_recording_busy() && passed;
+  if (smoke_pending_finished) {
+    MCShortcutFinished finished = smoke_pending_finished; gpointer data = smoke_pending_data;
+    smoke_pending_finished = NULL; smoke_pending_data = NULL;
+    finished(FALSE, "模拟桌面取消授权，原快捷键保留。", data);
+  }
+  passed = !host.shortcuts_pending && host.shortcuts[0].key == previous.key &&
+    host.shortcuts[0].mods == previous.mods && passed;
+  cancel_recording();
+  if (host.window) gtk_widget_destroy(host.window);
+  g_print("Linux shortcut input/pending host route %s.\n", passed ? "passed" : "FAILED");
+  return passed;
 }
 
 static gboolean smoke_check(gpointer data) {
@@ -491,7 +630,9 @@ static gboolean smoke_check(gpointer data) {
   passed = mc_linux_capture_smoke(host.application) && passed;
   passed = mc_linux_pin_smoke() && passed;
   passed = mc_linux_recording_smoke(host.application, host.smoke_dir) && passed;
+  passed = smoke_shortcut_input_pending() && passed;
   passed = mc_linux_update_smoke() && passed;
+  passed = mc_global_shortcuts_x11_smoke() && passed;
   host.exit_code = passed ? 0 : 1;
   g_print("Linux native UI smoke %s: core, settings persistence, clear/reset, duplicate validation, five close/reopen cycles.\n", passed ? "passed" : "FAILED");
   g_application_quit(G_APPLICATION(host.application));
@@ -516,6 +657,11 @@ static void startup(GApplication *application, gpointer data) {
   mc_linux_recording_init(host.application, recording_changed, NULL);
   mc_linux_pins_init(host.application, host.config_path);
   mc_linux_pins_set_enabled(host.pin_enabled);
+  const MCShortcutDescriptor descriptors[3] = {
+    {action_ids[0], action_labels[0]}, {action_ids[1], action_labels[1]}, {action_ids[2], action_labels[2]}
+  };
+  host.global_shortcuts = mc_global_shortcuts_new(gdk_display_get_default(), descriptors, global_shortcut_action, global_shortcut_state, NULL);
+  if (!mc_global_shortcuts_is_portal(host.global_shortcuts)) replace_shortcuts(host.shortcuts, FALSE);
   g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", host.prefer_dark || host.system_dark, NULL);
   host.indicator = app_indicator_new("moojicut", host.icon_path, APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
   app_indicator_set_title(host.indicator, "Mooji Cut");
@@ -615,6 +761,10 @@ int main(int argc, char **argv) {
   g_signal_connect(host.application, "startup", G_CALLBACK(startup), NULL);
   g_signal_connect(host.application, "command-line", G_CALLBACK(command_line), NULL);
   int result = g_application_run(G_APPLICATION(host.application), argc, argv);
+  host.quitting = TRUE;
+  MCGlobalShortcuts *shortcuts = host.global_shortcuts; host.global_shortcuts = NULL;
+  mc_global_shortcuts_close(shortcuts);
+  cancel_recording();
   mc_linux_capture_close();
   mc_linux_pins_set_enabled(FALSE);
   if (host.window) gtk_widget_destroy(host.window);
@@ -627,5 +777,7 @@ int main(int argc, char **argv) {
   g_free(host.smoke_dir);
   g_free(host.config_path);
   g_free(host.icon_path);
+  g_free(host.shortcut_status);
+  for (unsigned i = 0; i < 3; i++) g_free(host.shortcut_actual[i]);
   return result ? result : host.exit_code;
 }

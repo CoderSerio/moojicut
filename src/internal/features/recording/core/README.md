@@ -68,6 +68,6 @@ Windows 与 Linux 宿主只转换 DPI、绘制主题/图标及处理系统窗口
 自有面板以免录入画面，通过托盘/启动参数停止。Windows 只有系统支持窗口排除时显示
 录中控制条。macOS 仍使用既有准备界面和状态校验入口，尚未迁入这套 live flow/panel。
 
-调用与所有权见 `native/shared/recording_flow.h`。只在主/core线程操作句柄；后台任务
+调用与所有权见 `bindings/c/recording_flow.h`。只在主/core线程操作句柄；后台任务
 携带身份并返回宿主队列，不能直接访问 MoonBit 可变会话。未来 CLI/插件应接同一会话，
 Linux 当前 `--record/--stop` 只是 GUI 的启动控制参数，不等于完整 D2 CLI 已交付。

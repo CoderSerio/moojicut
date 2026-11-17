@@ -1,6 +1,6 @@
 #include <assert.h>
 #include <string.h>
-#include "native/shared/pixelate.h"
+#include "platform/shared/image/pixelate.h"
 int main(void) {
   /* Two source cells, padded row stride, a mask crossing their boundary. */
   uint8_t pixels[4 * 40], original[sizeof(pixels)];

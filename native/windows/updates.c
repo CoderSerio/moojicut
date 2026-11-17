@@ -6,7 +6,7 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include "updates.h"
-#include "native/shared/update_release.h"
+#include "bindings/c/update_release.h"
 #include <bcrypt.h>
 #include <commdlg.h>
 #include <shlobj.h>

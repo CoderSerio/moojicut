@@ -1,5 +1,5 @@
 #import "MCStyleControls.h"
-#include "native/shared/editor_style.h"
+#include "bindings/c/editor_style.h"
 #include <math.h>
 
 static NSTextField *MCStyleLabel(NSString *text) {

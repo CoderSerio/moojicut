@@ -54,7 +54,7 @@ worker 还会检查加载的原生库精确为 `1.41.0`。`action:"run"` 是目�
 Manifest 必须恰好声明 `capture.metadata` 与 `result.text`。不接受网络、文件、
 像素读取、自动写剪贴板或自定义界面能力；原生结果窗口提供用户主动点击的复制
 按钮。详细字段、大小和错误返回见
-[`src/internal/plugin_protocol/README.md`](../../src/internal/plugin_protocol/README.md)。
+[`src/internal/plugins/contracts/README.md`](../../src/internal/plugins/contracts/README.md)。
 
 原始插件输出先受字节上限约束，再原样嵌入 MoonBit 校验 envelope。宿主不能先用
 Foundation 解析再重编码，否则重复 JSON 字段会在校验前丢失。重复字段、未知声明、

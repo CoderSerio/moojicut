@@ -14,9 +14,11 @@
 @end
 
 @interface MCRecordingCountdownView : NSView
-@property double remaining;
-@property double duration;
-@property (copy) void (^onCancel)(void);
+// The shared flow owns phase/timing; this view only renders its panel and
+// forwards the action returned by the same shared hit test.
+@property (nonatomic) int32_t flowHandle;
+@property (copy) void (^onAction)(int32_t action);
+- (void)refresh;
 @end
 
 @interface MCRecordingOverlayPanel : NSPanel

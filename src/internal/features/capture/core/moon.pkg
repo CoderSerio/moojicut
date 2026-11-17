@@ -1,11 +1,11 @@
 import {
-  "moojicut/core/internal/protocol" @protocol,
-  "moojicut/core/internal/selection" @selection,
+  "moojicut/core/internal/shared/protocol" @protocol,
+  "moojicut/core/internal/shared/geometry" @selection,
   "moonbitlang/core/math",
   "moonbitlang/core/json",
   "moonbitlang/core/double",
 }
 
 import {
-  "moojicut/core/internal/test_support" @test_support,
+  "moojicut/core/internal/shared/test_support" @test_support,
 } for "wbtest"

@@ -37,7 +37,7 @@ MoonBit 核心继续编译为原生静态库，与平台程序链接；用户插
 
 共享规则通过已有或新增 C ABI 被实际调用。保留每个平台原有能力上限，不能因为共用配置函数就把 macOS 的录制规格套到 Windows。
 
-截图与录屏的 macOS 桌面选区共用 `components/selection/macos/`：边界手势、首击响应、内容坐标映射、选区绘制、窗口配置和快捷键释放等待。几何继续调用 `src/internal/selection` 的 MoonBit 实现。`components/desktop_capture/macos/` 统一生成冻结底图；所有屏幕就绪后才显示窗口，取消与迟到回调通过会话代次隔离。截图保留标注和导出行为，录屏只附加窗口候选、声音开关与录制确认。
+截图与录屏的 macOS 桌面选区共用 `components/selection/macos/`：边界手势、首击响应、内容坐标映射、选区绘制、窗口配置和快捷键释放等待。几何继续调用 `src/internal/shared/geometry` 的 MoonBit 实现。`components/desktop_capture/macos/` 统一生成冻结底图；所有屏幕就绪后才显示窗口，取消与迟到回调通过会话代次隔离。截图保留标注和导出行为，录屏只附加窗口候选、声音开关与录制确认。
 
 ## 录屏 MVP 范围
 

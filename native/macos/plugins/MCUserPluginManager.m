@@ -3,8 +3,8 @@
 #import "MCPluginWorker.h"
 #import "MCPluginResultController.h"
 #import "native/macos/preferences/MCToolRegistryStore.h"
-#include "native/shared/plugin_protocol.h"
-#include "native/shared/feature_runtime.h"
+#include "bindings/c/plugin_protocol.h"
+#include "bindings/c/feature_runtime.h"
 
 NSNotificationName const MCUserPluginsDidChangeNotification = @"MCUserPluginsDidChangeNotification";
 static NSError *MCPluginError(NSString *message) {

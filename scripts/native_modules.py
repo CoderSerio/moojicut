@@ -10,8 +10,37 @@ import json
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "plugins/system/builtins.json"
+MANIFEST = ROOT / "build/native-modules.json"
 SUFFIXES = {"macos": {".m", ".c", ".swift"}, "windows": {".c", ".cpp"}, "linux": {".c"}}
+COMPILE_SUFFIXES = {".c", ".cpp", ".m", ".mm", ".swift"}
+SHARED_PREFIXES = {
+    "shared.bindings": "bindings/c/",
+    "shared.icons": "components/icons/shared/",
+    "shared.media": "platform/shared/media/",
+    "shared.image": "platform/shared/image/",
+}
+
+
+def module_registry(manifest, platform):
+    shared = manifest.get("shared", {})
+    platform_modules = manifest["platforms"][platform]
+    if shared.keys() & platform_modules.keys():
+        raise ValueError("Shared and platform module identities must be distinct")
+    return dict(shared, **platform_modules)
+
+
+def module_prefix(name, platform):
+    if name in SHARED_PREFIXES:
+        return SHARED_PREFIXES[name]
+    if name.startswith("tool.") and platform == "macos":
+        return "native/tools/"
+    if name == "host" or name.startswith("system."):
+        return "native/" + platform + "/"
+    kind, separator, feature = name.partition(".")
+    if not separator or kind not in ("feature", "component", "platform"):
+        raise ValueError("Invalid module name: " + name)
+    return ("platform/" + platform + "/" + feature + "/" if kind == "platform" else
+            ("plugins/feature/" if kind == "feature" else "components/") + feature + "/" + platform + "/")
 
 
 def resolve_sources(root, manifest, platform, modules=("host",)):
@@ -19,27 +48,22 @@ def resolve_sources(root, manifest, platform, modules=("host",)):
     root = Path(root).resolve()
     if manifest.get("schema_version") != 1 or platform not in SUFFIXES:
         raise ValueError("Unsupported native module schema or platform.")
-    registry = manifest["platforms"][platform]
+    registry = module_registry(manifest, platform)
     owners = {}
     for name, module in registry.items():
         if len(set(module["requires"])) != len(module["requires"]):
             raise ValueError("Duplicate dependency in " + name)
-        for dependency in module["requires"]:
+        for dependency in module["requires"] + module.get("includes", []):
             if dependency not in registry:
                 raise ValueError("Unknown dependency: " + dependency)
-        for source in module["sources"]:
+        for source in module["sources"] + module.get("files", []):
             path = PurePosixPath(source)
             if path.is_absolute() or ".." in path.parts or "\\" in source:
                 raise ValueError("Source must be a repository-relative path: " + source)
-            if name == "host" or name.startswith("system."):
-                prefix = "native/" + platform + "/"
-            else:
-                kind, separator, feature = name.partition(".")
-                if not separator or kind not in ("feature", "component", "platform"):
-                    raise ValueError("Invalid module name: " + name)
-                prefix = ("platform/" + platform + "/" + feature + "/" if kind == "platform" else
-                          ("plugins/feature/" if kind == "feature" else "components/") + feature + "/" + platform + "/")
-            if not source.startswith(prefix) or path.suffix not in SUFFIXES[platform]:
+            prefix = module_prefix(name, platform)
+            if source in module.get("files", []) and path.suffix in COMPILE_SUFFIXES:
+                raise ValueError("Compilation unit must be listed in sources, not files: " + source)
+            if not source.startswith(prefix) or (source in module["sources"] and path.suffix not in SUFFIXES[platform]):
                 raise ValueError("Source is outside its module: " + source)
             resolved = (root / source).resolve()
             if not resolved.is_relative_to(root) or not resolved.is_file():
@@ -76,8 +100,13 @@ def resolve_sources(root, manifest, platform, modules=("host",)):
 
 
 def native_sources(platform, *modules):
-    return resolve_sources(ROOT, json.loads(MANIFEST.read_text(encoding="utf-8")),
-                           platform, modules or ("host",))
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    # Import lazily: the standalone checker also uses this module's resolver.
+    from check_native_boundaries import check_native_boundaries
+    errors = check_native_boundaries(ROOT, manifest)
+    if errors:
+        raise ValueError("\n".join(errors))
+    return resolve_sources(ROOT, manifest, platform, modules or ("host",))
 
 
 def object_path(directory, source):

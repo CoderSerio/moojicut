@@ -1,7 +1,7 @@
 #import "components/selection/macos/MCSelection.h"
 #include <math.h>
 #include <stdio.h>
-#include "native/shared/selection.h"
+#include "bindings/c/selection.h"
 
 #define CHECK(condition, message) do { if (!(condition)) { \
     fprintf(stderr, "FAIL selection: %s\n", message); passed = NO; } } while (0)

@@ -1,5 +1,5 @@
 // Native ABI entry points. Shared lifecycle policy lives in
-// internal/feature_runtime; native hosts own resources and persistence.
+// internal/plugins/runtime/lifecycle; native hosts own resources and persistence.
 
 ///|
 #export_name("feature_transition")

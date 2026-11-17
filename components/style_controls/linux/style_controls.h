@@ -3,7 +3,7 @@
 
 #include <gtk/gtk.h>
 #include "components/icons/shared/mc_icons.h"
-#include "native/shared/editor_style.h"
+#include "bindings/c/editor_style.h"
 
 /* GTK controls own their widgets; the containing widget owns each opaque
  * instance. Values/ranges are supplied by the caller, never read from an editor.

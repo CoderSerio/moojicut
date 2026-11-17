@@ -6,9 +6,9 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include "capture.h"
-#include "native/shared/image_session.h"
-#include "native/shared/capture_ui.h"
-#include "native/shared/pixelate.h"
+#include "bindings/c/image_session.h"
+#include "bindings/c/capture_ui.h"
+#include "platform/shared/image/pixelate.h"
 #include "components/icons/shared/mc_icons.h"
 #include "components/hud/windows/hud.h"
 #include "components/style_controls/windows/style_controls.h"

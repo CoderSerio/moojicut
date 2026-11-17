@@ -7,6 +7,7 @@
 #import "plugins/feature/recording/macos/MCRecordingSelectionView.h"
 #import "plugins/feature/video_editor/macos/MCVideoEditor.h"
 #include "moonbit.h"
+#include "bindings/c/recording_flow.h"
 #include <assert.h>
 
 @interface MCVideoEditor (RecordingExperienceFixture)
@@ -23,14 +24,20 @@
 - (NSString *)defaultExportName;
 @end
 @interface MCMacRecordingController (RecordingExperienceFixture)
-- (BOOL)transition:(NSString *)event;
-- (void)countdownTick;
+- (BOOL)beginFlow;
+- (int32_t)sendFlowEvent:(int32_t)event;
+- (double)flowNow;
+- (void)flowTick;
+- (void)fail:(NSError *)error;
+- (void)presentFailure:(NSError *)error;
 - (BOOL)countingDown;
 - (void)beginCaptureWithFilter:(SCContentFilter *)filter;
 - (void)openDraft:(NSURL *)directory;
 - (void)captureStarted:(SCStream *)stream error:(NSError *)error;
 - (void)recordingOutputDidStartRecording:(SCRecordingOutput *)output;
 - (void)recordingOutputDidFinishRecording:(SCRecordingOutput *)output;
+- (void)recordingOutput:(SCRecordingOutput *)output didFailWithError:(NSError *)error;
+- (void)stream:(SCStream *)stream didStopWithError:(NSError *)error;
 - (NSURL *)draftsDirectory;
 - (MCVideoEditor *)latestRecoverableDraftWithError:(NSError **)error;
 - (void)presentEditor:(MCVideoEditor *)editor;
@@ -49,15 +56,38 @@
 @implementation FixtureStream
 - (void)stopCaptureWithCompletionHandler:(void (^)(NSError *))completion { self.stops++; if (completion) completion(nil); }
 @end
+static BOOL Wait(BOOL (^condition)(void), double seconds);
+@interface DeferredFixtureStream : FixtureStream
+@property NSMutableArray *stopCompletions;
+- (void)acknowledgeStop:(NSError *)error;
+@end
+@implementation DeferredFixtureStream
+- (instancetype)init { if ((self=[super init])) _stopCompletions=[NSMutableArray array]; return self; }
+- (void)stopCaptureWithCompletionHandler:(void (^)(NSError *))completion {
+    self.stops++; if (completion) [self.stopCompletions addObject:[completion copy]];
+}
+- (void)acknowledgeStop:(NSError *)error {
+    assert(self.stopCompletions.count);
+    void (^completion)(NSError *)=self.stopCompletions.firstObject;
+    [self.stopCompletions removeObjectAtIndex:0]; completion(error);
+    __block BOOL delivered=NO;
+    CFRunLoopPerformBlock(CFRunLoopGetMain(),kCFRunLoopCommonModes,^{ delivered=YES; });
+    assert(Wait(^BOOL { return delivered; },1));
+}
+@end
 @interface FixtureOutput : NSObject
 @end
 @implementation FixtureOutput
 - (CMTime)recordedDuration { return CMTimeMake(65,1); }
 @end
 @interface FixtureRecorder : MCMacRecordingController
-@property NSUInteger starts, openedDrafts;
+@property NSUInteger starts, openedDrafts, failures;
+@property double fixtureNow;
 @end
 @implementation FixtureRecorder
+- (instancetype)init { if ((self=[super init])) _fixtureNow=10000; return self; }
+- (double)flowNow { return self.fixtureNow; }
+- (void)presentFailure:(__unused NSError *)error { self.failures++; }
 - (void)beginCaptureWithFilter:(__unused SCContentFilter *)filter { self.starts++; }
 - (void)openDraft:(__unused NSURL *)directory { self.openedDrafts++; }
 // Keep the lifecycle/plan real, without opening a countdown or capturing screens.
@@ -178,12 +208,31 @@ static void CheckSelection(void) {
     [view keyDown:enter]; assert(confirms==3 && !windowID && NSEqualRects(selected,view.bounds));
     NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:panel.windowNumber context:nil characters:@"\e" charactersIgnoringModifiers:@"\e" isARepeat:NO keyCode:53];
     [view keyDown:escape]; assert(cancels==1);
-    MCRecordingCountdownView *countdown = [[MCRecordingCountdownView alloc] initWithFrame:NSMakeRect(0,0,200,212)];
-    countdown.onCancel = ^{ cancels++; }; countdown.remaining=2.5;
+    MCRecordingCountdownView *countdown = [[MCRecordingCountdownView alloc] initWithFrame:NSMakeRect(0,0,240,208)];
+    int32_t handle=recording_flow_open();
+    assert(recording_flow_event(handle,MC_RECORDING_BEGIN,0)==MC_RECORDING_REQUEST_SOURCE);
+    assert(recording_flow_event(handle,MC_RECORDING_SELECTED,0)==MC_RECORDING_NO_EFFECT);
+    countdown.flowHandle=handle;
+    countdown.onAction=^(int32_t action) { assert(action==MC_RECORDING_CANCEL); cancels++; };
+    assert(recording_flow_event(handle,MC_RECORDING_TICK,500)==MC_RECORDING_NO_EFFECT);
+    [countdown refresh];
+    double *frame=recording_ui_frame(handle,NSWidth(countdown.bounds),NSHeight(countdown.bounds));
+    assert(NSEqualRects(countdown.subviews.firstObject.frame,NSMakeRect(frame[8],frame[9],frame[10],frame[11])));
+    NSRect actionRect=NSMakeRect(frame[8],frame[9],frame[10],frame[11]); moonbit_decref(frame);
     [panel setContentSize:countdown.frame.size]; panel.contentView=countdown;
     SaveView(countdown,@"recording-countdown.png"); [countdown keyDown:escape]; assert(cancels==2);
     [(NSButton *)countdown.subviews.firstObject performClick:nil]; assert(cancels==3);
-    [panel close];
+    for (NSUInteger inside=0; inside<2; inside++) {
+        NSPoint point=inside ? NSMakePoint(NSMidX(actionRect),NSMidY(actionRect)) : NSMakePoint(1,1);
+        NSEvent *click=[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:[countdown convertPoint:point toView:nil]
+            modifierFlags:0 timestamp:0 windowNumber:panel.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1];
+        [countdown mouseUp:click]; assert(cancels==3+inside);
+    }
+    assert(recording_flow_event(handle,MC_RECORDING_STOP,500)==MC_RECORDING_RELEASE_SOURCE);
+    [countdown refresh]; assert(countdown.subviews.firstObject.hidden);
+    [countdown keyDown:escape]; assert(cancels==4);
+    assert(recording_flow_event(handle,MC_RECORDING_COMPLETE,500)==MC_RECORDING_NO_EFFECT);
+    assert(recording_flow_close(handle)); [panel close];
 }
 @interface FixtureSelectionScreen : NSObject
 @property NSRect frame;
@@ -255,7 +304,7 @@ static void CheckSelectionEntry(void) {
 static void CheckLifecycle(void) {
     FixtureRecorder *recorder = [FixtureRecorder new];
     assert(!recorder.busy && !recorder.canStop);
-    assert([recorder transition:@"start"]);
+    assert([recorder beginFlow]);
     NSRect region=NSMakeRect(200,100,320,240);
     [recorder setValue:[NSValue valueWithRect:region] forKey:@"captureRegion"];
     [recorder setValue:@YES forKey:@"captureAudio"];
@@ -265,21 +314,24 @@ static void CheckLifecycle(void) {
     assert(NSEqualRects(configuration.sourceRect,region)); // Points, not Retina pixels.
     assert(configuration.width==640 && configuration.height==480 && configuration.capturesAudio);
     [recorder stopRecording]; assert(!recorder.busy);
-    assert([recorder transition:@"start"]);
+    assert([recorder beginFlow]);
     [recorder setValue:[NSValue valueWithRect:NSZeroRect] forKey:@"captureRegion"];
     [recorder selectFilter:(SCContentFilter *)[FixtureFilter new]];
     configuration = [recorder streamConfiguration];
     assert(NSIsEmptyRect(configuration.sourceRect) && configuration.width==3840 && configuration.height==2160);
     [recorder stopRecording]; assert(!recorder.busy);
-    assert([recorder transition:@"start"] && recorder.busy && recorder.canStop && !recorder.recording);
-    assert([recorder transition:@"selected"]);
-    [recorder setValue:@(NSProcessInfo.processInfo.systemUptime-1) forKey:@"countdownDeadline"];
-    [recorder countdownTick]; // Schedules capture after the countdown disappears.
+    assert([recorder beginFlow] && recorder.busy && recorder.canStop && !recorder.recording);
+    assert([recorder sendFlowEvent:MC_RECORDING_SELECTED] == MC_RECORDING_NO_EFFECT);
+    recorder.fixtureNow+=1000; [recorder flowTick]; assert([recorder.statusText hasPrefix:@"2 秒"]);
+    recorder.fixtureNow+=1000; [recorder flowTick]; assert([recorder.statusText hasPrefix:@"1 秒"]);
+    recorder.fixtureNow+=1000;
+    [recorder flowTick]; // Schedules capture after the countdown disappears.
     [recorder stopRecording];
     Wait(^BOOL { return recorder.starts>0; },0.3);
     assert(recorder.starts==0 && !recorder.busy && !recorder.canStop);
 
-    assert([recorder transition:@"start"] && [recorder transition:@"selected"] && [recorder transition:@"countdown_finished"]);
+    assert([recorder beginFlow] && [recorder sendFlowEvent:MC_RECORDING_SELECTED] == MC_RECORDING_NO_EFFECT);
+    recorder.fixtureNow+=3000; assert([recorder sendFlowEvent:MC_RECORDING_TICK] == MC_RECORDING_START_MEDIA);
     FixtureStream *stream = [FixtureStream new]; FixtureOutput *output = [FixtureOutput new];
     [recorder setValue:stream forKey:@"stream"]; [recorder setValue:output forKey:@"output"];
     [recorder stopRecording]; [recorder stopRecording];
@@ -294,17 +346,106 @@ static void CheckLifecycle(void) {
     Wait(^BOOL { return recorder.recording; },0.03);
     assert(!recorder.recording); // A late output cannot resurrect cancelled work.
 
-    assert([recorder transition:@"start"] && [recorder transition:@"selected"] && [recorder transition:@"countdown_finished"]);
+    assert([recorder beginFlow] && [recorder sendFlowEvent:MC_RECORDING_SELECTED] == MC_RECORDING_NO_EFFECT);
+    recorder.fixtureNow+=3000; assert([recorder sendFlowEvent:MC_RECORDING_TICK] == MC_RECORDING_START_MEDIA);
     stream = [FixtureStream new]; output = [FixtureOutput new];
     [recorder setValue:stream forKey:@"stream"]; [recorder setValue:output forKey:@"output"];
     [recorder recordingOutputDidStartRecording:(SCRecordingOutput *)output];
     assert(Wait(^BOOL { return recorder.recording; },2));
+    recorder.fixtureNow+=65000; [recorder flowTick];
     assert([recorder.statusText containsString:@"01:05"] && recorder.canStop);
     [recorder stopRecording];
     assert(!recorder.recording && recorder.busy);
     [recorder recordingOutputDidFinishRecording:(SCRecordingOutput *)output];
     assert(Wait(^BOOL { return !recorder.busy; },2));
     assert(recorder.openedDrafts==1 && stream.stops==1);
+}
+static void BeginFixtureMedia(FixtureRecorder *recorder, FixtureStream *stream, FixtureOutput *output, BOOL active) {
+    assert([recorder beginFlow] && [recorder sendFlowEvent:MC_RECORDING_SELECTED] == MC_RECORDING_NO_EFFECT);
+    recorder.fixtureNow+=3000; assert([recorder sendFlowEvent:MC_RECORDING_TICK] == MC_RECORDING_START_MEDIA);
+    [recorder setValue:stream forKey:@"stream"]; [recorder setValue:output forKey:@"output"];
+    [recorder setValue:@YES forKey:@"awaitingStartCallback"]; [recorder setValue:@YES forKey:@"outputAttached"];
+    if (active) {
+        [recorder captureStarted:(SCStream *)stream error:nil];
+        [recorder recordingOutputDidStartRecording:(SCRecordingOutput *)output];
+        assert(Wait(^BOOL { return recorder.recording; },1));
+    }
+}
+static void CheckMediaAcknowledgements(NSURL *directory) {
+    // Output finalization and stream stop completion may arrive in either order.
+    // Neither permits reusing the recorder while a submitted start is pending.
+    for (NSUInteger order=0; order<2; order++) {
+        FixtureRecorder *recorder=[FixtureRecorder new];
+        DeferredFixtureStream *stream=[DeferredFixtureStream new]; FixtureOutput *output=[FixtureOutput new];
+        BeginFixtureMedia(recorder,stream,output,NO);
+        [recorder stopRecording]; [recorder recordingOutputDidFinishRecording:(SCRecordingOutput *)output];
+        assert(Wait(^BOOL { return [[recorder valueForKey:@"outputFinished"] boolValue]; },1));
+        assert(recorder.busy && stream.stopCompletions.count==1 && recorder.openedDrafts==0);
+        if (order==0) [stream acknowledgeStop:nil];
+        assert(recorder.busy);
+        NSError *termination=nil; assert(![recorder prepareForTermination:&termination] && termination);
+        [recorder captureStarted:(SCStream *)stream error:nil];
+        assert(recorder.busy && stream.stops==2);
+        if (order==1) { [stream acknowledgeStop:nil]; assert(recorder.busy); } // Older stop cannot acknowledge a newer request.
+        [stream acknowledgeStop:nil];
+        assert(!recorder.busy && recorder.openedDrafts==0 && ![recorder valueForKey:@"stream"]);
+        [recorder recordingOutputDidStartRecording:(SCRecordingOutput *)output];
+        [recorder recordingOutputDidFinishRecording:(SCRecordingOutput *)output];
+        Wait(^BOOL { return recorder.recording; },0.02); assert(!recorder.busy && recorder.openedDrafts==0);
+    }
+    FixtureRecorder *recorder=[FixtureRecorder new];
+    DeferredFixtureStream *stream=[DeferredFixtureStream new]; FixtureOutput *output=[FixtureOutput new];
+    BeginFixtureMedia(recorder,stream,output,YES);
+    [recorder stopRecording]; [recorder recordingOutputDidFinishRecording:(SCRecordingOutput *)output];
+    assert(Wait(^BOOL { return [[recorder valueForKey:@"outputFinished"] boolValue]; },1));
+    assert(recorder.busy && recorder.openedDrafts==0);
+    [stream acknowledgeStop:nil]; assert(!recorder.busy && recorder.openedDrafts==1);
+    [recorder recordingOutputDidFinishRecording:(SCRecordingOutput *)output]; assert(recorder.openedDrafts==1);
+
+    NSURL *draft=[directory URLByAppendingPathComponent:@"failed-recording" isDirectory:YES];
+    assert([NSFileManager.defaultManager createDirectoryAtURL:draft withIntermediateDirectories:YES attributes:nil error:NULL]);
+    NSURL *source=[draft URLByAppendingPathComponent:@"source.mp4"];
+    NSData *bytes=[@"partial encoder bytes must survive stop failure" dataUsingEncoding:NSUTF8StringEncoding];
+    assert([bytes writeToURL:source atomically:YES]);
+    recorder=[FixtureRecorder new]; stream=[DeferredFixtureStream new]; output=[FixtureOutput new];
+    BeginFixtureMedia(recorder,stream,output,YES); [recorder setValue:draft forKey:@"draft"];
+    [recorder stopRecording];
+    NSError *failure=[NSError errorWithDomain:@"RecordingFixture" code:1 userInfo:nil];
+    [stream acknowledgeStop:failure]; // Failed stop retries cleanup before publishing ERROR.
+    assert(recorder.busy && recorder.failures==0 && stream.stops==2);
+    NSError *termination=nil; assert(![recorder prepareForTermination:&termination] && termination);
+    [recorder recordingOutputDidFinishRecording:(SCRecordingOutput *)output];
+    assert(Wait(^BOOL { return [[recorder valueForKey:@"outputFinished"] boolValue]; },1));
+    assert(recorder.busy && recorder.openedDrafts==0 && [[NSData dataWithContentsOfURL:source] isEqual:bytes]);
+    [stream acknowledgeStop:nil];
+    assert(!recorder.busy && recorder.failures==1 && recorder.openedDrafts==0);
+    assert([[NSData dataWithContentsOfURL:source] isEqual:bytes]);
+    [recorder recordingOutputDidFinishRecording:(SCRecordingOutput *)output]; assert(recorder.openedDrafts==0);
+
+    recorder=[FixtureRecorder new]; stream=[DeferredFixtureStream new]; output=[FixtureOutput new];
+    BeginFixtureMedia(recorder,stream,output,YES); [recorder setValue:draft forKey:@"draft"];
+    [recorder fail:failure]; [stream acknowledgeStop:nil];
+    assert(recorder.busy && recorder.failures==0 && recorder.openedDrafts==0);
+    [recorder recordingOutput:(SCRecordingOutput *)output didFailWithError:failure];
+    assert(Wait(^BOOL { return !recorder.busy; },1));
+    assert(recorder.failures==1 && [[NSData dataWithContentsOfURL:source] isEqual:bytes]);
+
+    recorder=[FixtureRecorder new]; stream=[DeferredFixtureStream new]; output=[FixtureOutput new];
+    BeginFixtureMedia(recorder,stream,output,YES); [recorder setValue:draft forKey:@"draft"];
+    [recorder stopRecording]; [stream acknowledgeStop:failure]; [stream acknowledgeStop:failure];
+    assert(recorder.busy && recorder.failures==0); // Repeated stop errors are not proof that capture has stopped.
+    [recorder recordingOutput:(SCRecordingOutput *)output didFailWithError:failure];
+    assert(Wait(^BOOL { return [[recorder valueForKey:@"outputFinished"] boolValue]; },1) && recorder.busy);
+    [recorder stream:(SCStream *)stream didStopWithError:failure];
+    assert(Wait(^BOOL { return !recorder.busy; },1));
+    assert(recorder.failures==1 && [[NSData dataWithContentsOfURL:source] isEqual:bytes]);
+
+    recorder=[FixtureRecorder new]; stream=[DeferredFixtureStream new]; output=[FixtureOutput new];
+    BeginFixtureMedia(recorder,stream,output,NO); [recorder setValue:draft forKey:@"draft"];
+    [recorder fail:failure]; [stream acknowledgeStop:nil];
+    assert(recorder.busy && recorder.failures==0); // Start failure is the final missing acknowledgement.
+    [recorder captureStarted:(SCStream *)stream error:failure];
+    assert(!recorder.busy && recorder.failures==1 && [[NSData dataWithContentsOfURL:source] isEqual:bytes]);
 }
 static void CheckDraftRecovery(NSURL *mediaDirectory) {
     NSFileManager *files=NSFileManager.defaultManager;NSError *error=nil;
@@ -493,8 +634,9 @@ int main(int argc,const char *argv[]) {
     @autoreleasepool {
         assert(argc==2);moonbit_init();[NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];CheckLifecycle();CheckSelection();CheckSelectionEntry();
         NSURL *directory=[NSURL fileURLWithPath:@(argv[1]) isDirectory:YES];NSError *error=nil;
+        CheckMediaAcknowledgements(directory);
         if(![MCVideoEditor runSmokeInDirectory:directory error:&error]){NSLog(@"Production media smoke: %@",error);return 1;}
         CheckDraftRecovery(directory);CheckProductionEditor(directory);
-        puts("PASS: production shared v2 input/core/media, v1 read-only migration, strict v2 recovery, durable retries/termination refusal, export cancellation and close races; source/legacy retained");
+        puts("PASS: shared recording flow/UI, asynchronous start/stop/encoder acknowledgements, v2 input/core/media, v1 migration/recovery, durable retries/termination refusal and export close races; source/legacy retained");
     }
 }

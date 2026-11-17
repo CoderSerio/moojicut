@@ -1,0 +1,15 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/plugins/runtime/lifecycle"
+
+// Values
+pub fn feature_can_invoke(Int32) -> Int32
+
+pub fn feature_transition(Int32, Int32) -> Int32
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

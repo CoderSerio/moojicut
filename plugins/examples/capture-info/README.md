@@ -35,5 +35,5 @@ Mooji Cut 的“设置 → 插件管理”中导入 ZIP，打开一张截图，�
 名称、大小、CRC。它不会复制 App 的整套 manifest 业务规则，也不会代替真实
 运行测试；App 导入时的 MoonBit 协议校验和 Wasm probe 才是最终检查。
 
-协议完整约束见仓库 `src/internal/plugin_protocol/README.md`。不能声明网络、
+协议完整约束见仓库 `src/internal/plugins/contracts/README.md`。不能声明网络、
 文件、图像像素、自动写剪贴板或自定义界面能力。

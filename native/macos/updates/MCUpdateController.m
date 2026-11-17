@@ -1,6 +1,6 @@
 #import "MCUpdateController.h"
 #import <Sparkle/Sparkle.h>
-#include "native/shared/update_release.h"
+#include "bindings/c/update_release.h"
 
 NSNotificationName const MCUpdateStateDidChangeNotification = @"MCUpdateStateDidChangeNotification";
 static void *MCUpdateObservationContext = &MCUpdateObservationContext;

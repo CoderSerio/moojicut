@@ -207,7 +207,7 @@ class NativeBuild:
         shutil.copy2(runtime / "libextism.dylib", library)
         self.run("/usr/bin/install_name_tool", "-id", "@rpath/libextism.dylib", library)
         self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
-                 "-I", runtime, ROOT / "native/tools/plugin-worker.m", library, "-framework", "Foundation",
+                 "-I", runtime, *native_sources("macos", "tool.plugin_worker"), library, "-framework", "Foundation",
                  "-Wl,-rpath,@executable_path/../Frameworks", "-o", helper)
         self.binary_platform(helper)
         self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", library)
@@ -257,7 +257,7 @@ class NativeBuild:
             generator = directory / "generate-app-icon"
             iconset = staging / "MoojiCut.iconset"
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
-                     ROOT / "native/tools/generate-app-icon.m", "-framework", "AppKit", "-o", generator)
+                     *native_sources("macos", "tool.app_icon"), "-framework", "AppKit", "-o", generator)
             self.run(generator, brand / "app-icon-rounded-preview.png", iconset)
             self.run("/usr/bin/iconutil", "-c", "icns", iconset, "-o", resources / "MoojiCut.icns")
             shutil.copy2(brand / "menubar-18.png", resources / "MoojiCutStatusTemplate.png")

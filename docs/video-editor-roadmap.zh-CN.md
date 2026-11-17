@@ -27,7 +27,7 @@
 - 原生 ABI 已提供同一套带 revision、批量事务和 requestId 的编辑命令，但正式视频 CLI 与本地应用服务尚未接入。macOS 正式入口已接入 v2 原子保存、恢复和退出保护；自动回归使用生成素材验证，不代替人工录屏与更新验收。
 - Windows 仍用旧录制/编辑宿主，Linux 尚无视频媒体链；新共享界面的对应宿主未接入，native/wasm 的核心测试不代表三个系统均已实装。
 
-旧 `src/internal/video` 继续提供 v1 API。`src/internal/video_project` 承载 v2 文档与命令。正式编辑器优先严格校验 `edit-v2.json`，只有该文件不存在时才读取并迁移旧 `edit.json`；已有 v2 损坏或不可读时不退回旧版。新编辑写入独立 v2 文件，保留原片与旧文件。最近草稿恢复跳过无效候选且不改写它们；保存失败保留内存编辑，阻止关闭、退出与导出并允许重试。`MCVideoMedia` 同时接受 v1/v2 计划，不再要求 v2 区间按原片顺序排列。以下章节保留完整目标设计，其中字幕、效果、多素材等仍是后续计划。
+旧 `src/internal/features/video_editor/core/legacy_document` 继续提供 v1 API。`src/internal/features/video_editor/core` 承载 v2 文档与命令。正式编辑器优先严格校验 `edit-v2.json`，只有该文件不存在时才读取并迁移旧 `edit.json`；已有 v2 损坏或不可读时不退回旧版。新编辑写入独立 v2 文件，保留原片与旧文件。最近草稿恢复跳过无效候选且不改写它们；保存失败保留内存编辑，阻止关闭、退出与导出并允许重试。`MCVideoMedia` 同时接受 v1/v2 计划，不再要求 v2 区间按原片顺序排列。以下章节保留完整目标设计，其中字幕、效果、多素材等仍是后续计划。
 
 ## 交互目标
 
@@ -109,7 +109,7 @@ flowchart TD
 
 共享范围包括片段编辑、链接、吸附规则、缓动、字幕时间映射、布局、绘制描述和交互。平台后端只接窗口、原始输入、绘制表面、权限、设备与编码器；不会出现三套 timeline、三套字幕布局或三套关键帧曲线。
 
-以下路径描述迁移前接线；目标按功能组织 core/ui/extensions，详见[架构与实施规划](architecture.md#目标目录)。不复制截图遗留的三端原生界面。`src/internal/video_ui` 承载复杂 UI，`src/internal/video_project` 承载 v2 文档与 RenderPlan，`src/internal/video` 保留 v1 兼容；macOS 的 `plugins/feature/video_editor` 已拆为应用接线与媒体适配，`components/shared_canvas` 解释通用绘制/输入。播放条、时间线和属性面板目前是 `video_ui` 包内职责，不虚构已经存在的独立包。完整现状与目标映射见[共享编辑组件的目录约定](shared-editor-ui.zh-CN.md#沿用截图的目录分层)。
+MoonBit 目录已按功能组织，原生接线仍逐批提取，详见[架构与实施规划](architecture.md#目标目录)。不复制截图遗留的三端原生界面。`src/internal/features/video_editor/ui` 承载复杂 UI，`src/internal/features/video_editor/core` 承载 v2 文档与 RenderPlan，`src/internal/features/video_editor/core/legacy_document` 保留已有视频文档读取和旧宿主 API；它不是插件 v1 兼容层。macOS 的 `plugins/feature/video_editor` 已拆为应用接线与媒体适配，`components/shared_canvas` 解释通用绘制/输入。播放条、时间线和属性面板目前是 `video_editor/ui` 包内职责，不虚构已经存在的独立包。完整现状与目标映射见[共享编辑组件的目录约定](shared-editor-ui.zh-CN.md#沿用截图的目录分层)。
 
 FFmpeg 可执行裁剪、拼接、滤镜和输出；项目规则仍由 MoonBit 产生。RenderPlan 是结构化数据，不是让 Agent 或 UI 拼接 shell 命令。后端将其编译成受控参数/滤镜图。
 

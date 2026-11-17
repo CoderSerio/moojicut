@@ -1,0 +1,8 @@
+import {
+  "moojicut/core/internal/shared/protocol",
+  "moonbitlang/core/json",
+}
+
+import {
+  "moojicut/core/internal/shared/test_support",
+} for "wbtest"

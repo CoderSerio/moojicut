@@ -72,6 +72,15 @@ class DesktopBuild:
         self.run(sys.executable, "-m", "unittest", "discover", "-s", ROOT / "test/build", "-v")
         self.moon_command("check", "--target", "native", "--deny-warn")
         self.moon_command("test", "--target", "native", "--release", "--deny-warn")
+        if self.system == "linux":
+            # Private GTestDBus server: verifies the Wayland shortcut protocol
+            # without contacting a desktop portal or requesting user permission.
+            fixture = self.directory / "portal-shortcuts-test"
+            flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gio-2.0"))
+            self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                     ROOT / "test/native/linux-global-shortcuts-portal.c",
+                     ROOT / "platform/linux/input/portal_shortcuts.c", *flags, "-o", fixture)
+            self.run(fixture)
 
     def build(self):
         self.run(sys.executable, ROOT / "scripts/check_module_boundaries.py")
@@ -171,7 +180,8 @@ class DesktopBuild:
                 "and X11 global hide/recover/click-through keys, confirmed image copy. "
                 "Wayland positioning/keep-above is compositor-dependent; click-through is disabled. "
                 "Silent X11 selected-region or Wayland ScreenCast/PipeWire recording to WebM; "
-                "shared countdown/stop controls. Capture global shortcuts and video editor are not connected.")
+                "shared countdown/stop controls. Screenshot/record/stop shortcuts use native X11 registration "
+                "or the Wayland GlobalShortcuts portal when provided by the compositor. Video editor is not connected.")
 
     def verify_bundle(self, directory):
         expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt"}
@@ -227,8 +237,10 @@ class DesktopBuild:
                          "录屏：X11 自由框选区域；Wayland 通过系统录屏门户选择屏幕/窗口，\n"
                          "需要当前桌面的 ScreenCast portal 后端与 PipeWire。3 秒倒计时后开始，\n"
                          "可从托盘停止，保存静音 WebM 原片；最高 1920×1080 / 15fps。\n"
-                         "本版 Linux 尚无录后编辑器，也未在应用内注册全局截图/录屏快捷键。可在桌面设置中\n"
-                         "将快捷键绑定到解压目录下 moojicut --capture、--record 或 --stop 的完整路径。\n"
+                         "本版 Linux 尚无录后编辑器。截图/录屏快捷键在 X11 直接注册；Wayland 需要\n"
+                         "桌面的 GlobalShortcuts portal，在设置中申请授权，实际组合由系统确认。\n"
+                         "后端不支持时仍可从托盘操作，或在桌面设置中将快捷键绑定到解压目录下\n"
+                         "moojicut --capture、--record 或 --stop 的完整路径。\n"
                          "部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘；没有扩展也可用\n"
                          "./launch.sh 重新打开设置。包不自动安装依赖或修改桌面配置。\n")
 

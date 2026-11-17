@@ -1,10 +1,10 @@
 # Mooji Cut 架构与实施规划
 
-更新日期：2026-11-17。源码核对基线：`14bbbea`。
+更新日期：2026-11-18。初始审计基线：`14bbbea`；当前实施状态见迁移台账，未发布源码与已发布版本分别记录。
 
 Mooji Cut 以 MoonBit 实现共享界面、交互、文档和业务规则，以平台适配层执行系统操作。截图、录屏、视频编辑按功能组织；内置能力和用户插件接入同一套扩展机制。第一阶段以 CLI 作为唯一对外自动化入口，MCP 暂不实现。
 
-本文是目录、插件边界、跨平台复用和自动化入口的统一设计依据。下文区分当前实现、确定的目标和延后事项；截图 MoonBit 模块与录屏核心已按目标归位；其余目录迁移、CLI 和新插件协议尚未交付。[迁移台账](architecture-migration.md)逐项列出旧模块、三端缺口、构建依赖和验收责任，不能只凭本页目标目录判断完成度。历史 Electron 方案不作为新增功能的依据。
+本文是目录、插件边界、跨平台复用和自动化入口的统一设计依据。下文区分当前实现、确定的目标和延后事项；现有 MoonBit 包已归入 features、app、plugins、shared，旧包路径已经退出。目录归位不代表共享 UI、通用贡献机制、应用编排或 CLI 已全部实现。[迁移台账](architecture-migration.md)逐项列出旧模块、三端缺口、构建依赖和验收责任，不能只凭本页目标目录判断完成度。历史 Electron 方案不作为新增功能的依据。
 
 ## 决策记录
 
@@ -32,18 +32,20 @@ Mooji Cut 以 MoonBit 实现共享界面、交互、文档和业务规则，以�
 | 截图 | MoonBit 文档、撤销、几何和工具规则；三端接入矩形/圆框、箭头、实心覆盖/马赛克手势及工具栏定位 | 工具栏、属性控件和部分选区交互仍在原生层，尚非完整共享 UI |
 | 选区 | macOS、Windows 截图与录屏各自复用同一原生选区组件；MoonBit 共用几何 | 完整三端选区 UI、窗口 hover 与选区调整；Linux 当前仍为独立选区适配 |
 | 视频编辑 | MoonBit v2 文档、事务、时间映射、布局、图标和时间线；macOS 已接正式媒体宿主和波形 | Windows 仍有旧编辑器；Linux 尚无同等视频链；多素材、字幕、效果仍有缺口 |
-| 录屏 | MoonBit live flow、倒计时/计时面板与编码计划已接 Windows/Linux；Windows 区域 MP4；Linux X11 与 Wayland ScreenCast/PipeWire→WebM 实现已接 | 新平台原生编译/实机验收按台账；macOS 迁入新 flow/panel；系统音频、麦克风、暂停与完整运行时能力快照 |
+| 录屏 | 三端接入 MoonBit live flow 与倒计时面板；Windows 区域 MP4；Linux X11 与 Wayland ScreenCast/PipeWire→WebM | Windows/Linux 为静音；三端麦克风/暂停与完整运行时能力快照仍缺；实际授权、设备和交互验收按台账 |
 | 用户插件 | macOS ZIP 导入、工具管理、独立 Wasm worker；v1 仅截图元信息输入和文本输出 | Windows/Linux 插件宿主；通用截图工具、自定义属性与录屏扩展协议 |
 | 插件注册 | 稳定 ID、开关、排序与共享启停门控 | 内置工具仍有固定枚举；录屏、录后编辑注册内容为空；取消/排空仍有原生策略 |
 | Agent | 图片与视频核心命令；视频 revision、批量事务和 requestId 去重 | 完整 CLI、应用通信、任务查询；现有启动参数仅覆盖少量操作 |
 
-当前用户插件限制以 [v1 协议](../src/internal/plugin_protocol/README.md)和[运行方式](../plugins/user-runtime/README.md)为准，不能将目标能力解释为当前 v1 已支持。
+当前用户插件限制以 [v1 协议](../src/internal/plugins/contracts/README.md)和[运行方式](../plugins/user-runtime/README.md)为准，不能将目标能力解释为当前 v1 已支持。
 
 三端构建通过不等于功能、权限、输入法、媒体和交互已经对齐。能力交付分别记录模型、UI、平台执行、CLI 和发布状态。
 
+MoonBit 的 `check_module_boundaries.py` 检查包归属及依赖方向，拒绝旧包路径重新出现；`check_native_boundaries.py` 检查原生源码、头文件、包含片段与打包资源的归属，以及实际 include/import。原生平台层不得反向依赖产品功能，跨功能协调应回到 app。现有 12 对旧引用逐条列入 `legacy_includes`，绑定迁移任务；新代码不能继承这些例外，删除旧引用后也必须删掉例外。这些检查已经进入构建入口，但不代替共享 UI、运行时行为或实机验收。
+
 ## 目标目录
 
-这是最终归属结构；截图 core/ui/extensions 与根会话、录屏 core 已归位，其他部分仍按阶段迁移。仅在出现明确职责和依赖边界时拆包；小模块先使用包内文件，延后功能不预建空目录。
+这是最终归属结构；现有 MoonBit 功能与基础包已经归位。app 的统一编排、CLI、shared/selection 和 shared/ui 等仍是目标，不因目录图出现而视为已实现。仅在出现明确职责和依赖边界时拆包；小模块先使用包内文件，延后功能不预建空目录。
 
 ```text
 moojicut/
@@ -86,12 +88,15 @@ moojicut/
 │     │  └─ video_editor/
 │     │     ├─ session.mbt           # 工程、预览、草稿和导出协调
 │     │     ├─ core/                 # 素材、片段、轨道、事务、RenderPlan
+│     │     │  └─ legacy_document/   # 已有旧草稿/API与时间线几何；非插件兼容层
 │     │     ├─ ui/                   # 时间线、预览布局、属性面板
 │     │     └─ extensions/           # 字幕、效果等未来贡献，按需建立
 │     │
 │     ├─ plugins/
 │     │  ├─ contracts/              # 通用清单、贡献身份、能力与生命周期
-│     │  └─ runtime/                # 注册、启停、排序、版本租约与调用校验
+│     │  └─ runtime/                # 目标含版本租约与调用校验，当前按职责拆包
+│     │     ├─ catalog/             # 现有目录/开关/排序，固定贡献仍待泛化
+│     │     └─ lifecycle/           # 现有启停门控，完整资源租约仍待实现
 │     └─ shared/
 │        ├─ geometry/               # 通用坐标与变换
 │        ├─ selection/              # 截图/录屏共用框选、hover 和选区 UI
@@ -182,7 +187,7 @@ MoonBit 多后端支持共享代码，设备和界面能力仍通过 FFI 或宿�
 
 权限按效果拆分：元信息读取、已渲染选区像素读取、受控标注写入、本地 OCR/翻译、文本展示、显式复制、采集、贴图、录制标记、录制来源、媒体导出各有边界。读取像素默认得到含遮挡的最终快照，未遮挡原图另行授权；展示文本不隐含剪贴板写入，本地翻译不隐含外部网络。大二进制不塞进现有 64 KiB 调用 JSON，资源端口另有字节预算和取消释放规则。第一包只需元信息与既有图元写入即可闭环。
 
-内置扩展可以静态链接，运行时注册和停用贡献。静态链接模块、运行时贡献开关、可安装的用户 Wasm 包是三个不同层面。现有 plugins/system/builtins.json 仅描述构建源文件与依赖，迁入 build 后仍不承担插件加载。
+内置扩展可以静态链接，运行时注册和停用贡献。静态链接模块、运行时贡献开关、可安装的用户 Wasm 包是三个不同层面。`build/native-modules.json` 仅描述构建源文件、头文件、资源归属与依赖；它已从旧 plugins/system 迁出，不承担插件加载。
 
 ### 用户插件产物
 
@@ -335,24 +340,26 @@ Windows 混合 DPI、多屏和 IME，Linux X11/Wayland 与音频环境必须分�
 
 ### 共享包迁移摘要
 
-前三项为已完成迁移的历史路径，不再作为待寻找的当前目录。
+下表中的旧 MoonBit 路径均为已完成迁移的历史路径，不再作为待寻找的当前目录。结构归位与功能提取分开验收；原生混合职责仍按台账推进。
 
 | 当前或历史路径 | 目标归属 |
 | --- | --- |
 | src/internal/image | 模型/历史到 capture/core；持有 UI 的协调移到 capture 根包 |
 | src/internal/capture_ui | capture/ui 与 annotations；通用属性控件到 shared/ui |
 | src/internal/editor_style | 持久字段默认值、值域与文档校验到 capture/core；控件显隐/属性描述到 ui，工具偏好与创建配置由 extensions/session 协调；core 不经 UI 校验数据 |
-| src/internal/selection 与原生选区组件 | 几何到 shared/geometry；共用框选状态/UI 到 shared/selection；窗口枚举与采集留平台 |
-| src/internal/pin | capture/extensions/pin；窗口和像素资源到平台适配 |
+| src/internal/selection 与原生选区组件 | MoonBit 几何已到 shared/geometry；共用框选状态/UI 到 shared/selection 仍待做；窗口枚举与采集留平台 |
+| src/internal/pin | MoonBit 数值/交互规则已到 capture/extensions/pin；窗口和像素资源到平台适配仍待提取 |
 | src/internal/video/recording.mbt | recording/core；资源协调到 recording 根会话 |
-| src/internal/video_project、video_ui | video_editor/core、ui；旧 video 仍有 Windows 消费者，在 E1 替换后清理旧业务路径。已有草稿读取/转换另列，不扩建长期兼容层 |
-| src/internal/tool_registry、feature_runtime、plugin_protocol | plugins/contracts、runtime；功能专用契约回到所属功能 |
+| src/internal/video_project、video_ui、video | 已到 video_editor/core、ui 与 core/legacy_document；旧文档/API 仍有 Windows 消费者，在 E1 替换后清理无调用入口。已有草稿读取/转换保留，不扩建用户插件兼容层 |
+| src/internal/tool_registry、feature_runtime、plugin_protocol | 已到 plugins/runtime/catalog、runtime/lifecycle、contracts；固定贡献、完整租约和功能专用契约的提取仍待做 |
+| src/internal/desktop、updates | 已到 app/shortcuts、app/updates；应用命令、会话、任务编排尚未实现 |
+| src/internal/protocol、test_support | 已到 shared/protocol、shared/test_support；测试辅助只允许测试作用域导入 |
 | native、components、plugins/feature | 按迁移台账逐项提取；Windows/Linux capture 内嵌图片编辑、Windows recording 内嵌视频编辑、macOS 分散选区均单列任务 |
-| native/shared 头文件 | ABI 声明到 bindings/c；含像素实现的 pixelate.h 按台账分到 platform/shared/image；分阶段迁移 include，保留所有权 |
-| plugins/system/builtins.json | build/native-modules.json；同步归属检查与构建依赖 |
+| 原 native/shared 头文件 | 已迁：15 个 ABI 头在 bindings/c；pixelate.h 实现在 platform/shared/image；同仓调用者同步，无旧路径转发 |
+| 原 plugins/system/builtins.json | 已迁 build/native-modules.json；构建前检查全量原生文件归属与实际 include 依赖 |
 | plugins/user-runtime | 当前仅作者 README，迁根 plugins/spec；真实执行器 native/tools/plugin-worker.m 与 native/macos/plugins 按台账拆分 |
 
-已修复图片 core 反向导入 UI：协调已移到 capture 根包，样式值域也留在 core。录屏核心已脱离旧 video 包。后续继续处理 Windows recording.cpp 混合采集、编码和旧编辑器，以及 macOS 插件管理中的通用取消/排空策略。提取时保留配置 preflight、原子索引和迟到结果校验，不能退化为简单通知式开关。
+已修复图片 core 反向导入 UI：协调已移到 capture 根包，样式值域也留在 core。录屏核心已脱离旧 video 包。剩余 MoonBit 包已归位，边界检查不再将旧路径映射为新归属，直接拒绝旧目录及旧导入（含测试导入）。后续继续处理 Windows recording.cpp 混合采集、编码和旧编辑器，以及 macOS 插件管理中的通用取消/排空策略。提取时保留配置 preflight、原子索引和迟到结果校验，不能退化为简单通知式开关。
 
 ### 实施阶段
 

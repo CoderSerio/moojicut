@@ -8,8 +8,8 @@
 #define NOMINMAX
 #include "recording.h"
 #include "native/windows/resource.h"
-#include "native/shared/recording_plan.h"
-#include "native/shared/recording_flow.h"
+#include "bindings/c/recording_plan.h"
+#include "bindings/c/recording_flow.h"
 #include "plugins/feature/select/windows/surface.h"
 #include <commctrl.h>
 #include <windowsx.h>

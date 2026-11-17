@@ -45,15 +45,15 @@ flowchart TD
 
 | 层 | 截图现状依据 | 视频现状及目标职责 |
 | --- | --- | --- |
-| 共享业务核心 | `src/internal/features/capture/core` 管图片与样式值域，capture 根包协调会话；selection 仍是共用几何，经根 ABI 暴露 | `src/internal/video` 保留视频 v1/共用几何，录屏已迁到 `features/recording/core`；`src/internal/video_project` 已实现 v2 片段、恒速、链接、版本事务和 RenderPlan |
-| 复杂 UI | `features/capture/ui` 的形状手势与定位已接入三端；annotations 管工具选项，ui 管属性显隐，core 管持久样式校验。三端 `components/style_controls` 仍负责控件绘制和输入，尚非一套共享控件渲染 | 已有 `src/internal/video_ui` 负责布局、主题、交互和语义；播放条、时间线、属性面板按职责拆为包内模块，不能照搬三套原生 UI |
+| 共享业务核心 | `src/internal/features/capture/core` 管图片与样式值域，capture 根包协调会话；`shared/geometry` 管共用几何，经根 ABI 暴露 | `src/internal/features/video_editor/core/legacy_document` 保留已有视频文档/API与时间线几何，录屏在 `features/recording/core`；`src/internal/features/video_editor/core` 已实现 v2 片段、恒速、链接、版本事务和 RenderPlan |
+| 复杂 UI | `features/capture/ui` 的形状手势与定位已接入三端；annotations 管工具选项，ui 管属性显隐，core 管持久样式校验。三端 `components/style_controls` 仍负责控件绘制和输入，尚非一套共享控件渲染 | 已有 `src/internal/features/video_editor/ui` 负责布局、主题、交互和语义；播放条、时间线、属性面板按职责拆为包内模块，不能照搬三套原生 UI |
 | 通用组件/后端 | `components/icons`、`style_controls`、`hud` 等已有实际组件 | 已有 `components/shared_canvas/macos`；仅解释通用绘制和输入协议。Windows/Linux 对应画布尚未验收，可复用公共绘图/字体库减少适配量 |
 | 功能接入 | `plugins/feature/capture` 组织采集与编辑，`select`、`pin` 等各有入口 | 已有 `plugins/feature/recording` 与 macOS `video_editor`；保留录屏、草稿、窗口生命周期和媒体端口接线，不决定组件布局或剪辑规则 |
-| 应用装配 | `native/*` 宿主、`plugins/system/builtins.json` 的 sources/requires | macOS 正式构建已装配共享 UI、通用画布与媒体端口，录制完成和恢复草稿进入同一编辑窗；其他平台仍待接入 |
+| 应用装配 | `native/*` 宿主、`build/native-modules.json` 的 sources/requires | macOS 正式构建已装配共享 UI、通用画布与媒体端口，录制完成和恢复草稿进入同一编辑窗；其他平台仍待接入 |
 
-这里 `plugins/feature` 是内置功能的源码组织，`builtins.json` 是原生构建依赖描述；它们不等于可导入的用户 Wasm 插件。现有 `src/internal/tool_registry` 和 `plugin_protocol` 管工具目录与插件边界，不承接视频文档或播放规则。用户插件的录后编辑列表仍不能据此视为已有视频效果 API。
+这里 `plugins/feature` 是内置功能的源码组织，`builtins.json` 是原生构建依赖描述；它们不等于可导入的用户 Wasm 插件。现有 `src/internal/plugins/runtime/catalog` 和 `src/internal/plugins/contracts` 管工具目录与插件边界，不承接视频文档或播放规则。用户插件的录后编辑列表仍不能据此视为已有视频效果 API。
 
-共享播放控制先在 `src/internal/video_ui` 包内形成明确模块：统一观看状态、动作、可用性、焦点、布局和图标；`src/internal/video_project` 管 v2 权威剪辑时间映射，媒体端口只执行 play/pause/seek/rate 并回报实际状态。确有第二个使用者时再提取独立 MoonBit 组件包与 C ABI，不预先虚构 `components/video_transport` 或第二套项目会话。`src/api_video_ui.mbt` / `native/shared/video_ui.h` 保持薄边界，应用 feature 负责连接，不能把命中、按钮可用性或 1%/最多5秒跳转策略放回每端控制器。
+共享播放控制先在 `src/internal/features/video_editor/ui` 包内形成明确模块：统一观看状态、动作、可用性、焦点、布局和图标；`src/internal/features/video_editor/core` 管 v2 权威剪辑时间映射，媒体端口只执行 play/pause/seek/rate 并回报实际状态。确有第二个使用者时再提取独立 MoonBit 组件包与 C ABI，不预先虚构 `components/video_transport` 或第二套项目会话。`src/api_video_ui.mbt` / `bindings/c/video_ui.h` 保持薄边界，应用 feature 负责连接，不能把命中、按钮可用性或 1%/最多5秒跳转策略放回每端控制器。
 
 通用绘制命令解释器可进一步复用跨平台 C/C++ 绘图与字体库，平台只留窗口、表面、设备和输入桥；尚未选择或接入新的库。共享的是 UI 规则、布局和语义，不保证不同系统字体栅格化像素完全相同。组件测量与绘制须使用一致字体度量；要求一致构图的字幕预览/导出使用同一字体资产和排版引擎，不能依赖三端系统字体替换后仍声称结果一致。
 
@@ -61,7 +61,7 @@ flowchart TD
 
 ## 当前实现与缺口
 
-- `src/internal/video_project` 提供正式编辑器的 v2 文档与编辑计划，`src/internal/video` 保留视频 v1 兼容与共用几何，录制规则已迁到 `features/recording/core`；`src/internal/video_ui` 包含共享布局、主题、绘制描述、命中、拖拽、焦点及语义状态。它消费权威文档快照并产生编辑请求，不建立另一份文档历史。
+- `src/internal/features/video_editor/core` 提供正式编辑器的 v2 文档与编辑计划，`src/internal/features/video_editor/core/legacy_document` 保留视频 v1 兼容与共用几何，录制规则已迁到 `features/recording/core`；`src/internal/features/video_editor/ui` 包含共享布局、主题、绘制描述、命中、拖拽、焦点及语义状态。它消费权威文档快照并产生编辑请求，不建立另一份文档历史。
 - `components/shared_canvas/macos` 解释通用绘制命令、转发输入与系统外观、呈现原生视频表面；`MCVideoMedia` 是独立媒体端口。`test/native/shared-video-ui.m` 将二者与 MoonBit 接起来，用生成的测试素材完成真实裁剪、播放及导出。通用画布属于平台适配，时间线本身没有 Objective-C 实现。
 - macOS 的 `plugins/feature/video_editor/macos/MCVideoEditor.m` 已改为应用接入层：创建窗口和通用画布，连接共享会话、草稿与媒体请求。编辑器布局和产品交互由 MoonBit 决定，AVPlayer、AVComposition 与正式预览/导出由 `MCVideoMedia` 执行。
 - Windows 的 `plugins/feature/recording/windows/recording.cpp` 里有 `buildEditor` / `editorProcedure`。当前预览通过外部系统播放器打开文件，尚没有可供共享 UI 控制的内嵌播放器接口。

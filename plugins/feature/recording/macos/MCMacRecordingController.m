@@ -6,11 +6,10 @@
 #import <AVFoundation/AVFoundation.h>
 #import "native/macos/runtime/MCRuntimeProfile.h"
 #include "moonbit.h"
+#include "bindings/c/recording_flow.h"
 #include <math.h>
 
-extern moonbit_string_t recording_transition(moonbit_string_t, moonbit_string_t);
 extern moonbit_string_t recording_plan(moonbit_string_t);
-extern moonbit_string_t recording_status(moonbit_string_t);
 static moonbit_string_t MCRecordingString(NSString *text) {
     moonbit_string_t value = moonbit_make_string_raw((int32_t)text.length);
     [text getCharacters:value range:NSMakeRange(0, text.length)]; return value;
@@ -31,8 +30,9 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
 }
 @interface MCMacRecordingController () <SCStreamDelegate, SCRecordingOutputDelegate>
-@property NSString *phase;
-@property NSDictionary *stateCapabilities;
+@property int32_t flowHandle;
+@property NSError *pendingFailure;
+@property BOOL awaitingStartCallback, stopAcknowledged, outputAttached, outputStarted, outputFinished;
 @property BOOL captureAudio, discardOnFinish;
 @property SCStream *stream;
 @property SCRecordingOutput *output;
@@ -47,15 +47,13 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 @property NSScreen *selectionScreen;
 @property NSRect captureRegion;
 @property NSTimer *timer;
-@property NSTimeInterval countdownDeadline;
-@property NSUInteger generation;
+@property NSUInteger generation, stopRequestGeneration;
 @property NSHashTable<NSWindow *> *hiddenWindows;
 @property NSRunningApplication *previousApplication;
 @end
 @implementation MCMacRecordingController
 - (instancetype)init {
     if ((self = [super init])) {
-        _phase = @"idle"; [self updateCapabilities];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenParametersChanged:)
             name:NSApplicationDidChangeScreenParametersNotification object:nil];
     }
@@ -64,14 +62,16 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 - (void)screenParametersChanged:(__unused NSNotification *)notification {
     if (self.selecting || self.countingDown) [self stopRecording];
 }
-- (BOOL)selecting { return [self.phase isEqual:@"requesting"]; }
-- (BOOL)starting { return [self.phase isEqual:@"starting"]; }
-- (BOOL)stopping { return [self.phase isEqual:@"stopping"]; }
-- (BOOL)recording { return [self.stateCapabilities[@"recording"] boolValue]; }
-- (BOOL)countingDown { return [self.phase isEqual:@"countdown"]; }
+- (int32_t)phase { return self.flowHandle ? recording_flow_value(self.flowHandle,MC_RECORDING_PHASE) : MC_RECORDING_IDLE; }
+- (BOOL)selecting { return self.phase == MC_RECORDING_SELECTING; }
+- (BOOL)starting { return self.phase == MC_RECORDING_STARTING; }
+- (BOOL)stopping { return self.phase == MC_RECORDING_STOPPING; }
+- (BOOL)recording { return self.phase == MC_RECORDING_ACTIVE; }
+- (BOOL)countingDown { return self.phase == MC_RECORDING_COUNTDOWN; }
 - (BOOL)busy { return self.captureInProgress || self.editor != nil; }
-- (BOOL)captureInProgress { return [self.stateCapabilities[@"captureInProgress"] boolValue]; }
-- (BOOL)canStop { return [self.stateCapabilities[@"canStop"] boolValue]; }
+- (BOOL)captureInProgress { return self.flowHandle && recording_flow_value(self.flowHandle,MC_RECORDING_BUSY) == 1; }
+- (BOOL)canStop { return self.flowHandle && (recording_flow_value(self.flowHandle,MC_RECORDING_CAN_CANCEL) == 1 ||
+    recording_flow_value(self.flowHandle,MC_RECORDING_CAN_STOP) == 1); }
 - (BOOL)exporting { return self.editor.exporting; }
 - (NSSet<NSNumber *> *)visibleEditorWindowNumbers { return self.editor.visibleWindowNumbers ?: [NSSet set]; }
 - (BOOL)prepareForTermination:(NSError **)error {
@@ -85,38 +85,39 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     return NO;
 }
 - (NSString *)stopActionTitle { return self.recording ? @"停止录屏并编辑" : self.stopping ? @"正在结束录屏…" : @"取消录屏"; }
-- (NSString *)elapsedText {
-    double seconds = CMTimeGetSeconds(self.output.recordedDuration);
-    NSInteger elapsed = isfinite(seconds) ? MAX(0, (NSInteger)floor(seconds)) : 0;
-    return [NSString stringWithFormat:@"%02ld:%02ld",(long)(elapsed/60),(long)(elapsed%60)];
+- (NSString *)flowText {
+    moonbit_string_t value=recording_ui_text(self.flowHandle);
+    NSString *text=[[NSString alloc] initWithCharacters:value length:Moonbit_array_length(value)]; moonbit_decref(value);
+    return text;
 }
 - (NSString *)statusItemTitle {
-    if (self.countingDown) return [NSString stringWithFormat:@" %ld…",(long)MAX(1,ceil(self.countdownDeadline-NSProcessInfo.processInfo.systemUptime))];
-    if (self.recording) return [@" ● " stringByAppendingString:self.elapsedText];
+    if (self.countingDown) return [NSString stringWithFormat:@" %@…",self.flowText];
+    if (self.recording) return [@" ● " stringByAppendingString:self.flowText];
     if (self.starting) return @" 准备…";
     if (self.stopping) return @" 保存…";
     return @"";
 }
 - (NSString *)statusText {
     if (self.selecting) return @"拖拽框选或单击窗口，回车开始录制";
-    if (self.countingDown) return [NSString stringWithFormat:@"%ld 秒后开始录屏", (long)MAX(1, ceil(self.countdownDeadline - NSProcessInfo.processInfo.systemUptime))];
+    if (self.countingDown) return [NSString stringWithFormat:@"%@ 秒后开始录屏",self.flowText];
     if (self.starting) return @"正在开始录屏…";
     if (self.stopping) return @"正在保存录屏，请稍候…";
-    if (self.recording) {
-        return [NSString stringWithFormat:@"录制中 %@ · %@", self.elapsedText, self.captureAudio ? @"含系统声音" : @"无声"];
-    }
+    if (self.recording) return [NSString stringWithFormat:@"录制中 %@ · %@",self.flowText,self.captureAudio ? @"含系统声音" : @"无声"];
     if (self.editor) return self.exporting ? @"正在导出录屏…" : @"正在编辑录屏";
     return @"Mooji Cut";
 }
-- (BOOL)transition:(NSString *)event {
-    moonbit_string_t state = MCRecordingString(self.phase), input = MCRecordingString(event);
-    NSDictionary *next = MCRecordingDecode(recording_transition(state, input)); moonbit_decref(state); moonbit_decref(input);
-    if (![next[@"ok"] boolValue]) return NO;
-    self.phase = next[@"state"]; [self updateCapabilities]; return YES;
+- (double)flowNow { return NSProcessInfo.processInfo.systemUptime * 1000; }
+- (int32_t)sendFlowEvent:(int32_t)event { return recording_flow_event(self.flowHandle,event,self.flowNow); }
+- (void)releaseFlow {
+    if (self.flowHandle && recording_flow_close(self.flowHandle)) self.flowHandle=0;
 }
-- (void)updateCapabilities {
-    moonbit_string_t input = MCRecordingString(self.phase);
-    self.stateCapabilities = MCRecordingDecode(recording_status(input)); moonbit_decref(input);
+- (BOOL)beginFlow {
+    [self releaseFlow];
+    if (self.flowHandle) return NO;
+    self.awaitingStartCallback=NO; self.stopAcknowledged=NO;
+    self.outputAttached=NO; self.outputStarted=NO; self.outputFinished=NO; self.pendingFailure=nil;
+    self.flowHandle=recording_flow_open();
+    return self.flowHandle && [self sendFlowEvent:MC_RECORDING_BEGIN] == MC_RECORDING_REQUEST_SOURCE;
 }
 - (void)changed { if (self.onStateChange) self.onStateChange(); }
 - (void)closeSelection {
@@ -199,7 +200,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 }
 - (void)startRecording {
     if (self.busy) { if (self.editor) [self.editor show]; else NSBeep(); return; }
-    if (![self transition:@"start"]) return;
+    if (![self beginFlow]) return;
     self.previousApplication = NSWorkspace.sharedWorkspace.frontmostApplication;
     self.generation++; self.discardOnFinish = NO; [self changed];
     self.captureAudio = YES; self.captureRegion = NSZeroRect; self.selectionScreen = nil;
@@ -325,43 +326,43 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:input options:0 error:NULL] encoding:NSUTF8StringEncoding];
     moonbit_string_t request = MCRecordingString(json); self.capturePlan = MCRecordingDecode(recording_plan(request)); moonbit_decref(request);
     if (![self.capturePlan[@"ok"] boolValue]) { [self fail:MCRecordingError(@"所选画面太小或尺寸无效，请重新选择。")]; return; }
-    [self transition:@"selected"]; self.pendingFilter = filter;
-    self.countdownDeadline = NSProcessInfo.processInfo.systemUptime + [self.capturePlan[@"countdownSeconds"] doubleValue];
+    if ([self sendFlowEvent:MC_RECORDING_SELECTED] == MC_RECORDING_REJECTED) return;
+    self.pendingFilter = filter;
     [self showCountdown]; [self changed];
     __weak MCMacRecordingController *weakSelf = self;
-    self.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(__unused NSTimer *timer) { [weakSelf countdownTick]; }];
+    self.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(__unused NSTimer *timer) { [weakSelf flowTick]; }];
     [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
 }
 - (void)showCountdown {
-    self.countdownPanel = [[MCRecordingOverlayPanel alloc] initWithContentRect:NSMakeRect(0,0,200,212)
+    self.countdownPanel = [[MCRecordingOverlayPanel alloc] initWithContentRect:NSMakeRect(0,0,240,208)
         styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
     self.countdownPanel.releasedWhenClosed = NO; self.countdownPanel.level = NSScreenSaverWindowLevel;
     self.countdownPanel.backgroundColor = NSColor.clearColor; self.countdownPanel.opaque = NO; self.countdownPanel.hasShadow = NO;
     self.countdownPanel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
-    self.countdownView = [[MCRecordingCountdownView alloc] initWithFrame:NSMakeRect(0,0,200,212)];
-    self.countdownView.duration = [self.capturePlan[@"countdownSeconds"] doubleValue];
-    self.countdownView.remaining = self.countdownView.duration;
+    self.countdownView = [[MCRecordingCountdownView alloc] initWithFrame:NSMakeRect(0,0,240,208)];
+    self.countdownView.flowHandle = self.flowHandle;
     __weak MCMacRecordingController *weakSelf = self;
-    self.countdownView.onCancel = ^{ [weakSelf stopRecording]; };
+    self.countdownView.onAction = ^(int32_t action) {
+        if (action == MC_RECORDING_CANCEL || action == MC_RECORDING_STOP) [weakSelf stopRecording];
+    };
     self.countdownPanel.contentView = self.countdownView;
     NSRect screen = (self.selectionScreen ?: NSScreen.mainScreen).frame;
-    [self.countdownPanel setFrameOrigin:NSMakePoint(NSMidX(screen)-100,NSMidY(screen)-106)];
+    NSSize size=self.countdownView.frame.size;
+    [self.countdownPanel setFrameOrigin:NSMakePoint(NSMidX(screen)-size.width/2,NSMidY(screen)-size.height/2)];
     [self.countdownPanel makeKeyAndOrderFront:nil]; [self.countdownPanel makeFirstResponder:self.countdownView];
 }
-- (void)countdownTick {
-    if (!self.countingDown) return;
-    if (NSProcessInfo.processInfo.systemUptime < self.countdownDeadline) {
-        double remaining = self.countdownDeadline - NSProcessInfo.processInfo.systemUptime;
-        if (ceil(self.countdownView.remaining) != ceil(remaining)) [self changed];
-        self.countdownView.remaining = remaining; self.countdownView.needsDisplay = YES;
-        return;
-    }
-    [self closeCountdown]; [self transition:@"countdown_finished"]; [self changed];
-    [self restorePreviousFocusIfUnchanged];
-    NSUInteger generation = self.generation;
-    // Let the WindowServer remove the countdown before the first recorded frame.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200*NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if (self.generation == generation && self.starting) [self beginCaptureWithFilter:self.pendingFilter];
+- (void)flowTick {
+    if (!self.captureInProgress) return;
+    int32_t effect=[self sendFlowEvent:MC_RECORDING_TICK];
+    [self.countdownView refresh]; [self changed];
+    if (effect != MC_RECORDING_START_MEDIA) return;
+    [self closeCountdown]; [self restorePreviousFocusIfUnchanged];
+    NSUInteger generation=self.generation; int32_t handle=self.flowHandle;
+    // The core owns the deadline. This short host-only drain removes the
+    // countdown's WindowServer pixels before capture can acquire its first frame.
+    MCSelectionAfter(0.2, ^{
+        if (self.generation == generation && self.flowHandle == handle && self.starting)
+            [self beginCaptureWithFilter:self.pendingFilter];
     });
 }
 - (SCStreamConfiguration *)streamConfiguration {
@@ -385,8 +386,12 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     recording.outputURL = [self.draft URLByAppendingPathComponent:@"source.mp4"];
     recording.videoCodecType = AVVideoCodecTypeH264; recording.outputFileType = AVFileTypeMPEG4;
     self.output = [[SCRecordingOutput alloc] initWithConfiguration:recording delegate:self];
-    if (![self.stream addRecordingOutput:self.output error:&error]) { [self fail:error]; return; }
-    SCStream *startedStream = self.stream;
+    if (![self.stream addRecordingOutput:self.output error:&error]) {
+        self.stopAcknowledged=YES; // No start was submitted and no writer was attached.
+        [self fail:error]; return;
+    }
+    self.outputAttached=YES;
+    SCStream *startedStream = self.stream; self.awaitingStartCallback=YES;
     [startedStream startCaptureWithCompletionHandler:^(NSError *startError) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self captureStarted:startedStream error:startError]; });
     }];
@@ -395,36 +400,76 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     });
 }
 - (void)captureStarted:(SCStream *)stream error:(NSError *)error {
-    // stopCapture can race an asynchronous start. A late successful start must
-    // stop its exact stream even if cancellation has already cleared the owner.
     if (self.stream != stream) { if (!error) [stream stopCaptureWithCompletionHandler:nil]; return; }
-    if (error) [self fail:error];
-    else if (self.stopping) [stream stopCaptureWithCompletionHandler:nil];
+    self.awaitingStartCallback=NO;
+    if (error) {
+        // An unsuccessful start cannot keep capturing. If its writer never
+        // started there is no encoder finalization to wait for.
+        self.stopAcknowledged=YES;
+        if (!self.outputStarted) self.outputFinished=YES;
+        [self fail:error]; [self finishPendingMediaIfReady];
+    }
+    else if (self.stopping) {
+        // The earlier stop may have completed before start did. Stop this
+        // exact stream again and keep its flow busy until that acknowledgement.
+        [self requestNativeStop:stream];
+    }
+}
+- (void)requestNativeStop:(SCStream *)stream {
+    self.stopAcknowledged=NO;
+    NSUInteger request=++self.stopRequestGeneration;
+    [stream stopCaptureWithCompletionHandler:^(NSError *error) {
+        MCSelectionPerformOnMain(^{
+            if (self.stream != stream || self.stopRequestGeneration != request) return;
+            // A didStop delegate may already have acknowledged the actual stop.
+            if (error && self.stopAcknowledged) { [self finishPendingMediaIfReady]; return; }
+            self.stopAcknowledged=error==nil;
+            if (error && !self.pendingFailure) [self fail:error];
+            else [self finishPendingMediaIfReady];
+        });
+    }];
+}
+- (void)finishPendingMediaIfReady {
+    if (!self.stream || !self.flowHandle || self.awaitingStartCallback || !self.stopAcknowledged) return;
+    if (self.pendingFailure) {
+        if (!self.outputAttached || self.outputFinished) [self finishFailureForStream:self.stream];
+        return;
+    }
+    if (!self.outputFinished) return;
+    NSURL *draft=self.draft; BOOL discard=self.discardOnFinish;
+    [self closeSelection]; [self closeCountdown];
+    self.stream=nil; self.output=nil; self.draft=nil; self.capturePlan=nil;
+    [self restoreOrdinaryWindows];
+    int32_t effect=[self sendFlowEvent:MC_RECORDING_COMPLETE]; [self releaseFlow];
+    if (discard) { if (draft) [NSFileManager.defaultManager removeItemAtURL:draft error:NULL]; [self changed]; }
+    else if (effect == MC_RECORDING_DELIVER_MEDIA) [self openDraft:draft];
 }
 - (void)recordingOutputDidStartRecording:(SCRecordingOutput *)output {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.output != output || !self.starting) return;
-        [self transition:@"capture_started"]; [self changed];
+        if (self.output != output) return;
+        self.outputStarted=YES;
+        if (!self.starting) return;
+        if ([self sendFlowEvent:MC_RECORDING_STARTED] == MC_RECORDING_REJECTED) return;
+        [self changed];
         __weak MCMacRecordingController *weakSelf = self;
-        self.timer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(__unused NSTimer *timer) { [weakSelf changed]; }];
+        self.timer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(__unused NSTimer *timer) { [weakSelf flowTick]; }];
         [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
     });
 }
 - (void)stopRecording {
-    if (self.selecting || self.countingDown || (self.starting && !self.stream)) {
-        if (self.starting) { [self transition:@"stop"]; [self transition:@"complete"]; }
-        else [self transition:@"cancel"];
-        self.generation++; self.pendingFilter = nil; [self closeCountdown]; [self closeSelection];
-        [self restoreOrdinaryWindows];
+    if (!self.canStop) return;
+    self.discardOnFinish=self.starting;
+    int32_t effect=[self sendFlowEvent:MC_RECORDING_STOP];
+    if (effect == MC_RECORDING_RELEASE_SOURCE || (effect == MC_RECORDING_STOP_MEDIA && !self.stream)) {
+        self.generation++; self.pendingFilter=nil; self.capturePlan=nil;
+        [self closeCountdown]; [self closeSelection]; [self restoreOrdinaryWindows];
+        [self sendFlowEvent:MC_RECORDING_COMPLETE]; [self releaseFlow];
         [self changed]; return;
     }
-    if (!self.stream || !self.canStop) return;
-    self.discardOnFinish = self.starting;
-    [self transition:@"stop"]; [self.timer invalidate]; self.timer = nil; [self changed];
-    SCStream *stoppedStream = self.stream;
-    [stoppedStream stopCaptureWithCompletionHandler:^(NSError *error) {
-        if (error) dispatch_async(dispatch_get_main_queue(), ^{ if (self.stream == stoppedStream) [self fail:error]; });
-    }];
+    if (effect != MC_RECORDING_STOP_MEDIA || !self.stream) return;
+    [self.timer invalidate]; self.timer=nil; [self changed];
+    SCStream *stoppedStream=self.stream;
+    [self requestNativeStop:stoppedStream];
     [self watchFinalization:stoppedStream];
 }
 - (void)watchFinalization:(SCStream *)stoppedStream {
@@ -433,49 +478,64 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     });
 }
 - (void)recordingOutputDidFinishRecording:(SCRecordingOutput *)output {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    MCSelectionPerformOnMain(^{
         if (self.output != output) return;
-        NSURL *draft = self.draft; BOOL discard = self.discardOnFinish;
-        if (!self.stopping) [self transition:@"stop"];
-        [self transition:@"complete"]; [self closeSelection]; [self closeCountdown];
-        self.stream = nil; self.output = nil; self.draft = nil; self.capturePlan = nil;
-        [self restoreOrdinaryWindows];
-        // A cancellation while starting must not unexpectedly open an editor.
-        if (discard) { [NSFileManager.defaultManager removeItemAtURL:draft error:NULL]; [self changed]; }
-        else [self openDraft:draft];
+        self.outputFinished=YES;
+        if (!self.stopping) {
+            [self sendFlowEvent:MC_RECORDING_STOP]; [self requestNativeStop:self.stream];
+        }
+        [self finishPendingMediaIfReady];
     });
 }
 - (void)recordingOutput:(SCRecordingOutput *)output didFailWithError:(NSError *)error {
-    dispatch_async(dispatch_get_main_queue(), ^{ if (self.output == output) [self fail:error]; });
+    MCSelectionPerformOnMain(^{
+        if (self.output != output) return;
+        self.outputFinished=YES; [self fail:error]; [self finishPendingMediaIfReady];
+    });
 }
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.stream != stream) return;
+        self.stopAcknowledged=YES;
         if ([error.domain isEqual:SCStreamErrorDomain] && error.code == SCStreamErrorUserStopped) {
-            if (!self.stopping) [self transition:@"stop"];
+            if (!self.stopping) [self sendFlowEvent:MC_RECORDING_STOP];
             [self.timer invalidate]; self.timer = nil; [self changed];
+            [self finishPendingMediaIfReady];
             [self watchFinalization:stream];
             // The output delegate fires only after the encoder has finalized MP4.
             return;
         }
-        [self fail:error];
+        [self fail:error]; [self finishPendingMediaIfReady];
     });
 }
-- (void)fail:(NSError *)error {
-    BOOL cancelled = self.discardOnFinish;
-    SCStream *stream = self.stream; self.stream = nil; self.output = nil;
-    self.generation++; self.pendingFilter = nil; [self transition:@"fail"];
-    [stream stopCaptureWithCompletionHandler:nil]; [self closeSelection]; [self closeCountdown];
+- (void)finishFailureForStream:(SCStream *)stream {
+    if (!self.pendingFailure || self.stream != stream) return;
+    NSError *error=self.pendingFailure; self.pendingFailure=nil;
+    BOOL cancelled=self.discardOnFinish;
+    self.stream=nil; self.output=nil; self.pendingFilter=nil; self.capturePlan=nil;
     if (self.draft && ![NSFileManager.defaultManager fileExistsAtPath:[self.draft URLByAppendingPathComponent:@"source.mp4"].path])
         [NSFileManager.defaultManager removeItemAtURL:self.draft error:NULL];
-    self.draft = nil; [self changed];
-    [self restoreOrdinaryWindows];
+    self.draft=nil; [self restoreOrdinaryWindows];
+    [self sendFlowEvent:MC_RECORDING_FAIL]; [self releaseFlow]; [self changed];
     if (cancelled) return;
-    NSString *message = error.localizedDescription ?: @"请重试。";
+    NSString *message=error.localizedDescription ?: @"请重试。";
     if ([error.domain isEqual:SCStreamErrorDomain] && error.code == SCStreamErrorUserDeclined)
-        message = @"未获得屏幕录制权限。请在系统设置的“隐私与安全性 → 屏幕与系统音频录制”允许当前应用，按系统提示重新打开后再试。";
-    MCRecordingAlert(@"录屏未能完成", MCRecordingError(message));
+        message=@"未获得屏幕录制权限。请在系统设置的“隐私与安全性 → 屏幕与系统音频录制”允许当前应用，按系统提示重新打开后再试。";
+    [self presentFailure:MCRecordingError(message)];
 }
-- (void)dealloc { [self.timer invalidate]; [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+- (void)presentFailure:(NSError *)error { MCRecordingAlert(@"录屏未能完成",error); }
+- (void)fail:(NSError *)error {
+    if (self.pendingFailure || !self.captureInProgress) return;
+    self.pendingFailure=error; self.generation++; self.pendingFilter=nil;
+    if (self.canStop) [self sendFlowEvent:MC_RECORDING_STOP];
+    [self closeSelection]; [self closeCountdown]; [self changed];
+    SCStream *stream=self.stream;
+    if (!stream) { [self finishFailureForStream:nil]; return; }
+    // The shared flow must remain busy until the native stop acknowledges
+    // cleanup. Do not publish ERROR while a capture still owns its resources.
+    if (self.stopAcknowledged) [self finishPendingMediaIfReady];
+    else [self requestNativeStop:stream];
+}
+- (void)dealloc { [self.timer invalidate]; if (_flowHandle) recording_flow_close(_flowHandle); [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 + (BOOL)runSmokeInDirectory:(NSURL *)directory error:(NSError **)error { return [MCVideoEditor runSmokeInDirectory:directory error:error]; }
 @end

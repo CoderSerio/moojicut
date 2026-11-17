@@ -6,7 +6,7 @@ testing and control painting still use native adapters. Tool/property rules,
 shape variants and undoable documents belong to MoonBit. This is not yet a
 single shared renderer for every screenshot control.
 
-`src/api_capture_ui.mbt` exports the C ABI in `native/shared/capture_ui.h`.
+`src/api_capture_ui.mbt` exports the C ABI in `bindings/c/capture_ui.h`.
 All calls run on the UI thread. Sessions are per editor, disposable, and never
 reuse handles. The image document and undo history stay in `features/capture/core`.
 The feature root owns native and style sessions and composes the core with UI;
@@ -53,7 +53,7 @@ in the host during this migration; it must cancel when the active tool closes.
 ## Typed desktop adapter
 
 Windows and Linux use `image_session_shape_begin/event/preview_value` in
-`native/shared/image_session.h`; this adapter calls the same `capture_ui.event`
+`bindings/c/image_session.h`; this adapter calls the same `capture_ui.event`
 reducer, then applies its command through `image_apply`. It does not reimplement
 shape normalization or minimum drag thresholds. `begin` freezes style, `move`
 only previews, `end` commits once, and `cancel` discards the draft. The feature root coordinates document commands and interaction state. Closing the
@@ -63,7 +63,7 @@ Scalar annotation fields retain family IDs (ellipse=outline, mosaic=cover),
 with field 9 for the variant and 10 for mosaic cell size. Existing variants are
 changed using `image_session_set_variant`, backed by `setShape` / `update`.
 Windows GDI and Linux Cairo retain pixel/font adapters. Their shared low-level
-`native/shared/pixelate.h` samples the composited source grid; it owns no UI or
+`platform/shared/image/pixelate.h` samples the composited source grid; it owns no UI or
 document state. Both preview and flattened export render that same scene.
 
 ## Layout contract

@@ -3,8 +3,8 @@
 #import "components/media_analysis/macos/MCAudioWaveform.h"
 #import "components/shared_canvas/macos/MCSharedCanvas.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
-#include "native/shared/video_project.h"
-#include "native/shared/video_ui.h"
+#include "bindings/c/video_project.h"
+#include "bindings/c/video_ui.h"
 #include <sys/stat.h>
 #include <errno.h>
 #include <math.h>

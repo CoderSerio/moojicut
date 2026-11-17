@@ -3,7 +3,7 @@
 #import "native/macos/preferences/MCPinShortcutStore.h"
 #include <math.h>
 #include "moonbit.h"
-#include "native/shared/pin_policy.h"
+#include "bindings/c/pin_policy.h"
 #import "native/macos/preferences/MCToolRegistryStore.h"
 #import <Carbon/Carbon.h>
 #include <stdlib.h>

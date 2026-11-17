@@ -1,6 +1,6 @@
 #include "pinning.h"
-#include "native/shared/feature_runtime.h"
-#include "native/shared/pin_policy.h"
+#include "bindings/c/feature_runtime.h"
+#include "bindings/c/pin_policy.h"
 #include "moonbit.h"
 #include <dlfcn.h>
 #include <gdk/gdkx.h>

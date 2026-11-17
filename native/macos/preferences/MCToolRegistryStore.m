@@ -1,7 +1,7 @@
 #import "MCToolRegistryStore.h"
 #import "plugins/feature/pin/macos/MCPinnedImageController.h"
-#include "native/shared/tool_registry.h"
-#include "native/shared/plugin_protocol.h"
+#include "bindings/c/tool_registry.h"
+#include "bindings/c/plugin_protocol.h"
 #include <stdint.h>
 
 NSNotificationName const MCToolRegistryDidChangeNotification = @"MCToolRegistryDidChangeNotification";

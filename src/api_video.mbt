@@ -1,5 +1,5 @@
 // Native ABI entry points. Video documents, timeline planning and sessions
-// live in internal/video; keep exported names and signatures stable.
+// live in internal/features/video_editor/core/legacy_document; keep exported names and signatures stable.
 
 ///|
 #export_name("video_open")

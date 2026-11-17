@@ -1,5 +1,5 @@
 #import <AppKit/AppKit.h>
-#include "native/shared/shortcut_bindings.h"
+#include "bindings/c/shortcut_bindings.h"
 
 // This adapter translates AppKit flags and property-list conventions only.
 // Recovery, modifier requirements, conflict resolution and edits live in MoonBit.

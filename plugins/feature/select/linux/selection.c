@@ -1,5 +1,5 @@
 #include "selection.h"
-#include "../../../../native/shared/selection.h"
+#include "../../../../bindings/c/selection.h"
 #include <math.h>
 
 static double clamp(double value, double low, double high) {

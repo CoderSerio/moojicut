@@ -5,8 +5,8 @@
 #import "components/selection/macos/MCSelectionSurface.h"
 #import "components/image_effects/macos/MCPixelate.h"
 #include "moonbit.h"
-#include "native/shared/image_session.h"
-#include "native/shared/capture_ui.h"
+#include "bindings/c/image_session.h"
+#include "bindings/c/capture_ui.h"
 #include <math.h>
 
 extern moonbit_string_t image_create(moonbit_string_t);

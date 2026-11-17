@@ -1,12 +1,12 @@
 #import <Foundation/Foundation.h>
 #include <assert.h>
 #include "moonbit.h"
-#include "native/shared/editor_style.h"
-#include "native/shared/update_release.h"
-#include "native/shared/plugin_protocol.h"
-#include "native/shared/image_session.h"
-#include "native/shared/recording_plan.h"
-#include "native/shared/recording_flow.h"
+#include "bindings/c/editor_style.h"
+#include "bindings/c/update_release.h"
+#include "bindings/c/plugin_protocol.h"
+#include "bindings/c/image_session.h"
+#include "bindings/c/recording_plan.h"
+#include "bindings/c/recording_flow.h"
 #include <math.h>
 
 // Signatures observed in native foreign_library output from moonc 0.10.20.
