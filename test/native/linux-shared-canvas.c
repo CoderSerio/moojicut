@@ -346,14 +346,20 @@ int main(int argc, char **argv) {
   key(&h, GDK_KEY_plus, GDK_CONTROL_MASK);
   CHECK(number(field(h.frame_json, "viewport"), "spanMs") < wheel_span, "Ctrl+plus reaches shared zoom");
   key(&h, GDK_KEY_0, GDK_CONTROL_MASK);
-  int fit_control = semantic(&h, "project-zoom-fit");
   /* Undo preserves the wider editing view after a gap extended the output.
-   * Explicit fit targets the current plan, not that retained historical span. */
-  CHECK(fabs(number(field(h.frame_json, "viewport"), "spanMs") - fit_duration_ms) < .0001 &&
-      fabs(number(field(h.frame_json, "viewport"), "startMs")) < .0001 && h.commands == zoom_commands &&
-      fit_control >= 0 && ui_frame_semantic_value(h.frame, fit_control, MC_UI_SEM_ENABLED) == 0 &&
-      number(h.frame_json, "revision") == number(zoom_snapshot, "revision") && !g_strcmp0(h.snapshot, zoom_snapshot),
-      "Ctrl+0 fits the current output from zero without changing document history");
+   * Explicit fit targets the current plan, not that retained historical span.
+   * Zoom is keyboard/wheel-only; there is no visible fit-button semantic. */
+  double fit_span_ms = number(field(h.frame_json, "viewport"), "spanMs");
+  double fit_start_ms = number(field(h.frame_json, "viewport"), "startMs");
+  gboolean fit_matches = fabs(fit_span_ms - fit_duration_ms) < .0001 && fabs(fit_start_ms) < .0001;
+  gboolean zoom_unchanged = h.commands == zoom_commands &&
+    number(h.frame_json, "revision") == number(zoom_snapshot, "revision") && !g_strcmp0(h.snapshot, zoom_snapshot);
+  if (!fit_matches || !zoom_unchanged)
+    fprintf(stderr, "GTK fit state: start=%.9f span=%.9f expected=%.9f commands=%u/%u revision=%.0f/%.0f snapshot_equal=%d\n",
+      fit_start_ms, fit_span_ms, fit_duration_ms, h.commands, zoom_commands,
+      number(h.frame_json, "revision"), number(zoom_snapshot, "revision"), !g_strcmp0(h.snapshot, zoom_snapshot));
+  CHECK(fit_matches, "Ctrl+0 fits the authoritative current output from zero");
+  CHECK(zoom_unchanged, "wheel and keyboard zoom preserve commands, revision and the complete snapshot");
   g_free(zoom_snapshot);
   unsigned cancelled = h.cancels;
   GdkEvent *focus = gdk_event_new(GDK_FOCUS_CHANGE); focus->focus_change.window = g_object_ref(gtk_widget_get_window(h.canvas));
