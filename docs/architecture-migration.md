@@ -140,7 +140,7 @@
 | .github/workflows/website.yml、website | 官网单独构建；平台支持、下载入口、版本文案与实际发布一致，架构迁移不重做网站 |
 | assets、updates、根构建元数据 | 图标/许可证和更新源继续受版本管理；各端产物命名与 MoonBit 资产筛选一致 |
 
-当前根 `updates/macos.xml` 仍指向 alpha.9；新版 GitHub 发现与旧固定 feed 是两条升级入口。后续发包必须分别检查，不能把“设置里有更新按钮”写成三端自动替换均已完成。Windows/Linux 当前下载校验后手动换装，自动替换是另一个交付项。
+alpha.20 发布后，根 `updates/macos.xml` 已同步该版签名 feed；新版 GitHub 发现与旧固定 feed 是两条升级入口。后续发包必须分别检查，不能把“设置里有更新按钮”写成三端自动替换均已完成。Windows/Linux 当前下载校验后手动换装，自动替换是另一个交付项。
 
 构建清单目前只有 sources/requires，不含全部系统链接依赖。迁移账本还必须核对 framework/系统库、Swift 桥、SDK/最低系统、worker/运行时库/rpath、CLI、图标/字体、OS manifest、许可证、启动脚本、feed、公钥及构建元数据。实际规则可继续由脚本执行，但必须与产物白名单、源 SHA 和解包验证对应。
 
@@ -261,3 +261,10 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 新增 Windows 选区输入/实际区域裁剪与完整媒体 worker 闭环、Linux X11/合成视频解码/原片失败保留/迟到回调取消自动 fixture 已加入目标平台 smoke，并随 `dfd817d` 通过 [Native desktop previews #44038639327](https://github.com/CoderSerio/moojicut/actions/runs/44038639327)：Windows 2022/MSVC 与 Ubuntu 22.04/Xvfb 两项构建、测试、打包及生成接口检查全部成功。修复涉及 Ubuntu runner 的 LLVM/GStreamer libunwind 开发包冲突、Windows fixture 使用真实鼠标捕获转移，以及 Linux fixture 的局部变量遮蔽 `stat`；未跳过录制测试或缩小断言范围。
 
 两路实现与独立审查已收口：tooltip 捕获、回调跨线程、起录前来源尺寸变化、无效小选区扩大为全屏均已修正。上述 CI 不覆盖真实 Wayland compositor/portal 授权、多显示器与混合 DPI、用户设备上的快捷键或发布更新；这些继续由实机验收记录。Wayland 当前采用无鼠标的通用 cursor mode，不持久化授权；这些限制需要在后续体验与能力扩展中继续处理。
+
+### alpha.20 发布交付（2026-11-17）
+
+- 三端均从 `57c3c419a346cb05a5726da486c645cdb7deb633` 的干净源码构建；[发布页](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.20) 提供 10 项资产。Windows/Linux 显式使用 alpha.20 版本号，构建、媒体 smoke 与打包见 [44043150444](https://github.com/CoderSerio/moojicut/actions/runs/44043150444)。
+- macOS 187 项共享核心、22 项构建/文件策略及完整原生回归通过，随后生成生产 ZIP。更新交付检查确认与现有 alpha.19 的证书、指定签名要求、bundle ID 与更新公钥一致。
+- 发布后匿名下载全部 10 项资产，大小与 SHA256 均匹配本地；重新验证公开 macOS feed 和 ZIP 的 Ed25519 签名。相同签名 feed 原样同步到旧固定地址。
+- 未安装或启动发布包，未重置权限；真实原位升级、TCC、Wayland 和用户设备交互仍待实机验收。macOS 尚未公证，Windows/Linux 仍是手动换装。

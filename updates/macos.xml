@@ -4,17 +4,17 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>Mooji Cut</title>
         <item>
-            <title>Mooji Cut 0.1.0-alpha.9</title>
-            <pubDate>Sun, 15 Nov 2026 02:04:33 +0800</pubDate>
+            <title>Mooji Cut 0.1.0-alpha.20</title>
+            <pubDate>Tue, 17 Nov 2026 16:03:40 +0800</pubDate>
             <link>https://github.com/CoderSerio/moojicut</link>
-            <sparkle:version>0.1.0a9</sparkle:version>
-            <sparkle:shortVersionString>0.1.0-alpha.9</sparkle:shortVersionString>
+            <sparkle:version>0.1.0a20</sparkle:version>
+            <sparkle:shortVersionString>0.1.0-alpha.20</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.9/moojicut-0.1.0-alpha.9-macos-arm64.zip" length="1568792" type="application/octet-stream" sparkle:edSignature="r2KGCvTBF76tIGd2/wDuMLFTqYWIsJRLMCMVWT+BKjqDSDZtNfY58lEhN7HY89N6h7fBOSUmguwFec2Xu6dvBg=="></enclosure>
+            <enclosure url="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-macos-arm64.zip" length="9493874" type="application/octet-stream" sparkle:edSignature="BNhO8SCRgLQjK8GpgXNPpf647ZBbbCoqur424Gu0TX3WfcZzSqboDfRpNXWoQ8aM69V1djI66CW9GLZYlq4oBQ=="></enclosure>
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: /hgPIy+iFjuGgLAMuPlcvow8gH8bsRDKidLjuziOpUeZ4Jno4QIQ/obRSZr5kBjmU+IXppKVoQPxQ+xYx08cBA==
-length: 1264
+edSignature: PVCojtoNu3hV81/Jso4OUiXSQ9iajEC6PyVSrKPBvVOBG0qcJfC6qI1nt09LAFmYG1xqCxjkzi2uKzypCj9fBw==
+length: 1269
 -->
