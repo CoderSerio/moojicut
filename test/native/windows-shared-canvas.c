@@ -189,32 +189,77 @@ static LONG find_accessible(IAccessible *a, const wchar_t *label) {
   }
   return 0;
 }
+static BOOL enumeration_check(BOOL condition, const char *step, HRESULT result, LONG actual, LONG expected) {
+  if (!condition) fprintf(stderr, "FAIL canvas enumeration %s: hr=0x%08lx actual=%ld expected=%ld\n",
+      step, (unsigned long)result, actual, expected);
+  return condition;
+}
 static BOOL enumerate_accessible(IAccessible *accessible, LONG retired) {
-  LONG count = 0, obtained = 0;
-  if (FAILED(IAccessible_get_accChildCount(accessible, &count)) || count < 2) return FALSE;
+  LONG count = 0, obtained = 0; ULONG fetched = 0;
+  HRESULT result = IAccessible_get_accChildCount(accessible, &count);
+  if (!enumeration_check(SUCCEEDED(result) && count >= 2, "child count", result, count, 2)) return FALSE;
   VARIANT *children = calloc((size_t)count, sizeof(*children)); if (!children) return FALSE;
-  BOOL ok = AccessibleChildren(accessible, 0, count, children, &obtained) == S_OK && obtained == count;
-  for (LONG i = 0; ok && i < obtained; i++) {
-    VARIANT role; VariantInit(&role);
-    ok = children[i].vt == VT_I4 && children[i].lVal > 0 && children[i].lVal != retired &&
-        SUCCEEDED(IAccessible_get_accRole(accessible, children[i], &role));
-    for (LONG j = 0; j < i; j++) if (children[i].lVal == children[j].lVal) ok = FALSE;
-  }
   IEnumVARIANT *enumeration = NULL, *clone = NULL;
-  if (SUCCEEDED(IAccessible_QueryInterface(accessible, &IID_IEnumVARIANT, (void **)&enumeration))) {
-    VARIANT first, second, cloned, reset; ULONG fetched = 0;
-    VariantInit(&first); VariantInit(&second); VariantInit(&cloned); VariantInit(&reset);
-    ok = IEnumVARIANT_Next(enumeration, 1, &first, &fetched) == S_OK && fetched == 1 && ok;
-    if (SUCCEEDED(IEnumVARIANT_Clone(enumeration, &clone))) {
-      ok = IEnumVARIANT_Next(enumeration, 1, &second, NULL) == S_OK &&
-          IEnumVARIANT_Next(clone, 1, &cloned, NULL) == S_OK && second.vt == VT_I4 && cloned.lVal == second.lVal && ok;
-      ok = IEnumVARIANT_Skip(clone, (ULONG)count + 1) == S_FALSE && IEnumVARIANT_Reset(clone) == S_OK &&
-          IEnumVARIANT_Next(clone, 1, &reset, NULL) == S_OK && reset.lVal == first.lVal && ok;
-      IEnumVARIANT_Release(clone);
-    } else ok = FALSE;
-    IEnumVARIANT_Release(enumeration);
-  } else ok = FALSE;
-  for (LONG i = 0; i < obtained; i++) VariantClear(&children[i]); free(children); return ok;
+  IUnknown *provider_identity = NULL, *enum_identity = NULL, *clone_identity = NULL;
+  VARIANT first, second, cloned, reset;
+  VariantInit(&first); VariantInit(&second); VariantInit(&cloned); VariantInit(&reset);
+  result = AccessibleChildren(accessible, 0, count, children, &obtained);
+  BOOL ok = enumeration_check(result == S_OK && obtained == count, "AccessibleChildren", result, obtained, count);
+  if (obtained < 0 || obtained > count) { ok = FALSE; goto cleanup; }
+  for (LONG i = 0; i < obtained; i++) {
+    VARIANT role; VariantInit(&role);
+    result = IAccessible_get_accRole(accessible, children[i], &role);
+    ok = enumeration_check(children[i].vt == VT_I4 && children[i].lVal > 0 && children[i].lVal != retired &&
+        SUCCEEDED(result), "live child role", result, children[i].lVal, retired) && ok;
+    for (LONG j = 0; j < i; j++) ok = enumeration_check(children[i].lVal != children[j].lVal,
+        "unique child identity", result, children[i].lVal, children[j].lVal) && ok;
+    VariantClear(&role);
+  }
+  result = IAccessible_QueryInterface(accessible, &IID_IEnumVARIANT, (void **)&enumeration);
+  if (!enumeration_check(result == S_OK && enumeration, "QI enumeration", result, 0, 0)) { ok = FALSE; goto cleanup; }
+  /* QueryInterface does not rewind an existing COM object. AccessibleChildren
+   * has already consumed this provider's primary enumeration. */
+  result = IEnumVARIANT_Reset(enumeration);
+  ok = enumeration_check(result == S_OK, "primary Reset", result, 0, 0) && ok;
+  result = IEnumVARIANT_Next(enumeration, 1, &first, &fetched);
+  ok = enumeration_check(result == S_OK && fetched == 1 && first.vt == VT_I4 && first.lVal == children[0].lVal,
+      "primary first child", result, first.lVal, children[0].lVal) && ok;
+  result = IEnumVARIANT_Clone(enumeration, &clone);
+  if (!enumeration_check(result == S_OK && clone, "Clone", result, 0, 0)) { ok = FALSE; goto cleanup; }
+  result = IAccessible_QueryInterface(accessible, &IID_IUnknown, (void **)&provider_identity);
+  ok = enumeration_check(result == S_OK && provider_identity, "provider IUnknown", result, 0, 0) && ok;
+  result = IEnumVARIANT_QueryInterface(enumeration, &IID_IUnknown, (void **)&enum_identity);
+  ok = enumeration_check(result == S_OK && enum_identity && enum_identity == provider_identity,
+      "primary shares provider identity", result, 0, 0) && ok;
+  result = IEnumVARIANT_QueryInterface(clone, &IID_IUnknown, (void **)&clone_identity);
+  ok = enumeration_check(result == S_OK && clone_identity && clone_identity != enum_identity,
+      "clone has independent COM identity", result, 0, 0) && ok;
+  result = IEnumVARIANT_Next(enumeration, 1, &second, NULL);
+  ok = enumeration_check(result == S_OK && second.vt == VT_I4 && second.lVal == children[1].lVal,
+      "primary advances independently", result, second.lVal, children[1].lVal) && ok;
+  result = IEnumVARIANT_Next(clone, 1, &cloned, NULL);
+  ok = enumeration_check(result == S_OK && cloned.vt == VT_I4 && cloned.lVal == second.lVal,
+      "clone preserves copied position", result, cloned.lVal, second.lVal) && ok;
+  result = IEnumVARIANT_Skip(clone, (ULONG)count + 1);
+  ok = enumeration_check(result == S_FALSE, "clone Skip beyond end", result, 0, 0) && ok;
+  result = IEnumVARIANT_Reset(clone);
+  ok = enumeration_check(result == S_OK, "clone Reset", result, 0, 0) && ok;
+  result = IEnumVARIANT_Next(clone, 1, &reset, NULL);
+  ok = enumeration_check(result == S_OK && reset.vt == VT_I4 && reset.lVal == first.lVal,
+      "clone rewinds its own snapshot", result, reset.lVal, first.lVal) && ok;
+  VariantClear(&second);
+  result = IEnumVARIANT_Next(enumeration, 1, &second, &fetched);
+  ok = enumeration_check(count > 2 ? result == S_OK && fetched == 1 && second.vt == VT_I4 && second.lVal == children[2].lVal
+      : result == S_FALSE && fetched == 0, "clone Reset leaves primary cursor unchanged", result,
+      second.lVal, count > 2 ? children[2].lVal : 0) && ok;
+cleanup:
+  if (clone_identity) IUnknown_Release(clone_identity);
+  if (enum_identity) IUnknown_Release(enum_identity);
+  if (provider_identity) IUnknown_Release(provider_identity);
+  if (clone) IEnumVARIANT_Release(clone);
+  if (enumeration) IEnumVARIANT_Release(enumeration);
+  VariantClear(&first); VariantClear(&second); VariantClear(&cloned); VariantClear(&reset);
+  for (LONG i = 0; i < count; i++) VariantClear(&children[i]); free(children); return ok;
 }
 #define CHECK(test, label) do { if (!(test)) { fprintf(stderr, "FAIL canvas: %s\n", label); passed = FALSE; } } while (0)
 int wmain(int argc, wchar_t **argv) {

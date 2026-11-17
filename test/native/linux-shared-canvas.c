@@ -322,6 +322,12 @@ int main(int argc, char **argv) {
     key(&h, GDK_KEY_z, GDK_CONTROL_MASK); CHECK(h.commands == commands + 2 && !has_gap(&h) && !h.failed, "Ctrl+Z follows the same core undo path and removes the gap");
   }
   double span = number(field(h.frame_json, "viewport"), "spanMs");
+  char *zoom_snapshot = g_strdup(h.snapshot), *zoom_plan = object(h.snapshot, "plan");
+  double fit_duration_ms = number(zoom_plan, "outputDurationTicks") * 1000.0 / number(zoom_plan, "timebase");
+  CHECK(zoom_plan && number(zoom_plan, "timebase") > 0 && fit_duration_ms > 0,
+      "fit expectation comes from the authoritative current output plan");
+  g_free(zoom_plan);
+  unsigned zoom_commands = h.commands;
   GdkEvent *scroll = gdk_event_new(GDK_SCROLL); scroll->scroll.window = g_object_ref(gtk_widget_get_window(h.canvas));
   scroll->scroll.send_event = TRUE; scroll->scroll.time = GDK_CURRENT_TIME; scroll->scroll.x = 400; scroll->scroll.y = h.height - 120;
   scroll->scroll.state = GDK_CONTROL_MASK; scroll->scroll.direction = GDK_SCROLL_UP; gdk_event_set_device(scroll, pointer_device(h.canvas));
@@ -337,12 +343,18 @@ int main(int argc, char **argv) {
       !(h.last_input.flags & MC_UI_INPUT_PRECISE) && number(field(h.frame_json, "viewport"), "spanMs") < discrete_span,
       "GDK smooth input preserves fractional wheel steps and normalized upward direction");
   double wheel_span = number(field(h.frame_json, "viewport"), "spanMs");
-  unsigned zoom_commands = h.commands;
   key(&h, GDK_KEY_plus, GDK_CONTROL_MASK);
   CHECK(number(field(h.frame_json, "viewport"), "spanMs") < wheel_span, "Ctrl+plus reaches shared zoom");
   key(&h, GDK_KEY_0, GDK_CONTROL_MASK);
-  CHECK(fabs(number(field(h.frame_json, "viewport"), "spanMs") - span) < .0001 && h.commands == zoom_commands,
-      "Ctrl+0 restores fit without changing document history");
+  int fit_control = semantic(&h, "project-zoom-fit");
+  /* Undo preserves the wider editing view after a gap extended the output.
+   * Explicit fit targets the current plan, not that retained historical span. */
+  CHECK(fabs(number(field(h.frame_json, "viewport"), "spanMs") - fit_duration_ms) < .0001 &&
+      fabs(number(field(h.frame_json, "viewport"), "startMs")) < .0001 && h.commands == zoom_commands &&
+      fit_control >= 0 && ui_frame_semantic_value(h.frame, fit_control, MC_UI_SEM_ENABLED) == 0 &&
+      number(h.frame_json, "revision") == number(zoom_snapshot, "revision") && !g_strcmp0(h.snapshot, zoom_snapshot),
+      "Ctrl+0 fits the current output from zero without changing document history");
+  g_free(zoom_snapshot);
   unsigned cancelled = h.cancels;
   GdkEvent *focus = gdk_event_new(GDK_FOCUS_CHANGE); focus->focus_change.window = g_object_ref(gtk_widget_get_window(h.canvas));
   focus->focus_change.send_event = TRUE; focus->focus_change.in = FALSE; gtk_widget_event(h.canvas, focus); gdk_event_free(focus);

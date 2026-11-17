@@ -20,6 +20,8 @@ typedef struct {
   LONG child; wchar_t *identifier;
   BOOL value_changed, focus_changed, state_changed, name_changed, location_changed;
 } AccessibleNode;
+typedef struct AccessibleEnumeration AccessibleEnumeration;
+static void free_enumeration(AccessibleEnumeration *enumeration);
 struct MCCanvasAccessible {
   IAccessible base;
   LONG references, next_child;
@@ -30,6 +32,7 @@ struct MCCanvasAccessible {
   MCCanvasAccessibleAction action;
   void *context;
   BOOL reordered;
+  AccessibleEnumeration *enumeration;
 };
 static MCCanvasAccessible *owner(IAccessible *self) { return (MCCanvasAccessible *)self; }
 static HRESULT enumeration(MCCanvasAccessible *a, void **out);
@@ -41,7 +44,7 @@ static void free_nodes(AccessibleNode *nodes, int count) {
 static ULONG STDMETHODCALLTYPE release(IAccessible *self) {
   MCCanvasAccessible *a = owner(self);
   LONG count = InterlockedDecrement(&a->references);
-  if (!count) { free_nodes(a->nodes, a->count); free(a); }
+  if (!count) { free_enumeration(a->enumeration); free_nodes(a->nodes, a->count); free(a); }
   return (ULONG)count;
 }
 static HRESULT STDMETHODCALLTYPE query(IAccessible *self, REFIID iid, void **out) {
@@ -52,24 +55,34 @@ static HRESULT STDMETHODCALLTYPE query(IAccessible *self, REFIID iid, void **out
   if (IsEqualIID(iid, &IID_IEnumVARIANT)) return enumeration(owner(self), out);
   return E_NOINTERFACE;
 }
-typedef struct {
+struct AccessibleEnumeration {
   IEnumVARIANT base;
   LONG references;
+  /* Non-NULL only for the provider's stable primary enumeration interface.
+   * Clones are independent COM objects with their own IUnknown identity. */
   MCCanvasAccessible *accessible;
   LONG *children;
   ULONG count, index;
-} AccessibleEnumeration;
+};
+static void free_enumeration(AccessibleEnumeration *e) { if (e) { free(e->children); free(e); } }
 static AccessibleEnumeration *enumerator(IEnumVARIANT *self) { return (AccessibleEnumeration *)self; }
-static ULONG STDMETHODCALLTYPE enum_add_ref(IEnumVARIANT *self) { return (ULONG)InterlockedIncrement(&enumerator(self)->references); }
+static ULONG STDMETHODCALLTYPE enum_add_ref(IEnumVARIANT *self) {
+  AccessibleEnumeration *e = enumerator(self);
+  return e->accessible ? add_ref(&e->accessible->base) : (ULONG)InterlockedIncrement(&e->references);
+}
 static ULONG STDMETHODCALLTYPE enum_release(IEnumVARIANT *self) {
-  AccessibleEnumeration *e = enumerator(self); LONG refs = InterlockedDecrement(&e->references);
-  if (!refs) { release(&e->accessible->base); free(e->children); free(e); } return (ULONG)refs;
+  AccessibleEnumeration *e = enumerator(self);
+  if (e->accessible) return release(&e->accessible->base);
+  LONG refs = InterlockedDecrement(&e->references);
+  if (!refs) free_enumeration(e); return (ULONG)refs;
 }
 static HRESULT STDMETHODCALLTYPE enum_query(IEnumVARIANT *self, REFIID iid, void **out) {
   if (!out) return E_POINTER; *out = NULL;
-  if (IsEqualIID(iid, &IID_IEnumVARIANT)) { *out = self; enum_add_ref(self); return S_OK; }
-  /* Every interface exposed by this provider has the same IUnknown identity. */
-  return query(&enumerator(self)->accessible->base, iid, out);
+  AccessibleEnumeration *e = enumerator(self);
+  if (IsEqualIID(iid, &IID_IEnumVARIANT) || (!e->accessible && IsEqualIID(iid, &IID_IUnknown))) {
+    *out = self; enum_add_ref(self); return S_OK;
+  }
+  return e->accessible ? query(&e->accessible->base, iid, out) : E_NOINTERFACE;
 }
 static HRESULT STDMETHODCALLTYPE enum_next(IEnumVARIANT *self, ULONG count, VARIANT *items, ULONG *fetched) {
   if (fetched) *fetched = 0;
@@ -84,24 +97,42 @@ static HRESULT STDMETHODCALLTYPE enum_skip(IEnumVARIANT *self, ULONG count) {
   AccessibleEnumeration *e = enumerator(self); ULONG available = e->count - e->index;
   e->index += min(count, available); return count <= available ? S_OK : S_FALSE;
 }
-static HRESULT STDMETHODCALLTYPE enum_reset(IEnumVARIANT *self) { enumerator(self)->index = 0; return S_OK; }
+static HRESULT STDMETHODCALLTYPE enum_reset(IEnumVARIANT *self) {
+  AccessibleEnumeration *e = enumerator(self);
+  if (e->accessible) {
+    MCCanvasAccessible *a = e->accessible;
+    if (!a->window) return CO_E_OBJNOTCONNECTED;
+    LONG *children = a->count ? calloc((size_t)a->count, sizeof(LONG)) : NULL;
+    if (a->count && !children) return E_OUTOFMEMORY;
+    for (int i = 0; i < a->count; i++) children[i] = a->nodes[i].child;
+    free(e->children); e->children = children; e->count = (ULONG)a->count;
+  }
+  e->index = 0; return S_OK;
+}
 static HRESULT STDMETHODCALLTYPE enum_clone(IEnumVARIANT *self, IEnumVARIANT **out);
 static IEnumVARIANTVtbl enum_methods = {enum_query, enum_add_ref, enum_release, enum_next, enum_skip, enum_reset, enum_clone};
-static AccessibleEnumeration *make_enumeration(MCCanvasAccessible *a, ULONG count) {
+static AccessibleEnumeration *make_enumeration(ULONG count) {
   AccessibleEnumeration *e = calloc(1, sizeof(*e)); if (!e) return NULL;
   e->children = count ? calloc(count, sizeof(LONG)) : NULL;
   if (count && !e->children) { free(e); return NULL; }
-  e->base.lpVtbl = &enum_methods; e->references = 1; e->count = count; e->accessible = a; add_ref(&a->base); return e;
+  e->base.lpVtbl = &enum_methods; e->references = 1; e->count = count; return e;
 }
 static HRESULT enumeration(MCCanvasAccessible *a, void **out) {
   if (!a->window) return CO_E_OBJNOTCONNECTED;
-  AccessibleEnumeration *e = make_enumeration(a, (ULONG)a->count); if (!e) return E_OUTOFMEMORY;
-  for (int i = 0; i < a->count; i++) e->children[i] = a->nodes[i].child;
-  *out = &e->base; return S_OK;
+  if (!a->enumeration) {
+    AccessibleEnumeration *e = make_enumeration(0); if (!e) return E_OUTOFMEMORY;
+    e->accessible = a;
+    HRESULT reset = enum_reset(&e->base);
+    if (FAILED(reset)) { free_enumeration(e); return reset; }
+    a->enumeration = e;
+  }
+  /* QueryInterface is identity navigation, not a fresh iterator operation.
+   * AccessibleChildren resets this interface to snapshot the current tree. */
+  *out = &a->enumeration->base; add_ref(&a->base); return S_OK;
 }
 static HRESULT STDMETHODCALLTYPE enum_clone(IEnumVARIANT *self, IEnumVARIANT **out) {
   if (!out) return E_POINTER; *out = NULL; AccessibleEnumeration *current = enumerator(self);
-  AccessibleEnumeration *copy = make_enumeration(current->accessible, current->count); if (!copy) return E_OUTOFMEMORY;
+  AccessibleEnumeration *copy = make_enumeration(current->count); if (!copy) return E_OUTOFMEMORY;
   if (current->count) memcpy(copy->children, current->children, (size_t)current->count * sizeof(LONG));
   copy->index = current->index; *out = &copy->base; return S_OK;
 }
