@@ -111,7 +111,8 @@
     "gst-plugins-good:ximagesrc-xdamage=enabled",
     "gst-plugins-bad:videoparsers=enabled",
     "gst-plugins-bad:openh264=enabled",
-    "gst-plugins-bad:soundtouch=enabled"
+    "gst-plugins-bad:soundtouch=enabled",
+    "gstreamer:check=enabled"
   ],
   "ffmpeg_options": [
     "--enable-shared",
@@ -292,7 +293,8 @@
   "policy": {
     "glib": "System GLib >= 2.64; GTK and media must share the process GLib. No bundled GLib.",
     "pipewire": "Only the unmodified upstream GStreamer plugin sources are compiled; OS PipeWire client/SPA and daemon remain system integration dependencies.",
-    "redistribution": "SDK is not a release payload. Packaging must resolve ELF dependency closure, include dependency licenses/sources, relocate and revalidate."
+    "redistribution": "SDK is not a release payload. Packaging must resolve ELF dependency closure, include dependency licenses/sources, relocate and revalidate.",
+    "gstcheck": "The monorepo good/bad/GES/libav docs setup accesses core plugins_cache_generator even with doc disabled. Core defines that helper only when gstcheck is enabled; build this SDK helper/library while all tests and documentation stay disabled. It is not part of the shipped runtime closure."
   },
   "tool_versions": {
     "meson": "1.8.3",

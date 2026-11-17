@@ -61,7 +61,7 @@ class LinuxMediaSDKTest(unittest.TestCase):
         options = set(self.lock["meson_options"])
         for flag in ("auto_features=disabled", "glib_checks=true", "glib_assert=true", "glib_debug=enabled",
                      "gpl=disabled", "orc-source=system", "orc=enabled", "gst-plugins-good:ximagesrc=enabled",
-                     "gst-plugins-good:pulse=enabled", "gst-plugins-bad:openh264=enabled"):
+                     "gst-plugins-good:pulse=enabled", "gst-plugins-bad:openh264=enabled", "gstreamer:check=enabled"):
             self.assertIn(flag, options)
         self.assertIn("pipewiresrc", self.lock["required_factories"])
         self.assertIn("ximagesrc", self.lock["required_factories"])
@@ -106,6 +106,7 @@ class LinuxMediaSDKTest(unittest.TestCase):
                 self.assertFalse(destination.exists())
         self.assertFalse((self.root / "escape").exists())
 
+    @unittest.skipUnless(os.name == "posix", "POSIX symlink and Unix executable/setuid mode semantics")
     def test_tar_preserves_internal_document_link_and_strips_privileged_bits(self):
         archive, package = self.archive([("source/a", b"a", None), ("source/link", b"", "a")])
         source = sdk.unpack(archive, self.root / "extract", package)
@@ -156,6 +157,7 @@ class LinuxMediaSDKTest(unittest.TestCase):
                     "configuration_sha256": sdk.configuration_digest(lock), "files": sdk.inventory(home)}
         return archive, lock, home, build, verify
 
+    @unittest.skipUnless(os.name == "posix", "Linux installation uses a POSIX flock")
     def test_failed_new_build_removes_only_its_prefix_and_publishes_no_receipt(self):
         archive, lock, home, build, verify = self.fixture_install()
         sibling = self.root / "keep"
@@ -169,6 +171,7 @@ class LinuxMediaSDKTest(unittest.TestCase):
         self.assertEqual(sibling.read_text(), "user data")
         self.assertEqual(list(self.root.glob(".linux-media-build-*")), [])
 
+    @unittest.skipUnless(os.name == "posix", "Linux installation uses a POSIX flock")
     def test_success_publishes_receipt_last_and_reuse_does_not_rebuild(self):
         archive, lock, home, build, verify = self.fixture_install()
         def verified(home, lock, **kwargs):
@@ -184,6 +187,7 @@ class LinuxMediaSDKTest(unittest.TestCase):
             download.assert_not_called()
             rebuild.assert_not_called()
 
+    @unittest.skipUnless(os.name == "posix", "Linux installation uses a POSIX flock")
     def test_invalid_existing_prefix_is_preserved_not_adopted(self):
         home = self.root / "sdk"
         home.mkdir()
@@ -194,8 +198,11 @@ class LinuxMediaSDKTest(unittest.TestCase):
 
     def test_cache_hash_and_lock_mismatch_fail_before_running_binaries(self):
         archive, lock, home, build, verify = self.fixture_install()
-        with patch.object(sdk, "download", return_value=archive):
-            sdk.install(home, self.root / "cache", lock, build=build, verify=verify)
+        # Receipt/hash validation is platform-neutral and does not need the
+        # Linux flock installer. Keep this check active on Windows too.
+        home.mkdir()
+        (home / "payload").write_text("built", encoding="utf-8")
+        (home / sdk.REPORT).write_text(json.dumps(verify(home, lock)), encoding="utf-8")
         (home / "payload").write_text("corrupt", encoding="utf-8")
         with patch.object(sdk, "run") as execute:
             with self.assertRaisesRegex(ValueError, "hash inventory"):

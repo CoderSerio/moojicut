@@ -19,7 +19,9 @@ class GStreamerSDKTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="gstreamer test ")
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        # Windows TEMP may use an 8.3 alias (RUNNER~1); verification reports
+        # canonical paths, so fixture expectations use the same real directory.
+        self.root = Path(self.directory.name).resolve()
         self.package = copy.deepcopy(sdk.load_lock())
 
     def archive(self):

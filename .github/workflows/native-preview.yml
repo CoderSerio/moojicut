@@ -106,8 +106,10 @@ jobs:
         with:
           path: ${{ runner.temp }}/linux-media-sources
           key: linux-media-sources-${{ hashFiles('build/linux-media-sdk.json') }}
+          restore-keys: linux-media-sources-
       - name: Build and validate private Linux media SDK
         if: runner.os == 'Linux'
+        id: linux_sdk_build
         run: |
           python scripts/install_linux_gstreamer.py --prefix "$RUNNER_TEMP/linux-media-sdk" --cache "$RUNNER_TEMP/linux-media-sources" --jobs 4
           echo "MOOJICUT_LINUX_MEDIA_SDK=$RUNNER_TEMP/linux-media-sdk" >> "$GITHUB_ENV"
@@ -118,7 +120,7 @@ jobs:
           path: ${{ runner.temp }}/linux-media-sdk
           key: ${{ steps.linux_media_cache.outputs.cache-primary-key }}
       - name: Save locked Linux media sources
-        if: runner.os == 'Linux' && steps.linux_sources_cache.outputs.cache-hit != 'true'
+        if: always() && runner.os == 'Linux' && steps.linux_sdk_build.outcome != 'skipped' && steps.linux_sources_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/linux-media-sources

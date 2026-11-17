@@ -84,6 +84,9 @@ def download(package, cache):
             verified_archive(temporary, package)
             os.replace(temporary, target)
         finally:
+            # Windows cannot unlink an open download on the oversize/error
+            # path. Close before removing it on every platform.
+            stream.close()
             temporary.unlink(missing_ok=True)
     return target
 
