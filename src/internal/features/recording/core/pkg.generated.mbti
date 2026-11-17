@@ -4,7 +4,11 @@ package "moojicut/core/internal/features/recording/core"
 // Values
 pub fn native_recording_plan(Int32, Int32, Int32, Int32) -> FixedArray[Int32]
 
+pub fn recording_capabilities(String) -> String
+
 pub fn recording_plan(String) -> String
+
+pub fn recording_request_plan(String) -> String
 
 pub fn recording_status(String) -> String
 

@@ -226,3 +226,15 @@ pub fn native_recording_plan(
 pub fn recording_status(state : String) -> String {
   @recording.recording_status(state)
 }
+
+///|
+#export_name("recording_capabilities")
+pub fn recording_capabilities(platform : String) -> String {
+  @recording.recording_capabilities(platform)
+}
+
+///|
+#export_name("recording_request_plan")
+pub fn recording_request_plan(request : String) -> String {
+  @recording.recording_request_plan(request)
+}

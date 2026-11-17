@@ -5,6 +5,7 @@
 #include "native/shared/update_release.h"
 #include "native/shared/plugin_protocol.h"
 #include "native/shared/image_session.h"
+#include "native/shared/recording_plan.h"
 #include <math.h>
 
 // Signatures observed in native foreign_library output from moonc 0.10.20.
@@ -150,12 +151,36 @@ static void CheckPluginUTF16Boundary(void) {
   NSCAssert([Call(tool_registry_resolve, @{@"layout":NSNull.null,@"manifests":@[manifest]})[@"ok"] boolValue],
             @"Dynamic tool catalog accepts the same valid Unicode manifest");
 }
+static void CheckRecordingBoundary(void) {
+  for (int iteration = 0; iteration < 64; iteration++) {
+    moonbit_string_t platform = MoonString(@"windows");
+    NSDictionary *capabilities = TakeJSON(recording_capabilities(platform));
+    NSCAssert(Moonbit_rc_count(Moonbit_object_header(platform)) == 1, @"Platform input remains caller-owned");
+    moonbit_decref(platform);
+    NSCAssert([capabilities[@"supported"] boolValue] && [capabilities[@"permission"] isEqual:@"unknown"] &&
+              [capabilities[@"availability"] isEqual:@"unverified"], @"Static support must not grant permission");
+    NSMutableDictionary *request = [@{@"platform":@"windows", @"source":@"primary-display",
+      @"width":@5120, @"height":@2880, @"systemAudio":@NO} mutableCopy];
+    NSDictionary *plan = Call(recording_request_plan, request);
+    MCCoreRecordingPlan legacy = mc_core_recording_plan(MC_RECORDING_WINDOWS, 5120, 2880, 1);
+    NSCAssert([plan[@"ok"] boolValue] && [plan[@"width"] intValue] == legacy.width &&
+              [plan[@"height"] intValue] == legacy.height && legacy.system_audio == 0 &&
+              [plan[@"requiresHostValidation"] boolValue], @"Both ABI paths share encoding policy");
+    request[@"systemAudio"] = @YES;
+    NSDictionary *rejected = Call(recording_request_plan, request);
+    NSCAssert(![rejected[@"ok"] boolValue] && [rejected[@"error"][@"code"] isEqual:@"unsupported_audio"],
+              @"Strict requests must not silently remove requested audio");
+    MCCoreRecordingPlan unsupported = mc_core_recording_plan(MC_RECORDING_LINUX_WAYLAND, 1920, 1080, 0);
+    NSCAssert(unsupported.width == 0 && unsupported.frames_per_second == 0, @"No synthetic Linux plan");
+  }
+}
 int main(void) {
   @autoreleasepool {
     moonbit_init(); // Once per process, before allocations or exported calls.
     CheckEditorStyles();
     CheckImageHitBoundary();
     CheckPluginUTF16Boundary();
+    CheckRecordingBoundary();
     moonbit_string_t unicode = MoonString(@"中文🦊");
     assert(Moonbit_array_length(unicode) == 4);
     assert(unicode[0] == 0x4e2d && unicode[1] == 0x6587 && unicode[2] == 0xd83e && unicode[3] == 0xdd8a);

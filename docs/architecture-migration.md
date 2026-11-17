@@ -228,3 +228,12 @@ B2 在扩大迁移之前先通过 macOS+Windows 的同一完整切片（声明�
 - 派生任务迟到的取消回调仅删除本次确已发布的目标，发布失败时不删除目标路径上原有的文件。
 - 便携 C++ 文件故障测试已通过：中途失败、发布冲突、发布后探测失败、派生清理及原文件不变。Windows 原有 MF smoke 已增加真实样本写入后失败收尾、保留文件解码、真实 MoveFileEx 冲突和迟到取消检查；本轮在 macOS 开发，**尚未运行 Windows MF smoke**，不可据此宣称 Windows 实机验收完成。
 - 文件清理属于平台媒体 I/O；此 C++ 辅助类不承载 UI/录制业务状态。没有引入自动恢复承诺，也没有把 partial 标记为成功素材。
+
+### B1：静态能力与参数计划切片
+
+- `features/recording/core/capabilities.mbt` 统一记录源码已实现的后端/来源/音源/暂停/编码限制；`plan.mbt` 让新请求和现有原生宿主实际共用同一编码策略。已有生命周期规则仍在 `recording.mbt`。
+- 新增纯查询 ABI `recording_capabilities` 与严格请求 ABI `recording_request_plan`。Windows 当前只接受主显示器静音录制，不支持的来源/音源/暂停明确拒绝；Linux X11/Wayland 分别可查询，但均不能生成可执行录制计划。
+- `supported` 仅代表源码静态支持；`permission=unknown`、`availability=unverified`、`requiresHostValidation=true` 防止把成功计划误当成实际授权。接口不弹权限窗、不获取来源、不启动录制。
+- 本轮全量 MoonBit native/Wasm 各 **181/181**、构建与便携故障测试 **21/21** 通过；真实原生 C ABI 测试覆盖输入/输出引用所有权、新旧策略一致与严格拒绝音频。新增 ABI 回归已进入 `test/native/core-embedding.m`，公共接口由固定工具链重新生成。
+- B1 切片与 R0 分别由另一代理只读交叉审查，R0 的录制取消错误提示缺口已按审查修正并复核。
+- **B1 整体仍未完成**：运行时能力探测、来源身份/坐标转换/媒体时基/generation、取消与资源释放回执、UI/CLI 接入仍待 C1/C2 真实来源验证后落实。此处保留现有宿主 ABI 是为了让正在运行的宿主继续使用同一策略，不是插件 v1 兼容层。
