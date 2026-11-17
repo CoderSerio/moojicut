@@ -36,6 +36,11 @@ static NSDictionary *toolWithID(MCToolRegistryStore *store, NSString *identifier
 static NSButton *toggleFor(NSTableView *table, NSInteger row) {
     return (NSButton *)[table.delegate tableView:table viewForTableColumn:table.tableColumns[1] row:row];
 }
+static NSInteger rowForTool(NSTableView *table, NSString *identifier) {
+    for (NSInteger row = 0; row < table.numberOfRows; row++)
+        if ([toggleFor(table, row).identifier isEqual:identifier]) return row;
+    return -1;
+}
 
 int main(void) {
     @autoreleasepool {
@@ -48,6 +53,7 @@ int main(void) {
         NSString *key = @"builtinToolLayoutV1";
         NSString *rectangle = @"builtin.image.rectangle", *arrow = @"builtin.image.arrow";
         NSString *text = @"builtin.image.text", *cover = @"builtin.image.cover", *pin = @"builtin.image.pin";
+        NSString *ocr = @"builtin.capture.ocr", *translate = @"builtin.capture.translate", *scroll = @"builtin.capture.scroll", *numbered = @"builtin.image.numberedRectangle";
         MCToolRegistryStore *store = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
         __block NSUInteger prepared = 0, applied = 0, notified = 0;
         __block BOOL veto = NO, nestedRejected = NO;
@@ -66,13 +72,17 @@ int main(void) {
         MCPreferencesController *preferences = nil;
         MCPluginManagementController *controller = nil;
         @try {
-            CHECK(([ids(store) isEqual:@[rectangle, arrow, text, cover, pin]] && !store.loadError), "first launch exposes built-in tools and the pin action in default order");
+            CHECK(([ids(store) isEqual:@[rectangle, arrow, text, cover, pin, ocr, translate, scroll, numbered]] && !store.loadError), "first launch exposes built-in tools and the pin action in default order");
             CHECK([defaults objectForKey:key] == nil, "opening settings does not write defaults");
+            CHECK(![toolWithID(store,scroll)[@"enabled"] boolValue] && ![toolWithID(store,numbered)[@"enabled"] boolValue] &&
+                  [toolWithID(store,pin)[@"slot"] isEqual:@"finish"] && [toolWithID(store,ocr)[@"slot"] isEqual:@"tools"] &&
+                  [toolWithID(store,translate)[@"command"] isEqual:@"translate"] && [toolWithID(store,numbered)[@"interaction"] isEqual:@"dragRect"],
+                  "settings consume the actual extension defaults, toolbar slots and generic command descriptors");
             CHECK([store toolsForGroup:@"recording"].count == 0 && [store toolsForGroup:@"videoEditing"].count == 0,
                   "unintegrated groups remain empty");
             NSError *error = nil;
             CHECK([store moveTool:text inGroup:@"screenshot" beforeTool:rectangle error:&error], "moving by stable ID succeeds");
-            CHECK(([ids(store) isEqual:@[text, rectangle, arrow, cover, pin]]), "move preserves the other tools' relative order");
+            CHECK(([ids(store) isEqual:@[text, rectangle, arrow, cover, pin, ocr, translate, scroll, numbered]]), "move preserves the other tools' relative order");
             CHECK(nestedRejected && prepared == 1 && applied == 1 && notified == 1, "publication is synchronous and rejects reentrant changes");
             CHECK([store setTool:cover enabled:NO error:&error], "disable persists");
             MCToolRegistryStore *reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
@@ -97,13 +107,13 @@ int main(void) {
             NSButton *up = (NSButton *)findView(preferences.window.contentView, @"plugin-tool-move-up");
             NSButton *down = (NSButton *)findView(preferences.window.contentView, @"plugin-tool-move-down");
             NSButton *import = (NSButton *)findView(preferences.window.contentView, @"plugin-import");
-            CHECK(table && table.numberOfRows == 5 && groups.segmentCount == 3 && !preferences.window.visible,
+            CHECK(table && table.numberOfRows == 9 && groups.segmentCount == 3 && !preferences.window.visible,
                   "real preferences exposes three categories and one tool list in a hidden fixture");
             CHECK(import && !import.enabled && [import.toolTip containsString:@"尚未初始化"], "import stays unavailable until the plugin service is attached");
             [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
             CHECK(!up.enabled && down.enabled, "first row only moves down");
             [down performClick:nil];
-            CHECK(([ids(store) isEqual:@[rectangle, text, arrow, cover, pin]] && table.selectedRow == 1), "down button saves order and follows stable selection");
+            CHECK(([ids(store) isEqual:@[rectangle, text, arrow, cover, pin, ocr, translate, scroll, numbered]] && table.selectedRow == 1), "down button saves order and follows stable selection");
             [up performClick:nil];
             CHECK([ids(store).firstObject isEqual:text] && table.selectedRow == 0, "up button updates the same order contract");
             veto = YES;
@@ -121,10 +131,30 @@ int main(void) {
             id<NSPasteboardWriting> writer = [table.dataSource tableView:table pasteboardWriterForRow:0];
             [drag.draggingPasteboard writeObjects:@[writer]];
             id<NSDraggingInfo> info = (id<NSDraggingInfo>)drag;
-            CHECK([table.dataSource tableView:table validateDrop:info proposedRow:5 proposedDropOperation:NSTableViewDropAbove] == NSDragOperationMove,
-                  "same-table drag is accepted");
-            CHECK([table.dataSource tableView:table acceptDrop:info row:5 dropOperation:NSTableViewDropAbove] && [ids(store).lastObject isEqual:text],
-                  "dragging to the end persists actual stable-ID order");
+            NSInteger finishRow = rowForTool(table, pin);
+            CHECK(finishRow == table.numberOfRows - 1 && finishRow > 0,
+                  "settings display tools before the separate finish slot regardless of registry storage order");
+            before = store.snapshot; saved = [defaults dictionaryForKey:key]; count = notified;
+            CHECK([table.dataSource tableView:table validateDrop:info proposedRow:table.numberOfRows proposedDropOperation:NSTableViewDropAbove] == NSDragOperationNone &&
+                  ![table.dataSource tableView:table acceptDrop:info row:table.numberOfRows dropOperation:NSTableViewDropAbove] &&
+                  [store.snapshot isEqual:before] && [[defaults dictionaryForKey:key] isEqual:saved] && notified == count,
+                  "dragging a tool beyond the finish slot is rejected without changing saved or live state");
+            CHECK([table.dataSource tableView:table validateDrop:info proposedRow:finishRow proposedDropOperation:NSTableViewDropAbove] == NSDragOperationMove,
+                  "a tool can be dropped at the end of its own slot directly above the first finish row");
+            CHECK([table.dataSource tableView:table acceptDrop:info row:finishRow dropOperation:NSTableViewDropAbove] &&
+                  rowForTool(table, text) == finishRow - 1 && rowForTool(table, pin) == finishRow,
+                  "dropping at the tools boundary appends within tools and leaves finish actions in place");
+            reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
+            CHECK([ids(reopened) isEqual:ids(store)] && [ids(store).lastObject isEqual:text],
+                  "the slot-end drag persists the same stable-ID order that the settings display");
+            [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)rowForTool(table, text)] byExtendingSelection:NO];
+            CHECK(up.enabled && !down.enabled, "the last tool cannot move into finish through the arrow buttons");
+            [drag.draggingPasteboard clearContents];
+            writer = [table.dataSource tableView:table pasteboardWriterForRow:rowForTool(table, pin)];
+            [drag.draggingPasteboard writeObjects:@[writer]];
+            CHECK([table.dataSource tableView:table validateDrop:info proposedRow:0 proposedDropOperation:NSTableViewDropAbove] == NSDragOperationNone &&
+                  ![table.dataSource tableView:table acceptDrop:info row:0 dropOperation:NSTableViewDropAbove],
+                  "finish actions cannot be dragged into tools");
             drag.draggingSource = [NSTableView new];
             CHECK([table.dataSource tableView:table validateDrop:info proposedRow:0 proposedDropOperation:NSTableViewDropAbove] == NSDragOperationNone,
                   "foreign table drag cannot mutate tools");
@@ -137,10 +167,16 @@ int main(void) {
             [preferences setPinningEnabled:NO];
             CHECK(![toolWithID(store, pin)[@"enabled"] boolValue] && ![defaults boolForKey:MCPinFeatureEnabledDefaultsKey],
                   "legacy general checkbox uses the same registry gate and persisted preference");
-            NSInteger pinRow = (NSInteger)[ids(store) indexOfObject:pin];
+            NSInteger pinRow = rowForTool(table, pin);
             [toggleFor(table, pinRow) performClick:nil];
             CHECK(preferences.pinningEnabled && [(NSButton *)[preferences valueForKey:@"pinningCheckbox"] state] == NSControlStateValueOn &&
                   [defaults boolForKey:MCPinFeatureEnabledDefaultsKey], "management switch also updates the general checkbox and shared gate");
+            NSInteger numberedRow = rowForTool(table, numbered);
+            [toggleFor(table,numberedRow) performClick:nil];
+            CHECK([toolWithID(store,numbered)[@"enabled"] boolValue] &&
+                  [toolWithID(store,numbered)[@"command"] isEqual:@"capture.numberedRectangle"],
+                  "the new declared tool is enabled by the same settings row without a native tool-specific branch");
+            [toggleFor(table,numberedRow) performClick:nil];
             NSString *previewPath = NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOL_SETTINGS_PREVIEW"];
             if (previewPath.length) {
                 NSView *content = preferences.window.contentView;
@@ -153,7 +189,7 @@ int main(void) {
             [preferences.window close]; preferences = nil;
             reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
             controller = [[MCPluginManagementController alloc] initWithStore:reopened];
-            CHECK(((NSTableView *)findView(controller.view, @"plugin-management-table")).numberOfRows == 5 &&
+            CHECK(((NSTableView *)findView(controller.view, @"plugin-management-table")).numberOfRows == 9 &&
                   [ids(reopened) isEqual:ids(store)], "management view can reopen after its previous observer was removed");
             [controller invalidate]; controller = nil;
 
@@ -177,7 +213,7 @@ int main(void) {
 
             [defaults setObject:@{@"version":@999} forKey:key];
             reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
-            CHECK(reopened.loadError && [reopened toolsForGroup:@"screenshot"].count == 5 &&
+            CHECK(reopened.loadError && [reopened toolsForGroup:@"screenshot"].count == 9 &&
                   [[defaults dictionaryForKey:key][@"version"] integerValue] == 999,
                   "corrupt preferences recover in memory without overwriting the original");
             CHECK([reopened setTool:text enabled:NO error:&error] && !reopened.loadError &&

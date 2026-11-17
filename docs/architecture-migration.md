@@ -110,14 +110,14 @@
 
 | 当前包 | 目标与状态 |
 | --- | --- |
-| `features/capture`、core、ui、extensions/annotations | 第一批结构已迁；annotations 目前仅属性与默认值，固定工具分发和 ui→annotations 仍需泛化，不是完整插件化 |
+| `features/capture`、core、ui、extensions/annotations | 结构已迁；annotations 已声明内置工具并处理通用拖框命令，其他扩展声明自身贡献；完整属性 Schema 和 ui→annotations 仍待泛化 |
 | `features/recording/core`、ui | 已归位；live flow、静态能力/参数策略与倒计时面板已共享，完整资源会话及动态能力快照仍待做 |
 | `app/shortcuts`（原 desktop） | 规则已迁；平台全局注册/释放仍由宿主执行 |
 | `features/capture/extensions/pin`（原 pin） | 数值/缩放/可见性规则已迁；贡献接入与窗口资源提取另验 |
 | `shared/geometry`（原 selection） | 已迁；不要与新的共享框选 UI 混为一包 |
 | `app/updates`（原 updates） | 版本/资产规则已迁；平台下载/安装不在此包 |
 | `plugins/runtime/lifecycle`（原 feature_runtime） | 已迁；现在只是启停门控，不能计为通用取消、排空与版本租约实现 |
-| `plugins/runtime/catalog`（原 tool_registry） | 目录/配置已迁；固定内置描述仍需迁到各功能 extensions，由 app 注入 |
+| `plugins/runtime/catalog`（原 tool_registry） | 目录/配置已迁；贡献已由各功能 extensions 声明、app/tools 注入；通用目录不再导入固定功能 |
 | `plugins/contracts`（原 plugin_protocol） | 当前 v1 校验已迁；通用字段与截图业务契约后续拆分，新协议一次替换旧插件 v1 |
 | `features/video_editor/core/legacy_document`（原 video） | 已有旧草稿读取/转换、宿主 API 与时间线几何已迁；拆掉旧编辑器后清理无调用 API。视频草稿保护与插件 v1 兼容是两件事 |
 | `features/video_editor/core`（原 video_project） | 文档、命令、RenderPlan 已迁；会话装配后续到功能根 |
@@ -284,3 +284,17 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 本批本地验证：构建/归属/文件策略 33 项、MoonBit native 197 项及 macOS 完整原生回归通过；包括实际 AVFoundation 编辑/导出、插件 worker 与 Vision OCR。ScreenCaptureKit 回执乱序使用故障 fixture，Apple Translation fixture 不触发真实模型下载。Windows 全部 9 个生产单元严格交叉编译为 AMD64 COFF；这不代替 MSVC 链接/运行。Linux X11 真按键、私有 D-Bus portal fixture、目标编译与打包已经通过本批 CI；真实 compositor 授权留实机。
 
 提交 `e1424e0` 已通过 [Native desktop previews #44150074776](https://github.com/CoderSerio/moojicut/actions/runs/44150074776)：Windows 2022/MSVC 与 Ubuntu 22.04/Xvfb 两项均成功，包含构建、核心/平台回归、打包及生成接口一致性。此批合并推送一次，尚未发布新版本。CI 成功不关闭上文实机验收和剩余能力工作包。
+
+
+### 2026-11-18：B2 截图贡献接线（当前源码，尚未发布）
+
+本批在 `d2f9e80` 基础上实现，只完成 B2 的贡献目录、工具栏接线和一个真实命令案例；**没有完成整个共享属性/输入 UI 工作包，也没有开放用户插件 v2**。
+
+- `capture/extensions/{annotations,pin,ocr,translation,scroll_capture}` 各自声明贡献；`app/tools` 组装注入 `plugins/runtime/catalog`。通用目录不再定义 Rectangle/Pin 固定工具枚举或功能文案；`plugins/contracts` 只持有限贡献字段。
+- C ABI 提供不可变目录快照及候选启停/排序；快照从 app 贡献和已验证 manifest 重建，拒绝伪造 command、kind、icon、slot 或能力字段。关闭后句柄不复用，活动快照数量有上限，读接口不改变状态。JSON/typed 操作统一拒绝跨槽位排序，新增内置工具为已保存条目保留有界余量；输出再次检查大小，避免保存后无法读回。能力不可用与用户是否启用分开记录，缺少 OCR/翻译后端时不能点击执行。
+- 三端工具栏读取同一描述与图标资产名称；工具在左，贴图等完成操作在右。macOS OCR/翻译/滚动不再是另一排固定按钮；滚动和编号框默认关闭。设置只允许同槽位排序，用户顺序不充当执行依赖顺序。
+- Windows/Linux 新增截图工具管理，预检当前输入后构建候选配置，保存成功才发布；保存失败、IME/未提交文本/拖拽或属性输入阻止变更时保留原工具、文档与配置。Windows 先准备隐藏控件、提交时替换，并拒绝旧按钮延迟消息；贴图菜单资源尚未排空时，启用在写盘前被纯预检拒绝。Linux 控件复制描述，借用宿主持有的当前快照；同步切换后才关闭旧句柄；贴图通用开关与工具开关共用唯一已保存配置，成功停用才回收贴图窗口。macOS 沿用已有多窗口预检/提交机制；NSUserDefaults 的写入调用不提供完整磁盘持久化失败回执，这一限制未因此消失。
+- 新增默认关闭的“编号框”内置声明案例。三端通过通用 `dragRect` 交互调用 MoonBit 命令，不为其 ID 新建三套原生按钮分支；共享处理器生成核心已有的矩形与文字，一个命令、一次撤销。取消、过小拖框、陈旧文档版本不提交；多位编号按框内宽高限制字号，JSON 适配拒绝画布外矩形。停用贡献保留已生成图元、导出与历史。
+- 编号框目前复用矩形颜色/粗细/透明度样式库并隐藏形状选择。这是有限模板，不是任意自绘 UI、任意图元或完整属性 Schema。现有六属性原生控件、IME 桥、工具栏布局还有产品逻辑；`shared/ui` 的完整迁移继续保持未完成。用户 ZIP 仍是已有 v1 元信息/文本协议，v2 的效果权限、安装、三端 worker 和像素端口留在 D1。
+
+本批本地验证：MoonBit native/Wasm 各 212 项、构建/归属/文件策略 33 项与 macOS 完整原生回归通过。新增真实工具栏、复合图元 PNG 导出/撤销、配置停用不丢内容与分组末尾拖拽回归；排序边界测试证明修复前失败、修复后通过。Windows/Linux 目标 CI 待本批提交后记录。Windows/Linux 实机输入、DPI、Wayland 和硬件验收仍由用户后续组织，不以本地交叉编译代替。

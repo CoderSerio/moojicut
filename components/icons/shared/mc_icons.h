@@ -3,6 +3,7 @@
  * ISC / Feather MIT: assets/icons/lucide/LICENSE; shape variants are Mooji Cut geometry. */
 #ifndef MOOJICUT_SHARED_ICONS_H
 #define MOOJICUT_SHARED_ICONS_H
+#include <string.h>
 typedef enum {
   MC_ICON_SELECT,
   MC_ICON_RECTANGLE,
@@ -242,6 +243,29 @@ static const MCIconCommand mc_icon_mosaic[] = {
   {'Z', 0.000000f, 0.000000f, 0.000000f, 0.000000f, 0.000000f, 0.000000f},
   {'F', 0.800000f, 0.000000f, 0.000000f, 0.000000f, 0.000000f, 0.000000f},
 };
+/* Stable asset names for declarative contributions; unknown names have no geometry. */
+static inline MCIcon mc_icon_from_name(const char *name) {
+  if (!name) return MC_ICON_COUNT;
+  if (!strcmp(name, "select")) return MC_ICON_SELECT;
+  if (!strcmp(name, "rectangle")) return MC_ICON_RECTANGLE;
+  if (!strcmp(name, "arrow")) return MC_ICON_ARROW;
+  if (!strcmp(name, "text")) return MC_ICON_TEXT;
+  if (!strcmp(name, "redact")) return MC_ICON_REDACT;
+  if (!strcmp(name, "undo")) return MC_ICON_UNDO;
+  if (!strcmp(name, "redo")) return MC_ICON_REDO;
+  if (!strcmp(name, "pin")) return MC_ICON_PIN;
+  if (!strcmp(name, "close")) return MC_ICON_CLOSE;
+  if (!strcmp(name, "check")) return MC_ICON_CHECK;
+  if (!strcmp(name, "font_size")) return MC_ICON_FONT_SIZE;
+  if (!strcmp(name, "ocr")) return MC_ICON_OCR;
+  if (!strcmp(name, "translate")) return MC_ICON_TRANSLATE;
+  if (!strcmp(name, "chevron_up")) return MC_ICON_CHEVRON_UP;
+  if (!strcmp(name, "chevron_down")) return MC_ICON_CHEVRON_DOWN;
+  if (!strcmp(name, "ellipse")) return MC_ICON_ELLIPSE;
+  if (!strcmp(name, "cover_ellipse")) return MC_ICON_COVER_ELLIPSE;
+  if (!strcmp(name, "mosaic")) return MC_ICON_MOSAIC;
+  return MC_ICON_COUNT;
+}
 static inline MCIconPath mc_icon_path(MCIcon icon) {
   switch (icon) {
     case MC_ICON_SELECT: {

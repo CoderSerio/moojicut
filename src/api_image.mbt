@@ -188,6 +188,19 @@ pub fn image_session_shape_event(id : Int, phase : Int, x : Double, y : Double) 
 }
 
 ///|
+#export_name("image_session_tool_begin")
+pub fn image_session_tool_begin(id : Int, command : String, x : Double, y : Double,
+  color : Int, stroke : Double, opacity : Double, shape : Int, block : Double) -> Int {
+  @capture.image_session_tool_begin(id, command, x, y, color, stroke, opacity, shape, block)
+}
+
+///|
+#export_name("image_contribution_command")
+pub fn image_contribution_command(request : String) -> String {
+  @annotation_tools.contribution_command_json(request)
+}
+
+///|
 #export_name("image_session_preview_value")
 pub fn image_session_preview_value(id : Int, field : Int) -> Double {
   @capture.image_session_preview_value(id, field)

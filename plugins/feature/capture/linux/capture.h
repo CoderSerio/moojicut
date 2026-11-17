@@ -16,5 +16,10 @@ void mc_linux_capture_start(GtkApplication *application, const MCLinuxCaptureHos
 gboolean mc_linux_capture_busy(void);
 void mc_linux_capture_close(void);
 void mc_linux_capture_refresh_capabilities(void);
+/* Host owns the snapshot. Preflight never commits a draft or changes history;
+ * publish is called only after durable settings save, before closing the old
+ * snapshot. An editor copies descriptor data into its native widgets. */
+gboolean mc_linux_capture_preflight_tools(int snapshot, const char **reason);
+void mc_linux_capture_publish_tools(int snapshot);
 gboolean mc_linux_capture_smoke(GtkApplication *application);
 #endif

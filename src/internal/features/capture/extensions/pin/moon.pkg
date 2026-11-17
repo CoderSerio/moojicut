@@ -1,4 +1,6 @@
 import {
+  "moojicut/core/internal/plugins/contracts" @plugin_protocol,
+  "moonbitlang/core/json",
   "moonbitlang/core/double",
   "moonbitlang/core/math",
 }

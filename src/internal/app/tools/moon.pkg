@@ -1,0 +1,14 @@
+import {
+  "moojicut/core/internal/plugins/contracts" @plugin_protocol,
+  "moojicut/core/internal/plugins/runtime/catalog",
+  "moojicut/core/internal/features/capture/extensions/annotations",
+  "moojicut/core/internal/features/capture/extensions/pin",
+  "moojicut/core/internal/features/capture/extensions/ocr",
+  "moojicut/core/internal/features/capture/extensions/translation",
+  "moojicut/core/internal/features/capture/extensions/scroll_capture" @scroll,
+}
+
+import {
+  "moonbitlang/core/json",
+  "moojicut/core/internal/shared/test_support",
+} for "wbtest"

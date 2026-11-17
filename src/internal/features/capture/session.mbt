@@ -19,6 +19,8 @@ priv struct NativeImageSession {
   mut next_annotation : Int
   gesture : Int
   mut preview : Json
+  mut contribution : String
+  mut gesture_revision : Json
 }
 
 ///|
@@ -47,7 +49,8 @@ fn native_image_create(request : Json) -> Int {
   native_image_next_id.val = id + 1
   let gesture = @capture_ui.open(image_number(document, "width", 0), image_number(document, "height", 0))
   if gesture == 0 { return 0 }
-  native_image_sessions[id] = { document, text: "文本", next_annotation: 1, gesture, preview: Json::null() }
+  native_image_sessions[id] = { document, text: "文本", next_annotation: 1, gesture, preview: Json::null(),
+    contribution: "", gesture_revision: Json::null() }
   id
 }
 
@@ -308,7 +311,20 @@ pub fn image_session_shape_begin(id : Int, kind : Int, x : Double, y : Double,
     "kind": Json(kind), "x": Json(x), "y": Json(y), "color": Json(native_image_color(color)),
     "stroke": Json(stroke), "opacity": Json(opacity), "shape": Json(shape), "blockSize": Json(block),
   }).stringify())) catch { _ => return 0 }
-  match result { Object({ "ok": True, .. }) => { s.preview = Json::null(); 1 }; _ => 0 }
+  match result { Object({ "ok": True, .. }) => {
+    s.preview = Json::null(); s.contribution = ""; s.gesture_revision = s.document["revision"]; 1
+  }; _ => 0 }
+}
+
+///|
+// The descriptor's dragRect interaction reuses rectangle input and rendering;
+// the feature handler builds a checked, atomic document command at gesture end.
+pub fn image_session_tool_begin(id : Int, command : String, x : Double, y : Double,
+  color : Int, stroke : Double, opacity : Double, _shape : Int, block : Double) -> Int {
+  if command != "capture.numberedRectangle" { return 0 }
+  if image_session_shape_begin(id, 1, x, y, color, stroke, opacity, 0, block) == 0 { return 0 }
+  native_image_sessions[id].contribution = command
+  1
 }
 
 ///|
@@ -323,10 +339,17 @@ pub fn image_session_shape_event(id : Int, phase : Int, x : Double, y : Double) 
     Object({ "ok": True, "preview": preview, "command": command, .. }) => {
       s.preview = preview
       if command != Json::null() {
+        let contribution = s.contribution
+        s.contribution = ""
+        if s.gesture_revision != s.document["revision"] { return 0 }
+        let command = if contribution == "" { command } else {
+          let rectangle = match command { Object({ "annotations": Array(items), .. }) if items.length() == 1 => items[0]; _ => return 0 }
+          @annotation_tools.contribution_drag_command(contribution, rectangle, native_image_annotations(id)) catch { _ => return 0 }
+        }
         let applied = native_image_command(s, command)
         if applied == 1 { s.next_annotation += 1 }
         applied
-      } else { 1 }
+      } else { if phase != 0 { s.contribution = "" }; 1 }
     }
     _ => 0
   }

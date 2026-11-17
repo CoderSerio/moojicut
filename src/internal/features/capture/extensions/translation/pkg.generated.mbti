@@ -1,0 +1,17 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/features/capture/extensions/translation"
+
+import {
+  "moojicut/core/internal/plugins/contracts",
+}
+
+// Values
+pub fn contribution() -> @contracts.ToolContribution
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

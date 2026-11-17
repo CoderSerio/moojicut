@@ -1,12 +1,26 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "moojicut/core/internal/features/capture/extensions/annotations"
 
+import {
+  "moojicut/core/internal/plugins/contracts",
+  "moojicut/core/internal/shared/protocol",
+  "moonbitlang/core/json",
+}
+
 // Values
+pub fn contribution_command_json(String) -> String
+
+pub fn contribution_drag_command(String, @json.Json, Array[@json.Json]) -> @json.Json raise @protocol.InputError
+
+pub fn contributions() -> Array[@contracts.ToolContribution]
+
 pub fn editor_style_default(Int32) -> Double
 
 pub fn editor_style_property_mask(Int32) -> Int32
 
 pub fn editor_style_shape_count(Int32) -> Int32
+
+pub fn numbered_rectangle_contribution() -> @contracts.ToolContribution
 
 // Errors
 

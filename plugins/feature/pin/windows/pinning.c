@@ -45,6 +45,9 @@ static BOOL global_registered[2], capture_hidden, shortcuts_suspended;
 static int feature_state = MC_FEATURE_ENABLED;
 static unsigned menu_leases;
 BOOL mc_pin_enabled(void) { return feature_can_invoke(feature_state) != 0; }
+BOOL mc_pin_can_set_enabled(BOOL enabled) {
+  return !enabled || feature_can_invoke(feature_transition(feature_state, MC_FEATURE_ENABLE)) != 0;
+}
 static void finish_disable(void) {
   if (!pins && !hotkey_host && !menu_leases && feature_state == MC_FEATURE_DISABLING)
     feature_state = feature_transition(feature_state, MC_FEATURE_CLEANUP_FINISHED);
@@ -690,7 +693,10 @@ static HGLOBAL clone_dib(HGLOBAL original) {
   }
   return copy;
 }
-typedef struct { BOOL menu_entered, disabled, enable_rejected; } PinMenuSmoke;
+typedef struct {
+  BOOL menu_entered, disabled, enable_rejected, preflight_rejected, transaction_ok;
+  BOOL (*check_draining_transaction)(void);
+} PinMenuSmoke;
 static LRESULT CALLBACK pin_menu_smoke_proc(HWND window, UINT message, WPARAM wp, LPARAM lp,
                                            UINT_PTR id, DWORD_PTR data) {
   PinMenuSmoke *state = (PinMenuSmoke *)data;
@@ -701,6 +707,8 @@ static LRESULT CALLBACK pin_menu_smoke_proc(HWND window, UINT message, WPARAM wp
     KillTimer(window, 1);
     mc_pin_set_enabled(FALSE); // Destroys this window during TrackPopupMenu.
     state->disabled = !mc_pin_enabled() && !pins && !hotkey_host;
+    state->preflight_rejected = !mc_pin_can_set_enabled(TRUE) && mc_pin_can_set_enabled(FALSE);
+    state->transaction_ok = !state->check_draining_transaction || state->check_draining_transaction();
     state->enable_rejected = !mc_pin_set_enabled(TRUE); // Menu callback is still leased.
     return 0;
   }
@@ -717,8 +725,9 @@ static DWORD WINAPI pin_menu_watchdog(void *context) {
   }
   return 0;
 }
-static BOOL pin_menu_disable_smoke(HWND window) {
+static BOOL pin_menu_disable_smoke(HWND window, BOOL (*check_draining_transaction)(void)) {
   PinMenuSmoke state = {0};
+  state.check_draining_transaction = check_draining_transaction;
   if (!SetWindowSubclass(window, pin_menu_smoke_proc, 99, (DWORD_PTR)&state)) return FALSE;
   ShowWindow(window, SW_SHOWNOACTIVATE); // Only our synthetic image fixture.
   if (!SetTimer(window, 1, 1, NULL)) { RemoveWindowSubclass(window, pin_menu_smoke_proc, 99); return FALSE; }
@@ -739,6 +748,7 @@ static BOOL pin_menu_disable_smoke(HWND window) {
     RemoveWindowSubclass(window, pin_menu_smoke_proc, 99);
   }
   return !watchdog.expired && state.menu_entered && state.disabled && state.enable_rejected &&
+      state.preflight_rejected && state.transaction_ok && mc_pin_can_set_enabled(TRUE) &&
       !IsWindow(window) && !pins && !hotkey_host && !menu_leases && feature_state == MC_FEATURE_DISABLED;
 }
 static BOOL pin_interaction_smoke(Pin *pin) {
@@ -802,7 +812,7 @@ static BOOL pin_interaction_smoke(Pin *pin) {
   printf("Windows pin interaction smoke %s: fractional wheel, proportional edge resize, capture cancellation, input guards.\n", ok ? "passed" : "FAILED");
   return ok;
 }
-BOOL mc_pin_smoke(HINSTANCE instance) {
+BOOL mc_pin_smoke(HINSTANCE instance, BOOL (*check_draining_transaction)(void)) {
   if (!mc_pin_set_enabled(TRUE))
     return FALSE;
   HGLOBAL dib = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(BITMAPINFOHEADER) + 320 * 200 * 3);
@@ -983,7 +993,7 @@ BOOL mc_pin_smoke(HINSTANCE instance) {
     GlobalFree(restart); return FALSE;
   }
   ok = ok && global_registered[0] && global_registered[1];
-  BOOL menu_ok = pin_menu_disable_smoke(pins->window);
+  BOOL menu_ok = pin_menu_disable_smoke(pins->window, check_draining_transaction);
   ok = ok && menu_ok;
   mc_pins_shutdown();
   memcpy(keys, configured, sizeof(keys));

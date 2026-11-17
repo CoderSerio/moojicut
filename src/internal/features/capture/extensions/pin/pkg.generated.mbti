@@ -1,7 +1,13 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "moojicut/core/internal/features/capture/extensions/pin"
 
+import {
+  "moojicut/core/internal/plugins/contracts",
+}
+
 // Values
+pub fn contribution() -> @contracts.ToolContribution
+
 pub fn hidden_after(Int32, Int32, Int32, Int32, Int32) -> Int32
 
 pub fn hit_handle(Double, Double, Double, Double, Double) -> Int32

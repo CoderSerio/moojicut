@@ -43,6 +43,9 @@ fn decode_layout(
   }
   let groups = @protocol.object_field(fields, "groups")
   let seen : Map[String, Bool] = Map([])
+  // Built-ins can grow without spending the saved user/unknown-entry budget.
+  // Use the same bound before and after defaults so emitted layouts reload.
+  let entry_limit = 256 + catalog.builtins.length()
   let mut count = 0
   let mut layout : Layout = {
     screenshot: [],
@@ -58,9 +61,10 @@ fn decode_layout(
     let entries : Array[Entry] = []
     for item in items {
       count += 1
-      if count > 256 {
+      if count > entry_limit {
         raise InputError(
-          "invalid_input", "Tool layout exceeds 256 saved entries",
+          "invalid_input",
+          "Tool layout exceeds \{entry_limit} saved entries",
         )
       }
       let fields = match item {
@@ -89,7 +93,7 @@ fn decode_layout(
     }
     for tool in catalog.all(group) {
       if !seen.contains(tool.key()) {
-        entries.push({ id: Known(tool), enabled: true, })
+        entries.push({ id: Known(tool), enabled: tool.default_enabled(), })
         seen[tool.key()] = true
       }
     }
@@ -98,15 +102,11 @@ fn decode_layout(
   if layout.screenshot.length() +
     layout.recording.length() +
     layout.video_editing.length() >
-    256 {
+    entry_limit {
     raise InputError(
-      "invalid_input", "Tool layout exceeds 256 entries after adding available tools",
+      "invalid_input",
+      "Tool layout exceeds \{entry_limit} entries after adding available tools",
     )
-  }
-  // Leave space inside the shared request bound for an update command. Escaped
-  // unknown IDs can be larger in JSON than their decoded character count.
-  if encode_layout(layout).stringify().length() > 60000 {
-    raise InputError("invalid_input", "Normalized tool layout is too large")
   }
   layout
 }
@@ -150,6 +150,11 @@ fn decode_command(
               "invalid_group", "Move destination must be in the same group",
             )
           }
+          if before.slot() != tool.slot() {
+            raise InputError(
+              "invalid_slot", "Move destination must be in the same toolbar slot",
+            )
+          }
           Some(before)
         }
         _ =>
@@ -182,34 +187,69 @@ fn encode_layout(layout : Layout) -> Json {
 }
 
 ///|
-fn result(layout : Layout) -> Json {
+fn encode_contribution(
+  tool : @plugin_protocol.ToolContribution,
+  enabled : Bool,
+) -> Json {
+  let descriptor : Map[String, Json] = {
+    "id": Json(tool.id),
+    "pluginId": Json(tool.plugin_id),
+    "target": Json(tool.target),
+    "title": Json(tool.title),
+    "icon": Json(tool.icon),
+    "slot": Json(tool.slot),
+    "type": Json(tool.behavior),
+    "command": Json(tool.command),
+    "interaction": Json(tool.interaction),
+    "enabled": Json(enabled),
+    "defaultEnabled": Json(tool.default_enabled),
+    "capability": Json(tool.capability),
+    "requires": Json(tool.requires),
+    "payload": tool.payload,
+  }
+  if tool.behavior == "annotation" {
+    descriptor["kind"] = Json(tool.annotation_kind)
+  }
+  if tool.behavior == "action" {
+    descriptor["action"] = Json(tool.command)
+  }
+  Json::object(descriptor)
+}
+
+///|
+fn encode_user(tool : @plugin_protocol.UserTool, enabled : Bool) -> Json {
+  let fields = match @plugin_protocol.encode_tool(tool, enabled) {
+    Object(fields) => fields
+    _ => abort("tool descriptor")
+  }
+  fields["icon"] = Json("plugin")
+  fields["slot"] = Json("tools")
+  fields["command"] = Json("plugin.run")
+  fields["interaction"] = Json("invoke")
+  fields["defaultEnabled"] = Json(true)
+  fields["capability"] = Json(16)
+  fields["requires"] = Json("userPlugins")
+  fields["payload"] = Json::object({})
+  Json::object(fields)
+}
+
+///|
+fn result(layout : Layout, catalog : Catalog) -> Json raise InputError {
+  let saved = encode_layout(layout)
+  // Check the candidate after every update as well as normalization. Even
+  // true -> false grows JSON by one character and must remain reloadable.
+  // Leave room inside the shared request bound for the next update command.
+  if saved.stringify().length() > 60000 {
+    raise InputError("invalid_input", "Normalized tool layout is too large")
+  }
   let groups : Map[String, Json] = Map([])
   for group in [Screenshot, Recording, VideoEditing] {
     let tools : Array[Json] = []
     for entry in layout.entries(group) {
       match entry.id {
-        Known(BuiltinTool(tool)) => {
-          let descriptor : Map[String, Json] = {
-            "id": Json(tool.key()),
-            "pluginId": Json(tool.plugin_id()),
-            "target": Json(group.key()),
-            "title": Json(tool.title()),
-            "enabled": Json(entry.enabled),
-          }
-          match tool.behavior() {
-            Annotation(kind) => {
-              descriptor["type"] = Json("annotation")
-              descriptor["kind"] = Json(kind)
-            }
-            PinAction => {
-              descriptor["type"] = Json("action")
-              descriptor["action"] = Json("pin")
-            }
-          }
-          tools.push(Json::object(descriptor))
-        }
-        Known(PluginTool(tool)) =>
-          tools.push(@plugin_protocol.encode_tool(tool, entry.enabled))
+        Known(BuiltinTool(tool)) =>
+          tools.push(encode_contribution(tool, entry.enabled))
+        Known(PluginTool(tool)) => tools.push(encode_user(tool, entry.enabled))
         Unknown(_) => ()
       }
     }
@@ -217,22 +257,56 @@ fn result(layout : Layout) -> Json {
   }
   Json::object({
     "ok": Json(true),
-    "layout": encode_layout(layout),
+    "layout": saved,
     "groups": Json::object(groups),
+    "manifests": Json::array(catalog.manifests),
   })
+}
+
+///|
+fn builtin_catalog(
+  builtins : Array[@plugin_protocol.ToolContribution],
+) -> Catalog raise InputError {
+  if builtins.length() > 128 {
+    raise InputError("invalid_catalog", "Too many built-in contributions")
+  }
+  let seen : Map[String, Bool] = Map([])
+  for tool in builtins {
+    if tool.id.length() == 0 ||
+      tool.id.length() > 160 ||
+      seen.contains(tool.id) ||
+      ToolGroup::from_key(tool.target) is None ||
+      !["tools", "finish"].contains(tool.slot) ||
+      !["annotation", "action", "command"].contains(tool.behavior) ||
+      !["invoke", "annotation", "dragRect"].contains(tool.interaction) ||
+      tool.command.length() == 0 ||
+      tool.capability < 0 ||
+      (tool.behavior == "annotation" && tool.annotation_kind <= 0) {
+      raise InputError(
+        "invalid_catalog", "Invalid or duplicate built-in contribution",
+      )
+    }
+    seen[tool.id] = true
+  }
+  { builtins: builtins.copy(), users: [], manifests: [], }
 }
 
 ///|
 /// Normalize a versioned saved layout, or return defaults for an empty string.
 /// Unknown IDs remain saved but never appear in the executable catalog.
-pub fn tool_registry_normalize(saved_json : String) -> String {
+pub fn normalize(
+  builtins : Array[@plugin_protocol.ToolContribution],
+  saved_json : String,
+) -> String {
   @protocol.response(() => {
+    let catalog = builtin_catalog(builtins)
     result(
       if saved_json == "" {
-        default_layout({ users: [], })
+        default_layout(catalog)
       } else {
-        decode_layout(@protocol.request_object(saved_json), { users: [], })
+        decode_layout(@protocol.request_object(saved_json), catalog)
       },
+      catalog,
     )
   })
 }
@@ -240,10 +314,13 @@ pub fn tool_registry_normalize(saved_json : String) -> String {
 ///|
 /// Pure checked update: the caller persists the returned layout before applying
 /// it to live controls. Errors return no replacement layout.
-pub fn tool_registry_update(request_json : String) -> String {
+pub fn update_catalog(
+  builtins : Array[@plugin_protocol.ToolContribution],
+  request_json : String,
+) -> String {
   @protocol.response(() => {
     let request = @protocol.request_object(request_json)
-    let catalog : Catalog = { users: [], }
+    let catalog = builtin_catalog(builtins)
     let layout = decode_layout(
       @protocol.object_field(request, "layout"),
       catalog,
@@ -252,12 +329,16 @@ pub fn tool_registry_update(request_json : String) -> String {
       @protocol.object_field(request, "command"),
       catalog,
     )
-    result(layout.apply(command))
+    result(layout.apply(command), catalog)
   })
 }
 
 ///|
-fn decode_catalog(value : Json) -> Catalog raise InputError {
+fn decode_catalog(
+  builtins : Array[@plugin_protocol.ToolContribution],
+  value : Json,
+) -> Catalog raise InputError {
+  let base = builtin_catalog(builtins)
   let manifests = match value {
     Array(items) if items.length() <= 64 => items
     _ =>
@@ -267,8 +348,10 @@ fn decode_catalog(value : Json) -> Catalog raise InputError {
   }
   let seen : Map[String, Bool] = Map([])
   let users : Array[@plugin_protocol.UserTool] = []
+  let canonical : Array[Json] = []
   for value in manifests {
     let manifest = @plugin_protocol.decode_manifest(value)
+    canonical.push(@plugin_protocol.encode_manifest(manifest))
     if seen.contains(manifest.plugin_id()) {
       raise InputError(
         "invalid_catalog", "Duplicate pluginId in installed catalog",
@@ -281,16 +364,22 @@ fn decode_catalog(value : Json) -> Catalog raise InputError {
           "invalid_catalog", "Installed catalog exceeds 64 user tools",
         )
       }
+      if base.find(tool.global_id()) is Some(_) {
+        raise InputError("invalid_catalog", "Contribution identity collision")
+      }
       users.push(tool)
     }
   }
-  { users, }
+  { builtins: base.builtins, users, manifests: canonical, }
 }
 
 ///|
 /// Resolve against the caller's current installed-package snapshot. Removed
 /// tools become unknown saved entries, retaining their preferences for reinstall.
-pub fn tool_registry_resolve(request_json : String) -> String {
+pub fn resolve_catalog(
+  builtins : Array[@plugin_protocol.ToolContribution],
+  request_json : String,
+) -> String {
   @protocol.response(() => {
     let request = @plugin_protocol.parse_object(request_json, 262144)
     for key, _ in request {
@@ -302,7 +391,7 @@ pub fn tool_registry_resolve(request_json : String) -> String {
       }
     }
     let catalog = match request.get("manifests") {
-      Some(value) => decode_catalog(value)
+      Some(value) => decode_catalog(builtins, value)
       None => raise InputError("invalid_catalog", "manifests is required")
     }
     let layout = match request.get("layout") {
@@ -315,6 +404,6 @@ pub fn tool_registry_resolve(request_json : String) -> String {
       Some(Object(fields)) => layout.apply(decode_command(fields, catalog))
       _ => raise InputError("invalid_input", "command must be an object")
     }
-    result(layout)
+    result(layout, catalog)
   })
 }

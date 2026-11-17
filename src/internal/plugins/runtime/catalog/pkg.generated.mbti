@@ -1,12 +1,32 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "moojicut/core/internal/plugins/runtime/catalog"
 
+import {
+  "moojicut/core/internal/plugins/contracts",
+}
+
 // Values
-pub fn tool_registry_normalize(String) -> String
+pub fn normalize(Array[@contracts.ToolContribution], String) -> String
 
-pub fn tool_registry_resolve(String) -> String
+pub fn resolve_catalog(Array[@contracts.ToolContribution], String) -> String
 
-pub fn tool_registry_update(String) -> String
+pub fn snapshot_close(Int32) -> Int32
+
+pub fn snapshot_count(Int32, Int32) -> Int32
+
+pub fn snapshot_layout(Int32) -> String
+
+pub fn snapshot_move(Array[@contracts.ToolContribution], Int32, String, String) -> Int32
+
+pub fn snapshot_open(Array[@contracts.ToolContribution], String, Int32) -> Int32
+
+pub fn snapshot_set_enabled(Array[@contracts.ToolContribution], Int32, String, Int32) -> Int32
+
+pub fn snapshot_text(Int32, Int32, Int32, Int32) -> String
+
+pub fn snapshot_value(Int32, Int32, Int32, Int32) -> Int32
+
+pub fn update_catalog(Array[@contracts.ToolContribution], String) -> String
 
 // Errors
 

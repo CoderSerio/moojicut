@@ -4,6 +4,7 @@
 #import "components/style_controls/macos/MCStylePropertiesView.h"
 #import "components/icons/macos/MCIcon.h"
 #include "moonbit.h"
+#include "bindings/c/tool_registry.h"
 #include <math.h>
 #import <objc/runtime.h>
 
@@ -23,7 +24,7 @@
 @property (readonly) MCStylePropertiesView *properties;
 @property (readonly) NSStackView *toolbar;
 @property (readonly) NSButton *pinButton;
-@property (readonly) NSButton *ocrButton;
+@property (readonly) NSArray<NSDictionary *> *visibleTools;
 @property (readonly) NSButton *undoButton;
 @property (readonly) NSButton *redoButton;
 @property (readonly) NSButton *cancelButton;
@@ -43,18 +44,46 @@
 @end
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL tool layout: %s\n", message); passed = NO; } } while (0)
 
+static NSDictionary *registryConfiguration(NSArray<NSDictionary *> *entries, NSArray *manifests) {
+    NSMutableArray *saved = [NSMutableArray array];
+    for (NSDictionary *entry in entries) [saved addObject:@{@"id":entry[@"id"], @"enabled":([entry[@"enabled"] boolValue] ? @YES : @NO)}];
+    NSDictionary *request = @{@"layout":@{@"version":@1,@"groups":@{@"screenshot":saved}}, @"manifests":manifests};
+    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:request options:0 error:NULL] encoding:NSUTF8StringEncoding];
+    moonbit_string_t input = moonbit_make_string_raw((int32_t)json.length);
+    [json getCharacters:input range:NSMakeRange(0,json.length)];
+    moonbit_string_t result = tool_registry_resolve(input); moonbit_decref(input);
+    NSString *text = [[NSString alloc] initWithCharacters:result length:Moonbit_array_length(result)]; moonbit_decref(result);
+    NSDictionary *configuration = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    NSCAssert([configuration[@"ok"] boolValue], @"Invalid registry fixture: %@", configuration);
+    return configuration;
+}
 static NSDictionary *configuration(NSArray<NSNumber *> *order, NSSet<NSNumber *> *disabled) {
     NSArray *ids = @[@"builtin.image.rectangle", @"builtin.image.arrow", @"builtin.image.text", @"builtin.image.cover"];
-    NSArray *titles = @[@"矩形", @"箭头", @"文字", @"遮挡"];
     NSMutableArray *entries = [NSMutableArray array];
     NSArray *ordered = [order containsObject:@100] ? order : [order arrayByAddingObject:@100];
-    for (NSNumber *kind in ordered) {
-        if (kind.integerValue == 100) [entries addObject:@{@"id":@"builtin.image.pin", @"pluginId":@"builtin.pin",
-            @"type":@"action", @"action":@"pin", @"title":@"贴图", @"enabled":@(![disabled containsObject:kind])}];
-        else [entries addObject:@{@"id":ids[kind.integerValue - 1], @"kind":kind, @"type":@"annotation",
-            @"title":titles[kind.integerValue - 1], @"enabled":@(![disabled containsObject:kind])}];
-    }
-    return @{@"ok":@YES, @"layout":@{}, @"groups":@{@"screenshot":entries, @"recording":@[], @"videoEditing":@[]}};
+    for (NSNumber *kind in ordered) [entries addObject:@{@"id":kind.integerValue == 100 ? @"builtin.image.pin" : ids[kind.integerValue - 1],
+        @"enabled":@(![disabled containsObject:kind])}];
+    // These fixtures isolate annotation interactions. Content actions are tested
+    // separately against the actual default catalog and host capabilities.
+    for (NSString *identifier in @[@"builtin.capture.ocr",@"builtin.capture.translate"])
+        [entries addObject:@{@"id":identifier,@"enabled":@NO}];
+    return registryConfiguration(entries,@[]);
+}
+static NSDictionary *setConfiguredTool(NSDictionary *configuration, NSString *identifier, BOOL enabled) {
+    NSMutableArray *entries = [NSMutableArray array];
+    for (NSDictionary *entry in configuration[@"layout"][@"groups"][@"screenshot"])
+        [entries addObject:[entry[@"id"] isEqual:identifier] ? @{@"id":identifier,@"enabled":@(enabled)} : entry];
+    return registryConfiguration(entries,configuration[@"manifests"] ?: @[]);
+}
+static NSInteger contributionSegment(MCImageEditorController *editor, NSString *identifier) {
+    for (NSUInteger index = 0; index < editor.visibleTools.count; index++)
+        if ([editor.visibleTools[index][@"id"] isEqual:identifier]) return (NSInteger)index;
+    return -1;
+}
+static void invokeContribution(MCImageEditorController *editor, NSString *identifier) {
+    NSInteger index = contributionSegment(editor,identifier);
+    NSCAssert(index >= 0,@"Contribution must have a visible segment: %@",identifier);
+    editor.tools.selectedSegment=index; [editor.tools sendAction:editor.tools.action to:editor.tools.target];
 }
 static NSData *pixels(void) {
     NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:800 pixelsHigh:500
@@ -317,15 +346,19 @@ static BOOL userActions(void) {
     NSString *firstID = @"user.com.example.capture/info";
     [entries insertObject:@{@"id":firstID, @"pluginId":@"com.example.capture", @"toolId":@"info",
         @"type":@"action", @"action":@"run", @"target":@"screenshot", @"title":@"截图信息", @"enabled":@YES} atIndex:0];
+    NSMutableArray *manifestTools = [NSMutableArray arrayWithObject:@{@"toolId":@"info",@"title":@"截图信息",@"target":@"screenshot",@"action":@"run"}];
     // Enough actions to overflow even a wide editor. All remain addressable by
     // stable identity while the annotation controls keep their semantic tags.
     for (NSUInteger index = 0; index < 15; index++) {
         NSString *tool = [NSString stringWithFormat:@"extra-%lu", (unsigned long)index];
+        [manifestTools addObject:@{@"toolId":tool,@"title":tool,@"target":@"screenshot",@"action":@"run"}];
         [entries addObject:@{@"id":[@"user.com.example.capture/" stringByAppendingString:tool],
             @"pluginId":@"com.example.capture", @"toolId":tool, @"type":@"action", @"action":@"run",
             @"target":@"screenshot", @"title":tool, @"enabled":@YES}];
     }
-    NSDictionary *candidate = @{@"ok":@YES,@"layout":@{},@"groups":@{@"screenshot":entries,@"recording":@[],@"videoEditing":@[]}};
+    NSArray *manifests = @[@{@"apiVersion":@1,@"pluginId":@"com.example.capture",@"name":@"Capture fixture",@"version":@"1.0.0",
+        @"entry":@"plugin.wasm",@"runtime":@"extism-1",@"capabilities":@[@"capture.metadata",@"result.text"],@"tools":manifestTools}];
+    NSDictionary *candidate = registryConfiguration(entries,manifests);
     CHECK([e canApplyToolConfiguration:candidate error:NULL], "user action catalog is accepted alongside all built-ins");
     [e applyToolConfiguration:candidate];
     CHECK(e.tools.segmentCount == 21 && ![e.tools isEnabledForSegment:1], "user tools need a host callback before invocation");
@@ -369,7 +402,7 @@ static BOOL userActions(void) {
     CHECK(calls == 2 && e.canvas.textView == draft && draft.hasMarkedText && e.window.firstResponder == responder &&
           e.activeTool == 3 && [e.document isEqual:before], "metadata actions do not commit or discard ongoing IME input");
     NSMutableArray *moved = [entries mutableCopy]; [moved removeObjectAtIndex:0]; [moved addObject:entries[0]];
-    NSDictionary *reordered = @{@"ok":@YES,@"layout":@{},@"groups":@{@"screenshot":moved,@"recording":@[],@"videoEditing":@[]}};
+    NSDictionary *reordered = registryConfiguration(moved,manifests);
     [e applyToolConfiguration:reordered];
     e.tools.selectedSegment = e.tools.segmentCount-1; [e.tools sendAction:e.tools.action to:e.tools.target];
     CHECK(calls == 3 && [calledID isEqual:firstID] && draft.hasMarkedText && [e.document isEqual:before],
@@ -380,6 +413,43 @@ static BOOL userActions(void) {
     [e cancel:nil];
     CHECK([closedOwner isEqual:owner] && e.pluginCaptureMetadata == nil,
           "closing the editor invalidates metadata and notifies its plugin invocation owner");
+    return passed;
+}
+static BOOL declarativeComposite(void) {
+    BOOL passed=YES;
+    MCImageEditorController *e=editor();
+    NSDictionary *base=configuration(@[@1,@2,@3,@4],[NSSet set]);
+    NSString *identifier=@"builtin.image.numberedRectangle";
+    CHECK(contributionSegment(e,identifier) == -1, "the declared composite tool starts disabled");
+    NSDictionary *enabled=setConfiguredTool(base,identifier,YES);
+    CHECK([e canApplyToolConfiguration:enabled error:NULL], "a generic drag contribution preflights through the real registry response");
+    [e applyToolConfiguration:enabled];
+    NSInteger numberSegment=contributionSegment(e,identifier);
+    CHECK(numberSegment >= 0 && [e.tools isEnabledForSegment:numberSegment] &&
+          [e.visibleTools[(NSUInteger)numberSegment][@"interaction"] isEqual:@"dragRect"],
+          "the descriptor creates an available segment without a native numbered-tool button");
+    NSData *baseline=[e renderPNGData:NULL];
+    invokeContribution(e,identifier);
+    draw(e,NSMakePoint(80,90),NSMakePoint(280,220));
+    NSArray *annotations=e.document[@"annotations"];
+    CHECK(annotations.count == 2 && [annotations[0][@"type"] isEqual:@"rect"] &&
+          [annotations[1][@"type"] isEqual:@"text"] && [annotations[1][@"text"] isEqual:@"1"] &&
+          [e.document[@"undo"] count] == 1,
+          "dragRect routes one generic command into a rectangle and number in a single document transaction");
+    NSData *rendered=[e renderPNGData:NULL];
+    CHECK(rendered.length > 0 && ![rendered isEqual:baseline], "the composite renders through ordinary annotation/export paths");
+    [e undo:nil];
+    CHECK([e.document[@"annotations"] count] == 0 && [[e renderPNGData:NULL] isEqual:baseline], "one undo removes both composite annotations");
+    [e redo:nil];
+    CHECK([e.document[@"annotations"] isEqual:annotations] && [[e renderPNGData:NULL] isEqual:rendered], "one redo restores the composite and identical export");
+    NSDictionary *document=e.document;
+    NSDictionary *disabled=setConfiguredTool(enabled,identifier,NO);
+    CHECK([e canApplyToolConfiguration:disabled error:NULL], "disabling the new contribution uses the ordinary preflight");
+    [e applyToolConfiguration:disabled];
+    CHECK(contributionSegment(e,identifier) == -1 && e.activeTool == 0 && [e.document isEqual:document] &&
+          [[e renderPNGData:NULL] isEqual:rendered],
+          "disabling removes the command entry while preserving existing document shapes, history and export");
+    [e cancel:nil];
     return passed;
 }
 static BOOL objectSelection(CGFloat scale) {
@@ -501,41 +571,42 @@ static BOOL toolbarAppearance(void) {
     NSUInteger separatorCount = 0;
     for (NSView *view in items) for (NSView *child in view.subviews)
         if ([child isKindOfClass:NSBox.class] && ((NSBox *)child).boxType == NSBoxSeparator) separatorCount++;
-    CHECK(separatorCount == 1 && [items indexOfObject:e.ocrButton] < divider &&
+    NSInteger ocrSegment=contributionSegment(e,@"builtin.capture.ocr");
+    CHECK(separatorCount == 1 && ocrSegment >= 0 && [e.tools isEnabledForSegment:ocrSegment] &&
+          [items indexOfObject:e.tools.enclosingScrollView] < divider &&
           [items indexOfObject:e.undoButton] < divider && [items indexOfObject:e.redoButton] < divider &&
           [items indexOfObject:e.pinButton] == divider + 1 && [items indexOfObject:e.cancelButton] == divider + 2 &&
           [items indexOfObject:e.confirmButton] == divider + 3,
           "exactly two groups: editing/OCR/history, then pin/cancel/confirm");
     for (NSString *mode in @[@"light", @"dark"]) {
         e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
-        NSPoint hoverPoint = [e.tools convertPoint:NSMakePoint(2*30+15,14) toView:nil];
+        NSPoint hoverPoint = [e.tools convertPoint:NSMakePoint(ocrSegment*30+15,14) toView:nil];
         NSEvent *hover = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:hoverPoint modifierFlags:0
             timestamp:0 windowNumber:e.window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
         NSBitmapImageRep *normal = toolbarPixels(e);
         NSData *normalPNG = [normal representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
         NSRect pointer = [e.tools convertRect:NSMakeRect(6,5,18,18) toView:e.floatingToolbar];
-        NSRect action = [e.ocrButton convertRect:NSInsetRect(e.ocrButton.bounds,6,5) toView:e.floatingToolbar];
+        NSRect action = [e.tools convertRect:NSMakeRect(ocrSegment*30+6,5,18,18) toView:e.floatingToolbar];
         CHECK(iconContrast(normal,pointer,e.floatingToolbar) >= 4.5 && iconContrast(normal,action,e.floatingToolbar) >= 4.5,
               "enabled tool and action icons retain readable contrast in light and dark appearances");
         [e.undoButton mouseEntered:hover];
         CHECK([normalPNG isEqual:[toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
               "disabled actions do not acquire an enabled hover background in either appearance");
         [e.undoButton mouseExited:hover];
-        [e.ocrButton mouseEntered:hover];
         [e.tools mouseMoved:hover];
         NSBitmapImageRep *hovered = toolbarPixels(e);
         CHECK(![normalPNG isEqual:[hovered representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
               "enabled native buttons and tool segments show their individual hover state");
-        [e.ocrButton highlight:YES]; [e.tools setValue:@2 forKey:@"pressedSegment"];
+        [e.tools setValue:@(ocrSegment) forKey:@"pressedSegment"];
         NSBitmapImageRep *pressed = toolbarPixels(e);
         CHECK(![[hovered representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
                 isEqual:[pressed representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
               "pressed feedback is distinct from hover without selecting a momentary action");
-        [e.ocrButton highlight:NO]; [e.tools setValue:@(-1) forKey:@"pressedSegment"];
-        [e.ocrButton mouseExited:hover]; [e.tools mouseExited:hover];
-        CHECK(e.activeTool == 1 && e.tools.selectedSegment == segment(e, 1) && e.ocrButton.state == NSControlStateValueOff,
+        [e.tools setValue:@(-1) forKey:@"pressedSegment"];
+        [e.tools mouseExited:hover];
+        CHECK(e.activeTool == 1 && e.tools.selectedSegment == segment(e, 1) && e.tools.selectedSegment != ocrSegment,
               "rendering hover/pressed states preserves the single selected annotation tool");
-        CHECK(e.ocrButton.accessibilityLabel.length > 0 && e.tools.accessibilityLabel.length > 0 && [e.tools imageForSegment:1].accessibilityDescription.length > 0,
+        CHECK([e.tools imageForSegment:ocrSegment].accessibilityDescription.length > 0 && e.tools.accessibilityLabel.length > 0 && [e.tools imageForSegment:1].accessibilityDescription.length > 0,
               "native action labels and per-tool accessibility descriptions remain intact");
         NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];
         if (directory.length) {
@@ -825,6 +896,7 @@ int main(void) {
         moonbit_init();
         BOOL passed = interactions(); passed = validationAndFanout() && passed; passed = pinAction() && passed;
         passed = userActions() && passed;
+        passed = declarativeComposite() && passed;
         passed = objectSelection(.5) && passed;
         passed = objectSelection(1.5) && passed;
         passed = toolbarAppearance() && passed;

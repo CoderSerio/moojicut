@@ -2,6 +2,9 @@
 #define MOOJICUT_PINNING_H
 #include <windows.h>
 BOOL mc_pin_enabled(void);
+/* Pure UI-thread preflight. Commit on the same thread without pumping messages
+ * between this check and mc_pin_set_enabled so cleanup cannot acquire a lease. */
+BOOL mc_pin_can_set_enabled(BOOL enabled);
 BOOL mc_pin_set_enabled(BOOL enabled);
 BOOL mc_pin_image(HINSTANCE instance, HGLOBAL dib, int x, int y, BOOL hidden);
 void mc_pins_close(void);
@@ -16,5 +19,5 @@ void mc_pin_default_keys(WORD keys[6]);
 void mc_pin_suspend_shortcuts(BOOL suspended);
 void mc_pin_set_capture_keys(const WORD keys[3]);
 BOOL mc_pin_capture_conflicts(const WORD keys[3]);
-BOOL mc_pin_smoke(HINSTANCE instance);
+BOOL mc_pin_smoke(HINSTANCE instance, BOOL (*check_draining_transaction)(void));
 #endif

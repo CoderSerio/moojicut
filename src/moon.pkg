@@ -10,7 +10,7 @@ import {
   "moojicut/core/internal/features/capture/extensions/pin",
   "moojicut/core/internal/plugins/contracts" @plugin_protocol,
   "moojicut/core/internal/shared/geometry" @selection,
-  "moojicut/core/internal/plugins/runtime/catalog" @tool_registry,
+  "moojicut/core/internal/app/tools" @tool_registry,
   "moojicut/core/internal/app/updates",
   "moojicut/core/internal/features/video_editor/core/legacy_document" @video,
   "moojicut/core/internal/features/video_editor/core" @video_project,

@@ -8,6 +8,7 @@
 #include "capture.h"
 #include "bindings/c/image_session.h"
 #include "bindings/c/capture_ui.h"
+#include "bindings/c/tool_registry.h"
 #include "platform/shared/image/pixelate.h"
 #include "components/icons/shared/mc_icons.h"
 #include "components/hud/windows/hud.h"
@@ -27,20 +28,22 @@
 enum { TOOL_SELECT = 0, TOOL_RECT, TOOL_ARROW, TOOL_TEXT, TOOL_REDACT };
 enum {
   ID_SELECT = 8100,
-  ID_RECT,
-  ID_ARROW,
-  ID_TEXT,
-  ID_REDACT,
-  ID_UNDO,
+  ID_UNDO = 8105,
   ID_REDO,
   ID_COPY,
   ID_CANCEL,
   ID_TEXT_INPUT,
-  ID_PIN,
-  ID_OCR,
-  ID_TRANSLATE
+  ID_CONTRIBUTION_BASE = 9000
 };
 enum { ID_STYLE_BASE = 8500 };
+enum { MAX_TOOL_BUTTONS = 261 };
+typedef struct {
+  HWND window;
+  int command, icon, slot, kind, interaction;
+  BOOL available, registered;
+  wchar_t *id, *action, *handler, *label;
+} ToolButton;
+typedef struct { ToolButton buttons[MAX_TOOL_BUTTONS]; int count; } ToolButtons;
 typedef struct {
   HDC dc;
   HBITMAP bitmap;
@@ -50,7 +53,9 @@ typedef struct {
 } Surface;
 typedef struct {
   HINSTANCE instance;
-  HWND owner, overlay, editor, text, tooltip, buttons[12];
+  HWND owner, overlay, editor, text, tooltip;
+  ToolButtons toolbar_buttons, prepared_buttons;
+  int active_button;
   MCStyleControls *style_controls;
   MCCaptureHost host;
   HFONT font, text_font;
@@ -58,19 +63,32 @@ typedef struct {
   RECT desktop_bounds, canvas, viewport, toolbar, drag_bounds, draft;
   POINT start, end;
   double zoom, opacity;
-  int32_t session, style_bank;
+  int32_t session, style_bank, tool_snapshot, owned_tools;
   int tool, color, stroke, font_size, selected, editing, drag_mode, handle, shape, block;
   BOOL dragging, dirty, smoke, closing, composing;
 } Capture;
 static Capture capture;
+static int32_t configured_tools, prepared_tools;
 static void layout_editor(HWND window);
+static BOOL build_tool_buttons(int32_t snapshot, ToolButtons *buttons);
+static void clear_tool_buttons(ToolButtons *buttons);
+static void publish_tool_buttons(void);
+static ToolButton *find_button(int command);
+static BOOL custom_drag(void) {
+  return capture.active_button >= 0 && capture.active_button < capture.toolbar_buttons.count &&
+    capture.toolbar_buttons.buttons[capture.active_button].interaction == MC_TOOL_INTERACTION_DRAG_RECT;
+}
 static const wchar_t *EDITOR_CLASS = L"MoojiCut.Capture.Editor";
 static BOOL pin_enabled(void) {
   return !capture.host.pin_enabled || capture.host.pin_enabled(capture.host.context);
 }
 void mc_capture_refresh_capabilities(void) {
-  if (capture.buttons[7])
-    EnableWindow(capture.buttons[7], pin_enabled());
+  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
+    ToolButton *button = &capture.toolbar_buttons.buttons[i];
+    BOOL enabled = button->available;
+    if (button->action && !wcscmp(button->action, L"pin")) enabled = enabled && pin_enabled();
+    EnableWindow(button->window, enabled);
+  }
 }
 static void set_pins_hidden(BOOL hidden) {
   if (capture.host.set_pins_hidden)
@@ -348,6 +366,7 @@ static void sync_style_controls(void) {
   MCStyleControlsModel model = {0};
   model.tool = style_context();
   model.mask = (unsigned)editor_style_visible_mask(model.tool, capture.shape);
+  if (custom_drag() && capture.selected < 0) model.mask &= ~(1u << MC_STYLE_SHAPE);
   model.enabled = !capture.composing;
   const double values[] = {capture.color, capture.opacity, capture.stroke, capture.font_size, capture.shape, capture.block};
   for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
@@ -413,22 +432,23 @@ static void layout_editor(HWND window) {
   double *frame = capture_ui_toolbar_frame(client.right / scale, client.bottom / scale,
     capture.viewport.left / scale, capture.viewport.top / scale,
     (capture.viewport.right - capture.viewport.left) / scale,
-    (capture.viewport.bottom - capture.viewport.top) / scale, 368, mc_style_controls_width(capture.style_controls));
+    (capture.viewport.bottom - capture.viewport.top) / scale,
+    capture.toolbar_buttons.count * 30 + 6, mc_style_controls_width(capture.style_controls));
   int x = rounded(frame[0] * scale), y = rounded(frame[1] * scale);
   SetRect(&capture.toolbar, x, y, x + rounded(frame[2] * scale), y + rounded(frame[3] * scale));
   moonbit_decref(frame);
-  const int order[] = {0, 1, 2, 3, 4, 10, 11, 5, 6, 7, 8, 9};
   int left = 6;
-  for (int position = 0; position < 12; position++) {
-    if (position == 9) left += 8;
-    int i = order[position], bx = x + dpi_px(window, left), by = y + dpi_px(window, 6);
-    MoveWindow(capture.buttons[i], bx, by, dpi_px(window, 28), dpi_px(window, 28), TRUE);
+  int previous_slot = MC_TOOL_SLOT_TOOLS;
+  for (int position = 0; position < capture.toolbar_buttons.count; position++) {
+    ToolButton *button = &capture.toolbar_buttons.buttons[position];
+    if (button->slot != previous_slot) left += 8;
+    previous_slot = button->slot;
+    int bx = x + dpi_px(window, left), by = y + dpi_px(window, 6);
+    MoveWindow(button->window, bx, by, dpi_px(window, 28), dpi_px(window, 28), TRUE);
     left += 30;
-    if (i >= 10) {
-      TOOLINFOW tip = {sizeof(tip)}; tip.hwnd = window; tip.uId = i == 10 ? ID_OCR : ID_TRANSLATE;
-      SetRect(&tip.rect, bx, by, bx + dpi_px(window, 28), by + dpi_px(window, 28));
-      SendMessageW(capture.tooltip, TTM_NEWTOOLRECTW, 0, (LPARAM)&tip);
-    }
+    TOOLINFOW tip = {sizeof(tip)}; tip.hwnd = window; tip.uId = button->command;
+    SetRect(&tip.rect, bx, by, bx + dpi_px(window, 28), by + dpi_px(window, 28));
+    SendMessageW(capture.tooltip, TTM_NEWTOOLRECTW, 0, (LPARAM)&tip);
   }
   mc_style_controls_layout(capture.style_controls, x + dpi_px(window, 6), y + dpi_px(window, 40));
   capture.canvas = capture.viewport;
@@ -630,11 +650,6 @@ static void region_label(HDC dc, RECT rect) {
   TextOutW(dc, maximum(0, rect.left), maximum(0, rect.top - 24), label, (int)wcslen(label));
   SelectObject(dc, old);
 }
-static const int button_ids[12] = {ID_SELECT, ID_RECT, ID_ARROW,  ID_TEXT, ID_REDACT, ID_UNDO,
-                                   ID_REDO,   ID_PIN,  ID_CANCEL, ID_COPY, ID_OCR,    ID_TRANSLATE};
-static const MCIcon button_icons[12] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT,
-                                        MC_ICON_REDACT, MC_ICON_UNDO,      MC_ICON_REDO,  MC_ICON_PIN,
-                                        MC_ICON_CLOSE,  MC_ICON_CHECK,     MC_ICON_OCR,   MC_ICON_TRANSLATE};
 static LRESULT CALLBACK hud_button_proc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id,
                                         DWORD_PTR data) {
   (void)id;
@@ -654,35 +669,169 @@ static LRESULT CALLBACK hud_button_proc(HWND window, UINT message, WPARAM wp, LP
   return DefSubclassProc(window, message, wp, lp);
 }
 static HWND hud_button(HWND parent, int id, const wchar_t *label) {
-  HWND button = CreateWindowW(L"BUTTON", label, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1,
+  HWND button = CreateWindowW(L"BUTTON", label, WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1,
                               parent, (HMENU)(INT_PTR)id, capture.instance, NULL);
   SetWindowSubclass(button, hud_button_proc, 2, 0);
-  TOOLINFOW tip = {sizeof(tip)};
-  tip.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-  tip.hwnd = parent;
-  tip.uId = (UINT_PTR)button;
-  tip.lpszText = (LPWSTR)label;
-  SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
   return button;
+}
+static wchar_t *tool_text(int32_t snapshot, int index, int key) {
+  moonbit_string_t text = tool_registry_snapshot_text(snapshot, MC_TOOL_GROUP_SCREENSHOT, index, key);
+  int length = Moonbit_array_length(text);
+  wchar_t *copy = calloc((SIZE_T)length + 1, sizeof(wchar_t));
+  if (copy) memcpy(copy, text, (SIZE_T)length * sizeof(wchar_t));
+  moonbit_decref(text);
+  return copy;
+}
+static int tool_value(int32_t snapshot, int index, int key) {
+  return tool_registry_snapshot_value(snapshot, MC_TOOL_GROUP_SCREENSHOT, index, key);
+}
+static MCIcon tool_icon(const wchar_t *name) {
+  char key[96];
+  if (!name || !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, -1, key, sizeof(key), NULL, NULL))
+    return MC_ICON_RECTANGLE;
+  MCIcon icon = mc_icon_from_name(key);
+  return icon == MC_ICON_COUNT ? MC_ICON_RECTANGLE : icon;
+}
+static void clear_tool_buttons(ToolButtons *buttons) {
+  for (int i = 0; i < buttons->count; i++) {
+    ToolButton *button = &buttons->buttons[i];
+    if (capture.tooltip && button->registered) {
+      TOOLINFOW tip = {sizeof(tip)}; tip.hwnd = capture.editor; tip.uId = button->command;
+      SendMessageW(capture.tooltip, TTM_DELTOOLW, 0, (LPARAM)&tip);
+      tip.uFlags = TTF_IDISHWND; tip.uId = (UINT_PTR)button->window;
+      SendMessageW(capture.tooltip, TTM_DELTOOLW, 0, (LPARAM)&tip);
+    }
+    if (button->window) DestroyWindow(button->window);
+    free(button->id); free(button->action); free(button->handler); free(button->label);
+  }
+  ZeroMemory(buttons, sizeof(*buttons));
+}
+static BOOL add_host_button(ToolButtons *buttons, int command, int icon, int slot, const wchar_t *label) {
+  if (buttons->count >= MAX_TOOL_BUTTONS) return FALSE;
+  ToolButton *button = &buttons->buttons[buttons->count++];
+  button->command = command; button->icon = icon; button->slot = slot; button->available = TRUE;
+  button->label = _wcsdup(label);
+  if (!button->label) return FALSE;
+  button->window = hud_button(capture.editor, command, button->label);
+  return button->window != NULL;
+}
+static BOOL add_contribution_buttons(int32_t snapshot, ToolButtons *buttons, int slot) {
+  int count = tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT);
+  if (count < 0 || count > MAX_TOOL_BUTTONS - 5) return FALSE;
+  for (int i = 0; i < count; i++) {
+    if (tool_value(snapshot, i, MC_TOOL_ENABLED) != 1 || tool_value(snapshot, i, MC_TOOL_SLOT) != slot) continue;
+    ToolButton *button = &buttons->buttons[buttons->count++];
+    button->command = ID_CONTRIBUTION_BASE + i; button->slot = slot;
+    button->kind = tool_value(snapshot, i, MC_TOOL_KIND);
+    button->interaction = tool_value(snapshot, i, MC_TOOL_INTERACTION);
+    button->available = tool_value(snapshot, i, MC_TOOL_AVAILABLE) == 1;
+    button->id = tool_text(snapshot, i, MC_TOOL_ID);
+    button->action = tool_text(snapshot, i, MC_TOOL_ACTION);
+    button->handler = tool_text(snapshot, i, MC_TOOL_COMMAND);
+    button->label = tool_text(snapshot, i, MC_TOOL_TITLE);
+    wchar_t *icon = tool_text(snapshot, i, MC_TOOL_ICON);
+    button->icon = tool_icon(icon); free(icon);
+    if (!button->id || !button->action || !button->handler || !button->label) return FALSE;
+    if (!button->available) {
+      wchar_t *reason = tool_text(snapshot, i, MC_TOOL_UNAVAILABLE_REASON);
+      SIZE_T a = wcslen(button->label), b = reason ? wcslen(reason) : 0;
+      wchar_t *label = calloc(a + b + 4, sizeof(wchar_t));
+      if (!label) { free(reason); return FALSE; }
+      swprintf_s(label, a + b + 4, L"%s · %s", button->label, reason ? reason : L"");
+      free(reason); free(button->label); button->label = label;
+    }
+    button->window = hud_button(capture.editor, button->command, button->label);
+    if (!button->window) return FALSE;
+  }
+  return TRUE;
+}
+static BOOL build_tool_buttons(int32_t snapshot, ToolButtons *buttons) {
+  ZeroMemory(buttons, sizeof(*buttons));
+  BOOL ok = add_host_button(buttons, ID_SELECT, MC_ICON_SELECT, MC_TOOL_SLOT_TOOLS, L"选择 / 移动") &&
+    add_contribution_buttons(snapshot, buttons, MC_TOOL_SLOT_TOOLS) &&
+    add_host_button(buttons, ID_UNDO, MC_ICON_UNDO, MC_TOOL_SLOT_TOOLS, L"撤销 Ctrl+Z") &&
+    add_host_button(buttons, ID_REDO, MC_ICON_REDO, MC_TOOL_SLOT_TOOLS, L"重做 Ctrl+Y") &&
+    add_contribution_buttons(snapshot, buttons, MC_TOOL_SLOT_FINISH) &&
+    add_host_button(buttons, ID_CANCEL, MC_ICON_CLOSE, MC_TOOL_SLOT_FINISH, L"取消 Esc") &&
+    add_host_button(buttons, ID_COPY, MC_ICON_CHECK, MC_TOOL_SLOT_FINISH, L"确认并复制 Ctrl+Enter");
+  if (!ok) clear_tool_buttons(buttons);
+  return ok;
+}
+static ToolButton *find_button(int command) {
+  for (int i = 0; i < capture.toolbar_buttons.count; i++)
+    if (capture.toolbar_buttons.buttons[i].command == command) return &capture.toolbar_buttons.buttons[i];
+  return NULL;
+}
+static void publish_tool_buttons(void) {
+  wchar_t *active = capture.active_button >= 0 && capture.active_button < capture.toolbar_buttons.count
+    && capture.toolbar_buttons.buttons[capture.active_button].id
+    ? _wcsdup(capture.toolbar_buttons.buttons[capture.active_button].id) : NULL;
+  clear_tool_buttons(&capture.toolbar_buttons);
+  capture.toolbar_buttons = capture.prepared_buttons;
+  ZeroMemory(&capture.prepared_buttons, sizeof(capture.prepared_buttons));
+  capture.active_button = -1;
+  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
+    ToolButton *button = &capture.toolbar_buttons.buttons[i];
+    /* Re-register after retiring old IDs; prepared controls were hidden. */
+    TOOLINFOW tip = {sizeof(tip)}; tip.hwnd = capture.editor; tip.uId = button->command;
+    tip.uFlags = TTF_SUBCLASS; tip.lpszText = button->label;
+    SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
+    /* Enabled child buttons receive their own mouse input. The parent region
+     * also supplies the same reason when a disabled child cannot receive it. */
+    if (button->available) {
+      tip.uFlags = TTF_SUBCLASS | TTF_IDISHWND; tip.uId = (UINT_PTR)button->window;
+      SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
+    }
+    button->registered = TRUE;
+    ShowWindow(button->window, SW_SHOWNA);
+    if (active && button->id && !wcscmp(active, button->id) && button->available) capture.active_button = i;
+  }
+  free(active);
+  if (capture.active_button < 0) { capture.tool = TOOL_SELECT; capture.selected = -1; load_tool_style(TOOL_SELECT); }
+  mc_capture_refresh_capabilities();
+  layout_editor(capture.editor);
+}
+void mc_capture_discard_tools(void) {
+  clear_tool_buttons(&capture.prepared_buttons); prepared_tools = 0;
+}
+BOOL mc_capture_prepare_tools(int32_t snapshot) {
+  mc_capture_discard_tools();
+  if (tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT) < 0) return FALSE;
+  if (capture.editor && (capture.composing || capture.editing != -2 || capture.dragging || GetCapture())) return FALSE;
+  if (capture.editor && !build_tool_buttons(snapshot, &capture.prepared_buttons)) return FALSE;
+  prepared_tools = snapshot;
+  return TRUE;
+}
+void mc_capture_commit_tools(int32_t snapshot) {
+  if (snapshot != prepared_tools) return;
+  configured_tools = snapshot; prepared_tools = 0;
+  if (capture.editor) {
+    capture.tool_snapshot = snapshot;
+    publish_tool_buttons();
+    if (capture.owned_tools) { tool_registry_snapshot_close(capture.owned_tools); capture.owned_tools = 0; }
+  }
 }
 static BOOL add_shape(void) {
   return image_session_shape_event(capture.session, 1, capture.end.x, capture.end.y) == 1;
 }
 static void editor_command(int command) {
-  if (command == ID_OCR || command == ID_TRANSLATE)
-    return;
-  if (command == ID_PIN && !pin_enabled())
-    return;
+  ToolButton *button = find_button(command);
+  if (button && !IsWindowEnabled(button->window)) return;
+  BOOL pin = button && button->action && !wcscmp(button->action, L"pin");
+  if (pin && !pin_enabled()) return;
   if (!finish_text(FALSE))
     return;
-  if (command >= ID_SELECT && command <= ID_REDACT) {
-    capture.tool = command - ID_SELECT;
+  if (command == ID_SELECT || (button && (button->interaction == MC_TOOL_INTERACTION_ANNOTATION ||
+      button->interaction == MC_TOOL_INTERACTION_DRAG_RECT))) {
+    capture.active_button = command == ID_SELECT ? -1 : (int)(button - capture.toolbar_buttons.buttons);
+    capture.tool = command == ID_SELECT ? TOOL_SELECT :
+      button->interaction == MC_TOOL_INTERACTION_DRAG_RECT ? TOOL_RECT : button->kind;
     capture.selected = -1;
     load_tool_style(capture.tool);
     layout_editor(capture.editor);
     changed();
-    for (int i = 0; i < 5; i++)
-      InvalidateRect(capture.buttons[i], NULL, FALSE);
+    for (int i = 0; i < capture.toolbar_buttons.count; i++)
+      InvalidateRect(capture.toolbar_buttons.buttons[i].window, NULL, FALSE);
     SetFocus(capture.editor);
   } else if (command == ID_UNDO || command == ID_REDO) {
     if (command == ID_UNDO)
@@ -701,7 +850,7 @@ static void editor_command(int command) {
       mc_capture_close();
     else if (!capture.smoke)
       MessageBoxW(capture.editor, L"剪贴板暂时被占用，请重试。", L"Mooji Cut", MB_OK | MB_ICONWARNING);
-  } else if (command == ID_PIN) {
+  } else if (pin) {
     HGLOBAL dib = image_dib();
     if (dib) {
       int x = capture.desktop_bounds.left + capture.viewport.left,
@@ -796,36 +945,10 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     capture.font =
         CreateFontW(-dpi_px(window, 14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    const wchar_t *labels[12] = {L"选择",
-                                 L"矩形",
-                                 L"箭头",
-                                 L"文字",
-                                 L"填充覆盖",
-                                 L"撤销 Ctrl+Z",
-                                 L"重做 Ctrl+Y",
-                                 L"贴图",
-                                 L"取消 Esc",
-                                 L"确认并复制 Ctrl+Enter",
-                                 L"文字识别 · 尚未开放",
-                                 L"翻译 · 尚未开放"};
     capture.tooltip =
         CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT,
                         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, NULL, capture.instance, NULL);
-    for (int i = 0; i < 12; i++)
-      capture.buttons[i] = hud_button(window, button_ids[i], labels[i]);
-    mc_capture_refresh_capabilities();
-    for (int i = 10; i < 12; i++) {
-      EnableWindow(capture.buttons[i], FALSE);
-      TOOLINFOW tip = {sizeof(tip)};
-      tip.hwnd = window;
-      tip.uId = (UINT_PTR)capture.buttons[i];
-      tip.uFlags = TTF_IDISHWND;
-      SendMessageW(capture.tooltip, TTM_DELTOOLW, 0, (LPARAM)&tip);
-      tip.uId = button_ids[i];
-      tip.uFlags = TTF_SUBCLASS;
-      tip.lpszText = (LPWSTR)labels[i];
-      SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
-    }
+    if (!capture.tooltip || !build_tool_buttons(capture.tool_snapshot, &capture.prepared_buttons)) return -1;
     capture.style_controls = mc_style_controls_create(window, capture.instance, ID_STYLE_BASE,
         style_changed, NULL);
     if (!capture.style_controls)
@@ -837,7 +960,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     SetWindowSubclass(capture.text, text_proc, 1, 0);
     SendMessageW(capture.text, EM_SETLIMITTEXT, 10000, 0);
     SendMessageW(capture.text, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
-    layout_editor(window);
+    publish_tool_buttons();
     return 0;
   }
   case WM_SIZE:
@@ -853,10 +976,11 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       return TRUE;
     int kind = -1, value = 0;
     BOOL selected = FALSE;
-    for (int i = 0; i < 12; i++)
-      if (item->CtlID == (UINT)button_ids[i]) {
-        kind = button_icons[i];
-        selected = i < 5 && capture.tool == i;
+    for (int i = 0; i < capture.toolbar_buttons.count; i++)
+      if (item->CtlID == (UINT)capture.toolbar_buttons.buttons[i].command) {
+        kind = capture.toolbar_buttons.buttons[i].icon;
+        selected = capture.active_button == i ||
+          (capture.active_button < 0 && item->CtlID == ID_SELECT && capture.tool == TOOL_SELECT);
       }
     if (kind >= 0) {
       mc_hud_button(item->hDC, &item->rcItem, kind, value, selected,
@@ -875,8 +999,6 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     }
     break;
   case WM_COMMAND:
-    if (LOWORD(wp) == ID_OCR || LOWORD(wp) == ID_TRANSLATE)
-      return 0;
     if (LOWORD(wp) == ID_TEXT_INPUT && HIWORD(wp) == EN_CHANGE && capture.editing != -2) {
       style_text();
       return 0;
@@ -885,6 +1007,12 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       if (capture.editing != -2)
         SetFocus(capture.text);
       return 0;
+    }
+    if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) >= ID_CONTRIBUTION_BASE) {
+      ToolButton *button = find_button(LOWORD(wp));
+      /* Snapshot reordering may reuse a numeric child ID. A queued notification
+       * from a retired HWND must never invoke the new contribution at that ID. */
+      if (!button || button->window != (HWND)lp) return 0;
     }
     if (HIWORD(wp) == BN_CLICKED)
       editor_command(LOWORD(wp));
@@ -961,8 +1089,18 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       load_tool_style(capture.tool);
     if (capture.drag_mode == 0) {
       image_session_shape_event(capture.session, 2, 0, 0);
-      if (!image_session_shape_begin(capture.session, capture.tool, p.x, p.y,
-          capture.color, capture.stroke, capture.opacity, capture.shape, capture.block)) return 0;
+      BOOL began;
+      if (custom_drag()) {
+        const wchar_t *name = capture.toolbar_buttons.buttons[capture.active_button].handler;
+        int length = (int)wcslen(name);
+        moonbit_string_t command = moonbit_make_string_raw(length);
+        memcpy(command, name, (SIZE_T)length * sizeof(wchar_t));
+        began = image_session_tool_begin(capture.session, command, p.x, p.y,
+          capture.color, capture.stroke, capture.opacity, 0, capture.block);
+        moonbit_decref(command);
+      } else began = image_session_shape_begin(capture.session, capture.tool, p.x, p.y,
+          capture.color, capture.stroke, capture.opacity, capture.shape, capture.block);
+      if (!began) return 0;
     }
     capture.dragging = TRUE;
     SetCapture(window);
@@ -1045,6 +1183,16 @@ static BOOL open_editor(void) {
   capture.selected = -1;
   capture.editing = -2;
   capture.tool = TOOL_SELECT;
+  capture.active_button = -1;
+  capture.tool_snapshot = configured_tools;
+  if (!capture.tool_snapshot) {
+    moonbit_string_t empty = moonbit_make_string_raw(0);
+    moonbit_string_t result = tool_registry_normalize(empty);
+    moonbit_decref(empty);
+    capture.tool_snapshot = capture.owned_tools = tool_registry_snapshot_open(result, MC_TOOL_CAP_COMMANDS);
+    moonbit_decref(result);
+  }
+  if (!capture.tool_snapshot) return FALSE;
   capture.style_bank = editor_style_create();
   if (capture.style_bank <= 0)
     return FALSE;
@@ -1162,6 +1310,8 @@ void mc_capture_close(void) {
   capture.closing = TRUE;
   MCCaptureHost services = capture.host;
   HWND overlay = capture.overlay, editor = capture.editor;
+  clear_tool_buttons(&capture.toolbar_buttons);
+  mc_capture_discard_tools();
   capture.overlay = NULL;
   capture.editor = NULL;
   capture.dragging = FALSE;
@@ -1177,6 +1327,7 @@ void mc_capture_close(void) {
     image_session_dispose(capture.session);
   if (capture.style_bank > 0)
     editor_style_dispose(capture.style_bank);
+  if (capture.owned_tools) tool_registry_snapshot_close(capture.owned_tools);
   surface_free(&capture.desktop);
   surface_free(&capture.dimmed);
   surface_free(&capture.image);
@@ -1333,19 +1484,42 @@ static void step_style(BOOL increase) {
       increase ? MC_STYLE_CONTROL_INCREASE : MC_STYLE_CONTROL_DECREASE);
   SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED), (LPARAM)button);
 }
+static ToolButton *smoke_annotation_button(int kind) {
+  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
+    ToolButton *button = &capture.toolbar_buttons.buttons[i];
+    if (button->interaction == MC_TOOL_INTERACTION_ANNOTATION && button->kind == kind) return button;
+  }
+  return NULL;
+}
+static void smoke_select_tool(int kind) {
+  ToolButton *button = smoke_annotation_button(kind);
+  if (kind == TOOL_SELECT) editor_command(ID_SELECT);
+  else if (button) SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(button->command, BN_CLICKED), (LPARAM)button->window);
+}
+static ToolButton *smoke_action_button(const wchar_t *action) {
+  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
+    ToolButton *button = &capture.toolbar_buttons.buttons[i];
+    if (button->action && !wcscmp(button->action, action)) return button;
+  }
+  return NULL;
+}
+static void smoke_invoke_action(const wchar_t *action) {
+  ToolButton *button = smoke_action_button(action);
+  if (button) SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(button->command, BN_CLICKED), (LPARAM)button->window);
+}
 static BOOL context_toolbar_smoke(void) {
   RECT initial = capture.toolbar;
   if (style_visible(MC_STYLE_CONTROL_COLOR) || style_visible(MC_STYLE_CONTROL_FONT) ||
       style_visible(MC_STYLE_CONTROL_STROKE))
     return FALSE;
-  editor_command(ID_TEXT);
+  smoke_select_tool(TOOL_TEXT);
   if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_FONT) ||
       !style_visible(MC_STYLE_CONTROL_INCREASE) || !style_visible(MC_STYLE_CONTROL_DECREASE) ||
       style_visible(MC_STYLE_CONTROL_STROKE) || capture.font_size != 32)
     return FALSE;
   if (!choose_style(MC_STYLE_COLOR, 0x246BFD) || !choose_style(MC_STYLE_OPACITY, .5))
     return FALSE;
-  editor_command(ID_RECT);
+  smoke_select_tool(TOOL_RECT);
   if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_STROKE) ||
       style_visible(MC_STYLE_CONTROL_FONT) || !style_visible(MC_STYLE_CONTROL_INCREASE) ||
       capture.color != 0xF26769 || capture.opacity != 1)
@@ -1359,44 +1533,48 @@ static BOOL context_toolbar_smoke(void) {
   step_style(FALSE);
   if (capture.stroke != 8)
     return FALSE;
-  editor_command(ID_ARROW);
+  smoke_select_tool(TOOL_ARROW);
   if (capture.color != 0xF26769 || capture.opacity != 1 || capture.stroke != 4)
     return FALSE;
   if (!choose_style(MC_STYLE_COLOR, 0xFFFFFF) || !choose_style(MC_STYLE_OPACITY, .8))
     return FALSE;
-  editor_command(ID_REDACT);
+  smoke_select_tool(TOOL_REDACT);
   if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_OPACITY) ||
       style_visible(MC_STYLE_CONTROL_FONT) || style_visible(MC_STYLE_CONTROL_STROKE) ||
       capture.color != 0x111111 || capture.opacity != 1)
     return FALSE;
   if (!choose_style(MC_STYLE_COLOR, 0x25A56A) || !choose_style(MC_STYLE_OPACITY, .2))
     return FALSE;
-  editor_command(ID_TEXT);
+  smoke_select_tool(TOOL_TEXT);
   if (capture.color != 0x246BFD || capture.opacity != .5)
     return FALSE;
-  editor_command(ID_RECT);
+  smoke_select_tool(TOOL_RECT);
   if (capture.color != 0x25A56A || capture.opacity != .3 || capture.stroke != 8)
     return FALSE;
-  editor_command(ID_ARROW);
+  smoke_select_tool(TOOL_ARROW);
   if (capture.color != 0xFFFFFF || capture.opacity != .8)
     return FALSE;
-  editor_command(ID_REDACT);
+  smoke_select_tool(TOOL_REDACT);
   if (capture.color != 0x25A56A || capture.opacity != .2)
     return FALSE;
   // Restore the drawing defaults before the existing geometry/export fixture.
   for (int tool = TOOL_RECT; tool <= TOOL_REDACT; tool++) {
-    editor_command(ID_SELECT + tool);
+    smoke_select_tool(tool);
     unsigned mask = (unsigned)editor_style_visible_mask(tool, 0);
     for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
       if ((mask & (1u << field)) && !choose_style(field,
           tool == TOOL_REDACT && field == MC_STYLE_COLOR ? 0x111111 : editor_style_default(field)))
         return FALSE;
   }
-  for (int i = 10; i < 12; i++) {
-    if (IsWindowEnabled(capture.buttons[i]))
+  int unavailable = 0;
+  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
+    ToolButton *entry = &capture.toolbar_buttons.buttons[i];
+    if (entry->available) continue;
+    unavailable++;
+    if (IsWindowEnabled(entry->window))
       return FALSE;
     RECT button;
-    GetWindowRect(capture.buttons[i], &button);
+    GetWindowRect(entry->window, &button);
     POINT point = {(button.left + button.right) / 2, (button.top + button.bottom) / 2};
     ScreenToClient(capture.editor, &point);
     TTHITTESTINFOW hit = {0};
@@ -1404,23 +1582,24 @@ static BOOL context_toolbar_smoke(void) {
     hit.pt = point;
     hit.ti.cbSize = sizeof(hit.ti);
     if (!SendMessageW(capture.tooltip, TTM_HITTESTW, 0, (LPARAM)&hit) ||
-        hit.ti.uId != (UINT_PTR)button_ids[i])
+        hit.ti.uId != (UINT_PTR)entry->command)
       return FALSE;
     wchar_t label[128] = {0};
     TOOLINFOW tip = {sizeof(tip)};
     tip.hwnd = capture.editor;
-    tip.uId = button_ids[i];
+    tip.uId = entry->command;
     tip.lpszText = label;
     SendMessageW(capture.tooltip, TTM_GETTEXTW, ARRAYSIZE(label), (LPARAM)&tip);
-    if (!wcsstr(label, L"尚未开放"))
+    if (!*label || !wcsstr(label, L" · "))
       return FALSE;
   }
+  if (unavailable < 2) return FALSE;
   editor_command(ID_SELECT);
   return EqualRect(&initial, &capture.toolbar) && !style_visible(MC_STYLE_CONTROL_COLOR) &&
          !style_visible(MC_STYLE_CONTROL_FONT);
 }
 static BOOL independent_text_style_smoke(void) {
-  editor_command(ID_TEXT);
+  smoke_select_tool(TOOL_TEXT);
   if (!choose_style(MC_STYLE_COLOR, 0x246BFD) || !choose_style(MC_STYLE_OPACITY, .5) ||
       !choose_style(MC_STYLE_FONT, 40))
     return FALSE;
@@ -1443,10 +1622,10 @@ static BOOL independent_text_style_smoke(void) {
   SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(600, 400));
   if (capture.selected != -1 || capture.color != 0x246BFD || capture.opacity != .5 || capture.font_size != 41)
     return FALSE;
-  editor_command(ID_RECT);
+  smoke_select_tool(TOOL_RECT);
   if (capture.color != 0xF26769 || capture.opacity != 1 || capture.stroke != 4)
     return FALSE;
-  editor_command(ID_TEXT);
+  smoke_select_tool(TOOL_TEXT);
   if (capture.color != 0x246BFD || capture.opacity != .5 || capture.font_size != 41 ||
       image_session_value(capture.session, index, 5) != 0xFFFFFF ||
       image_session_value(capture.session, index, 8) != .8 ||
@@ -1477,7 +1656,7 @@ static BOOL shape_variants_smoke(void) {
   BOOL ok = TRUE;
   for (int tool = TOOL_RECT; tool <= TOOL_REDACT; tool += 3) {
     for (int shape = 0; shape < editor_style_shape_count(tool); shape++) {
-      editor_command(ID_SELECT + tool);
+      smoke_select_tool(tool);
       ok = choose_style(MC_STYLE_SHAPE, shape) && ok;
       if (shape == 2) ok = choose_style(MC_STYLE_BLOCK, 16) && !choose_style(MC_STYLE_OPACITY, .5) && ok;
       int count = image_session_count(capture.session);
@@ -1507,6 +1686,75 @@ static BOOL shape_variants_smoke(void) {
   capture.session = original_session; capture.style_bank = original_bank;
   editor_command(ID_SELECT); changed();
   printf("Windows shape variants smoke %s: native input, shared gesture commit, ellipse pixels, mosaic, undo.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
+static BOOL contribution_smoke(void) {
+  int32_t baseline = capture.tool_snapshot;
+  int count = tool_registry_snapshot_count(baseline, 0), index = -1;
+  for (int i = 0; i < count; i++) if (tool_value(baseline, i, MC_TOOL_INTERACTION) == MC_TOOL_INTERACTION_DRAG_RECT) { index = i; break; }
+  if (index < 0 || tool_value(baseline, index, MC_TOOL_ENABLED) != 0) return FALSE;
+  moonbit_string_t id = tool_registry_snapshot_text(baseline, 0, index, MC_TOOL_ID);
+  int32_t enabled = tool_registry_snapshot_set_enabled(baseline, id, 1), disabled = 0;
+  moonbit_decref(id);
+  BOOL ok = enabled > 0;
+  RECT original_toolbar = capture.toolbar;
+  ToolButton *prior_rectangle = smoke_annotation_button(TOOL_RECT);
+  HWND retired_button = prior_rectangle ? prior_rectangle->window : NULL;
+  int retired_command = prior_rectangle ? prior_rectangle->command : 0;
+  int initial_count = image_session_count(capture.session);
+  capture.composing = TRUE;
+  ok = !mc_capture_prepare_tools(enabled) && capture.tool_snapshot == baseline && ok;
+  capture.composing = FALSE;
+  if (!mc_capture_prepare_tools(enabled)) { ok = FALSE; goto cleanup; }
+  /* Preparing and aborting never changes live controls or their tooltips. */
+  ok = EqualRect(&original_toolbar, &capture.toolbar) && capture.tool_snapshot == baseline && ok;
+  mc_capture_discard_tools();
+  if (!mc_capture_prepare_tools(enabled)) { ok = FALSE; goto cleanup; }
+  mc_capture_commit_tools(enabled);
+  ok = capture.toolbar.right - capture.toolbar.left > original_toolbar.right - original_toolbar.left && ok;
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(retired_command, BN_CLICKED), (LPARAM)retired_button);
+  ok = capture.active_button == -1 && capture.tool == TOOL_SELECT && ok;
+  ToolButton *button = find_button(ID_CONTRIBUTION_BASE + index);
+  if (!button) { ok = FALSE; goto cleanup; }
+  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(button->command, BN_CLICKED), (LPARAM)button->window);
+  ok = custom_drag() && !style_visible(MC_STYLE_CONTROL_SHAPE) && ok;
+  SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(90, 90));
+  SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(200, 165));
+  ok = capture.dragging && image_session_count(capture.session) == initial_count &&
+    !mc_capture_prepare_tools(baseline) && ok;
+  ReleaseCapture();
+  SendMessageW(capture.editor, WM_LBUTTONUP, 0, MAKELPARAM(200, 165));
+  ok = !capture.dragging && image_session_count(capture.session) == initial_count && ok;
+  SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(90, 90));
+  SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(200, 165));
+  SendMessageW(capture.editor, WM_LBUTTONUP, 0, MAKELPARAM(200, 165));
+  ok = image_session_count(capture.session) == initial_count + 2 && render_image() && ok;
+  if (image_session_count(capture.session) == initial_count + 2) {
+    moonbit_string_t label = image_session_text(capture.session, initial_count + 1);
+    ok = image_session_value(capture.session, initial_count, 0) == TOOL_RECT &&
+      image_session_value(capture.session, initial_count + 1, 0) == TOOL_TEXT &&
+      Moonbit_array_length(label) > 0 && ok;
+    moonbit_decref(label);
+    HGLOBAL dib = image_dib(); ok = dib != NULL && ok; if (dib) GlobalFree(dib);
+  }
+  id = tool_registry_snapshot_text(enabled, 0, index, MC_TOOL_ID);
+  disabled = tool_registry_snapshot_set_enabled(enabled, id, 0); moonbit_decref(id);
+  if (!disabled || !mc_capture_prepare_tools(disabled)) { ok = FALSE; goto cleanup; }
+  mc_capture_commit_tools(disabled);
+  ok = !find_button(ID_CONTRIBUTION_BASE + index) && image_session_count(capture.session) == initial_count + 2 &&
+    render_image() && ok;
+  editor_command(ID_UNDO);
+  ok = image_session_count(capture.session) == initial_count && ok;
+  editor_command(ID_REDO);
+  ok = image_session_count(capture.session) == initial_count + 2 && ok;
+  editor_command(ID_UNDO);
+cleanup:
+  if (capture.dragging) ReleaseCapture();
+  if (mc_capture_prepare_tools(baseline)) mc_capture_commit_tools(baseline); else ok = FALSE;
+  if (disabled) tool_registry_snapshot_close(disabled);
+  if (enabled) tool_registry_snapshot_close(enabled);
+  editor_command(ID_SELECT); changed();
+  printf("Windows contribution smoke %s: descriptor button, preflight/cancel, drag rectangle+text, export, disable and one undo.\n", ok ? "passed" : "FAILED");
   return ok;
 }
 typedef struct {
@@ -1570,15 +1818,17 @@ int mc_capture_smoke(HINSTANCE instance) {
   if (!capture.editor || capture.viewport.left != 10 || capture.viewport.top != 20 ||
       (GetWindowLongPtrW(capture.editor, GWL_STYLE) & WS_CAPTION))
     goto cleanup;
-  if (!mc_style_controls_smoke(instance) || !context_toolbar_smoke() || !independent_text_style_smoke() || !shape_variants_smoke())
+  if (!mc_style_controls_smoke(instance) || !context_toolbar_smoke() || !independent_text_style_smoke() || !shape_variants_smoke() || !contribution_smoke())
     goto cleanup;
   if (image_session_add(capture.session, TOOL_REDACT, 40, 60, 80, 60, 0, 4) != 1)
     goto cleanup;
   begin_text((POINT){50, 70}, -1);
   SetWindowTextW(capture.text, L"截图测试 MoonBit\r\n第二行");
   int initial_font = capture.font_size;
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_OCR, BN_CLICKED), 0);
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(ID_TRANSLATE, BN_CLICKED), 0);
+  for (int i = 0; i < capture.toolbar_buttons.count; i++)
+    if (!capture.toolbar_buttons.buttons[i].available)
+      SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(capture.toolbar_buttons.buttons[i].command, BN_CLICKED),
+        (LPARAM)capture.toolbar_buttons.buttons[i].window);
   if (!capture.editor || capture.editing != -1 || image_session_count(capture.session) != 1)
     goto cleanup;
   step_style(TRUE);
@@ -1723,16 +1973,16 @@ int mc_capture_smoke(HINSTANCE instance) {
     goto cleanup;
   host.enabled = FALSE;
   mc_capture_refresh_capabilities();
-  editor_command(ID_PIN);
-  if (IsWindowEnabled(capture.buttons[7]) || host.attempts || !mc_capture_busy())
+  smoke_invoke_action(L"pin");
+  if ((!smoke_action_button(L"pin") || IsWindowEnabled(smoke_action_button(L"pin")->window)) || host.attempts || !mc_capture_busy())
     goto cleanup;
   host.enabled = TRUE;
   mc_capture_refresh_capabilities();
-  editor_command(ID_PIN);
+  smoke_invoke_action(L"pin");
   if (host.attempts != 1 || host.accepted || host.restored || !mc_capture_busy() || !host.valid_image)
     goto cleanup;
   host.accept = TRUE;
-  editor_command(ID_PIN);
+  smoke_invoke_action(L"pin");
   if (host.attempts != 2 || host.accepted != 1 || host.hidden != 1 || host.restored != 1 ||
       host.x != 70 || host.y != 50 || host.width != 500 || host.height != 270 || mc_capture_busy())
     goto cleanup;

@@ -114,7 +114,11 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
     [self reloadPreservingIdentifier:nil];
 }
 - (void)reloadPreservingIdentifier:(NSString *)identifier {
-    self.rows = [self.toolRegistryStore toolsForGroup:[self currentGroup]] ?: @[];
+    NSArray *all = [self.toolRegistryStore toolsForGroup:[self currentGroup]] ?: @[];
+    NSMutableArray *ordered = [NSMutableArray array];
+    for (NSString *slot in @[@"tools",@"finish"])
+        for (NSDictionary *tool in all) if ([tool[@"slot"] isEqual:slot]) [ordered addObject:tool];
+    self.rows = ordered;
     [self.table reloadData];
     NSUInteger selected = [self.rows indexOfObjectPassingTest:^BOOL(NSDictionary *tool, __unused NSUInteger index, __unused BOOL *stop) {
         return [tool[@"id"] isEqualToString:identifier];
@@ -140,8 +144,9 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
 }
 - (void)updateMoveButtons {
     NSInteger row = self.table.selectedRow;
-    self.moveUpButton.enabled = row > 0;
-    self.moveDownButton.enabled = row >= 0 && row + 1 < (NSInteger)self.rows.count;
+    self.moveUpButton.enabled = row > 0 && [self.rows[(NSUInteger)row][@"slot"] isEqual:self.rows[(NSUInteger)row-1][@"slot"]];
+    self.moveDownButton.enabled = row >= 0 && row+1 < (NSInteger)self.rows.count &&
+        [self.rows[(NSUInteger)row][@"slot"] isEqual:self.rows[(NSUInteger)row+1][@"slot"]];
 }
 - (void)groupChanged:(__unused id)sender {
     self.draggedIdentifier = nil; self.draggedGroup = nil;
@@ -153,12 +158,10 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
 - (void)tableViewSelectionDidChange:(__unused NSNotification *)notification { [self updateMoveButtons]; }
 - (NSInteger)numberOfRowsInTableView:(__unused NSTableView *)tableView { return (NSInteger)self.rows.count; }
 - (NSImage *)iconForTool:(NSDictionary *)tool {
-    NSDictionary *icons = @{@"builtin.image.rectangle":@(MC_ICON_RECTANGLE), @"builtin.image.arrow":@(MC_ICON_ARROW),
-        @"builtin.image.text":@(MC_ICON_TEXT), @"builtin.image.cover":@(MC_ICON_REDACT), @"builtin.image.pin":@(MC_ICON_PIN)};
     NSImage *custom = [self.userPluginManager iconForPlugin:tool[@"pluginId"]];
     if (custom) return custom;
-    NSNumber *icon = icons[tool[@"id"]];
-    NSImage *image = icon ? MCIconImage((MCIcon)icon.integerValue, tool[@"title"]) : nil;
+    MCIcon asset = mc_icon_from_name([tool[@"icon"] UTF8String]);
+    NSImage *image = asset != MC_ICON_COUNT ? MCIconImage(asset,tool[@"title"]) : nil;
     return image ?: [NSImage imageWithSystemSymbolName:@"puzzlepiece.extension" accessibilityDescription:@"工具"];
 }
 - (NSView *)tableView:(__unused NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
@@ -167,7 +170,7 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
         NSButton *toggle = [NSButton checkboxWithTitle:@"启用" target:self action:@selector(toggleTool:)];
         toggle.identifier = tool[@"id"]; toggle.state = [tool[@"enabled"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
         toggle.accessibilityLabel = [NSString stringWithFormat:@"启用%@", tool[@"title"]];
-        if ([tool[@"id"] isEqualToString:@"builtin.image.pin"])
+        if ([tool[@"command"] isEqualToString:@"pin"])
             toggle.toolTip = @"关闭后会关闭所有贴图并释放贴图快捷键。";
         return toggle;
     }
@@ -218,12 +221,13 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
 }
 - (void)moveUp:(__unused id)sender {
     NSInteger row = self.table.selectedRow;
-    if (row > 0) [self moveIdentifier:self.rows[(NSUInteger)row][@"id"] before:self.rows[(NSUInteger)row - 1][@"id"]];
+    if (self.moveUpButton.enabled && row > 0) [self moveIdentifier:self.rows[(NSUInteger)row][@"id"] before:self.rows[(NSUInteger)row - 1][@"id"]];
 }
 - (void)moveDown:(__unused id)sender {
     NSInteger row = self.table.selectedRow;
-    if (row < 0 || row + 1 >= (NSInteger)self.rows.count) return;
-    NSString *before = row + 2 < (NSInteger)self.rows.count ? self.rows[(NSUInteger)row + 2][@"id"] : nil;
+    if (!self.moveDownButton.enabled || row < 0 || row+1 >= (NSInteger)self.rows.count) return;
+    NSString *before = row+2 < (NSInteger)self.rows.count &&
+        [self.rows[(NSUInteger)row][@"slot"] isEqual:self.rows[(NSUInteger)row+2][@"slot"]] ? self.rows[(NSUInteger)row+2][@"id"] : nil;
     [self moveIdentifier:self.rows[(NSUInteger)row][@"id"] before:before];
 }
 - (id<NSPasteboardWriting>)tableView:(NSTableView *)tableView pasteboardWriterForRow:(NSInteger)row {
@@ -238,13 +242,26 @@ static NSPasteboardType const MCToolRowPasteboardType = @"dev.moojicut.tool-row"
     if (tableView != self.table || info.draggingSource != self.table || operation != NSTableViewDropAbove ||
         row < 0 || row > (NSInteger)self.rows.count || ![self.draggedGroup isEqualToString:[self currentGroup]] ||
         ![identifier isEqualToString:self.draggedIdentifier]) return NSDragOperationNone;
-    for (NSDictionary *tool in self.rows) if ([tool[@"id"] isEqualToString:identifier]) return NSDragOperationMove;
+    for (NSDictionary *tool in self.rows) if ([tool[@"id"] isEqualToString:identifier]) {
+        NSDictionary *next = row < (NSInteger)self.rows.count ? self.rows[(NSUInteger)row] : nil;
+        NSDictionary *previous = row > 0 ? self.rows[(NSUInteger)row - 1] : nil;
+        // The boundary before the next slot is also the end of this slot.
+        return [tool[@"slot"] isEqual:next[@"slot"]] || [tool[@"slot"] isEqual:previous[@"slot"]] ?
+            NSDragOperationMove : NSDragOperationNone;
+    }
     return NSDragOperationNone;
 }
 - (BOOL)tableView:(NSTableView *)tableView acceptDrop:(id<NSDraggingInfo>)info row:(NSInteger)row dropOperation:(NSTableViewDropOperation)operation {
     if ([self tableView:tableView validateDrop:info proposedRow:row proposedDropOperation:operation] != NSDragOperationMove) return NO;
     NSString *identifier = [info.draggingPasteboard stringForType:MCToolRowPasteboardType];
-    NSString *before = row < (NSInteger)self.rows.count ? self.rows[(NSUInteger)row][@"id"] : nil;
+    NSDictionary *next = row < (NSInteger)self.rows.count ? self.rows[(NSUInteger)row] : nil;
+    NSString *before = nil;
+    for (NSDictionary *tool in self.rows) if ([tool[@"id"] isEqualToString:identifier]) {
+        // Appending uses the registry's same-slot operation, never a target
+        // belonging to the following slot.
+        if ([tool[@"slot"] isEqual:next[@"slot"]]) before = next[@"id"];
+        break;
+    }
     if ([identifier isEqualToString:before]) return YES;
     return [self moveIdentifier:identifier before:before];
 }

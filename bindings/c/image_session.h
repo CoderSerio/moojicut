@@ -64,6 +64,17 @@ moonbit_string_t image_session_text(int32_t id, int32_t index);
  * only; end adds one undo entry; cancel adds none. Preview fields match value(). */
 int32_t image_session_shape_begin(int32_t id, int32_t kind, double x, double y,
     int32_t color, double stroke, double opacity, int32_t shape, double block);
+/* Declarative dragRect interaction. Commands are resolved by the shared feature,
+ * never by a platform button ID. Shape is reserved/ignored for this rectangle
+ * template. End/move/cancel and rectangle preview use the existing APIs below.
+ * End publishes all resulting annotations in one undo step; a document change
+ * since begin rejects the stale gesture. Command strings remain caller-owned. */
+int32_t image_session_tool_begin(int32_t id, moonbit_string_t command, double x, double y,
+    int32_t color, double stroke, double opacity, int32_t shape, double block);
+/* Pure JSON host adapter: {document, expectedRevision, command, rectangle} ->
+ * {ok:true,command} or structured error. A normal image_apply commits the result.
+ * Request remains caller-owned; release the owned result with moonbit_decref. */
+moonbit_string_t image_contribution_command(moonbit_string_t request);
 int32_t image_session_shape_event(int32_t id, int32_t phase, double x, double y);
 double image_session_preview_value(int32_t id, int32_t field);
 /* editor_style field 4=shape, 5=block size. One checked undoable mutation. */

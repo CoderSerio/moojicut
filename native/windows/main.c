@@ -11,10 +11,12 @@
 #include <shellapi.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <wchar.h>
 #include "moonbit.h"
 #include "resource.h"
 #include "updates.h"
+#include "bindings/c/tool_registry.h"
 #include "plugins/feature/capture/windows/capture.h"
 #include "plugins/feature/pin/windows/pinning.h"
 #include "plugins/feature/recording/windows/recording.h"
@@ -61,6 +63,11 @@ static BOOL open_on_start;
 static BOOL update_exit_pending;
 static int core_ok;
 static BOOL global_registered[3];
+static int32_t tool_snapshot;
+static BOOL tool_publishing, smoke_fail_tool_save;
+static unsigned smoke_tool_save_attempts;
+static HWND tools_window;
+static void refresh_tools_page(HWND page, int selected);
 static wchar_t shortcut_registration_error[180];
 static void refresh_global_shortcuts(void);
 static void unregister_shortcuts(void) {
@@ -167,6 +174,94 @@ static int validate_keys(const WORD keys[3]) {
     return 0;
 }
 
+static wchar_t *copy_tool_text(int32_t snapshot, int group, int index, int field) {
+    moonbit_string_t text = tool_registry_snapshot_text(snapshot, group, index, field);
+    int length = Moonbit_array_length(text);
+    wchar_t *result = calloc((SIZE_T)length + 1, sizeof(wchar_t));
+    if (result) memcpy(result, text, (SIZE_T)length * sizeof(wchar_t));
+    moonbit_decref(text);
+    return result;
+}
+static int find_tool_action(int32_t snapshot, const wchar_t *action) {
+    int count = tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT);
+    for (int i = 0; i < count; i++) {
+        wchar_t *value = copy_tool_text(snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_ACTION);
+        BOOL match = value && !wcscmp(value, action); free(value);
+        if (match) return i;
+    }
+    return -1;
+}
+static BOOL save_tool_layout(int32_t snapshot) {
+    if (smoke_mode) smoke_tool_save_attempts++;
+    if (smoke_mode && smoke_fail_tool_save) return FALSE;
+    moonbit_string_t value = tool_registry_snapshot_layout(snapshot);
+    int length = Moonbit_array_length(value);
+    BOOL saved = FALSE;
+    HKEY key;
+    if (length > 0 && RegCreateKeyExW(HKEY_CURRENT_USER, registry_path, 0, NULL, 0,
+        KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        /* One value is the complete layout; no partial per-row preferences. */
+        saved = RegSetValueExW(key, L"ToolLayout", 0, REG_BINARY,
+            (const BYTE *)value, (DWORD)length * sizeof(wchar_t)) == ERROR_SUCCESS;
+        RegCloseKey(key);
+    }
+    moonbit_decref(value);
+    return saved;
+}
+static BOOL publish_tools(int32_t candidate, BOOL persist) {
+    if (candidate <= 0 || tool_publishing) { if (candidate > 0) tool_registry_snapshot_close(candidate); return FALSE; }
+    tool_publishing = TRUE;
+    BOOL ok = mc_capture_prepare_tools(candidate);
+    int pin = find_tool_action(candidate, L"pin");
+    BOOL enabled = pin >= 0 && tool_registry_snapshot_value(candidate, 0, pin, MC_TOOL_ENABLED) == 1;
+    if (ok) ok = mc_pin_can_set_enabled(enabled);
+    if (ok && persist) ok = save_tool_layout(candidate);
+    if (ok) {
+        /* Pin disable drains native resources; its user preference lives only
+         * in the shared layout. Preflight, registry save and commit run on this
+         * UI thread without a nested message loop, so an enable accepted above
+         * cannot enter draining before commit. No document annotations change. */
+        mc_pin_set_enabled(enabled);
+        int32_t previous = tool_snapshot;
+        tool_snapshot = candidate;
+        mc_capture_commit_tools(candidate);
+        if (previous > 0) tool_registry_snapshot_close(previous);
+    } else {
+        mc_capture_discard_tools();
+        tool_registry_snapshot_close(candidate);
+    }
+    tool_publishing = FALSE;
+    return ok;
+}
+static void load_tool_layout(BOOL legacy_pin_enabled) {
+    DWORD bytes = 0;
+    moonbit_string_t saved = moonbit_make_string_raw(0);
+    BOOL present = RegGetValueW(HKEY_CURRENT_USER, registry_path, L"ToolLayout", RRF_RT_REG_BINARY,
+        NULL, NULL, &bytes) == ERROR_SUCCESS && bytes && bytes <= 131072 && !(bytes % sizeof(wchar_t));
+    if (present) {
+        moonbit_decref(saved); saved = moonbit_make_string_raw((int)(bytes / sizeof(wchar_t)));
+        if (RegGetValueW(HKEY_CURRENT_USER, registry_path, L"ToolLayout", RRF_RT_REG_BINARY,
+            NULL, saved, &bytes) != ERROR_SUCCESS) {
+            moonbit_decref(saved); saved = moonbit_make_string_raw(0); present = FALSE;
+        }
+    }
+    moonbit_string_t result = tool_registry_normalize(saved);
+    moonbit_decref(saved);
+    int32_t candidate = tool_registry_snapshot_open(result, MC_TOOL_CAP_COMMANDS);
+    moonbit_decref(result);
+    if (!candidate) {
+        saved = moonbit_make_string_raw(0); result = tool_registry_normalize(saved); moonbit_decref(saved);
+        candidate = tool_registry_snapshot_open(result, MC_TOOL_CAP_COMMANDS); moonbit_decref(result);
+    }
+    if (candidate && !present && !legacy_pin_enabled) {
+        int pin = find_tool_action(candidate, L"pin");
+        moonbit_string_t id = tool_registry_snapshot_text(candidate, 0, pin, MC_TOOL_ID);
+        int32_t migrated = tool_registry_snapshot_set_enabled(candidate, id, 0); moonbit_decref(id);
+        if (migrated) { tool_registry_snapshot_close(candidate); candidate = migrated; }
+    }
+    if (candidate) publish_tools(candidate, FALSE);
+}
+
 static void load_preferences(void) {
     HKEY key;
     int i;
@@ -174,7 +269,6 @@ static void load_preferences(void) {
     open_on_start = FALSE;
     DWORD pin_enabled = 1, pin_bytes = sizeof(pin_enabled);
     RegGetValueW(HKEY_CURRENT_USER, registry_path, L"PinEnabled", RRF_RT_REG_DWORD, NULL, &pin_enabled, &pin_bytes);
-    mc_pin_set_enabled(pin_enabled != 0);
     if (RegOpenKeyExW(HKEY_CURRENT_USER, registry_path, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
         PreferenceRecord record;
         DWORD size = sizeof(record);
@@ -188,6 +282,7 @@ static void load_preferences(void) {
     }
     if (validate_keys(hotkeys) != 0) for (i = 0; i < 3; i++) hotkeys[i] = DEFAULT_KEYS[i];
     mc_pin_set_capture_keys(hotkeys);mc_pin_load_keys(registry_path);
+    load_tool_layout(pin_enabled != 0);
 }
 
 static BOOL save_preferences(void) {
@@ -241,19 +336,14 @@ static void update_shortcuts(HWND page) {
 }
 
 static BOOL set_pin_enabled(BOOL enabled) {
-    HKEY key;
-    DWORD value = enabled ? 1 : 0;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, registry_path, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS)
-        return FALSE;
-    BOOL saved = RegSetValueExW(key, L"PinEnabled", 0, REG_DWORD, (const BYTE *)&value, sizeof(value)) == ERROR_SUCCESS;
-    if (saved && !mc_pin_set_enabled(enabled)) {
-        value = mc_pin_enabled() ? 1 : 0;
-        RegSetValueExW(key, L"PinEnabled", 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
-        saved = FALSE;
-    }
-    RegCloseKey(key);
-    mc_capture_refresh_capabilities();
-    return saved;
+    int pin = find_tool_action(tool_snapshot, L"pin");
+    if (pin < 0) return FALSE;
+    moonbit_string_t id = tool_registry_snapshot_text(tool_snapshot, 0, pin, MC_TOOL_ID);
+    int32_t candidate = tool_registry_snapshot_set_enabled(tool_snapshot, id, enabled ? 1 : 0);
+    moonbit_decref(id);
+    BOOL ok = publish_tools(candidate, TRUE);
+    if (tools_window) refresh_tools_page(tools_window, -1);
+    return ok;
 }
 
 static INT_PTR CALLBACK general_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
@@ -312,6 +402,99 @@ static INT_PTR CALLBACK shortcuts_page(HWND window, UINT message, WPARAM wp, LPA
         }
     }
     return FALSE;
+}
+
+static int tool_page_group(HWND page) {
+    int group = (int)SendDlgItemMessageW(page, IDC_TOOL_GROUP, CB_GETCURSEL, 0, 0);
+    return group >= 0 && group <= 2 ? group : 0;
+}
+static int tool_neighbor(int group, int index, int direction) {
+    int count = tool_registry_snapshot_count(tool_snapshot, group);
+    int slot = tool_registry_snapshot_value(tool_snapshot, group, index, MC_TOOL_SLOT);
+    for (int i = index + direction; i >= 0 && i < count; i += direction)
+        if (tool_registry_snapshot_value(tool_snapshot, group, i, MC_TOOL_SLOT) == slot) return i;
+    return -1;
+}
+static void refresh_tool_selection(HWND page) {
+    int group = tool_page_group(page);
+    int index = (int)SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCURSEL, 0, 0);
+    BOOL valid = index >= 0 && index < tool_registry_snapshot_count(tool_snapshot, group);
+    EnableWindow(GetDlgItem(page, IDC_TOOL_ENABLED), valid);
+    CheckDlgButton(page, IDC_TOOL_ENABLED, valid &&
+        tool_registry_snapshot_value(tool_snapshot, group, index, MC_TOOL_ENABLED) == 1 ? BST_CHECKED : BST_UNCHECKED);
+    EnableWindow(GetDlgItem(page, IDC_TOOL_UP), valid && tool_neighbor(group, index, -1) >= 0);
+    EnableWindow(GetDlgItem(page, IDC_TOOL_DOWN), valid && tool_neighbor(group, index, 1) >= 0);
+    wchar_t *reason = valid ? copy_tool_text(tool_snapshot, group, index, MC_TOOL_UNAVAILABLE_REASON) : NULL;
+    SetDlgItemTextW(page, IDC_TOOL_STATUS, reason && *reason ? reason :
+        valid ? L"修改自动保存；上下调整同组顺序。" : L"暂无可管理项。");
+    free(reason);
+}
+static void refresh_tools_page(HWND page, int selected) {
+    if (selected < 0) selected = (int)SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCURSEL, 0, 0);
+    int group = tool_page_group(page);
+    SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_RESETCONTENT, 0, 0);
+    int count = tool_registry_snapshot_count(tool_snapshot, group);
+    for (int i = 0; i < count; i++) {
+        wchar_t *title = copy_tool_text(tool_snapshot, group, i, MC_TOOL_TITLE);
+        BOOL enabled = tool_registry_snapshot_value(tool_snapshot, group, i, MC_TOOL_ENABLED) == 1;
+        BOOL available = tool_registry_snapshot_value(tool_snapshot, group, i, MC_TOOL_AVAILABLE) == 1;
+        BOOL finish = tool_registry_snapshot_value(tool_snapshot, group, i, MC_TOOL_SLOT) == MC_TOOL_SLOT_FINISH;
+        wchar_t label[256];
+        swprintf_s(label, ARRAYSIZE(label), L"%s  %.160s%s%s", enabled ? L"✓" : L"○", title ? title : L"",
+            finish ? L" · 完成操作" : L"", available ? L"" : L" · 暂不可用");
+        SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_ADDSTRING, 0, (LPARAM)label);
+        free(title);
+    }
+    if (count > 0) SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_SETCURSEL,
+        selected >= 0 && selected < count ? selected : 0, 0);
+    refresh_tool_selection(page);
+}
+static INT_PTR CALLBACK tools_page(HWND page, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_INITDIALOG) {
+        tools_window = page;
+        const wchar_t *groups[] = {L"截图工具", L"录制控制", L"录后编辑"};
+        for (unsigned i = 0; i < ARRAYSIZE(groups); i++)
+            SendDlgItemMessageW(page, IDC_TOOL_GROUP, CB_ADDSTRING, 0, (LPARAM)groups[i]);
+        SendDlgItemMessageW(page, IDC_TOOL_GROUP, CB_SETCURSEL, 0, 0);
+        refresh_tools_page(page, 0);
+        return TRUE;
+    }
+    if (message == WM_DESTROY) { if (tools_window == page) tools_window = NULL; return TRUE; }
+    if (message == WM_NOTIFY && ((NMHDR *)lp)->code == PSN_SETACTIVE) { refresh_tools_page(page, -1); return TRUE; }
+    if (message != WM_COMMAND || tool_publishing) return FALSE;
+    int control = LOWORD(wp);
+    if (control == IDC_TOOL_GROUP && HIWORD(wp) == CBN_SELCHANGE) { refresh_tools_page(page, 0); return TRUE; }
+    if (control == IDC_TOOL_LIST && HIWORD(wp) == LBN_SELCHANGE) { refresh_tool_selection(page); return TRUE; }
+    if (HIWORD(wp) != BN_CLICKED || (control != IDC_TOOL_ENABLED && control != IDC_TOOL_UP && control != IDC_TOOL_DOWN)) return FALSE;
+    int group = tool_page_group(page), index = (int)SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCURSEL, 0, 0);
+    if (index < 0) return TRUE;
+    moonbit_string_t id = tool_registry_snapshot_text(tool_snapshot, group, index, MC_TOOL_ID);
+    int32_t candidate = 0;
+    if (control == IDC_TOOL_ENABLED) candidate = tool_registry_snapshot_set_enabled(tool_snapshot, id,
+        IsDlgButtonChecked(page, IDC_TOOL_ENABLED) == BST_CHECKED ? 1 : 0);
+    else {
+        int next = tool_neighbor(group, index, control == IDC_TOOL_UP ? -1 : 1);
+        if (next >= 0) {
+            int before_index = control == IDC_TOOL_UP ? next : tool_neighbor(group, next, 1);
+            moonbit_string_t before = before_index >= 0 ?
+                tool_registry_snapshot_text(tool_snapshot, group, before_index, MC_TOOL_ID) : moonbit_make_string_raw(0);
+            candidate = tool_registry_snapshot_move(tool_snapshot, id, before);
+            moonbit_decref(before);
+        }
+    }
+    BOOL ok = publish_tools(candidate, TRUE);
+    int selected = index;
+    if (ok) for (int i = 0; i < tool_registry_snapshot_count(tool_snapshot, group); i++) {
+        moonbit_string_t found = tool_registry_snapshot_text(tool_snapshot, group, i, MC_TOOL_ID);
+        BOOL same = Moonbit_array_length(found) == Moonbit_array_length(id) &&
+            !memcmp(found, id, (SIZE_T)Moonbit_array_length(id) * sizeof(wchar_t));
+        moonbit_decref(found);
+        if (same) { selected = i; break; }
+    }
+    moonbit_decref(id);
+    refresh_tools_page(page, selected);
+    if (!ok) SetDlgItemTextW(page, IDC_TOOL_STATUS, L"修改未保存；请先完成截图输入/拖动，并检查设置写入权限。");
+    return TRUE;
 }
 
 static void refresh_pin_page(HWND window) {
@@ -406,12 +589,12 @@ static LRESULT CALLBACK settings_subclass(HWND window, UINT message, WPARAM wp, 
 
 static BOOL show_settings(void) {
     if (!settings) {
-        PROPSHEETPAGEW pages[5];
+        PROPSHEETPAGEW pages[6];
         PROPSHEETHEADERW header;
-        const DLGPROC procedures[5] = {general_page, shortcuts_page, about_page, pins_page, updates_page};
+        const DLGPROC procedures[6] = {general_page, shortcuts_page, about_page, pins_page, updates_page, tools_page};
         int i;
         ZeroMemory(pages, sizeof(pages));
-        for (i = 0; i < 5; i++) {
+        for (i = 0; i < 6; i++) {
             pages[i].dwSize = sizeof(pages[i]);
             pages[i].dwFlags = PSP_DEFAULT;
             pages[i].hInstance = instance;
@@ -424,7 +607,7 @@ static BOOL show_settings(void) {
         header.hwndParent = host;
         header.hInstance = instance;
         header.pszCaption = L"Mooji Cut 设置";
-        header.nPages = 5;
+        header.nPages = 6;
         header.ppsp = pages;
         settings = (HWND)PropertySheetW(&header);
         if (settings == (HWND)-1) settings = NULL;
@@ -551,6 +734,7 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
     case WM_DESTROY:
         unregister_shortcuts();
         mc_capture_close();
+        if (tool_snapshot) { tool_registry_snapshot_close(tool_snapshot); tool_snapshot = 0; }
         mc_pins_shutdown();
         mc_updates_shutdown();
         if (settings) DestroyWindow(settings);
@@ -668,6 +852,31 @@ cleanup:
     return passed;
 }
 
+static BOOL smoke_saved_tool_layout_matches(int32_t snapshot) {
+    moonbit_string_t layout = tool_registry_snapshot_layout(snapshot);
+    DWORD expected = (DWORD)Moonbit_array_length(layout) * sizeof(wchar_t), bytes = expected;
+    BYTE *saved = malloc(expected ? expected : 1);
+    BOOL matches = saved && expected && RegGetValueW(HKEY_CURRENT_USER, registry_path, L"ToolLayout", RRF_RT_REG_BINARY,
+        NULL, saved, &bytes) == ERROR_SUCCESS && bytes == expected && !memcmp(saved, layout, expected);
+    free(saved); moonbit_decref(layout);
+    return matches;
+}
+static BOOL smoke_pin_draining_transaction(void) {
+    /* Called inside the real pin menu callback after disable destroys its
+     * window, while TrackPopupMenu still owns the retirement lease. */
+    if (!set_pin_enabled(FALSE)) return FALSE;
+    int32_t previous = tool_snapshot;
+    unsigned saves = smoke_tool_save_attempts;
+    BOOL persisted_before = smoke_saved_tool_layout_matches(previous);
+    BOOL rejected = !set_pin_enabled(TRUE);
+    int pin = find_tool_action(tool_snapshot, L"pin");
+    BOOL ok = persisted_before && rejected && tool_snapshot == previous && smoke_tool_save_attempts == saves &&
+        pin >= 0 && tool_registry_snapshot_value(tool_snapshot, 0, pin, MC_TOOL_ENABLED) == 0 &&
+        !mc_pin_enabled() && smoke_saved_tool_layout_matches(previous);
+    printf("Windows pin settings drain smoke %s: real menu lease rejects enable before disk or snapshot publication.\n", ok ? "passed" : "FAILED");
+    return ok;
+}
+
 static int run_smoke(void) {
     HWND page, first;
     WORD changed = MAKEWORD(VK_F6, HOTKEYF_CONTROL);
@@ -722,6 +931,38 @@ static int run_smoke(void) {
     if (mc_pin_key(0) != MAKEWORD(VK_F8, HOTKEYF_CONTROL)) goto cleanup;
     SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_PIN_RESET, BN_CLICKED), 0);
     if (mc_pin_key(0) != VK_OEM_PLUS) goto cleanup;
+    PropSheet_SetCurSel(settings, NULL, 5);
+    page = PropSheet_GetCurrentPageHwnd(settings);
+    if (!page || SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCOUNT, 0, 0) < 9) goto cleanup;
+    SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_SETCURSEL, 0, 0);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_LIST, LBN_SELCHANGE), 0);
+    moonbit_string_t first_id = tool_registry_snapshot_text(tool_snapshot, 0, 0, MC_TOOL_ID);
+    int32_t before_failure = tool_snapshot;
+    smoke_fail_tool_save = TRUE;
+    CheckDlgButton(page, IDC_TOOL_ENABLED, BST_UNCHECKED);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_ENABLED, BN_CLICKED), 0);
+    smoke_fail_tool_save = FALSE;
+    BOOL tools_ok = tool_snapshot == before_failure &&
+        tool_registry_snapshot_value(tool_snapshot, 0, 0, MC_TOOL_ENABLED) == 1 &&
+        IsDlgButtonChecked(page, IDC_TOOL_ENABLED) == BST_CHECKED;
+    CheckDlgButton(page, IDC_TOOL_ENABLED, BST_UNCHECKED);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_ENABLED, BN_CLICKED), 0);
+    tools_ok = tool_registry_snapshot_value(tool_snapshot, 0, 0, MC_TOOL_ENABLED) == 0 && tools_ok;
+    load_preferences();
+    tools_ok = tool_registry_snapshot_value(tool_snapshot, 0, 0, MC_TOOL_ENABLED) == 0 && tools_ok;
+    refresh_tools_page(page, 0);
+    CheckDlgButton(page, IDC_TOOL_ENABLED, BST_CHECKED);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_ENABLED, BN_CLICKED), 0);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_DOWN, BN_CLICKED), 0);
+    int selected = (int)SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCURSEL, 0, 0);
+    moonbit_string_t moved = tool_registry_snapshot_text(tool_snapshot, 0, selected, MC_TOOL_ID);
+    tools_ok = selected > 0 && Moonbit_array_length(first_id) == Moonbit_array_length(moved) &&
+        !memcmp(first_id, moved, (SIZE_T)Moonbit_array_length(first_id) * sizeof(wchar_t)) && tools_ok;
+    moonbit_decref(moved); moonbit_decref(first_id);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_UP, BN_CLICKED), 0);
+    tools_ok = SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCURSEL, 0, 0) == 0 && tools_ok;
+    printf("Windows tool settings smoke %s: shared rows, save failure rollback, enabled persistence and ordering.\n", tools_ok ? "passed" : "FAILED");
+    if (!tools_ok) goto cleanup;
     passed = core_ok && save_smoke_screenshot(settings);
 cleanup:
     if (settings) DestroyWindow(settings);
@@ -795,9 +1036,11 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
     if (smoke_mode) {
         result = run_smoke();
         if (result == 0) result = mc_capture_smoke(instance);
-        if (result == 0 && !mc_pin_smoke(instance)) result = 1;
+        if (result == 0 && !mc_pin_smoke(instance, smoke_pin_draining_transaction)) result = 1;
+        if (result == 0 && (!set_pin_enabled(TRUE) || !smoke_saved_tool_layout_matches(tool_snapshot))) result = 1;
         if (result == 0 && !mc_updates_smoke(instance)) result = 1;
         if (result == 0) result = mc_recording_smoke(instance);
+        RegDeleteTreeW(HKEY_CURRENT_USER, registry_path);
         DestroyWindow(host);
     } else {
         if (!mc_updates_initialize(instance, host)) return 1;

@@ -1,77 +1,8 @@
 ///|
-// Stable identity is independent of presentation order and the legacy style ABI.
-priv enum ToolId {
-  Rectangle
-  Arrow
-  Text
-  Cover
-  Pin
-}
-
-///|
-priv enum ToolBehavior {
-  Annotation(Int32)
-  PinAction
-}
-
-///|
 priv enum ToolGroup {
   Screenshot
   Recording
   VideoEditing
-}
-
-///|
-fn ToolId::key(self : ToolId) -> String {
-  match self {
-    Rectangle => "builtin.image.rectangle"
-    Arrow => "builtin.image.arrow"
-    Text => "builtin.image.text"
-    Cover => "builtin.image.cover"
-    Pin => "builtin.image.pin"
-  }
-}
-
-///|
-fn ToolId::from_key(key : String) -> ToolId? {
-  match key {
-    "builtin.image.rectangle" => Some(Rectangle)
-    "builtin.image.arrow" => Some(Arrow)
-    "builtin.image.text" => Some(Text)
-    "builtin.image.cover" => Some(Cover)
-    "builtin.image.pin" => Some(Pin)
-    _ => None
-  }
-}
-
-///|
-fn ToolId::behavior(self : ToolId) -> ToolBehavior {
-  match self {
-    Rectangle => Annotation(1)
-    Arrow => Annotation(2)
-    Text => Annotation(3)
-    Cover => Annotation(4)
-    Pin => PinAction
-  }
-}
-
-///|
-fn ToolId::plugin_id(self : ToolId) -> String {
-  match self {
-    Pin => "builtin.pin"
-    _ => "builtin.image-editor"
-  }
-}
-
-///|
-fn ToolId::title(self : ToolId) -> String {
-  match self {
-    Rectangle => "矩形"
-    Arrow => "箭头"
-    Text => "文字"
-    Cover => "遮挡"
-    Pin => "贴图"
-  }
 }
 
 ///|
@@ -94,29 +25,16 @@ fn ToolGroup::from_key(key : String) -> ToolGroup? {
 }
 
 ///|
-fn catalog(group : ToolGroup) -> Array[ToolId] {
-  match group {
-    Screenshot => [Rectangle, Arrow, Text, Cover, Pin]
-    _ => []
-  }
-}
-
-///|
-fn ToolId::belongs_to(_self : ToolId, group : ToolGroup) -> Bool {
-  group is Screenshot
-}
-
-///|
 // Unknown identities survive a save/reload, but cannot become executable tools.
 priv enum AvailableTool {
-  BuiltinTool(ToolId)
+  BuiltinTool(@plugin_protocol.ToolContribution)
   PluginTool(@plugin_protocol.UserTool)
 }
 
 ///|
 fn AvailableTool::key(self : AvailableTool) -> String {
   match self {
-    BuiltinTool(tool) => tool.key()
+    BuiltinTool(tool) => tool.id
     PluginTool(tool) => tool.global_id()
   }
 }
@@ -124,20 +42,48 @@ fn AvailableTool::key(self : AvailableTool) -> String {
 ///|
 fn AvailableTool::belongs_to(self : AvailableTool, group : ToolGroup) -> Bool {
   match self {
-    BuiltinTool(tool) => tool.belongs_to(group)
+    BuiltinTool(tool) => tool.target == group.key()
     PluginTool(_) => group is Screenshot
   }
 }
 
 ///|
+fn AvailableTool::default_enabled(self : AvailableTool) -> Bool {
+  match self {
+    BuiltinTool(tool) => tool.default_enabled
+    PluginTool(_) => true
+  }
+}
+
+///|
+fn AvailableTool::slot(self : AvailableTool) -> String {
+  match self {
+    BuiltinTool(tool) => tool.slot
+    PluginTool(_) => "tools"
+  }
+}
+
+///|
+fn AvailableTool::group(self : AvailableTool) -> ToolGroup {
+  match self {
+    BuiltinTool(tool) => ToolGroup::from_key(tool.target).unwrap()
+    PluginTool(_) => Screenshot
+  }
+}
+
+///|
 priv struct Catalog {
+  builtins : Array[@plugin_protocol.ToolContribution]
   users : Array[@plugin_protocol.UserTool]
+  manifests : Array[Json]
 }
 
 ///|
 fn Catalog::find(self : Catalog, key : String) -> AvailableTool? {
-  if ToolId::from_key(key) is Some(tool) {
-    return Some(BuiltinTool(tool))
+  for tool in self.builtins {
+    if tool.id == key {
+      return Some(BuiltinTool(tool))
+    }
   }
   for tool in self.users {
     if tool.global_id() == key {
@@ -149,7 +95,12 @@ fn Catalog::find(self : Catalog, key : String) -> AvailableTool? {
 
 ///|
 fn Catalog::all(self : Catalog, group : ToolGroup) -> Array[AvailableTool] {
-  let result = catalog(group).map(tool => BuiltinTool(tool))
+  let result : Array[AvailableTool] = []
+  for tool in self.builtins {
+    if tool.target == group.key() {
+      result.push(BuiltinTool(tool))
+    }
+  }
   if group is Screenshot {
     for tool in self.users {
       result.push(PluginTool(tool))
@@ -227,9 +178,13 @@ fn default_layout(catalog : Catalog) -> Layout {
   {
     screenshot: catalog
     .all(Screenshot)
-    .map(tool => { id: Known(tool), enabled: true, }),
-    recording: [],
-    video_editing: [],
+    .map(tool => { id: Known(tool), enabled: tool.default_enabled(), }),
+    recording: catalog
+    .all(Recording)
+    .map(tool => { id: Known(tool), enabled: tool.default_enabled(), }),
+    video_editing: catalog
+    .all(VideoEditing)
+    .map(tool => { id: Known(tool), enabled: tool.default_enabled(), }),
   }
 }
 
@@ -246,8 +201,10 @@ fn Layout::apply(self : Layout, command : Command) -> Layout {
   match command {
     SetEnabled(tool, enabled) =>
       self.with_entries(
-        Screenshot,
-        self.screenshot.map(entry => {
+        tool.group(),
+        self
+        .entries(tool.group())
+        .map(entry => {
           if entry.id.key() == tool.key() {
             { id: entry.id, enabled, }
           } else {

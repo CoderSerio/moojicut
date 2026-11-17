@@ -1,6 +1,7 @@
 #include "capture.h"
 #include "bindings/c/image_session.h"
 #include "bindings/c/capture_ui.h"
+#include "bindings/c/tool_registry.h"
 #include "platform/shared/image/pixelate.h"
 #include "components/icons/shared/mc_icons.h"
 #include "moonbit.h"
@@ -21,10 +22,19 @@ typedef struct {
   int cursor, selection;
 } TextSnapshot;
 typedef struct {
+  char *id, *command, *action;
+  int kind, interaction;
+  gboolean available;
+  GtkWidget *button;
+} ToolControl;
+typedef struct {
   GtkApplication *application;
   MCLinuxCaptureHost host;
   GtkWidget *editor, *canvas, *overlay, *toolbar, *entry, *tools[5], *future_tools[2], *pin_button;
   MCStyleControls *style_controls;
+  GtkWidget *tool_slots[2];
+  GPtrArray *contributions;
+  char *active_tool_id, *tool_command;
   int style_bank;
   GdkPixbuf *image;
   GdkRectangle toolbar_bounds, entry_bounds;
@@ -43,6 +53,8 @@ typedef struct {
 } Capture;
 static Capture capture;
 static guint generation;
+/* The application owns published snapshots; native widgets own copied fields. */
+static int published_tools;
 
 static gboolean open_editor(GdkPixbuf *image);
 static gboolean commit_text(void);
@@ -50,7 +62,19 @@ static void layout_controls(void);
 static void refresh_context(void);
 static void sync_control_values(void);
 static void draw_document(cairo_t *cr, gboolean export);
+static void rebuild_tool_rows(void);
+static void sync_tool_selection(void);
+static void command(GtkWidget *widget, gpointer data);
 static PangoLayout *text_layout(cairo_t *cr, const char *text, double width, double size);
+static void tool_control_free(gpointer data) {
+  ToolControl *tool = data;
+  g_free(tool->id); g_free(tool->command); g_free(tool->action); g_free(tool);
+}
+static char *snapshot_text_value(int snapshot, int index, int key) {
+  moonbit_string_t value = tool_registry_snapshot_text(snapshot, MC_TOOL_GROUP_SCREENSHOT, index, key);
+  char *text = g_utf16_to_utf8((gunichar2 *)value, Moonbit_array_length(value), NULL, NULL, NULL);
+  moonbit_decref(value); return text ? text : g_strdup("");
+}
 static void snapshot_free(gpointer value) {
   TextSnapshot *snapshot = value;
   if (!snapshot)
@@ -168,6 +192,9 @@ void mc_linux_capture_close(void) {
   capture.editor = NULL;
   if (window)
     gtk_widget_destroy(window);
+  g_clear_pointer(&capture.contributions, g_ptr_array_unref);
+  g_clear_pointer(&capture.active_tool_id, g_free);
+  g_clear_pointer(&capture.tool_command, g_free);
   if (capture.session > 0)
     image_session_dispose(capture.session);
   if (capture.style_bank > 0)
@@ -182,6 +209,30 @@ void mc_linux_capture_close(void) {
 }
 gboolean mc_linux_capture_busy(void) {
   return capture.editor || capture.pending;
+}
+gboolean mc_linux_capture_preflight_tools(int snapshot, const char **reason) {
+  const char *failure = NULL;
+  if (tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT) < 0)
+    failure = "工具配置无效，原设置未改动。";
+  else if (capture.composing || capture.editing || capture.dragging || capture.selecting)
+    failure = "请先完成当前框选、拖动或文字输入，再调整工具。";
+  else if (capture.editor) {
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(capture.editor));
+    if (focus && (GTK_IS_EDITABLE(focus) || GTK_IS_TEXT_VIEW(focus)))
+      failure = "请先完成属性输入，再调整工具。";
+    GList *windows = gtk_window_list_toplevels();
+    for (GList *item = windows; item; item = item->next)
+      if (gtk_widget_get_visible(item->data) &&
+          gtk_window_get_transient_for(GTK_WINDOW(item->data)) == GTK_WINDOW(capture.editor))
+        failure = "请先关闭属性弹窗，再调整工具。";
+    g_list_free(windows);
+  }
+  if (reason) *reason = failure;
+  return failure == NULL;
+}
+void mc_linux_capture_publish_tools(int snapshot) {
+  published_tools = snapshot;
+  if (capture.editor) { rebuild_tool_rows(); layout_controls(); }
 }
 static MCSelectionRect selection_rect(const double *r) {
   return (MCSelectionRect){r[0], r[1], r[2], r[3]};
@@ -512,7 +563,10 @@ static void sync_control_values(void) {
   double values[MC_STYLE_PROPERTY_COUNT];
   current_style(values);
   mc_style_controls_set_tool(capture.style_controls, context_kind());
-  mc_style_controls_sync(capture.style_controls, editor_style_visible_mask(context_kind(), capture.shape), values);
+  unsigned mask = (unsigned)editor_style_visible_mask(context_kind(), capture.shape);
+  if (capture.tool_command && capture.selected < 0)
+    mask &= ~((1u << MC_STYLE_SHAPE) | (1u << MC_STYLE_BLOCK));
+  mc_style_controls_sync(capture.style_controls, mask, values);
 }
 static void refresh_context(void) { sync_control_values(); }
 static void load_tool_style(int tool) {
@@ -734,8 +788,19 @@ static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer 
     capture.selected = -1;
     sync_style();
     image_session_shape_event(capture.session, 2, 0, 0);
-    if (!image_session_shape_begin(capture.session, capture.tool, x, y, capture.color,
-        capture.stroke, capture.opacity, capture.shape, capture.block)) return TRUE;
+    int accepted;
+    if (capture.tool_command) {
+      glong length = 0;
+      gunichar2 *text = g_utf8_to_utf16(capture.tool_command, -1, NULL, &length, NULL);
+      moonbit_string_t value = moonbit_make_string_raw((int32_t)length);
+      if (length) memcpy(value, text, (gsize)length * sizeof(gunichar2));
+      g_free(text);
+      accepted = image_session_tool_begin(capture.session, value, x, y, capture.color,
+        capture.stroke, capture.opacity, 0, capture.block);
+      moonbit_decref(value);
+    } else accepted = image_session_shape_begin(capture.session, capture.tool, x, y, capture.color,
+      capture.stroke, capture.opacity, capture.shape, capture.block);
+    if (!accepted) return TRUE;
   }
   capture.selection.original = selection_rect(capture.original);
   memcpy(capture.preview, capture.original, sizeof(capture.preview));
@@ -812,23 +877,42 @@ static gboolean canvas_release(GtkWidget *widget, GdkEventButton *event, gpointe
   gtk_widget_queue_draw(widget);
   return TRUE;
 }
-static void tool_clicked(GtkWidget *widget, gpointer data) {
-  (void)widget;
+static void choose_tool(int kind, const char *id, const char *tool_command) {
   if (!commit_text())
     return;
-  capture.tool = GPOINTER_TO_INT(data);
-  for (int i = 0; i < 5; i++) {
-    GtkStyleContext *style = gtk_widget_get_style_context(capture.tools[i]);
-    if (i == capture.tool)
-      gtk_style_context_add_class(style, "mc-selected");
-    else
-      gtk_style_context_remove_class(style, "mc-selected");
-  }
+  capture.tool = kind;
+  g_free(capture.active_tool_id); capture.active_tool_id = g_strdup(id);
+  g_free(capture.tool_command); capture.tool_command = g_strdup(tool_command);
+  sync_tool_selection();
   capture.selected = -1;
   sync_style();
   layout_controls();
   gtk_widget_grab_focus(capture.canvas);
   gtk_widget_queue_draw(capture.canvas);
+}
+static void tool_clicked(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  int kind = GPOINTER_TO_INT(data);
+  if (kind == SELECT) { choose_tool(SELECT, NULL, NULL); return; }
+  for (guint i = 0; capture.contributions && i < capture.contributions->len; i++) {
+    ToolControl *tool = g_ptr_array_index(capture.contributions, i);
+    if (tool->available && tool->interaction == MC_TOOL_INTERACTION_ANNOTATION && tool->kind == kind) {
+      choose_tool(kind, tool->id, NULL); return;
+    }
+  }
+}
+static void sync_tool_selection(void) {
+  if (capture.tools[SELECT]) {
+    GtkStyleContext *style = gtk_widget_get_style_context(capture.tools[SELECT]);
+    if (!capture.active_tool_id) gtk_style_context_add_class(style, "mc-selected");
+    else gtk_style_context_remove_class(style, "mc-selected");
+  }
+  for (guint i = 0; capture.contributions && i < capture.contributions->len; i++) {
+    ToolControl *tool = g_ptr_array_index(capture.contributions, i);
+    GtkStyleContext *style = gtk_widget_get_style_context(tool->button);
+    if (!g_strcmp0(tool->id, capture.active_tool_id)) gtk_style_context_add_class(style, "mc-selected");
+    else gtk_style_context_remove_class(style, "mc-selected");
+  }
 }
 static void style_finished(gpointer data) {
   (void)data;
@@ -840,6 +924,8 @@ static void style_changed(unsigned fields, const double values[MC_STYLE_PROPERTY
   if (capture.closing || capture.composing)
     return;
   fields &= (unsigned)editor_style_visible_mask(context_kind(), capture.shape);
+  if (capture.tool_command && capture.selected < 0)
+    fields &= ~((1u << MC_STYLE_SHAPE) | (1u << MC_STYLE_BLOCK));
   gboolean defaults = capture.editing ? capture.edit_index < 0 : capture.selected < 0;
   int tool = capture.editing ? TEXT : capture.tool;
   /* Only edits to an active tool or a new text draft change its future style.
@@ -894,7 +980,79 @@ void mc_linux_capture_refresh_capabilities(void) {
   if (capture.pin_button) {
     gtk_widget_set_sensitive(capture.pin_button, pin_available());
     gtk_widget_set_tooltip_text(capture.pin_button, pin_available() ? "固定贴图" : "贴图已关闭，可在通用设置中启用");
+    GtkWidget *parent = gtk_widget_get_parent(capture.pin_button);
+    if (GTK_IS_EVENT_BOX(parent)) {
+      gtk_event_box_set_above_child(GTK_EVENT_BOX(parent), !pin_available());
+      gtk_widget_set_tooltip_text(parent, pin_available() ? "固定贴图" : "贴图已关闭，可在通用设置中启用");
+    }
   }
+}
+static MCIcon contribution_icon(const char *name) {
+  MCIcon icon = mc_icon_from_name(name);
+  return icon == MC_ICON_COUNT ? MC_ICON_RECTANGLE : icon;
+}
+static void contribution_clicked(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  ToolControl *tool = data;
+  if (!tool->available) return;
+  if (tool->interaction == MC_TOOL_INTERACTION_ANNOTATION) choose_tool(tool->kind, tool->id, NULL);
+  else if (tool->interaction == MC_TOOL_INTERACTION_DRAG_RECT)
+    choose_tool(RECTANGLE, tool->id, tool->command); /* Generic rectangle-style template. */
+  else if (!strcmp(tool->action, "pin")) command(NULL, GINT_TO_POINTER(5));
+  else report("当前后端尚未提供这个操作。");
+}
+static void rebuild_tool_rows(void) {
+  if (!capture.tool_slots[0]) return;
+  for (unsigned slot = 0; slot < 2; slot++) {
+    GList *children = gtk_container_get_children(GTK_CONTAINER(capture.tool_slots[slot]));
+    for (GList *item = children; item; item = item->next) gtk_widget_destroy(item->data);
+    g_list_free(children);
+  }
+  if (!capture.contributions) capture.contributions = g_ptr_array_new_with_free_func(tool_control_free);
+  else g_ptr_array_set_size(capture.contributions, 0);
+  memset(capture.tools + 1, 0, sizeof(capture.tools) - sizeof(capture.tools[0]));
+  memset(capture.future_tools, 0, sizeof(capture.future_tools)); capture.pin_button = NULL;
+  gboolean still_selected = capture.active_tool_id == NULL;
+  int count = tool_registry_snapshot_count(published_tools, MC_TOOL_GROUP_SCREENSHOT);
+  for (int index = 0; index < count; index++) {
+    if (tool_registry_snapshot_value(published_tools, MC_TOOL_GROUP_SCREENSHOT, index, MC_TOOL_ENABLED) != 1) continue;
+    int slot = tool_registry_snapshot_value(published_tools, MC_TOOL_GROUP_SCREENSHOT, index, MC_TOOL_SLOT);
+    if (slot < 0 || slot > 1) continue;
+    ToolControl *tool = g_new0(ToolControl, 1);
+    tool->id = snapshot_text_value(published_tools, index, MC_TOOL_ID);
+    tool->command = snapshot_text_value(published_tools, index, MC_TOOL_COMMAND);
+    tool->action = snapshot_text_value(published_tools, index, MC_TOOL_ACTION);
+    tool->kind = tool_registry_snapshot_value(published_tools, MC_TOOL_GROUP_SCREENSHOT, index, MC_TOOL_KIND);
+    tool->interaction = tool_registry_snapshot_value(published_tools, MC_TOOL_GROUP_SCREENSHOT, index, MC_TOOL_INTERACTION);
+    tool->available = tool_registry_snapshot_value(published_tools, MC_TOOL_GROUP_SCREENSHOT, index, MC_TOOL_AVAILABLE) == 1;
+    char *title = snapshot_text_value(published_tools, index, MC_TOOL_TITLE);
+    char *icon = snapshot_text_value(published_tools, index, MC_TOOL_ICON);
+    char *reason = snapshot_text_value(published_tools, index, MC_TOOL_UNAVAILABLE_REASON);
+    GtkWidget *wrapper = gtk_event_box_new();
+    gtk_event_box_set_visible_window(GTK_EVENT_BOX(wrapper), FALSE);
+    gtk_event_box_set_above_child(GTK_EVENT_BOX(wrapper), !tool->available);
+    char *tip = tool->available ? g_strdup(title) : g_strdup_printf("%s · %s", title, *reason ? reason : "当前后端不可用");
+    tool->button = mc_style_icon_button(contribution_icon(icon), tip, G_CALLBACK(contribution_clicked), tool);
+    gtk_widget_set_sensitive(tool->button, tool->available);
+    gtk_container_add(GTK_CONTAINER(wrapper), tool->button); gtk_widget_set_tooltip_text(wrapper, tip);
+    gtk_box_pack_start(GTK_BOX(capture.tool_slots[slot]), wrapper, FALSE, FALSE, 0);
+    g_ptr_array_add(capture.contributions, tool);
+    if (tool->interaction == MC_TOOL_INTERACTION_ANNOTATION && tool->kind > 0 && tool->kind < 5)
+      capture.tools[tool->kind] = tool->button;
+    int capability = tool_registry_snapshot_value(published_tools, MC_TOOL_GROUP_SCREENSHOT, index, MC_TOOL_CAPABILITY);
+    if (capability == MC_TOOL_CAP_OCR) capture.future_tools[0] = tool->button;
+    if (capability == MC_TOOL_CAP_TRANSLATE) capture.future_tools[1] = tool->button;
+    if (!strcmp(tool->action, "pin")) capture.pin_button = tool->button;
+    if (tool->available && !g_strcmp0(tool->id, capture.active_tool_id)) still_selected = TRUE;
+    g_free(title); g_free(icon); g_free(reason); g_free(tip);
+  }
+  if (!still_selected) {
+    g_clear_pointer(&capture.active_tool_id, g_free); g_clear_pointer(&capture.tool_command, g_free);
+    capture.tool = SELECT;
+  }
+  mc_linux_capture_refresh_capabilities(); sync_tool_selection();
+  for (unsigned slot = 0; slot < 2; slot++) gtk_widget_show_all(capture.tool_slots[slot]);
+  mc_style_hud_apply(capture.toolbar);
 }
 static void command(GtkWidget *widget, gpointer data) {
   (void)widget;
@@ -1127,25 +1285,10 @@ static gboolean open_editor(GdkPixbuf *image) {
   gtk_style_context_add_class(gtk_widget_get_style_context(capture.toolbar), "mc-capture-hud");
   GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
   gtk_box_pack_start(GTK_BOX(capture.toolbar), row, FALSE, FALSE, 0);
-  const char *names[] = {"选择 / 移动", "矩形", "箭头", "文字：单击新建，双击编辑", "遮盖"};
-  MCIcon icons[] = {MC_ICON_SELECT, MC_ICON_RECTANGLE, MC_ICON_ARROW, MC_ICON_TEXT, MC_ICON_REDACT};
-  for (int i = 0; i < 5; i++) {
-    capture.tools[i] = mc_style_icon_button(icons[i], names[i], G_CALLBACK(tool_clicked), GINT_TO_POINTER(i));
-    gtk_box_pack_start(GTK_BOX(row), capture.tools[i], FALSE, FALSE, 0);
-  }
-  gtk_style_context_add_class(gtk_widget_get_style_context(capture.tools[0]), "mc-selected");
-  MCIcon future_icons[] = {MC_ICON_OCR, MC_ICON_TRANSLATE};
-  const char *future_names[] = {"OCR · 尚未开放", "翻译 · 尚未开放"};
-  for (int i = 0; i < 2; i++) {
-    GtkWidget *wrapper = gtk_event_box_new();
-    gtk_event_box_set_visible_window(GTK_EVENT_BOX(wrapper), FALSE);
-    gtk_event_box_set_above_child(GTK_EVENT_BOX(wrapper), TRUE);
-    capture.future_tools[i] = mc_style_icon_button(future_icons[i], future_names[i], NULL, NULL);
-    gtk_widget_set_sensitive(capture.future_tools[i], FALSE);
-    gtk_container_add(GTK_CONTAINER(wrapper), capture.future_tools[i]);
-    gtk_widget_set_tooltip_text(wrapper, future_names[i]);
-    gtk_box_pack_start(GTK_BOX(row), wrapper, FALSE, FALSE, 0);
-  }
+  capture.tools[SELECT] = mc_style_icon_button(MC_ICON_SELECT, "选择 / 移动", G_CALLBACK(tool_clicked), GINT_TO_POINTER(SELECT));
+  gtk_box_pack_start(GTK_BOX(row), capture.tools[SELECT], FALSE, FALSE, 0);
+  capture.tool_slots[MC_TOOL_SLOT_TOOLS] = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+  gtk_box_pack_start(GTK_BOX(row), capture.tool_slots[MC_TOOL_SLOT_TOOLS], FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(row), mc_style_icon_button(MC_ICON_UNDO, "撤销 Ctrl+Z", G_CALLBACK(command), GINT_TO_POINTER(1)), FALSE,
                      FALSE, 0);
   gtk_box_pack_start(GTK_BOX(row), mc_style_icon_button(MC_ICON_REDO, "重做 Ctrl+Shift+Z", G_CALLBACK(command), GINT_TO_POINTER(2)),
@@ -1155,9 +1298,9 @@ static gboolean open_editor(GdkPixbuf *image) {
                    FALSE, FALSE, 0);
   gtk_box_pack_end(GTK_BOX(row), mc_style_icon_button(MC_ICON_CLOSE, "取消 Esc", G_CALLBACK(command), GINT_TO_POINTER(4)), FALSE, FALSE,
                    0);
-  capture.pin_button = mc_style_icon_button(MC_ICON_PIN, "固定贴图", G_CALLBACK(command), GINT_TO_POINTER(5));
-  mc_linux_capture_refresh_capabilities();
-  gtk_box_pack_end(GTK_BOX(row), capture.pin_button, FALSE, FALSE, 0);
+  capture.tool_slots[MC_TOOL_SLOT_FINISH] = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+  gtk_box_pack_end(GTK_BOX(row), capture.tool_slots[MC_TOOL_SLOT_FINISH], FALSE, FALSE, 0);
+  rebuild_tool_rows();
   MCStyleRange ranges[MC_STYLE_PROPERTY_COUNT];
   for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
     ranges[field] = (MCStyleRange){editor_style_min(field), editor_style_max(field),
@@ -1283,6 +1426,87 @@ static void smoke_style_rgba(int color, double opacity) {
   values[MC_STYLE_COLOR] = color;
   values[MC_STYLE_OPACITY] = opacity;
   style_changed((1u << MC_STYLE_COLOR) | (1u << MC_STYLE_OPACITY), values, NULL);
+}
+static moonbit_string_t smoke_core_string(const char *text) {
+  glong length = 0; gunichar2 *utf16 = g_utf8_to_utf16(text, -1, NULL, &length, NULL);
+  moonbit_string_t result = moonbit_make_string_raw((int32_t)length);
+  if (length) memcpy(result, utf16, (gsize)length * sizeof(gunichar2));
+  g_free(utf16); return result;
+}
+static ToolControl *smoke_find_tool(const char *id) {
+  for (guint i = 0; capture.contributions && i < capture.contributions->len; i++) {
+    ToolControl *tool = g_ptr_array_index(capture.contributions, i);
+    if (!strcmp(tool->id, id)) return tool;
+  }
+  return NULL;
+}
+static gboolean smoke_contributions(void) {
+  int original_session = capture.session, original_snapshot = published_tools;
+  capture.session = image_session_create(capture.width, capture.height);
+  if (capture.session <= 0) { capture.session = original_session; return FALSE; }
+  moonbit_string_t id = smoke_core_string("builtin.image.numberedRectangle");
+  int enabled = tool_registry_snapshot_set_enabled(original_snapshot, id, 1);
+  if (enabled <= 0) {
+    moonbit_decref(id); image_session_dispose(capture.session); capture.session = original_session;
+    g_printerr("Linux contribution fixture: shared descriptor candidate rejected.\n"); return FALSE;
+  }
+  gboolean ok = enabled > 0 && smoke_find_tool("builtin.image.numberedRectangle") == NULL;
+  const char *reason = NULL;
+  begin_text(-1, 60, 80);
+  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), "未提交草稿", -1);
+  ok = !mc_linux_capture_preflight_tools(enabled, &reason) && reason && image_session_count(capture.session) == 0 && ok;
+  TextSnapshot *draft = snapshot_text(); ok = !strcmp(draft->text, "未提交草稿") && ok; snapshot_free(draft);
+  preedit_changed(GTK_TEXT_VIEW(capture.entry), "组合中", NULL);
+  ok = !mc_linux_capture_preflight_tools(enabled, &reason) && capture.composing && ok;
+  preedit_changed(GTK_TEXT_VIEW(capture.entry), "", NULL); cancel_text();
+  gtk_widget_grab_focus(capture.canvas);
+  ok = mc_linux_capture_preflight_tools(enabled, &reason) && ok;
+  if (enabled > 0) mc_linux_capture_publish_tools(enabled);
+  ToolControl *tool = smoke_find_tool("builtin.image.numberedRectangle");
+  if (tool) gtk_button_clicked(GTK_BUTTON(tool->button)); else ok = FALSE;
+  ok = capture.tool_command && !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_SHAPE) &&
+    mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) && ok;
+  GdkEventButton event = {0}; event.button = 1;
+  event.x = capture.offset_x + 60 * capture.zoom; event.y = capture.offset_y + 80 * capture.zoom;
+  canvas_press(capture.canvas, &event, NULL); motion(130, 140);
+  ok = capture.dragging && image_session_count(capture.session) == 0 &&
+    !mc_linux_capture_preflight_tools(original_snapshot, &reason) && ok;
+  /* Cancellation must not spend a number or commit part of the contribution. */
+  image_session_shape_event(capture.session, 2, 0, 0); capture.dragging = FALSE;
+  if (gtk_widget_has_grab(capture.canvas)) gtk_grab_remove(capture.canvas);
+  canvas_press(capture.canvas, &event, NULL);
+  event.x = capture.offset_x + 130 * capture.zoom; event.y = capture.offset_y + 140 * capture.zoom;
+  canvas_release(capture.canvas, &event, NULL);
+  ok = image_session_count(capture.session) == 2 && ok;
+  if (image_session_count(capture.session) == 2) {
+    char *number = annotation_text(1);
+    ok = !strcmp(number, "1") && image_session_value(capture.session, 0, 0) == RECTANGLE &&
+      image_session_value(capture.session, 1, 0) == TEXT && ok; g_free(number);
+  }
+  ok = image_session_undo(capture.session) == 1 && image_session_count(capture.session) == 0 && ok;
+  ok = image_session_redo(capture.session) == 1 && image_session_count(capture.session) == 2 && ok;
+  int disabled = tool_registry_snapshot_set_enabled(enabled, id, 0);
+  if (disabled > 0) mc_linux_capture_publish_tools(disabled); else ok = FALSE;
+  ok = capture.tool == SELECT && !capture.tool_command && !smoke_find_tool("builtin.image.numberedRectangle") &&
+    image_session_count(capture.session) == 2 && capture.pin_button && ok;
+  moonbit_string_t text = smoke_core_string("builtin.image.text"), rectangle = smoke_core_string("builtin.image.rectangle");
+  int moved = tool_registry_snapshot_move(disabled, text, rectangle);
+  moonbit_decref(text); moonbit_decref(rectangle); moonbit_decref(id);
+  if (moved > 0) mc_linux_capture_publish_tools(moved); else ok = FALSE;
+  ToolControl *first = capture.contributions->len ? g_ptr_array_index(capture.contributions, 0) : NULL;
+  ok = first && !strcmp(first->id, "builtin.image.text") && ok;
+  if (first) gtk_button_clicked(GTK_BUTTON(first->button));
+  ok = capture.tool == TEXT && image_session_count(capture.session) == 2 && ok;
+  /* Configuration publication must not insert a document history entry. */
+  ok = image_session_undo(capture.session) == 1 && image_session_count(capture.session) == 0 && ok;
+  mc_linux_capture_publish_tools(original_snapshot);
+  if (enabled > 0) tool_registry_snapshot_close(enabled);
+  if (disabled > 0) tool_registry_snapshot_close(disabled);
+  if (moved > 0) tool_registry_snapshot_close(moved);
+  image_session_dispose(capture.session); capture.session = original_session;
+  capture.selected = -1; tool_clicked(NULL, GINT_TO_POINTER(SELECT)); sync_crop();
+  g_print("Linux contribution fixture %s: slots, draft/IME/drag preflight, generic composite undo, disable and reorder.\n", ok ? "passed" : "FAILED");
+  return ok;
 }
 static gboolean smoke_tool_styles(void) {
   int original_session = capture.session;
@@ -1490,6 +1714,7 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
     for (int i = 0; i < 2; i++) {
       int x, y;
       GtkWidget *button = capture.future_tools[i];
+      if (!button) { ok = FALSE; g_printerr("XTest fixture: unavailable action missing from descriptor toolbar\n"); break; }
       gtk_widget_translate_coordinates(button, capture.editor, gtk_widget_get_allocated_width(button) / 2,
                                        gtk_widget_get_allocated_height(button) / 2, &x, &y);
       motion_event(display, -1, ox + x, oy + y, 0);
@@ -1503,15 +1728,18 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
   if (ok) {
     int x, y;
     GtkWidget *button = capture.tools[TEXT];
-    gtk_widget_translate_coordinates(button, capture.editor, gtk_widget_get_allocated_width(button) / 2,
-                                     gtk_widget_get_allocated_height(button) / 2, &x, &y);
-    motion_event(display, -1, ox + x, oy + y, 0);
-    button_event(display, 1, TRUE, 0);
-    button_event(display, 1, FALSE, 0);
-    smoke_pump();
-    ok = capture.tool == TEXT;
-    if (!ok)
-      g_printerr("XTest fixture: toolbar click routing failed\n");
+    if (!button) { ok = FALSE; g_printerr("XTest fixture: text contribution missing\n"); }
+    if (button) {
+      gtk_widget_translate_coordinates(button, capture.editor, gtk_widget_get_allocated_width(button) / 2,
+                                       gtk_widget_get_allocated_height(button) / 2, &x, &y);
+      motion_event(display, -1, ox + x, oy + y, 0);
+      button_event(display, 1, TRUE, 0);
+      button_event(display, 1, FALSE, 0);
+      smoke_pump();
+      ok = capture.tool == TEXT;
+      if (!ok)
+        g_printerr("XTest fixture: toolbar click routing failed\n");
+    }
   }
   if (ok) {
     motion_event(display, -1, ox + 100, oy + 100, 0);
@@ -1591,7 +1819,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   selection_event.y = capture.offset_y + 50 * capture.zoom;
   ok = canvas_release(capture.canvas, &selection_event, NULL) && !capture.selecting &&
        capture.editor == original && !gtk_window_get_decorated(GTK_WINDOW(original)) && ok;
-  ok = smoke_tool_styles() && smoke_shape_variants() && ok;
+  ok = smoke_contributions() && smoke_tool_styles() && smoke_shape_variants() && ok;
   ok = (editor_style_property_mask(context_kind()) == 0) && !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
        !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) && ok;
   tool_clicked(NULL, GINT_TO_POINTER(TEXT));
@@ -1611,9 +1839,11 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
        mc_style_controls_property_visible(capture.style_controls, MC_STYLE_OPACITY) && !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) &&
        !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) && ok;
   for (int i = 0; i < 2; i++) {
+    if (!capture.future_tools[i]) { ok = FALSE; continue; }
     AtkStateSet *state = atk_object_ref_state_set(gtk_widget_get_accessible(capture.future_tools[i]));
     char *tip = gtk_widget_get_tooltip_text(gtk_widget_get_parent(capture.future_tools[i]));
-    ok = !atk_state_set_contains_state(state, ATK_STATE_ENABLED) && tip && strstr(tip, "尚未开放") && ok;
+    ok = !atk_state_set_contains_state(state, ATK_STATE_ENABLED) && tip && *tip &&
+      gtk_event_box_get_above_child(GTK_EVENT_BOX(gtk_widget_get_parent(capture.future_tools[i]))) && ok;
     g_free(tip);
     g_object_unref(state);
   }

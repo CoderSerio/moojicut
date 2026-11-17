@@ -52,6 +52,8 @@ pub fn image_apply(String) -> String
 
 pub fn image_arrowhead_value(Double, Double, Double, Double, Double, Int32) -> Double
 
+pub fn image_contribution_command(String) -> String
+
 pub fn image_create(String) -> String
 
 pub fn image_finalize(String) -> String
@@ -91,6 +93,8 @@ pub fn image_session_shape_begin(Int32, Int32, Double, Double, Int32, Double, Do
 pub fn image_session_shape_event(Int32, Int32, Double, Double) -> Int32
 
 pub fn image_session_text(Int32, Int32) -> String
+
+pub fn image_session_tool_begin(Int32, String, Double, Double, Int32, Double, Double, Int32, Double) -> Int32
 
 pub fn image_session_undo(Int32) -> Int32
 
@@ -213,6 +217,22 @@ pub fn shortcut_validate(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 pub fn tool_registry_normalize(String) -> String
 
 pub fn tool_registry_resolve(String) -> String
+
+pub fn tool_registry_snapshot_close(Int32) -> Int32
+
+pub fn tool_registry_snapshot_count(Int32, Int32) -> Int32
+
+pub fn tool_registry_snapshot_layout(Int32) -> String
+
+pub fn tool_registry_snapshot_move(Int32, String, String) -> Int32
+
+pub fn tool_registry_snapshot_open(String, Int32) -> Int32
+
+pub fn tool_registry_snapshot_set_enabled(Int32, String, Int32) -> Int32
+
+pub fn tool_registry_snapshot_text(Int32, Int32, Int32, Int32) -> String
+
+pub fn tool_registry_snapshot_value(Int32, Int32, Int32, Int32) -> Int32
 
 pub fn tool_registry_update(String) -> String
 

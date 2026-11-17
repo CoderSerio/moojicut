@@ -56,7 +56,7 @@ test "dynamic catalog appends multiple packages and routes same local names with
     entries(result, "screenshot")[5],
     @json.parse(
       (
-        #|{"id":"user.com.example.first/describe","pluginId":"com.example.first","toolId":"describe","title":"describe","target":"screenshot","type":"action","action":"run","enabled":true}
+        #|{"id":"user.com.example.first/describe","pluginId":"com.example.first","toolId":"describe","title":"describe","target":"screenshot","type":"action","action":"run","enabled":true,"icon":"plugin","slot":"tools","command":"plugin.run","interaction":"invoke","defaultEnabled":true,"capability":16,"requires":"userPlugins","payload":{}}
       ),
     ),
   )

@@ -30,6 +30,23 @@ pub struct Manifest {
 pub fn Manifest::plugin_id(Self) -> String
 pub fn Manifest::tools(Self) -> Array[UserTool]
 
+pub(all) struct ToolContribution {
+  id : String
+  plugin_id : String
+  target : String
+  title : String
+  icon : String
+  slot : String
+  behavior : String
+  command : String
+  interaction : String
+  annotation_kind : Int32
+  default_enabled : Bool
+  capability : Int32
+  requires : String
+  payload : @json.Json
+}
+
 pub struct UserTool {
   // private fields
 }

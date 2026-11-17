@@ -2,6 +2,7 @@
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
 #import "components/style_controls/macos/MCStylePropertiesView.h"
 #include "moonbit.h"
+#include "bindings/c/tool_registry.h"
 #include <math.h>
 #import <objc/runtime.h>
 
@@ -31,9 +32,7 @@
 @property (readonly) MCColorSwatch *color;
 @property (readonly) NSTextField *fontSize;
 @property (readonly) NSStepper *fontStepper;
-@property (readonly) NSButton *ocrButton;
-@property (readonly) NSButton *translateButton;
-@property (readonly) NSButton *scrollCaptureButton;
+@property (readonly) NSArray<NSDictionary *> *visibleTools;
 - (void)chooseTool:(id)sender;
 - (void)styleChanged:(id)sender;
 - (void)refresh;
@@ -57,6 +56,34 @@ static void selectTool(MCImageEditorController *editor, NSInteger kind) {
     }
 }
 
+static NSInteger contributionSegment(MCImageEditorController *editor, NSString *identifier) {
+    for (NSUInteger index = 0; index < editor.visibleTools.count; index++)
+        if ([editor.visibleTools[index][@"id"] isEqual:identifier]) return (NSInteger)index;
+    return -1;
+}
+static void invokeContribution(MCImageEditorController *editor, NSString *identifier) {
+    NSInteger index=contributionSegment(editor,identifier);
+    NSCAssert(index >= 0,@"Expected visible contribution %@",identifier);
+    editor.tools.selectedSegment=index; [editor chooseTool:editor.tools];
+}
+static NSDictionary *registryConfiguration(NSArray<NSDictionary *> *entries, NSArray *manifests) {
+    NSMutableArray *saved=[NSMutableArray array];
+    for (NSDictionary *entry in entries) [saved addObject:@{@"id":entry[@"id"],@"enabled":([entry[@"enabled"] boolValue] ? @YES : @NO)}];
+    NSDictionary *request=@{@"layout":@{@"version":@1,@"groups":@{@"screenshot":saved}},@"manifests":manifests};
+    NSString *json=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:request options:0 error:NULL] encoding:NSUTF8StringEncoding];
+    moonbit_string_t input=moonbit_make_string_raw((int32_t)json.length); [json getCharacters:input range:NSMakeRange(0,json.length)];
+    moonbit_string_t result=tool_registry_resolve(input); moonbit_decref(input);
+    NSString *text=[[NSString alloc] initWithCharacters:result length:Moonbit_array_length(result)]; moonbit_decref(result);
+    NSDictionary *configuration=[NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    NSCAssert([configuration[@"ok"] boolValue],@"Invalid overlay registry fixture: %@",configuration);
+    return configuration;
+}
+static NSDictionary *setConfiguredTool(NSDictionary *configuration, NSString *identifier, BOOL enabled) {
+    NSMutableArray *entries=[NSMutableArray array];
+    for (NSDictionary *entry in configuration[@"layout"][@"groups"][@"screenshot"])
+        [entries addObject:[entry[@"id"] isEqual:identifier] ? @{@"id":identifier,@"enabled":@(enabled)} : entry];
+    return registryConfiguration(entries,configuration[@"manifests"] ?: @[]);
+}
 static NSEvent *mouse(MCImageCanvas *canvas, NSEventType type, NSPoint point) {
     NSRect frame = canvas.imageFrame;
     NSPoint local = NSMakePoint(frame.origin.x + point.x * frame.size.width / 800,
@@ -122,15 +149,14 @@ static BOOL exercise(CGFloat scale) {
     CHECK(NSHeight(editor.floatingToolbar.frame) <= 40, "clearing the message collapses the unused row again");
     CHECK(editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
           "select without a text object shows no irrelevant properties");
-    CHECK(editor.ocrButton.superview == editor.toolbar && editor.translateButton.superview == editor.toolbar &&
-          editor.ocrButton.hidden && editor.translateButton.hidden && !editor.ocrButton.enabled && !editor.translateButton.enabled &&
-          !editor.ocrButton.isAccessibilityEnabled && !editor.translateButton.isAccessibilityEnabled &&
-          [editor.ocrButton.toolTip containsString:@"尚未开放"] && [editor.translateButton.toolTip containsString:@"尚未开放"],
-          "unavailable OCR/translation do not occupy screenshot toolbar space");
+    NSInteger ocr=contributionSegment(editor,@"builtin.capture.ocr"), translate=contributionSegment(editor,@"builtin.capture.translate");
+    CHECK(ocr >= 0 && translate >= 0 && ![editor.tools isEnabledForSegment:ocr] && ![editor.tools isEnabledForSegment:translate] &&
+          [[editor.tools toolTipForSegment:ocr] containsString:@"后端不可用"] && [[editor.tools toolTipForSegment:translate] containsString:@"后端不可用"] &&
+          [editor.tools imageForSegment:ocr].accessibilityDescription.length > 0 && [editor.tools imageForSegment:translate].accessibilityDescription.length > 0,
+          "enabled contributions remain visible with explicit unavailable state and accessible descriptions until a backend is supplied");
     NSNumber *revision = editor.document[@"revision"];
-    [editor.ocrButton performClick:nil];
-    [editor.translateButton performClick:nil];
-    CHECK([editor.document[@"revision"] isEqual:revision], "disabled future actions never mutate the image");
+    invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
+    CHECK([editor.document[@"revision"] isEqual:revision], "unavailable contribution dispatch never mutates the image");
     CHECK([editor.color isDescendantOf:editor.properties] && [editor.fontSize isDescendantOf:editor.properties] &&
           ![editor.color isDescendantOf:editor.toolbar] && ![editor.fontSize isDescendantOf:editor.toolbar],
           "color and font controls live only in the contextual second row");
@@ -330,24 +356,30 @@ static BOOL hasCursor(NSArray<NSDictionary *> *records, NSPoint point, NSCursor 
     return NO;
 }
 static NSDictionary *overlayConfiguration(NSSet<NSNumber *> *disabled, NSUInteger pluginCount) {
-    NSArray *ids = @[@"builtin.image.rectangle", @"builtin.image.arrow", @"builtin.image.text", @"builtin.image.cover"];
-    NSMutableArray *entries = [NSMutableArray array];
-    for (NSUInteger index = 0; index < ids.count; index++)
-        [entries addObject:@{@"id":ids[index], @"title":@"标注", @"type":@"annotation", @"kind":@(index+1), @"enabled":@(![disabled containsObject:@(index+1)])}];
-    [entries addObject:@{@"id":@"builtin.image.pin", @"title":@"贴图", @"type":@"action", @"action":@"pin", @"pluginId":@"builtin.pin", @"enabled":@(![disabled containsObject:@100])}];
-    for (NSUInteger index = 0; index < pluginCount; index++) {
-        NSString *tool = [NSString stringWithFormat:@"tool-%lu", (unsigned long)index];
-        [entries addObject:@{@"id":[@"user.com.example.capture/" stringByAppendingString:tool], @"pluginId":@"com.example.capture",
-            @"toolId":tool, @"title":@"截图信息", @"type":@"action", @"action":@"run", @"target":@"screenshot", @"enabled":@YES}];
+    NSArray *ids=@[@"builtin.image.rectangle",@"builtin.image.arrow",@"builtin.image.text",@"builtin.image.cover"];
+    NSMutableArray *entries=[NSMutableArray array], *tools=[NSMutableArray array];
+    for (NSUInteger index=0; index<ids.count; index++)
+        [entries addObject:@{@"id":ids[index],@"enabled":@(![disabled containsObject:@(index+1)])}];
+    [entries addObject:@{@"id":@"builtin.image.pin",@"enabled":@(![disabled containsObject:@100])}];
+    [entries addObject:@{@"id":@"builtin.capture.ocr",@"enabled":@(![disabled containsObject:@101])}];
+    [entries addObject:@{@"id":@"builtin.capture.translate",@"enabled":@(![disabled containsObject:@102])}];
+    [entries addObject:@{@"id":@"builtin.capture.scroll",@"enabled":@NO}];
+    [entries addObject:@{@"id":@"builtin.image.numberedRectangle",@"enabled":@NO}];
+    for (NSUInteger index=0; index<pluginCount; index++) {
+        NSString *tool=[NSString stringWithFormat:@"tool-%lu",(unsigned long)index];
+        [entries addObject:@{@"id":[@"user.com.example.capture/" stringByAppendingString:tool],@"enabled":@YES}];
+        [tools addObject:@{@"toolId":tool,@"title":@"截图信息",@"target":@"screenshot",@"action":@"run"}];
     }
-    return @{@"ok":@YES, @"layout":@{}, @"groups":@{@"screenshot":entries, @"recording":@[], @"videoEditing":@[]}};
+    NSArray *manifests=pluginCount ? @[@{@"apiVersion":@1,@"pluginId":@"com.example.capture",@"name":@"Capture fixture",@"version":@"1.0.0",
+        @"entry":@"plugin.wasm",@"runtime":@"extism-1",@"capabilities":@[@"capture.metadata",@"result.text"],@"tools":tools}] : @[];
+    return registryConfiguration(entries,manifests);
 }
 static BOOL adaptiveOverlay(CGFloat scale) {
     BOOL passed = YES;
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
     [editor prepareOverlayInFrame:NSMakeRect(-1200, -300, 800*scale, 500*scale)];
-    CHECK(editor.onScrollCapture == nil && editor.scrollCaptureButton.hidden && !editor.scrollCaptureButton.enabled,
-          "the default overlay keeps experimental scrolling hidden and disabled until a host explicitly supplies capability");
+    CHECK(editor.onScrollCapture == nil && contributionSegment(editor,@"builtin.capture.scroll") == -1,
+          "the experimental scroll contribution is disabled by default");
     MCImageCanvas *canvas = editor.canvas;
     NSArray *cursors = canvasCursors(canvas);
     CHECK(hasCursor(cursors, NSMakePoint(20,20), NSCursor.crosshairCursor), "initial region selection uses a canvas crosshair");
@@ -417,11 +449,17 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     editor.onOCR = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onTranslate = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onScrollCapture = ^(__unused MCImageEditorController *source) { contentActions++; };
-    CHECK(!editor.ocrButton.hidden && editor.ocrButton.enabled && editor.translateButton.hidden && !editor.translateButton.enabled,
-          "OCR and translation share one visible text entry even when both callbacks are attached");
-    CHECK(!editor.scrollCaptureButton.hidden && editor.scrollCaptureButton.enabled, "scroll capture appears only when the host supplies the capability");
-    [editor.ocrButton performClick:nil]; [editor.translateButton performClick:nil]; [editor.scrollCaptureButton performClick:nil];
-    CHECK(contentActions == 2, "text entry uses OCR and the hidden translation entry cannot dispatch a second action");
+    NSInteger ocr=contributionSegment(editor,@"builtin.capture.ocr"), translate=contributionSegment(editor,@"builtin.capture.translate");
+    CHECK(ocr >= 0 && translate >= 0 && [editor.tools isEnabledForSegment:ocr] && [editor.tools isEnabledForSegment:translate],
+          "OCR and translation occupy their own declared tool slots when their respective backends are attached");
+    CHECK(contributionSegment(editor,@"builtin.capture.scroll") == -1, "attaching a scroll backend does not override its saved disabled preference");
+    invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
+    CHECK(contentActions == 2, "both declared content actions route through the shared segmented control");
+    [editor applyToolConfiguration:setConfiguredTool(editor.toolConfiguration,@"builtin.capture.scroll",YES)];
+    NSInteger scroll=contributionSegment(editor,@"builtin.capture.scroll");
+    CHECK(scroll >= 0 && [editor.tools isEnabledForSegment:scroll], "scroll appears only after explicit enable plus backend availability");
+    invokeContribution(editor,@"builtin.capture.scroll");
+    CHECK(contentActions == 3, "the explicitly enabled scroll contribution invokes exactly once");
     [editor applyToolConfiguration:overlayConfiguration([NSSet set],0)];
     CGFloat withContentActions = NSWidth(editor.floatingToolbar.frame);
     // Tiny synthetic display: preserve action/field hit targets and scroll them

@@ -12,6 +12,7 @@
 #include "plugins/feature/recording/linux/recording.h"
 #include "updates.h"
 #include "platform/linux/input/global_shortcuts.h"
+#include "bindings/c/tool_registry.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "development"
@@ -27,11 +28,14 @@ typedef struct {
   GtkWidget *window, *notebook, *status, *recorders[3], *dark_toggle, *pin_toggle, *pin_menu[3];
   GtkWidget *record_start_menu, *record_stop_menu;
   GtkWidget *shortcut_note, *shortcut_enable;
+  GtkWidget *tool_settings;
+  int tool_snapshot;
+  char *tool_layout;
   MCGlobalShortcuts *global_shortcuts;
   char *shortcut_status, *shortcut_actual[3];
   gboolean shortcuts_pending, shortcut_keyboard_grabbed;
   Shortcut shortcuts[3];
-  gboolean prefer_dark, system_dark, smoke, activated, core_ok, pin_enabled, quitting;
+  gboolean prefer_dark, system_dark, smoke, activated, core_ok, pin_enabled, pins_ready, quitting;
   int recording, exit_code;
   char *config_path, *smoke_dir, *icon_path;
 } Host;
@@ -49,6 +53,53 @@ static void menu_stop(GtkWidget *widget, gpointer data);
 static gboolean save_settings(void);
 static void global_shortcut_action(unsigned index, gpointer data);
 static void global_shortcut_state(gboolean active, const char *message, const char *const labels[3], gpointer data);
+static void refresh_tool_settings(void);
+static void sync_pin_feature(void);
+static void pin_feature_changed(GtkToggleButton *button, gpointer data);
+static gboolean publish_tools(int candidate);
+
+static moonbit_string_t core_string(const char *text) {
+  glong length = 0;
+  gunichar2 *utf16 = g_utf8_to_utf16(text ? text : "", -1, NULL, &length, NULL);
+  moonbit_string_t result = moonbit_make_string_raw((int32_t)length);
+  if (length) memcpy(result, utf16, (gsize)length * sizeof(gunichar2));
+  g_free(utf16); return result;
+}
+static char *core_text(moonbit_string_t value) {
+  char *result = g_utf16_to_utf8((gunichar2 *)value, Moonbit_array_length(value), NULL, NULL, NULL);
+  moonbit_decref(value); return result ? result : g_strdup("");
+}
+static char *tool_text(int snapshot, int index, int key) {
+  return core_text(tool_registry_snapshot_text(snapshot, MC_TOOL_GROUP_SCREENSHOT, index, key));
+}
+static int open_tools(const char *layout) {
+  moonbit_string_t input = core_string(layout);
+  moonbit_string_t result = tool_registry_normalize(input);
+  int snapshot = tool_registry_snapshot_open(result, MC_TOOL_CAP_COMMANDS);
+  moonbit_decref(result); moonbit_decref(input); return snapshot;
+}
+static int tool_action_index(int snapshot, const char *action) {
+  int count = tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT);
+  for (int index = 0; index < count; index++) {
+    char *current = tool_text(snapshot, index, MC_TOOL_ACTION);
+    gboolean equal = !strcmp(current, action); g_free(current);
+    if (equal) return index;
+  }
+  return -1;
+}
+static int pin_candidate(int snapshot, gboolean enabled) {
+  int index = tool_action_index(snapshot, "pin");
+  if (index < 0) return 0;
+  char *text = tool_text(snapshot, index, MC_TOOL_ID);
+  moonbit_string_t id = core_string(text); g_free(text);
+  int candidate = tool_registry_snapshot_set_enabled(snapshot, id, enabled ? 1 : 0);
+  moonbit_decref(id); return candidate;
+}
+static void read_pin_preference(void) {
+  int index = tool_action_index(host.tool_snapshot, "pin");
+  host.pin_enabled = index >= 0 && tool_registry_snapshot_value(host.tool_snapshot,
+    MC_TOOL_GROUP_SCREENSHOT, index, MC_TOOL_ENABLED) == 1;
+}
 
 static int validate_shortcut(int index, Shortcut value) {
   Shortcut a = host.shortcuts[(index + 1) % 3];
@@ -133,10 +184,10 @@ static gboolean replace_shortcuts(const Shortcut candidate[3], gboolean persist)
   return accepted;
 }
 
-static gboolean save_settings(void) {
+static gboolean save_settings_with_tools(const char *layout) {
   GKeyFile *settings = g_key_file_new();
   g_key_file_set_boolean(settings, "General", "prefer-dark", host.prefer_dark);
-  g_key_file_set_boolean(settings, "Features", "pin-enabled", host.pin_enabled);
+  if (layout) g_key_file_set_string(settings, "Tools", "layout", layout);
   for (int i = 0; i < 3; i++) {
     int values[] = { host.shortcuts[i].key, host.shortcuts[i].mods };
     g_key_file_set_integer_list(settings, "Shortcuts", action_ids[i], values, 2);
@@ -158,16 +209,19 @@ static gboolean save_settings(void) {
   g_key_file_unref(settings);
   return ok;
 }
+static gboolean save_settings(void) { return save_settings_with_tools(host.tool_layout); }
 
 static void load_settings(void) {
   memcpy(host.shortcuts, defaults, sizeof(defaults));
   host.prefer_dark = FALSE;
-  host.pin_enabled = TRUE;
+  gboolean legacy_pin_enabled = TRUE;
   GKeyFile *settings = g_key_file_new();
+  char *saved_tools = NULL;
   if (g_key_file_load_from_file(settings, host.config_path, G_KEY_FILE_NONE, NULL)) {
+    saved_tools = g_key_file_get_string(settings, "Tools", "layout", NULL);
     host.prefer_dark = g_key_file_get_boolean(settings, "General", "prefer-dark", NULL);
     if (g_key_file_has_key(settings, "Features", "pin-enabled", NULL))
-      host.pin_enabled = g_key_file_get_boolean(settings, "Features", "pin-enabled", NULL);
+      legacy_pin_enabled = g_key_file_get_boolean(settings, "Features", "pin-enabled", NULL);
     for (int i = 0; i < 3; i++) {
       gsize count = 0;
       int *value = g_key_file_get_integer_list(settings, "Shortcuts", action_ids[i], &count, NULL);
@@ -180,6 +234,24 @@ static void load_settings(void) {
         break;
       }
     }
+  }
+  int snapshot = open_tools(saved_tools ? saved_tools : "");
+  if (snapshot <= 0) snapshot = open_tools("");
+  /* Import the former feature flag only for configurations without a tool
+   * layout. Once present, the saved contribution preference is authoritative. */
+  if ((!saved_tools || !*saved_tools) && !legacy_pin_enabled && snapshot > 0) {
+    int migrated = pin_candidate(snapshot, FALSE);
+    if (migrated > 0) { tool_registry_snapshot_close(snapshot); snapshot = migrated; }
+  }
+  g_free(saved_tools);
+  if (snapshot > 0) {
+    int old = host.tool_snapshot; host.tool_snapshot = snapshot;
+    g_free(host.tool_layout); host.tool_layout = core_text(tool_registry_snapshot_layout(snapshot));
+    read_pin_preference();
+    mc_linux_capture_publish_tools(snapshot);
+    sync_pin_feature();
+    if (old > 0) tool_registry_snapshot_close(old);
+    refresh_tool_settings();
   }
   g_key_file_unref(settings);
 }
@@ -291,25 +363,23 @@ static void appearance_changed(GtkToggleButton *button, gpointer data) {
   set_status("外观偏好已保存。");
 }
 static void sync_pin_feature(void) {
-  mc_linux_pins_set_enabled(host.pin_enabled);
+  if (host.pins_ready) mc_linux_pins_set_enabled(host.pin_enabled);
+  if (host.pin_toggle) {
+    g_signal_handlers_block_by_func(host.pin_toggle, pin_feature_changed, NULL);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), host.pin_enabled);
+    g_signal_handlers_unblock_by_func(host.pin_toggle, pin_feature_changed, NULL);
+  }
   mc_linux_capture_refresh_capabilities();
   for (int i = 0; i < 3; i++)
     if (host.pin_menu[i]) gtk_widget_set_sensitive(host.pin_menu[i], host.pin_enabled);
 }
 static void pin_feature_changed(GtkToggleButton *button, gpointer data) {
   (void)data;
-  gboolean previous = host.pin_enabled;
-  host.pin_enabled = gtk_toggle_button_get_active(button);
-  /* Persist first: a failed write must not irreversibly discard existing pins. */
-  if (!save_settings()) {
-    host.pin_enabled = previous;
-    g_signal_handlers_block_by_func(button, pin_feature_changed, NULL);
-    gtk_toggle_button_set_active(button, previous);
-    g_signal_handlers_unblock_by_func(button, pin_feature_changed, NULL);
-    return;
-  }
-  sync_pin_feature();
-  set_status(host.pin_enabled ? "贴图已启用。" : "贴图已关闭，当前贴图与全局按键已释放；按键配置保留。");
+  /* The general switch is another view of the same saved contribution, not a
+   * second policy. Persist before disabling, which closes existing pins. */
+  if (publish_tools(pin_candidate(host.tool_snapshot, gtk_toggle_button_get_active(button))))
+    set_status(host.pin_enabled ? "贴图已启用。" : "贴图已关闭，当前贴图与全局按键已释放；按键配置保留。");
+  else sync_pin_feature();
 }
 
 static GtkWidget *label(const char *text, gboolean secondary) {
@@ -327,10 +397,103 @@ static GtkWidget *page(void) {
   return widget;
 }
 
+static gboolean publish_tools(int candidate) {
+  if (candidate <= 0) {
+    set_status("工具配置无效，原设置未改动。"); refresh_tool_settings(); return FALSE;
+  }
+  const char *reason = NULL;
+  if (!mc_linux_capture_preflight_tools(candidate, &reason)) {
+    tool_registry_snapshot_close(candidate);
+    set_status(reason ? reason : "请先完成当前截图输入再调整工具。");
+    refresh_tool_settings(); return FALSE;
+  }
+  char *layout = core_text(tool_registry_snapshot_layout(candidate));
+  if (!*layout || !save_settings_with_tools(layout)) {
+    g_free(layout); tool_registry_snapshot_close(candidate);
+    refresh_tool_settings(); return FALSE;
+  }
+  int previous = host.tool_snapshot;
+  host.tool_snapshot = candidate;
+  g_free(host.tool_layout); host.tool_layout = layout;
+  read_pin_preference();
+  mc_linux_capture_publish_tools(candidate);
+  sync_pin_feature();
+  if (previous > 0) tool_registry_snapshot_close(previous);
+  refresh_tool_settings(); set_status("工具设置已保存并应用。"); return TRUE;
+}
+static void tool_enabled(GtkToggleButton *button, gpointer data) {
+  (void)data;
+  moonbit_string_t id = core_string(g_object_get_data(G_OBJECT(button), "tool-id"));
+  int candidate = tool_registry_snapshot_set_enabled(host.tool_snapshot, id,
+    gtk_toggle_button_get_active(button) ? 1 : 0);
+  moonbit_decref(id); publish_tools(candidate);
+}
+static void move_tool(GtkButton *button, gpointer data) {
+  int direction = GPOINTER_TO_INT(data), slot = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "tool-slot"));
+  const char *wanted = g_object_get_data(G_OBJECT(button), "tool-id");
+  GPtrArray *ids = g_ptr_array_new_with_free_func(g_free); int current = -1;
+  int count = tool_registry_snapshot_count(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT);
+  for (int i = 0; i < count; i++) if (tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_SLOT) == slot) {
+    char *id = tool_text(host.tool_snapshot, i, MC_TOOL_ID);
+    if (!g_strcmp0(id, wanted)) current = (int)ids->len;
+    g_ptr_array_add(ids, id);
+  }
+  if (current < 0 || current + direction < 0 || current + direction >= (int)ids->len) { g_ptr_array_unref(ids); return; }
+  const char *before = direction < 0 ? g_ptr_array_index(ids, current - 1) :
+    current + 2 < (int)ids->len ? g_ptr_array_index(ids, current + 2) : "";
+  moonbit_string_t id = core_string(wanted), next = core_string(before);
+  int candidate = tool_registry_snapshot_move(host.tool_snapshot, id, next);
+  moonbit_decref(id); moonbit_decref(next); g_ptr_array_unref(ids);
+  publish_tools(candidate);
+}
+static void refresh_tool_settings(void) {
+  if (!host.tool_settings) return;
+  GList *children = gtk_container_get_children(GTK_CONTAINER(host.tool_settings));
+  for (GList *item = children; item; item = item->next) gtk_widget_destroy(item->data);
+  g_list_free(children);
+  int count = tool_registry_snapshot_count(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT);
+  for (int slot = MC_TOOL_SLOT_TOOLS; slot <= MC_TOOL_SLOT_FINISH; slot++) {
+    GtkWidget *heading = label(slot == MC_TOOL_SLOT_TOOLS ? "截图工具" : "完成操作", FALSE);
+    gtk_box_pack_start(GTK_BOX(host.tool_settings), heading, FALSE, FALSE, 0);
+    int rows = 0;
+    for (int i = 0; i < count; i++) if (tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_SLOT) == slot) rows++;
+    int position = 0;
+    for (int i = 0; i < count; i++) {
+      if (tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_SLOT) != slot) continue;
+      char *id = tool_text(host.tool_snapshot, i, MC_TOOL_ID), *title = tool_text(host.tool_snapshot, i, MC_TOOL_TITLE);
+      char *reason = tool_text(host.tool_snapshot, i, MC_TOOL_UNAVAILABLE_REASON);
+      GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+      GtkWidget *enabled = gtk_check_button_new_with_label(title);
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(enabled), tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_ENABLED) == 1);
+      g_object_set_data_full(G_OBJECT(enabled), "tool-id", g_strdup(id), g_free);
+      g_signal_connect(enabled, "toggled", G_CALLBACK(tool_enabled), NULL);
+      gtk_box_pack_start(GTK_BOX(row), enabled, TRUE, TRUE, 0);
+      if (tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_AVAILABLE) != 1) {
+        GtkWidget *unavailable = label(*reason ? reason : "当前后端不可用", TRUE);
+        gtk_box_pack_start(GTK_BOX(row), unavailable, FALSE, FALSE, 0);
+        gtk_widget_set_tooltip_text(enabled, *reason ? reason : "当前后端不可用");
+      }
+      for (int direction = -1; direction <= 1; direction += 2) {
+        GtkWidget *button = gtk_button_new_with_label(direction < 0 ? "↑" : "↓");
+        gtk_widget_set_tooltip_text(button, direction < 0 ? "上移" : "下移");
+        gtk_widget_set_sensitive(button, direction < 0 ? position > 0 : position + 1 < rows);
+        g_object_set_data_full(G_OBJECT(button), "tool-id", g_strdup(id), g_free);
+        g_object_set_data(G_OBJECT(button), "tool-slot", GINT_TO_POINTER(slot));
+        g_signal_connect(button, "clicked", G_CALLBACK(move_tool), GINT_TO_POINTER(direction));
+        gtk_box_pack_start(GTK_BOX(row), button, FALSE, FALSE, 0);
+      }
+      gtk_box_pack_start(GTK_BOX(host.tool_settings), row, FALSE, FALSE, 0);
+      g_free(id); g_free(title); g_free(reason); position++;
+    }
+  }
+  gtk_widget_show_all(host.tool_settings);
+}
+
 static void window_destroyed(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
   host.window = host.notebook = host.status = host.dark_toggle = host.pin_toggle = NULL;
   host.shortcut_note = host.shortcut_enable = NULL;
+  host.tool_settings = NULL;
   memset(host.recorders, 0, sizeof(host.recorders));
   cancel_recording();
 }
@@ -433,6 +596,15 @@ static void show_preferences(void) {
   gtk_box_pack_start(GTK_BOX(shortcuts), label("注册成功后才保存配置。X11 会检查其他应用和贴图按键的冲突；Wayland 的实际组合由系统门户确认，未提供此门户的桌面请使用托盘。", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), shortcuts, gtk_label_new("快捷键"));
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_pin_preferences(), gtk_label_new("贴图按键"));
+  GtkWidget *tools = page();
+  gtk_box_pack_start(GTK_BOX(tools), label("工具与完成操作分别排序。关闭标注工具不会删除已有标注；关闭贴图会关闭现有贴图。未接入的能力显示不可用。", TRUE), FALSE, FALSE, 0);
+  GtkWidget *tool_scroll = gtk_scrolled_window_new(NULL, NULL);
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tool_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  host.tool_settings = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_add(GTK_CONTAINER(tool_scroll), host.tool_settings);
+  gtk_box_pack_start(GTK_BOX(tools), tool_scroll, TRUE, TRUE, 0);
+  refresh_tool_settings();
+  gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), tools, gtk_label_new("截图工具"));
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_update_preferences(), gtk_label_new("更新"));
 
   GtkWidget *about = page();
@@ -595,10 +767,114 @@ static gboolean smoke_shortcut_input_pending(void) {
   return passed;
 }
 
+static GtkWidget *smoke_tool_setting(GtkWidget *parent, const char *id, const char *button_label) {
+  if (GTK_IS_BUTTON(parent) && !g_strcmp0(g_object_get_data(G_OBJECT(parent), "tool-id"), id) &&
+      (button_label ? !g_strcmp0(gtk_button_get_label(GTK_BUTTON(parent)), button_label) : GTK_IS_TOGGLE_BUTTON(parent)))
+    return parent;
+  if (!GTK_IS_CONTAINER(parent)) return NULL;
+  GList *children = gtk_container_get_children(GTK_CONTAINER(parent));
+  GtkWidget *found = NULL;
+  for (GList *item = children; item && !found; item = item->next)
+    found = smoke_tool_setting(item->data, id, button_label);
+  g_list_free(children); return found;
+}
+static int smoke_tool_index(const char *id) {
+  int count = tool_registry_snapshot_count(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT);
+  for (int index = 0; index < count; index++) {
+    char *current = tool_text(host.tool_snapshot, index, MC_TOOL_ID);
+    gboolean equal = !strcmp(current, id); g_free(current);
+    if (equal) return index;
+  }
+  return -1;
+}
+static gboolean smoke_tool_settings(void) {
+  /* Exercise the actual GTK callbacks and disk boundary, not only pure snapshot
+   * operations. A regular file as a parent makes the failure deterministic even
+   * when the fixture runs with broad filesystem permissions. */
+  char *original = g_strdup(host.tool_layout), *before = NULL, *after = NULL;
+  gboolean ok = g_file_get_contents(host.config_path, &before, NULL, NULL);
+  GList *windows = g_list_copy(gtk_application_get_windows(host.application));
+  GdkPixbuf *image = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 32, 24);
+  GtkWidget *pinned = NULL;
+  if (image) {
+    gdk_pixbuf_fill(image, 0x336699ff); mc_linux_pin_image(image); g_object_unref(image);
+    for (GList *item = gtk_application_get_windows(host.application); item; item = item->next)
+      if (!g_list_find(windows, item->data)) { pinned = item->data; break; }
+  }
+  g_list_free(windows);
+  if (pinned) g_object_add_weak_pointer(G_OBJECT(pinned), (gpointer *)&pinned); else ok = FALSE;
+  int previous = host.tool_snapshot;
+  char *path = host.config_path;
+  host.config_path = g_build_filename(path, "blocked", NULL);
+  GtkWidget *toggle = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL);
+  if (toggle) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), FALSE); else ok = FALSE;
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), FALSE);
+  ok = pinned && host.pin_enabled && mc_linux_pins_enabled() &&
+    gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(host.pin_toggle)) && ok;
+  g_free(host.config_path); host.config_path = path;
+  toggle = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL);
+  ok = host.tool_snapshot == previous && !g_strcmp0(host.tool_layout, original) && toggle &&
+    gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toggle)) && ok;
+  ok = g_file_get_contents(path, &after, NULL, NULL) && !g_strcmp0(before, after) && ok;
+  g_free(before); g_free(after);
+
+  char *pin_id = tool_text(host.tool_snapshot, tool_action_index(host.tool_snapshot, "pin"), MC_TOOL_ID);
+  toggle = smoke_tool_setting(host.tool_settings, pin_id, NULL);
+  if (toggle) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), FALSE); else ok = FALSE;
+  ok = !pinned && !host.pin_enabled && !mc_linux_pins_enabled() &&
+    !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(host.pin_toggle)) && ok;
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), TRUE);
+  toggle = smoke_tool_setting(host.tool_settings, pin_id, NULL);
+  ok = host.pin_enabled && mc_linux_pins_enabled() && toggle &&
+    gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toggle)) && ok;
+  g_free(pin_id);
+
+  toggle = smoke_tool_setting(host.tool_settings, "builtin.image.numberedRectangle", NULL);
+  if (toggle) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), TRUE); else ok = FALSE;
+  int index = smoke_tool_index("builtin.image.numberedRectangle");
+  ok = host.tool_snapshot != previous && index >= 0 &&
+    tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT, index, MC_TOOL_ENABLED) == 1 && ok;
+  GKeyFile *saved = g_key_file_new();
+  ok = g_key_file_load_from_file(saved, path, G_KEY_FILE_NONE, NULL) && ok;
+  char *stored = g_key_file_get_string(saved, "Tools", "layout", NULL);
+  ok = !g_strcmp0(stored, host.tool_layout) && ok;
+  load_settings();
+  ok = !g_strcmp0(host.tool_layout, stored) && ok;
+  g_free(stored); g_key_file_unref(saved);
+
+  int arrow_before = smoke_tool_index("builtin.image.arrow");
+  GtkWidget *up = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", "↑");
+  if (up) gtk_button_clicked(GTK_BUTTON(up)); else ok = FALSE;
+  ok = arrow_before > 0 && smoke_tool_index("builtin.image.arrow") == arrow_before - 1 && ok;
+  char *moved = g_strdup(host.tool_layout); load_settings();
+  ok = !g_strcmp0(host.tool_layout, moved) && ok; g_free(moved);
+  ok = publish_tools(open_tools(original)) && !g_strcmp0(host.tool_layout, original) && ok;
+  g_free(original);
+
+  host.config_path = g_build_filename(host.smoke_dir, "legacy-tools.ini", NULL);
+  ok = g_file_set_contents(host.config_path, "[Features]\npin-enabled=false\n", -1, NULL) && ok;
+  load_settings();
+  ok = !host.pin_enabled && !mc_linux_pins_enabled() && save_settings() && ok;
+  saved = g_key_file_new();
+  ok = g_key_file_load_from_file(saved, host.config_path, G_KEY_FILE_NONE, NULL) &&
+    g_key_file_has_key(saved, "Tools", "layout", NULL) &&
+    !g_key_file_has_key(saved, "Features", "pin-enabled", NULL) && ok;
+  /* An old writer's contradictory legacy field must not override the layout. */
+  g_key_file_set_boolean(saved, "Features", "pin-enabled", TRUE);
+  ok = g_key_file_save_to_file(saved, host.config_path, NULL) && ok;
+  g_key_file_unref(saved); load_settings();
+  ok = !host.pin_enabled && !mc_linux_pins_enabled() && ok;
+  g_unlink(host.config_path); g_free(host.config_path); host.config_path = path; load_settings();
+  ok = host.pin_enabled && mc_linux_pins_enabled() && ok;
+  if (pinned) { g_object_remove_weak_pointer(G_OBJECT(pinned), (gpointer *)&pinned); mc_linux_pins_close(); }
+  g_print("Linux contribution settings fixture %s: failed save rollback, GTK enable/reorder, single pin preference, legacy migration/readback.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
+
 static gboolean smoke_check(gpointer data) {
   (void)data;
   gboolean passed = host.core_ok && host.window && gtk_widget_get_visible(host.window);
-  passed = passed && gtk_notebook_get_n_pages(GTK_NOTEBOOK(host.notebook)) == 5;
+  passed = passed && gtk_notebook_get_n_pages(GTK_NOTEBOOK(host.notebook)) == 6;
   passed = save_smoke_screenshot() && passed;
   gtk_notebook_set_current_page(GTK_NOTEBOOK(host.notebook), 1);
   passed = passed && validate_shortcut(0, host.shortcuts[1]) == 2;
@@ -625,6 +901,7 @@ static gboolean smoke_check(gpointer data) {
   reset_shortcuts(NULL, NULL);
   load_settings();
   passed = passed && memcmp(host.shortcuts, defaults, sizeof(defaults)) == 0;
+  passed = smoke_tool_settings() && passed;
   gtk_widget_destroy(host.window);
   passed = passed && host.window == NULL;
   passed = mc_linux_capture_smoke(host.application) && passed;
@@ -656,7 +933,8 @@ static void startup(GApplication *application, gpointer data) {
   load_settings();
   mc_linux_recording_init(host.application, recording_changed, NULL);
   mc_linux_pins_init(host.application, host.config_path);
-  mc_linux_pins_set_enabled(host.pin_enabled);
+  host.pins_ready = TRUE;
+  sync_pin_feature();
   const MCShortcutDescriptor descriptors[3] = {
     {action_ids[0], action_labels[0]}, {action_ids[1], action_labels[1]}, {action_ids[2], action_labels[2]}
   };
@@ -766,6 +1044,8 @@ int main(int argc, char **argv) {
   mc_global_shortcuts_close(shortcuts);
   cancel_recording();
   mc_linux_capture_close();
+  mc_linux_capture_publish_tools(0);
+  if (host.tool_snapshot > 0) tool_registry_snapshot_close(host.tool_snapshot);
   mc_linux_pins_set_enabled(FALSE);
   if (host.window) gtk_widget_destroy(host.window);
   if (host.indicator) {
@@ -778,6 +1058,7 @@ int main(int argc, char **argv) {
   g_free(host.config_path);
   g_free(host.icon_path);
   g_free(host.shortcut_status);
+  g_free(host.tool_layout);
   for (unsigned i = 0; i < 3; i++) g_free(host.shortcut_actual[i]);
   return result ? result : host.exit_code;
 }

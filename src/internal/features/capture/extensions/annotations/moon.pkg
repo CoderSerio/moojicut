@@ -1,0 +1,6 @@
+import {
+  "moojicut/core/internal/plugins/contracts" @plugin_protocol,
+  "moojicut/core/internal/features/capture/core" @image,
+  "moojicut/core/internal/shared/protocol",
+  "moonbitlang/core/json",
+}
