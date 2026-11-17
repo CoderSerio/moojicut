@@ -268,7 +268,22 @@ int main(int argc, char **argv) {
   gtk_widget_grab_focus(h.canvas); drain();
   CHECK(h.frame > 0 && !h.failed, "GTK size allocation produces an owned typed frame");
   if (!passed) goto cleanup;
-  click(&h, "clip:v1"); click(&h, "project-split");
+  click(&h, "clip:v1");
+  int split = semantic(&h, "project-split"), playhead = semantic(&h, "playhead");
+  CHECK(split >= 0 && playhead >= 0 && h.commands == 0 &&
+      ui_frame_semantic_number(h.frame, playhead, MC_UI_SEM_VALUE) == 0 &&
+      ui_frame_semantic_value(h.frame, split, MC_UI_SEM_ENABLED) == 0,
+      "selecting a clip preserves the playhead and cannot split at its boundary");
+  /* Clip-body input selects or moves clips; seeking is an independent ruler
+   * gesture. Exercise both real native paths before invoking split. */
+  click(&h, "playhead");
+  split = semantic(&h, "project-split"); playhead = semantic(&h, "playhead");
+  CHECK(split >= 0 && playhead >= 0 && h.commands == 0 &&
+      ui_frame_semantic_number(h.frame, playhead, MC_UI_SEM_VALUE) > 0 &&
+      ui_frame_semantic_number(h.frame, playhead, MC_UI_SEM_VALUE) < 4000 &&
+      ui_frame_semantic_value(h.frame, split, MC_UI_SEM_ENABLED) == 1,
+      "native ruler click seeks inside the selected clip and enables split");
+  click(&h, "project-split");
   CHECK(h.commands == 1 && !h.failed, "real GTK pointer events split through shared UI and core");
   int second = -1;
   for (int i = 0; i < ui_frame_semantic_count(h.frame); i++) {

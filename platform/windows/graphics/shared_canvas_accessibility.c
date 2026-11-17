@@ -126,7 +126,9 @@ static HRESULT STDMETHODCALLTYPE parent(IAccessible *self, IDispatch **out) {
   if (!out) return E_POINTER; *out = NULL; HWND window = owner(self)->window;
   if (!window || !IsWindow(window)) return CO_E_OBJNOTCONNECTED;
   HWND p = GetParent(window); if (!p) return S_FALSE;
-  return AccessibleObjectFromWindow(p, OBJID_CLIENT, &IID_IDispatch, (void **)out);
+  /* This API takes DWORD object IDs, while OBJID_CLIENT is a signed LONG.
+   * Preserve the documented bit pattern explicitly under MSVC /W4 /WX. */
+  return AccessibleObjectFromWindow(p, (DWORD)OBJID_CLIENT, &IID_IDispatch, (void **)out);
 }
 static HRESULT STDMETHODCALLTYPE child_count(IAccessible *self, LONG *out) {
   if (!out) return E_POINTER; MCCanvasAccessible *a = owner(self);

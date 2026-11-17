@@ -142,7 +142,8 @@ static void key(Harness *h, WPARAM key, BOOL control) {
   current[VK_CONTROL] = control ? 0x80 : 0; current[VK_MENU] = 0; current[VK_SHIFT] = 0;
   SetKeyboardState(current); SetFocus(h->canvas); SendMessageW(h->canvas, WM_KEYDOWN, key, 0); SetKeyboardState(saved);
 }
-static BOOL screenshot(HWND window, const wchar_t *path, UINT dpi, BOOL fixture) {
+static BOOL screenshot(HWND window, const wchar_t *path, int dpi, BOOL fixture) {
+  if (dpi <= 0 || dpi > 960) return FALSE;
   int width = fixture ? MulDiv(200, dpi, 96) : 1040, height = fixture ? MulDiv(120, dpi, 96) : 720;
   BITMAPINFO info = {0}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); info.bmiHeader.biWidth = width;
   info.bmiHeader.biHeight = -height; info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
@@ -150,7 +151,7 @@ static BOOL screenshot(HWND window, const wchar_t *path, UINT dpi, BOOL fixture)
   HBITMAP bitmap = dc ? CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, NULL, 0) : NULL; ReleaseDC(NULL, screen);
   if (!bitmap) { if (dc) DeleteDC(dc); return FALSE; }
   HGDIOBJ previous = SelectObject(dc, bitmap); RECT bounds = {0, 0, width, height};
-  BOOL ok = mc_win_canvas_paint(window, dc, &bounds, dpi);
+  BOOL ok = mc_win_canvas_paint(window, dc, &bounds, (UINT)dpi);
   if (fixture) {
     ok = ok && GetPixel(dc, MulDiv(20, dpi, 96), MulDiv(20, dpi, 96)) == RGB(255, 0, 0) &&
         GetPixel(dc, MulDiv(15, dpi, 96), MulDiv(65, dpi, 96)) == RGB(0, 255, 0) &&
@@ -241,13 +242,24 @@ int wmain(int argc, wchar_t **argv) {
   h.canvas = mc_win_canvas_create(parent, instance, 101, &callbacks, &h);
   CHECK(h.canvas != NULL, "native canvas is created"); if (!passed) goto cleanup;
   CHECK(h.appearances == 1, "initial system appearance is delivered before any manually injected theme message");
-  UINT dpi = GetDpiForWindow(h.canvas);
+  UINT window_dpi = GetDpiForWindow(h.canvas);
+  CHECK(window_dpi > 0 && window_dpi <= 960, "fixture DPI fits the drawing adapter and signed MulDiv arguments");
+  if (!passed) goto cleanup;
+  int dpi = (int)window_dpi;
   SetWindowPos(h.canvas, NULL, 0, 0, MulDiv(1040, dpi, 96), MulDiv(720, dpi, 96), SWP_NOZORDER | SWP_NOACTIVATE);
   ShowWindow(parent, SW_SHOW); SetForegroundWindow(parent); SetFocus(h.canvas); UpdateWindow(parent);
   CHECK(h.frame > 0 && !h.failed, "WM_SIZE produces an owned typed frame");
   SendMessageW(h.canvas, WM_THEMECHANGED, 0, 0);
   CHECK(h.last_input.type == MC_UI_INPUT_APPEARANCE, "system appearance becomes a shared input event");
-  click(&h, L"clip:v1"); click(&h, L"project-split");
+  click(&h, L"clip:v1");
+  /* Clip-body clicks select; a separate real ruler click seeks inside the
+   * source. Splitting at the initial zero playhead is correctly unavailable. */
+  click(&h, L"playhead");
+  double split_time = ui_frame_semantic_number(h.frame, semantic(&h, L"playhead"), MC_UI_SEM_VALUE);
+  CHECK(split_time > 0 && split_time < 4000 &&
+      ui_frame_semantic_value(h.frame, semantic(&h, L"project-split"), MC_UI_SEM_ENABLED) == 1,
+      "a real ruler click seeks inside the selected clip before splitting");
+  click(&h, L"project-split");
   CHECK(h.commands == 1 && !h.failed, "real mouse events split through UI effects and core");
   int second = -1;
   for (int i = 0; i < ui_frame_semantic_count(h.frame); i++) {
@@ -284,7 +296,7 @@ int wmain(int argc, wchar_t **argv) {
   wchar_t path[MAX_PATH]; swprintf_s(path, MAX_PATH, L"%ls\\video-ui.bmp", argv[1]);
   CHECK(screenshot(h.canvas, path, 96, FALSE), "actual v2 frame renders to a screenshot");
   IAccessible *accessible = NULL;
-  CHECK(SUCCEEDED(AccessibleObjectFromWindow(h.canvas, OBJID_CLIENT, &IID_IAccessible, (void **)&accessible)) && accessible,
+  CHECK(SUCCEEDED(AccessibleObjectFromWindow(h.canvas, (DWORD)OBJID_CLIENT, &IID_IAccessible, (void **)&accessible)) && accessible,
       "WM_GETOBJECT supplies a real MSAA provider");
   LONG retained_child = 0;
   if (accessible) {

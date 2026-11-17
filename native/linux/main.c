@@ -29,6 +29,7 @@ typedef struct {
   GtkWidget *record_start_menu, *record_stop_menu;
   GtkWidget *shortcut_note, *shortcut_enable;
   GtkWidget *tool_settings;
+  guint tool_settings_refresh;
   int tool_snapshot;
   char *tool_layout;
   MCGlobalShortcuts *global_shortcuts;
@@ -54,6 +55,8 @@ static gboolean save_settings(void);
 static void global_shortcut_action(unsigned index, gpointer data);
 static void global_shortcut_state(gboolean active, const char *message, const char *const labels[3], gpointer data);
 static void refresh_tool_settings(void);
+static void queue_tool_settings_refresh(void);
+static void cancel_tool_settings_refresh(void);
 static void sync_pin_feature(void);
 static void pin_feature_changed(GtkToggleButton *button, gpointer data);
 static gboolean publish_tools(int candidate);
@@ -399,18 +402,18 @@ static GtkWidget *page(void) {
 
 static gboolean publish_tools(int candidate) {
   if (candidate <= 0) {
-    set_status("工具配置无效，原设置未改动。"); refresh_tool_settings(); return FALSE;
+    set_status("工具配置无效，原设置未改动。"); queue_tool_settings_refresh(); return FALSE;
   }
   const char *reason = NULL;
   if (!mc_linux_capture_preflight_tools(candidate, &reason)) {
     tool_registry_snapshot_close(candidate);
     set_status(reason ? reason : "请先完成当前截图输入再调整工具。");
-    refresh_tool_settings(); return FALSE;
+    queue_tool_settings_refresh(); return FALSE;
   }
   char *layout = core_text(tool_registry_snapshot_layout(candidate));
   if (!*layout || !save_settings_with_tools(layout)) {
     g_free(layout); tool_registry_snapshot_close(candidate);
-    refresh_tool_settings(); return FALSE;
+    queue_tool_settings_refresh(); return FALSE;
   }
   int previous = host.tool_snapshot;
   host.tool_snapshot = candidate;
@@ -419,7 +422,7 @@ static gboolean publish_tools(int candidate) {
   mc_linux_capture_publish_tools(candidate);
   sync_pin_feature();
   if (previous > 0) tool_registry_snapshot_close(previous);
-  refresh_tool_settings(); set_status("工具设置已保存并应用。"); return TRUE;
+  queue_tool_settings_refresh(); set_status("工具设置已保存并应用。"); return TRUE;
 }
 static void tool_enabled(GtkToggleButton *button, gpointer data) {
   (void)data;
@@ -446,7 +449,28 @@ static void move_tool(GtkButton *button, gpointer data) {
   moonbit_decref(id); moonbit_decref(next); g_ptr_array_unref(ids);
   publish_tools(candidate);
 }
+static void cancel_tool_settings_refresh(void) {
+  guint pending = host.tool_settings_refresh;
+  host.tool_settings_refresh = 0;
+  if (pending) g_source_remove(pending);
+}
+static gboolean refresh_tool_settings_idle(gpointer data) {
+  host.tool_settings_refresh = 0;
+  /* The retained container cannot be reused by a subsequently opened window.
+   * This idle only renders current state; it never replays a settings change. */
+  if (!host.quitting && host.tool_settings == data &&
+      !gtk_widget_in_destruction(GTK_WIDGET(data))) refresh_tool_settings();
+  return G_SOURCE_REMOVE;
+}
+static void queue_tool_settings_refresh(void) {
+  if (!host.tool_settings || host.tool_settings_refresh || host.quitting) return;
+  /* GtkToggleButton notifies active after its toggled/clicked callbacks return.
+   * Rebuilding rows inside those callbacks can free the notifying button. */
+  host.tool_settings_refresh = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,
+    refresh_tool_settings_idle, g_object_ref(host.tool_settings), g_object_unref);
+}
 static void refresh_tool_settings(void) {
+  cancel_tool_settings_refresh();
   if (!host.tool_settings) return;
   GList *children = gtk_container_get_children(GTK_CONTAINER(host.tool_settings));
   for (GList *item = children; item; item = item->next) gtk_widget_destroy(item->data);
@@ -491,6 +515,7 @@ static void refresh_tool_settings(void) {
 
 static void window_destroyed(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
+  cancel_tool_settings_refresh();
   host.window = host.notebook = host.status = host.dark_toggle = host.pin_toggle = NULL;
   host.shortcut_note = host.shortcut_enable = NULL;
   host.tool_settings = NULL;
@@ -787,11 +812,24 @@ static int smoke_tool_index(const char *id) {
   }
   return -1;
 }
+static void smoke_tool_critical(const gchar *domain, GLogLevelFlags level,
+    const gchar *message, gpointer data) {
+  (*(guint *)data)++;
+  g_log_default_handler(domain, level, message, NULL);
+}
+static gboolean smoke_flush_tool_settings(void) {
+  for (int i = 0; i < 256 && host.tool_settings_refresh; i++)
+    g_main_context_iteration(NULL, FALSE);
+  return host.tool_settings_refresh == 0;
+}
 static gboolean smoke_tool_settings(void) {
   /* Exercise the actual GTK callbacks and disk boundary, not only pure snapshot
    * operations. A regular file as a parent makes the failure deterministic even
    * when the fixture runs with broad filesystem permissions. */
   char *original = g_strdup(host.tool_layout), *before = NULL, *after = NULL;
+  guint criticals = 0;
+  guint log_handler = g_log_set_handler("GLib-GObject", G_LOG_LEVEL_CRITICAL |
+    G_LOG_FLAG_FATAL | G_LOG_FLAG_RECURSION, smoke_tool_critical, &criticals);
   gboolean ok = g_file_get_contents(host.config_path, &before, NULL, NULL);
   GList *windows = g_list_copy(gtk_application_get_windows(host.application));
   GdkPixbuf *image = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 32, 24);
@@ -807,11 +845,18 @@ static gboolean smoke_tool_settings(void) {
   char *path = host.config_path;
   host.config_path = g_build_filename(path, "blocked", NULL);
   GtkWidget *toggle = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL);
+  GtkWidget *retired_toggle = toggle;
+  if (retired_toggle) g_object_add_weak_pointer(G_OBJECT(retired_toggle), (gpointer *)&retired_toggle);
   if (toggle) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), FALSE); else ok = FALSE;
+  guint pending_refresh = host.tool_settings_refresh;
+  ok = retired_toggle && pending_refresh && ok;
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), FALSE);
   ok = pinned && host.pin_enabled && mc_linux_pins_enabled() &&
-    gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(host.pin_toggle)) && ok;
+    gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(host.pin_toggle)) &&
+    host.tool_settings_refresh == pending_refresh && ok;
   g_free(host.config_path); host.config_path = path;
+  ok = smoke_flush_tool_settings() && !retired_toggle && ok;
+  if (retired_toggle) g_object_remove_weak_pointer(G_OBJECT(retired_toggle), (gpointer *)&retired_toggle);
   toggle = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL);
   ok = host.tool_snapshot == previous && !g_strcmp0(host.tool_layout, original) && toggle &&
     gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toggle)) && ok;
@@ -824,6 +869,7 @@ static gboolean smoke_tool_settings(void) {
   ok = !pinned && !host.pin_enabled && !mc_linux_pins_enabled() &&
     !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(host.pin_toggle)) && ok;
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), TRUE);
+  ok = smoke_flush_tool_settings() && ok;
   toggle = smoke_tool_setting(host.tool_settings, pin_id, NULL);
   ok = host.pin_enabled && mc_linux_pins_enabled() && toggle &&
     gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(toggle)) && ok;
@@ -849,6 +895,21 @@ static gboolean smoke_tool_settings(void) {
   char *moved = g_strdup(host.tool_layout); load_settings();
   ok = !g_strcmp0(host.tool_layout, moved) && ok; g_free(moved);
   ok = publish_tools(open_tools(original)) && !g_strcmp0(host.tool_layout, original) && ok;
+  /* Closing before the queued refresh must cancel its retained old container.
+   * A later main-loop turn must not rebuild the newly opened settings window. */
+  GtkWidget *retired_settings = host.tool_settings;
+  g_object_add_weak_pointer(G_OBJECT(retired_settings), (gpointer *)&retired_settings);
+  ok = host.tool_settings_refresh != 0 && ok;
+  gtk_widget_destroy(host.window);
+  ok = !host.window && !host.tool_settings_refresh && !retired_settings && ok;
+  if (retired_settings) g_object_remove_weak_pointer(G_OBJECT(retired_settings), (gpointer *)&retired_settings);
+  show_preferences();
+  GtkWidget *current_toggle = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL);
+  if (current_toggle) g_object_add_weak_pointer(G_OBJECT(current_toggle), (gpointer *)&current_toggle);
+  for (int i = 0; i < 32; i++) g_main_context_iteration(NULL, FALSE);
+  ok = current_toggle && smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL) == current_toggle &&
+    !g_strcmp0(host.tool_layout, original) && ok;
+  if (current_toggle) g_object_remove_weak_pointer(G_OBJECT(current_toggle), (gpointer *)&current_toggle);
   g_free(original);
 
   host.config_path = g_build_filename(host.smoke_dir, "legacy-tools.ini", NULL);
@@ -867,7 +928,9 @@ static gboolean smoke_tool_settings(void) {
   g_unlink(host.config_path); g_free(host.config_path); host.config_path = path; load_settings();
   ok = host.pin_enabled && mc_linux_pins_enabled() && ok;
   if (pinned) { g_object_remove_weak_pointer(G_OBJECT(pinned), (gpointer *)&pinned); mc_linux_pins_close(); }
-  g_print("Linux contribution settings fixture %s: failed save rollback, GTK enable/reorder, single pin preference, legacy migration/readback.\n", ok ? "passed" : "FAILED");
+  g_log_remove_handler("GLib-GObject", log_handler);
+  ok = criticals == 0 && ok;
+  g_print("Linux contribution settings fixture %s: failed save rollback, GTK enable/reorder, deferred refresh lifetime, close/reopen, zero GObject criticals, single pin preference, legacy migration/readback.\n", ok ? "passed" : "FAILED");
   return ok;
 }
 
