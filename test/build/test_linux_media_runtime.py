@@ -86,10 +86,10 @@ class LinuxMediaRuntimeTest(unittest.TestCase):
 
     def test_closure_keeps_media_private_and_excludes_desktop_glib(self):
         root = self.binary("bin/probe", ["libgstreamer-1.0.so.0"])
-        library = self.binary("lib/libgstreamer-1.0.so.0", ["libglib-2.0.so.0", "libc.so.6"], "libgstreamer-1.0.so.0")
+        library = self.binary("lib/libgstreamer-1.0.so.0", ["libglib-2.0.so.0", "libc.so.6", "libmvec.so.1"], "libgstreamer-1.0.so.0")
         closure, system = runtime.dependency_closure(self.home, [root], self.tools)
         self.assertEqual({value[0] for value in closure.values()}, {root, library})
-        self.assertEqual(system, {"libglib-2.0.so.0", "libc.so.6"})
+        self.assertEqual(system, {"libglib-2.0.so.0", "libc.so.6", "libmvec.so.1"})
         library.unlink()
         with self.assertRaisesRegex(ValueError, "system fallback forbidden"):
             runtime.dependency_closure(self.home, [root], self.tools,
@@ -131,6 +131,20 @@ class LinuxMediaRuntimeTest(unittest.TestCase):
         closure, _ = runtime.dependency_closure(self.home, [seed], self.tools)
         self.assertEqual(closure["liborc-0.4.so.0"][0], orc)
 
+    def test_closure_reports_independent_unresolved_dependencies_together(self):
+        first = self.binary("bin/first", ["libges-1.0.so.0"])
+        second = self.binary("bin/second", ["libgstapp-1.0.so.0"])
+        self.binary("lib/libgstapp-1.0.so.0", ["libunknown.so.7"], "libgstapp-1.0.so.0")
+        with self.assertRaises(ValueError) as error:
+            runtime.dependency_closure(self.home, [first, second], self.tools)
+        message = str(error.exception)
+        self.assertIn("libges-1.0.so.0", message)
+        self.assertIn("system fallback forbidden", message)
+        self.assertIn("libunknown.so.7", message)
+        self.assertIn("Unreviewed non-SDK dependency", message)
+        self.assertIn(str(first), message)
+        self.assertIn(str(self.home / "lib/libgstapp-1.0.so.0"), message)
+
     def test_codec_provenance_checks_actual_dpkg_owner_hash_source_and_baseline(self):
         codec = self.root / "usr/lib/libvpx.so.7.0.0"
         codec.parent.mkdir(parents=True); codec.write_bytes(elf_bytes("vpx"))
@@ -171,9 +185,11 @@ class LinuxMediaRuntimeTest(unittest.TestCase):
                 runtime.dpkg_provenance(codec, "libvpx.so.7", execute)
 
     def test_sdk_cannot_shadow_glib_or_follow_external_symlinks(self):
-        self.binary("lib/libglib-2.0.so.0", [], "libglib-2.0.so.0")
-        with self.assertRaisesRegex(ValueError, "system ABI"): runtime.sdk_index(self.home)
-        (self.home / "lib/libglib-2.0.so.0").unlink()
+        for name in ("libglib-2.0.so.0", "libmvec.so.1"):
+            with self.subTest(name=name):
+                path = self.binary("lib/" + name, [], name)
+                with self.assertRaisesRegex(ValueError, "system ABI"): runtime.sdk_index(self.home)
+                path.unlink()
         external = self.root / "foreign.so.0"; external.write_bytes(elf_bytes("outside"))
         (self.home / "lib/libavformat.so.61").symlink_to(external)
         with self.assertRaisesRegex(ValueError, "escapes"): runtime.sdk_index(self.home)

@@ -49,7 +49,7 @@ ROOT_LIBRARIES = (
 # These remain distribution-owned so GTK, portals, GLib and desktop services
 # stay in one ABI universe. Exact SONAMEs, not directory or lib*.so wildcards.
 SYSTEM_LIBRARIES = frozenset("""
-ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1
+ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libmvec.so.1 libdl.so.2 libpthread.so.0 librt.so.1
 libresolv.so.2 libutil.so.1 libgcc_s.so.1 libstdc++.so.6
 libglib-2.0.so.0 libgobject-2.0.so.0 libgio-2.0.so.0 libgmodule-2.0.so.0 libgthread-2.0.so.0
 libgtk-3.so.0 libgdk-3.so.0 libgdk_pixbuf-2.0.so.0 libpango-1.0.so.0 libpangocairo-1.0.so.0
@@ -188,9 +188,13 @@ def sdk_index(home):
     return result
 
 
+class UnresolvedDependency(ValueError):
+    """A missing/unknown provider, not an invalid ELF or provenance conflict."""
+
+
 def system_library(name, execute=run):
     if name not in SYSTEM_BUNDLES:
-        raise ValueError("Unreviewed non-SDK dependency: " + name)
+        raise UnresolvedDependency("Unreviewed non-SDK dependency: " + name)
     matches = set()
     for line in execute(["/sbin/ldconfig", "-p"]).splitlines():
         match = re.match(r"\s*(\S+)\s+\(([^)]*)\)\s+=>\s+(\S+)\s*$", line)
@@ -199,14 +203,17 @@ def system_library(name, execute=run):
             if not any(path.is_relative_to(Path(base)) for base in ("/usr/lib", "/lib")):
                 raise ValueError("System dependency resolves outside distribution libraries")
             matches.add(path)
+    if not matches:
+        raise UnresolvedDependency("Missing distribution dependency: " + name)
     if len(matches) != 1:
-        raise ValueError("Missing/ambiguous distribution dependency: " + name)
+        raise ValueError("Ambiguous distribution dependency: " + name)
     return matches.pop()
 
 
 def dependency_closure(home, seeds, execute=run, resolve_system=system_library):
     home = Path(home).resolve()
     index, result, system = sdk_index(home), {}, set()
+    unresolved = set()
     pending = [(Path(path), None) for path in seeds]
     while pending:
         path, required_name = pending.pop()
@@ -232,9 +239,19 @@ def dependency_closure(home, seeds, execute=run, resolve_system=system_library):
             elif dependency in index:
                 pending.append((index[dependency], dependency))
             elif PRIVATE_MEDIA.fullmatch(dependency):
-                raise ValueError("Private media dependency is missing; system fallback forbidden: " + dependency)
+                unresolved.add((str(path), "Private media dependency is missing; system fallback forbidden: " + dependency))
             else:
-                pending.append((resolve_system(dependency, execute), dependency))
+                try:
+                    resolved = resolve_system(dependency, execute)
+                except UnresolvedDependency as error:
+                    unresolved.add((str(path), str(error)))
+                else:
+                    pending.append((resolved, dependency))
+    if unresolved:
+        # Continue known branches to expose independent missing dependencies in
+        # one CI log. Never publish a partial closure or weaken identity checks.
+        raise ValueError("Unresolved runtime dependencies:\n" + "\n".join(
+            message + " (required by " + requester + ")" for requester, message in sorted(unresolved)))
     return result, system
 
 

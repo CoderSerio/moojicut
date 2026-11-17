@@ -4,6 +4,7 @@ import copy
 from contextlib import redirect_stdout
 import hashlib
 import io
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -66,12 +67,14 @@ class GStreamerSDKTest(unittest.TestCase):
             self.assertIn(required, command)
         self.assertNotIn("/ALLUSERS", command)
         self.assertIn("/DIR=" + str(self.root / "sdk path"), command)
-        original = {"PATH": "machine-untrusted", "SystemRoot": "C:/Windows", "GST_PLUGIN_PATH": "external",
+        original = {"PATH": "machine-untrusted", "SYSTEMROOT": "D:/Windows", "GST_PLUGIN_PATH": "external",
                     "GST_PLUGIN_PATH_1_0": "another", "GST_PLUGIN_FEATURE_RANK": "avenc_aac:999",
                     "GITHUB_ENV": "do-not-write", "GSTREAMER_ROOT_X86_64": "old SDK"}
         environment = sdk.sdk_environment(self.root, original)
         self.assertEqual(original["PATH"], "machine-untrusted")
         self.assertNotIn("machine-untrusted", environment["PATH"])
+        self.assertEqual(environment["PATH"], os.pathsep.join(map(str,
+            (self.root / "bin", Path("D:/Windows/System32"), Path("D:/Windows")))))
         self.assertNotIn("GST_PLUGIN_FEATURE_RANK", environment)
         self.assertNotIn("GST_PLUGIN_PATH", environment)
         self.assertNotIn("GSTREAMER_ROOT_X86_64", environment)

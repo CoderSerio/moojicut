@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -185,11 +186,14 @@ class GStreamerRuntimeTest(unittest.TestCase):
         (directory / "concrt140.dll").write_bytes(pe64(["kernel32.dll"]))
         # A newer unselected version must not override the official default.
         (vc / "Redist/MSVC/14.99.99999/x64/Microsoft.VC143.CRT").mkdir(parents=True)
-        environment = {"VCToolsInstallDir": str(tools), "SystemRoot": "C:/Windows", "PATH": "untrusted"}
+        # Windows os.environ normalizes keys to uppercase. A plain dict copy
+        # must retain case-insensitive lookup for the active toolchain.
+        environment = {"VCTOOLSINSTALLDIR": str(tools), "SYSTEMROOT": "D:/Windows", "PATH": "untrusted"}
         return directory, environment
 
     def signed_crt(self, command, **kwargs):
         self.assertEqual(Path(command[0]).name, "powershell.exe")
+        self.assertEqual(Path(command[0]), Path("D:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"))
         self.assertEqual(command[1:4], ["-NoProfile", "-NonInteractive", "-Command"])
         source = Path(kwargs["env"]["MOOJICUT_CRT_FILE"])
         self.assertEqual(source.parent.name, "Microsoft.VC143.CRT")
@@ -256,7 +260,7 @@ class GStreamerRuntimeTest(unittest.TestCase):
     def test_runtime_environment_cannot_discover_machine_plugins_or_sdk_dlls(self):
         bundle = self.root / "app"
         registry = self.root / "cache/registry.bin"
-        inherited = {"PATH": "machine-untrusted", "SystemRoot": "C:/Windows",
+        inherited = {"PATH": "machine-untrusted", "SYSTEMROOT": "D:/Windows",
                      "GST_PLUGIN_PATH": "external-plugin", "GST_PLUGIN_PATH_1_0": "external-1",
                      "GST_PLUGIN_SYSTEM_PATH_1_0": "machine-plugin", "GST_PLUGIN_SCANNER": "foreign-scanner",
                      "GST_PLUGIN_FEATURE_RANK": "x264enc:999", "GST_REGISTRY": "foreign-registry",
@@ -265,6 +269,8 @@ class GStreamerRuntimeTest(unittest.TestCase):
         environment = runtime.runtime_environment(bundle, registry, inherited)
         self.assertEqual(inherited, original)
         self.assertNotIn("machine-untrusted", environment["PATH"])
+        self.assertEqual(environment["PATH"], os.pathsep.join(map(str,
+            (bundle, Path("D:/Windows/System32"), Path("D:/Windows")))))
         self.assertNotIn("GST_PLUGIN_PATH", environment)
         self.assertNotIn("GST_PLUGIN_FEATURE_RANK", environment)
         self.assertNotIn("GST_PLUGIN_SCANNER", environment)

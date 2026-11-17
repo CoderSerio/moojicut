@@ -82,7 +82,8 @@ def sdk_environment(home, inherited=None):
     original = dict(os.environ if inherited is None else inherited)
     environment = {key: value for key, value in original.items()
                    if not key.upper().startswith(("GST_", "GSTREAMER_"))}
-    windows = Path(original.get("SystemRoot", r"C:\Windows"))
+    lookup = {key.casefold(): value for key, value in original.items()}
+    windows = Path(lookup.get("systemroot", r"C:\Windows"))
     environment.update({
         "PATH": os.pathsep.join(map(str, (home / "bin", windows / "System32", windows))),
         "GST_PLUGIN_PATH_1_0": "",

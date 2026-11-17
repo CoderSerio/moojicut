@@ -107,6 +107,9 @@ class MSVCRedist:
         self.policy = package["msvc_redist"]
         self.execute = execute
         self.environment = dict(os.environ if environment is None else environment)
+        # os.environ itself is case-insensitive on Windows; dict(os.environ)
+        # contains uppercase keys and no longer has that lookup behavior.
+        self.environment_lookup = {key.casefold(): value for key, value in self.environment.items()}
         self.directory = None
         self.records = {}
         self.failure = None
@@ -117,7 +120,7 @@ class MSVCRedist:
         if self.failure:
             raise ValueError(self.failure)
         try:
-            value = self.environment.get("VCToolsInstallDir")
+            value = self.environment_lookup.get("vctoolsinstalldir")
             if not value:
                 raise ValueError("VCToolsInstallDir is required to locate official VS Redist CRT files")
             tools = Path(value).resolve()
@@ -159,7 +162,7 @@ class MSVCRedist:
             raise ValueError("Missing official VS Redist dependency: " + str(source))
         if name not in self.records:
             environment = dict(self.environment, MOOJICUT_CRT_FILE=str(source))
-            powershell = Path(environment.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+            powershell = Path(self.environment_lookup.get("systemroot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
             script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
                       "$p=$env:MOOJICUT_CRT_FILE; $s=Get-AuthenticodeSignature -LiteralPath $p; "
                       "$v=(Get-Item -LiteralPath $p).VersionInfo; "
@@ -338,7 +341,8 @@ def runtime_environment(bundle, registry_path, inherited=None):
     environment = {key: value for key, value in original.items()
                    if not key.upper().startswith(("GST_", "GSTREAMER_", "GIO_"))
                    and key.upper() not in ("GSETTINGS_SCHEMA_DIR", "GI_TYPELIB_PATH")}
-    windows = Path(original.get("SystemRoot", r"C:\Windows"))
+    lookup = {key.casefold(): value for key, value in original.items()}
+    windows = Path(lookup.get("systemroot", r"C:\Windows"))
     environment.update({
         "PATH": os.pathsep.join(map(str, (root, windows / "System32", windows))),
         "GST_PLUGIN_PATH_1_0": "", "GST_PLUGIN_SYSTEM_PATH_1_0": str(root / PLUGIN_DIR),

@@ -296,7 +296,7 @@ class DesktopBuild:
                            GST_PLUGIN_SCANNER_1_0=invalid, GST_REGISTRY_1_0=invalid,
                            GST_REGISTRY_UPDATE="no", GST_PLUGIN_FEATURE_RANK="openh264enc:NONE,avenc_aac:NONE")
         if self.system == "windows":
-            windows = Path(environment.get("SystemRoot", r"C:\Windows"))
+            windows = Path({key.casefold(): value for key, value in environment.items()}.get("systemroot", r"C:\Windows"))
             environment["PATH"] = os.pathsep.join(map(str, (windows / "System32", windows)))
             # Production bootstrap must override these itself. Do not supply
             # the Python runtime_environment used by lower-level fixtures.
