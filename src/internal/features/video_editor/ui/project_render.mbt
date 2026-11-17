@@ -177,7 +177,13 @@ fn project_draw_row(
       semantics.push(semantic(s, id, "button", Json(selected)))
     }
   }
-  for c in project_clips(s, kind) {
+  let clips = project_clips(s, kind)
+  let wave_spans = if kind == "audio" {
+    project_waveform_spans(s, clips)
+  } else {
+    Map([])
+  }
+  for c in clips {
     let r = project_clip_rect(s, c)
     if r.width <= 0 {
       continue
@@ -204,7 +210,9 @@ fn project_draw_row(
         p.clip_border
       },
     )
-    project_draw_waveform(commands, s, c, r)
+    if kind == "audio" {
+      project_draw_visible_waveform(commands, s, c, r, wave_spans[c.id])
+    }
     if r.width > 48 {
       let label = "#\{c.id[1:]} · \{clip_rate_label(c)}"
       draw_text(

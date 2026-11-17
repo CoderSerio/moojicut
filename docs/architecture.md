@@ -31,7 +31,7 @@ Mooji Cut 以 MoonBit 实现共享界面、交互、文档和业务规则，以�
 | --- | --- | --- |
 | 截图 | MoonBit 文档、撤销、几何和工具规则；三端接入矩形/圆框、箭头、实心覆盖/马赛克手势及工具栏定位 | 三端工具栏已读取共享贡献描述；原生属性控件、部分选区交互和布局仍待迁移，尚非完整共享 UI |
 | 选区 | macOS、Windows 截图与录屏各自复用同一原生选区组件；MoonBit 共用几何 | 完整三端选区 UI、窗口 hover 与选区调整；Linux 当前仍为独立选区适配 |
-| 视频编辑 | MoonBit v2 文档、事务、时间映射、布局、图标和时间线；macOS 已接正式媒体宿主和波形 | Windows 仍有旧编辑器；Linux 尚无同等视频链；多素材、字幕、效果仍有缺口 |
+| 视频编辑 | MoonBit v2 文档、事务、时间映射、布局、图标和时间线；macOS 已接正式媒体宿主和波形，共享 frame 校验与绘制遍历已接入 | Windows/Linux 通用画布与真实 v2 输入 fixture 正在接入，尚非生产媒体编辑器；Windows 仍有旧编辑器，Linux 尚无同等视频链；多素材、字幕、效果仍有缺口 |
 | 录屏 | 三端接入 MoonBit live flow 与倒计时面板；Windows 区域 MP4；Linux X11 与 Wayland ScreenCast/PipeWire→WebM | Windows/Linux 为静音；三端麦克风/暂停与完整运行时能力快照仍缺；实际授权、设备和交互验收按台账 |
 | 用户插件 | macOS ZIP 导入、工具管理、独立 Wasm worker；v1 仅截图元信息输入和文本输出 | Windows/Linux 插件宿主；通用截图工具、自定义属性与录屏扩展协议 |
 | 插件注册 | 扩展声明贡献，app 注入通用目录；三端读取相同稳定 ID、槽位、开关、排序、能力与交互描述 | 通用属性 Schema、完整输入 UI 与用户插件 v2 待做；录屏、录后编辑注册内容为空；取消/排空仍有原生策略 |
@@ -45,7 +45,7 @@ MoonBit 的 `check_module_boundaries.py` 检查包归属及依赖方向，拒绝
 
 ## 目标目录
 
-这是最终归属结构；现有 MoonBit 功能与基础包已经归位。app 的统一编排、CLI、shared/selection 和 shared/ui 等仍是目标，不因目录图出现而视为已实现。仅在出现明确职责和依赖边界时拆包；小模块先使用包内文件，延后功能不预建空目录。
+这是最终归属结构；现有 MoonBit 功能与基础包已经归位，`shared/ui/frame` 已承担绘图/语义描述的验证与输入编码。app 的统一编排、CLI、shared/selection 和完整通用控件等仍是目标，不因目录图出现而视为已实现。仅在出现明确职责和依赖边界时拆包；小模块先使用包内文件，延后功能不预建空目录。
 
 ```text
 moojicut/

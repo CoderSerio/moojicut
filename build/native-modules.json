@@ -94,7 +94,9 @@
         "sources": [
           "components/shared_canvas/macos/MCSharedCanvas.m"
         ],
-        "requires": [],
+        "requires": [
+          "shared.graphics"
+        ],
         "files": [
           "components/shared_canvas/macos/MCSharedCanvas.h"
         ]
@@ -405,6 +407,22 @@
           "shared.bindings",
           "shared.media"
         ]
+      },
+      "platform.graphics": {
+        "sources": [
+          "platform/windows/graphics/shared_canvas.c",
+          "platform/windows/graphics/shared_canvas_accessibility.c"
+        ],
+        "files": [
+          "platform/windows/graphics/shared_canvas.h",
+          "platform/windows/graphics/shared_canvas_accessibility.h"
+        ],
+        "requires": [
+          "shared.graphics"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
       }
     },
     "linux": {
@@ -517,6 +535,20 @@
           "platform/linux/input/portal_shortcuts.h"
         ],
         "requires": []
+      },
+      "platform.graphics": {
+        "sources": [
+          "platform/linux/graphics/shared_canvas.c"
+        ],
+        "files": [
+          "platform/linux/graphics/shared_canvas.h"
+        ],
+        "requires": [
+          "shared.graphics"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
       }
     }
   },
@@ -538,7 +570,8 @@
         "bindings/c/update_release.h",
         "bindings/c/video_project.h",
         "bindings/c/video_timeline.h",
-        "bindings/c/video_ui.h"
+        "bindings/c/video_ui.h",
+        "bindings/c/ui_frame.h"
       ],
       "requires": []
     },
@@ -562,6 +595,18 @@
         "platform/shared/image/pixelate.h"
       ],
       "requires": []
+    },
+    "shared.graphics": {
+      "sources": [
+        "platform/shared/graphics/canvas.c"
+      ],
+      "files": [
+        "platform/shared/graphics/canvas.h"
+      ],
+      "requires": [],
+      "includes": [
+        "shared.bindings"
+      ]
     }
   },
   "excluded_files": {},

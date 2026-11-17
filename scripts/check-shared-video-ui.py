@@ -72,7 +72,8 @@ def main():
     run(project_media_test, run_dir / "project-media")
     harness = output / "shared-video-ui"
     run(*common, ROOT / "test/native/shared-video-ui.m", media,
-        ROOT / "components/shared_canvas/macos/MCSharedCanvas.m", archive, *frameworks,
+        ROOT / "components/shared_canvas/macos/MCSharedCanvas.m",
+        ROOT / "platform/shared/graphics/canvas.c", archive, *frameworks,
         "-framework", "AppKit", "-framework", "QuartzCore", "-o", harness)
     run(harness, run_dir / "source.mp4", run_dir)
     run(harness, run_dir / "source.mp4", run_dir / "project-ui", "--project")

@@ -100,6 +100,7 @@ class DesktopBuild:
                     archive = candidate
         if archive is None:
             raise RuntimeError("MoonBit did not produce the native static library.")
+        self.core_archive = archive
         with tempfile.TemporaryDirectory(prefix="build-", dir=self.directory) as name:
             staging = Path(name) / "MoojiCut"
             staging.mkdir()
@@ -250,11 +251,42 @@ class DesktopBuild:
     def smoke(self):
         self.verify_binary(self.executable)
         self.run(self.executable, "--smoke")
+        self.canvas_smoke()
+
+    def canvas_smoke(self):
+        # Exercise the shared v2 editor through real native input/painting and
+        # accessibility. This standalone fixture is not a shipped editor host.
+        # Its sources use the same explicit ownership/dependency manifest.
+        directory = self.directory / "shared-canvas"
+        directory.mkdir(exist_ok=True)
+        sources = native_sources(self.system, "platform.graphics")
+        fixture = ROOT / "test/native" / (self.system + "-shared-canvas.c")
+        executable = directory / ("shared-canvas.exe" if self.system == "windows" else "shared-canvas")
+        if self.system == "windows":
+            objects = []
+            for unit in [*sources, fixture]:
+                obj = object_path(directory, unit)
+                obj.parent.mkdir(parents=True, exist_ok=True)
+                self.run("cl", "/nologo", "/utf-8", "/MT", "/O2", "/W4", "/WX", "/std:c11",
+                         "/DUNICODE", "/D_UNICODE", "/I" + str(self.home / "include"),
+                         "/I" + str(ROOT), "/Fo" + str(obj), "/c", unit)
+                objects.append(obj)
+            self.run("cl", "/nologo", *objects, self.core_archive, "/Fe" + str(executable),
+                     "/link", "/SUBSYSTEM:CONSOLE", "/IMPLIB:" + str(directory / "shared-canvas.lib"),
+                     "user32.lib", "kernel32.lib", "gdi32.lib", "comctl32.lib", "ole32.lib",
+                     "oleacc.lib", "oleaut32.lib", "uuid.lib", "oldnames.lib", "advapi32.lib", "dbghelp.lib")
+        else:
+            flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0"))
+            self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                     "-I", self.home / "include", "-I", ROOT, *sources, fixture,
+                     self.core_archive, *flags, "-lm", "-o", executable)
+        self.run(executable, directory)
 
     def test(self):
         self.core_tests()
         self.build()
         self.verify_binary(self.executable)
+        self.canvas_smoke()
 
     def release(self):
         self.core_tests()
@@ -291,7 +323,7 @@ class DesktopBuild:
                 raise RuntimeError("Packaged executable differs from the tested binary.")
             checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
             metadata = dict(self.metadata, archive=archive.name, sha256=checksum,
-                            checks=["moon-check", "moon-tests", "native-core", "native-ui-smoke", "unpacked-native-core"])
+                            checks=["moon-check", "moon-tests", "native-core", "native-ui-smoke", "shared-canvas", "unpacked-native-core"])
             shutil.copy2(archive, releases / archive.name)
             (releases / (archive.name + ".sha256")).write_text(checksum + "  " + archive.name + "\n", encoding="utf-8")
             (releases / (stem + ".build.json")).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

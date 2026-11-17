@@ -135,29 +135,105 @@ fn project_waveform_peak(
 }
 
 ///|
-fn project_draw_waveform(
+// Clip rectangles are painted in row order. Their opaque interior will cover
+// earlier waveform columns. Subtract the union once per clip, rather than
+// testing every output pixel against every later clip. Work is O(clips^2 +
+// visible columns), with the core limiting an audio row to 256 clips.
+fn project_waveform_spans(
+  s : UI,
+  clips : Array[ProjectClip],
+) -> Map[String, Array[(Double, Double)]] {
+  let visible : Map[String, Array[(Double, Double)]] = Map([])
+  let mut covered : Array[(Double, Double)] = []
+  for i = clips.length() - 1; i >= 0; i = i - 1 {
+    let clip = clips[i]
+    let r = project_clip_rect(s, clip)
+    let right = r.x + r.width
+    let spans : Array[(Double, Double)] = []
+    let mut cursor = r.x
+    for interval in covered {
+      if interval.1 <= cursor {
+        continue
+      }
+      if interval.0 >= right {
+        break
+      }
+      if interval.0 > cursor {
+        spans.push((cursor, @protocol.smaller(interval.0, right)))
+      }
+      cursor = @protocol.larger(cursor, interval.1)
+      if cursor >= right {
+        break
+      }
+    }
+    if cursor < right {
+      spans.push((cursor, right))
+    }
+    visible[clip.id] = spans
+    // Keep four logical points at either edge: rounded corners and the stroke
+    // can leave an earlier column visible. Interior columns are fully covered.
+    let mut left = r.x + 4
+    let mut right = right - 4
+    if right <= left {
+      continue
+    }
+    let next : Array[(Double, Double)] = []
+    let mut inserted = false
+    for interval in covered {
+      if interval.1 < left {
+        next.push(interval)
+      } else if interval.0 > right {
+        if !inserted {
+          next.push((left, right))
+          inserted = true
+        }
+        next.push(interval)
+      } else {
+        left = @protocol.smaller(left, interval.0)
+        right = @protocol.larger(right, interval.1)
+      }
+    }
+    if !inserted {
+      next.push((left, right))
+    }
+    covered = next
+  }
+  visible
+}
+
+///|
+fn project_draw_visible_waveform(
   commands : Array[Json],
   s : UI,
   c : ProjectClip,
   r : Rect,
+  visible : Array[(Double, Double)],
 ) -> Unit {
-  if c.kind != "audio" || r.width < 4 || !has_waveform(s) {
+  if c.kind != "audio" || r.width * s.scale < 4 || !has_waveform(s) {
     return
   }
   let p = palette(s)
   let color = if project(s).muted { p.disabled } else { p.text }
   let center = r.y + 27
-  // Only visible pixels are drawn. Max-pooling preserves short transients when
-  // zoomed out; square-root display gain reveals quiet speech without changing
-  // the source envelope or the exported audio level.
-  for x = r.x + 2; x < r.x + r.width - 2; x = x + 2 {
-    let peak = project_waveform_peak(
-      s,
-      c,
-      x,
-      @protocol.smaller(x + 2, r.x + r.width),
-    )
-    let extent = @protocol.larger(0.5, peak.sqrt() * 12)
-    draw_line(commands, s, x, center - extent, x, center + extent, color, 1)
+  // Geometry and project_time use logical coordinates; draw_line applies the
+  // frame scale. Two output pixels per column bounds work even in a very short
+  // window. Preserve the original column grid and source pooling interval when
+  // skipping covered spans; visible waveform amplitudes/positions do not move.
+  let stride = 2.0 / s.scale
+  let origin = r.x + stride
+  for span in visible {
+    let first = origin +
+      @protocol.larger(0, @double.ceil((span.0 - origin) / stride)) * stride
+    let end = @protocol.smaller(r.x + r.width - stride, span.1)
+    for x = first; x < end; x = x + stride {
+      let peak = project_waveform_peak(
+        s,
+        c,
+        x,
+        @protocol.smaller(x + stride, r.x + r.width),
+      )
+      let extent = @protocol.larger(0.5, peak.sqrt() * 12)
+      draw_line(commands, s, x, center - extent, x, center + extent, color, 1)
+    }
   }
 }

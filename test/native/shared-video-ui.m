@@ -15,7 +15,7 @@ extern moonbit_string_t video_seek(int32_t, double);
 extern void video_dispose(int32_t);
 
 @interface MCSharedCanvasView (OffscreenFixture)
-- (void)drawCommands:(NSArray *)commands dirtyRect:(NSRect)dirtyRect;
+- (void)drawLayer:(int32_t)layer dirtyRect:(NSRect)dirtyRect;
 @end
 
 static moonbit_string_t Input(NSString *value) {
@@ -368,9 +368,28 @@ static void SaveLayout(SharedVideoHarness *host, NSURL *url) {
     // sibling overlay view above the AVPlayerLayer in the running component.
     NSAffineTransform *flipped=[NSAffineTransform transform];
     [flipped translateXBy:0 yBy:size.height]; [flipped scaleXBy:1 yBy:-1]; [flipped concat];
-    [host.canvas drawCommands:host.canvas.frameDescription[@"overlayCommands"] dirtyRect:host.canvas.bounds];
+    [host.canvas drawLayer:MC_UI_LAYER_OVERLAY dirtyRect:host.canvas.bounds];
     [NSGraphicsContext restoreGraphicsState];
     NSCAssert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToURL:url atomically:YES], @"Layout PNG");
+}
+
+static void ValidateCanvasFrame(SharedVideoHarness *host) {
+    NSDictionary *original=host.canvas.frameDescription;
+    NSCAssert([original[@"ok"] boolValue],@"The actual UI produces a complete frame");
+    NSArray *semantics=host.canvas.accessibilityChildren;
+    NSMutableDictionary *invalid=[original mutableCopy];
+    invalid[@"commands"]=@[@{@"type":@"unsupported-platform-command"}];
+    moonbit_string_t json=Input(JSON(invalid));
+    NSCAssert(![host.canvas setFrameJSON:json],@"The common boundary rejects a malformed frame before publication");
+    moonbit_decref(json);
+    NSCAssert([host.canvas.frameDescription isEqual:original] && [host.canvas.accessibilityChildren isEqual:semantics],
+        @"Rejection retains the visible frame and accessibility objects");
+    NSMutableDictionary *source=[NSJSONSerialization JSONObjectWithData:[JSON(original) dataUsingEncoding:NSUTF8StringEncoding]
+        options:NSJSONReadingMutableContainers error:NULL];
+    host.canvas.frameDescription=source;
+    [source[@"commands"] removeAllObjects]; [source[@"semantics"] removeAllObjects];
+    NSCAssert([host.canvas.frameDescription isEqual:original] && host.canvas.accessibilityChildren.count==semantics.count,
+        @"Mutable fixture input cannot alter the detached native frame after publication");
 }
 
 static void Smoke(SharedVideoHarness *host, NSURL *directory) {
@@ -744,6 +763,7 @@ int main(int argc, const char *argv[]) {
         }
         SharedVideoHarness *host = [[SharedVideoHarness alloc] initWithURL:source project:project error:&error];
         if (!host) { NSLog(@"Unable to load fixture: %@", error); return 1; }
+        if (!interactive) ValidateCanvasFrame(host);
         if (interactive) {
             host.interactive = YES; [host.window center]; [host.window makeKeyAndOrderFront:nil];
             [host.window makeFirstResponder:host.canvas]; [NSApp activateIgnoringOtherApps:YES]; [NSApp run];

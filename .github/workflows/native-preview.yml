@@ -112,6 +112,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: smoke-${{ matrix.platform }}
-          path: .artifacts/${{ matrix.platform }}/smoke.*
+          path: |
+            .artifacts/${{ matrix.platform }}/smoke.*
+            .artifacts/${{ matrix.platform }}/shared-canvas/*.bmp
+            .artifacts/${{ matrix.platform }}/shared-canvas/*.png
           if-no-files-found: ignore
           retention-days: 14

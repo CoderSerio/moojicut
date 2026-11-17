@@ -1,6 +1,7 @@
 #import "MCSharedCanvas.h"
 #import <QuartzCore/QuartzCore.h>
 #include <math.h>
+#include "platform/shared/graphics/canvas.h"
 
 static BOOL MCCanvasNumber(id value, CGFloat *result) {
     if (![value isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) return NO;
@@ -8,7 +9,7 @@ static BOOL MCCanvasNumber(id value, CGFloat *result) {
     if (!isfinite(number)) return NO;
     *result = number; return YES;
 }
-static BOOL MCCanvasRect(NSDictionary *value, NSRect *result) {
+static BOOL MCCanvasDecodeRect(NSDictionary *value, NSRect *result) {
     if (![value isKindOfClass:NSDictionary.class]) return NO;
     CGFloat x, y, width, height;
     if (!MCCanvasNumber(value[@"x"], &x) || !MCCanvasNumber(value[@"y"], &y) ||
@@ -19,21 +20,55 @@ static BOOL MCCanvasRect(NSDictionary *value, NSRect *result) {
 static NSString *MCCanvasString(id value) {
     return [value isKindOfClass:NSString.class] ? value : nil;
 }
-static NSColor *MCCanvasColor(id value) {
-    NSString *text = MCCanvasString(value);
-    if (text.length != 7 || [text characterAtIndex:0] != '#') return nil;
-    unsigned rgb = 0;
-    for (NSUInteger i = 1; i < 7; i++) {
-        unichar c = [text characterAtIndex:i];
-        unsigned digit;
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-        else return nil;
-        rgb = (rgb << 4) | digit;
-    }
+static NSColor *MCCanvasRGB(int32_t rgb) {
     return [NSColor colorWithSRGBRed:((rgb >> 16) & 255) / 255.0
         green:((rgb >> 8) & 255) / 255.0 blue:(rgb & 255) / 255.0 alpha:1];
+}
+static NSRect MCCanvasNativeRect(MCCanvasRect rect) {
+    return NSMakeRect(rect.x,rect.y,rect.width,rect.height);
+}
+static void MCCanvasPaintRect(void *context, MCCanvasRect rect, double radius,
+                              int32_t fill, int32_t stroke, double lineWidth) {
+    (void)context;
+    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:MCCanvasNativeRect(rect) xRadius:radius yRadius:radius];
+    if (fill >= 0) { [MCCanvasRGB(fill) setFill]; [path fill]; }
+    if (stroke >= 0) { [MCCanvasRGB(stroke) setStroke]; path.lineWidth = lineWidth; [path stroke]; }
+}
+static void MCCanvasPaintLine(void *context, double x1, double y1, double x2, double y2,
+                              int32_t color, double width) {
+    (void)context;
+    NSBezierPath *path = [NSBezierPath bezierPath];
+    [path moveToPoint:NSMakePoint(x1,y1)]; [path lineToPoint:NSMakePoint(x2,y2)];
+    [MCCanvasRGB(color) setStroke]; path.lineWidth = width; [path stroke];
+}
+static void MCCanvasPaintText(void *context, const MCCanvasText *command) {
+    (void)context;
+    NSString *text = [[NSString alloc] initWithCharacters:command->text length:command->length];
+    NSRect rect = MCCanvasNativeRect(command->rect);
+    NSFontWeight weight = command->weight == MC_UI_WEIGHT_BOLD ? NSFontWeightBold :
+        command->weight == MC_UI_WEIGHT_MEDIUM ? NSFontWeightMedium : NSFontWeightRegular;
+    NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+    paragraph.alignment = command->align == MC_UI_ALIGN_CENTER ? NSTextAlignmentCenter :
+        command->align == MC_UI_ALIGN_RIGHT ? NSTextAlignmentRight : NSTextAlignmentLeft;
+    paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSFont *font = [NSFont systemFontOfSize:command->size weight:weight];
+    NSDictionary *attributes = @{NSFontAttributeName:font,
+        NSForegroundColorAttributeName:MCCanvasRGB(command->color),NSParagraphStyleAttributeName:paragraph};
+    NSRect textRect = rect;
+    if (command->valign == MC_UI_VALIGN_CENTER) {
+        CGFloat height = [text boundingRectWithSize:NSMakeSize(rect.size.width,CGFLOAT_MAX)
+            options:NSStringDrawingUsesLineFragmentOrigin attributes:attributes].size.height;
+        if (!isfinite(height) || height <= 0) height = font.ascender-font.descender+font.leading;
+        height = ceil(height); textRect.origin.y += (rect.size.height-height)/2; textRect.size.height = height;
+    }
+    [NSGraphicsContext saveGraphicsState]; NSRectClip(rect);
+    [text drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+        attributes:attributes];
+    [NSGraphicsContext restoreGraphicsState];
+}
+static NSString *MCCanvasOwnedString(moonbit_string_t value) {
+    NSString *text = [[NSString alloc] initWithCharacters:value length:Moonbit_array_length(value)];
+    moonbit_decref(value); return text;
 }
 static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
     NSString *role = MCCanvasString(descriptor[@"role"]);
@@ -67,19 +102,21 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 @property NSArray<NSDictionary *> *tooltipRegions;
 @property BOOL pointerDown, pointerInside, inputActive;
 @property BOOL deliveredSize;
+@property int32_t frameHandle;
+@property (nonatomic, copy) NSString *serializedFrame;
 @property CGSize lastDeliveredSize;
 - (void)emitEvent:(NSDictionary *)event;
 - (void)cancelInput;
 - (void)updateVideoSurface;
 - (void)updateSemantics;
 - (void)updateTooltips;
-- (void)drawCommands:(NSArray *)commands dirtyRect:(NSRect)dirtyRect;
+- (void)drawLayer:(int32_t)layer dirtyRect:(NSRect)dirtyRect;
 @end
 
 @implementation MCCanvasOverlaySurface
 - (BOOL)isFlipped { return YES; }
 - (void)drawRect:(NSRect)dirtyRect {
-    [self.canvas drawCommands:self.canvas.frameDescription[@"overlayCommands"] dirtyRect:dirtyRect];
+    [self.canvas drawLayer:MC_UI_LAYER_OVERLAY dirtyRect:dirtyRect];
 }
 @end
 
@@ -111,7 +148,7 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 - (NSRect)accessibilityFrame {
     NSRect rect;
     MCSharedCanvasView *canvas = self.canvas;
-    if (!canvas.window || !MCCanvasRect(self.descriptor, &rect)) return NSZeroRect;
+    if (!canvas.window || !MCCanvasDecodeRect(self.descriptor, &rect)) return NSZeroRect;
     return [canvas.window convertRectToScreen:[canvas convertRect:rect toView:nil]];
 }
 - (BOOL)accessibilityPerformPress {
@@ -136,6 +173,7 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 @end
 
 @implementation MCSharedCanvasView
+@synthesize frameDescription = _frameDescription;
 - (instancetype)initWithFrame:(NSRect)frame {
     if ((self = [super initWithFrame:frame])) [self initializeCanvas];
     return self;
@@ -192,13 +230,41 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 - (void)setBoundsSize:(NSSize)size {
     [super setBoundsSize:size]; self.needsLayout = YES;
 }
+- (NSDictionary *)frameDescription {
+    if (!_frameDescription && self.serializedFrame) {
+        NSData *data = [self.serializedFrame dataUsingEncoding:NSUTF8StringEncoding];
+        _frameDescription = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    }
+    return _frameDescription;
+}
 - (void)setFrameDescription:(NSDictionary *)frameDescription {
-    _frameDescription = [frameDescription isKindOfClass:NSDictionary.class] ? [frameDescription copy] : nil;
-    [self updateVideoSurface];
-    [self updateSemantics];
-    [self updateTooltips];
-    self.needsDisplay = YES;
-    self.overlaySurface.needsDisplay = YES;
+    if (!frameDescription) {
+        int32_t previous = self.frameHandle; self.frameHandle = 0;
+        self.serializedFrame = nil; _frameDescription = nil;
+        if (previous) ui_frame_close(previous);
+        [self frameDidChange]; return;
+    }
+    if (![NSJSONSerialization isValidJSONObject:frameDescription]) return;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:frameDescription options:0 error:NULL];
+    NSString *json = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+    if (!json || json.length > INT32_MAX) return;
+    moonbit_string_t value = moonbit_make_string_raw((int32_t)json.length);
+    [json getCharacters:value range:NSMakeRange(0,json.length)];
+    [self setFrameJSON:value]; moonbit_decref(value);
+}
+- (BOOL)setFrameJSON:(moonbit_string_t)json {
+    NSAssert(NSThread.isMainThread, @"Canvas frames belong to their UI thread");
+    int32_t next = ui_frame_open(json);
+    if (!next) return NO;
+    NSString *source = [[NSString alloc] initWithCharacters:json length:Moonbit_array_length(json)];
+    int32_t previous = self.frameHandle;
+    self.frameHandle = next; self.serializedFrame = source; _frameDescription = nil;
+    if (previous) ui_frame_close(previous);
+    [self frameDidChange]; return YES;
+}
+- (void)frameDidChange {
+    [self updateVideoSurface]; [self updateSemantics]; [self updateTooltips];
+    self.needsDisplay = YES; self.overlaySurface.needsDisplay = YES;
     [self.window invalidateCursorRectsForView:self];
     if (self.pointerInside && self.window.isKeyWindow) [[self frameCursor] set];
 }
@@ -207,9 +273,10 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
     [self updateVideoSurface];
 }
 - (void)updateVideoSurface {
-    NSRect rect;
-    BOOL visible = self.videoLayer.player && MCCanvasRect(self.frameDescription[@"videoRect"], &rect) &&
-        rect.size.width > 0 && rect.size.height > 0;
+    MCCanvasRect sharedRect;
+    BOOL visible = self.videoLayer.player && mc_canvas_video_rect(self.frameHandle,&sharedRect) &&
+        sharedRect.width > 0 && sharedRect.height > 0;
+    NSRect rect = visible ? MCCanvasNativeRect(sharedRect) : NSZeroRect;
     self.videoSurface.hidden = !visible;
     if (!visible) return;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -230,72 +297,21 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
     }
 }
 - (void)drawRect:(NSRect)dirtyRect {
-    [self drawCommands:self.frameDescription[@"commands"] dirtyRect:dirtyRect];
+    [self drawLayer:MC_UI_LAYER_COMMANDS dirtyRect:dirtyRect];
 }
-- (void)drawCommands:(NSArray *)commands dirtyRect:(NSRect)dirtyRect {
-    [NSGraphicsContext saveGraphicsState];
-    NSRectClip(NSIntersectionRect(dirtyRect, self.bounds));
-    if (![commands isKindOfClass:NSArray.class]) commands = @[];
-    for (id entry in commands) {
-        if (![entry isKindOfClass:NSDictionary.class]) continue;
-        NSDictionary *command = entry;
-        NSString *type = MCCanvasString(command[@"type"]);
-        if ([type isEqualToString:@"rect"]) {
-            NSRect rect; CGFloat radius = 0, lineWidth = 1;
-            if (!MCCanvasRect(command, &rect)) continue;
-            if (command[@"radius"] && (!MCCanvasNumber(command[@"radius"], &radius) || radius < 0)) continue;
-            if (command[@"lineWidth"] && (!MCCanvasNumber(command[@"lineWidth"], &lineWidth) || lineWidth < 0)) continue;
-            NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:radius yRadius:radius];
-            NSColor *fill = MCCanvasColor(command[@"fill"]), *stroke = MCCanvasColor(command[@"stroke"]);
-            if (fill) { [fill setFill]; [path fill]; }
-            if (stroke) { [stroke setStroke]; path.lineWidth = lineWidth; [path stroke]; }
-        } else if ([type isEqualToString:@"line"]) {
-            CGFloat x1, y1, x2, y2, width = 1;
-            NSColor *color = MCCanvasColor(command[@"color"]);
-            if (!color || !MCCanvasNumber(command[@"x1"], &x1) || !MCCanvasNumber(command[@"y1"], &y1) ||
-                !MCCanvasNumber(command[@"x2"], &x2) || !MCCanvasNumber(command[@"y2"], &y2) ||
-                (command[@"lineWidth"] && !MCCanvasNumber(command[@"lineWidth"], &width)) || width < 0) continue;
-            NSBezierPath *path = [NSBezierPath bezierPath];
-            [path moveToPoint:NSMakePoint(x1, y1)]; [path lineToPoint:NSMakePoint(x2, y2)];
-            [color setStroke]; path.lineWidth = width; [path stroke];
-        } else if ([type isEqualToString:@"text"]) {
-            NSRect rect; CGFloat size;
-            NSString *text = MCCanvasString(command[@"text"]);
-            NSColor *color = MCCanvasColor(command[@"color"]);
-            if (!text || !color || !MCCanvasRect(command, &rect) || !MCCanvasNumber(command[@"size"], &size) || size <= 0) continue;
-            NSString *weight = MCCanvasString(command[@"weight"]), *align = MCCanvasString(command[@"align"]);
-            NSFontWeight fontWeight = [weight isEqualToString:@"bold"] ? NSFontWeightBold :
-                [weight isEqualToString:@"medium"] ? NSFontWeightMedium : NSFontWeightRegular;
-            NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
-            paragraph.alignment = [align isEqualToString:@"center"] ? NSTextAlignmentCenter :
-                [align isEqualToString:@"right"] ? NSTextAlignmentRight : NSTextAlignmentLeft;
-            paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
-            NSFont *font = [NSFont systemFontOfSize:size weight:fontWeight];
-            NSDictionary *attributes = @{ NSFontAttributeName:font,
-                NSForegroundColorAttributeName:color, NSParagraphStyleAttributeName:paragraph };
-            NSRect textRect = rect;
-            if ([MCCanvasString(command[@"valign"]) isEqualToString:@"center"]) {
-                CGFloat height = [text boundingRectWithSize:NSMakeSize(rect.size.width, CGFLOAT_MAX)
-                    options:NSStringDrawingUsesLineFragmentOrigin attributes:attributes].size.height;
-                if (!isfinite(height) || height <= 0) height = font.ascender - font.descender + font.leading;
-                height = ceil(height);
-                textRect.origin.y += (rect.size.height - height) / 2;
-                textRect.size.height = height;
-            }
-            [NSGraphicsContext saveGraphicsState]; NSRectClip(rect);
-            [text drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
-                attributes:attributes];
-            [NSGraphicsContext restoreGraphicsState];
-        }
-    }
+- (void)drawLayer:(int32_t)layer dirtyRect:(NSRect)dirtyRect {
+    [NSGraphicsContext saveGraphicsState]; NSRectClip(NSIntersectionRect(dirtyRect,self.bounds));
+    const MCCanvasPainter painter = {NULL,MCCanvasPaintRect,MCCanvasPaintLine,MCCanvasPaintText};
+    mc_canvas_draw_layer(self.frameHandle,layer,&painter);
     [NSGraphicsContext restoreGraphicsState];
 }
 - (NSCursor *)frameCursor {
-    NSString *cursor = MCCanvasString(self.frameDescription[@"cursor"]);
-    if ([cursor isEqualToString:@"resize"] || [cursor isEqualToString:@"resize-horizontal"]) return NSCursor.resizeLeftRightCursor;
-    if ([cursor isEqualToString:@"pointingHand"] || [cursor isEqualToString:@"pointer"]) return NSCursor.pointingHandCursor;
-    if ([cursor isEqualToString:@"crosshair"]) return NSCursor.crosshairCursor;
-    return NSCursor.arrowCursor;
+    switch (ui_frame_value(self.frameHandle,MC_UI_FRAME_CURSOR)) {
+        case MC_UI_CURSOR_RESIZE_HORIZONTAL: return NSCursor.resizeLeftRightCursor;
+        case MC_UI_CURSOR_POINTER: return NSCursor.pointingHandCursor;
+        case MC_UI_CURSOR_CROSSHAIR: return NSCursor.crosshairCursor;
+        default: return NSCursor.arrowCursor;
+    }
 }
 - (void)resetCursorRects {
     [super resetCursorRects]; [self addCursorRect:self.bounds cursor:[self frameCursor]];
@@ -311,7 +327,23 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 - (void)cursorUpdate:(NSEvent *)event { (void)event; [[self frameCursor] set]; }
 - (void)emitEvent:(NSDictionary *)event {
     void (^callback)(NSDictionary *) = self.onEvent;
-    if (callback) callback(event);
+    if (!callback) return;
+    NSArray *types=@[@"pointerDown",@"pointerMove",@"pointerUp",@"cancel",@"scroll",@"key",@"activate",@"appearance"];
+    NSUInteger index=[types indexOfObject:event[@"type"]];
+    if (index==NSNotFound) return;
+    NSString *text=event[index==5 ? @"key" : index==6 ? @"id" : @"mode"] ?: @"";
+    if (![text isKindOfClass:NSString.class] || text.length>256) return;
+    uint16_t characters[256];
+    [text getCharacters:characters range:NSMakeRange(0,text.length)];
+    MCCanvasInput input={(int32_t)index+1,[event[@"x"] doubleValue],[event[@"y"] doubleValue],
+        [event[@"deltaX"] doubleValue],[event[@"deltaY"] doubleValue],
+        ([event[@"mod"] boolValue] ? MC_UI_INPUT_MOD : 0) |
+        ([event[@"shift"] boolValue] ? MC_UI_INPUT_SHIFT : 0) |
+        ([event[@"precise"] boolValue] ? MC_UI_INPUT_PRECISE : 0),characters,text.length};
+    NSString *json=MCCanvasOwnedString(mc_canvas_input_json(&input));
+    if (!json.length) return;
+    NSDictionary *encoded=[NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if (encoded) callback(encoded);
 }
 - (void)sendPointer:(NSString *)type event:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
@@ -422,8 +454,30 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 - (NSAccessibilityRole)accessibilityRole { return NSAccessibilityGroupRole; }
 - (NSArray *)accessibilityChildren { return self.semanticElements; }
 - (void)updateSemantics {
-    NSArray *descriptors = self.frameDescription[@"semantics"];
-    if (![descriptors isKindOfClass:NSArray.class]) descriptors = @[];
+    NSMutableArray<NSDictionary *> *descriptors = [NSMutableArray array];
+    for (int32_t index=0; index<ui_frame_semantic_count(self.frameHandle); index++) {
+        const char *roles[] = {"group","button","slider","checkbox","text"};
+        int32_t role=ui_frame_semantic_value(self.frameHandle,index,MC_UI_SEM_ROLE);
+        if (role<MC_UI_ROLE_GROUP || role>MC_UI_ROLE_TEXT) continue;
+        NSMutableDictionary *item = [@{@"role":@(roles[role]),
+            @"id":MCCanvasOwnedString(ui_frame_semantic_text(self.frameHandle,index,MC_UI_SEM_ID)),
+            @"label":MCCanvasOwnedString(ui_frame_semantic_text(self.frameHandle,index,MC_UI_SEM_LABEL)),
+            @"tooltip":MCCanvasOwnedString(ui_frame_semantic_text(self.frameHandle,index,MC_UI_SEM_TOOLTIP)),
+            @"enabled":@(ui_frame_semantic_value(self.frameHandle,index,MC_UI_SEM_ENABLED)==1),
+            @"focused":@(ui_frame_semantic_value(self.frameHandle,index,MC_UI_SEM_FOCUSED)==1),
+            @"x":@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_X)),
+            @"y":@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_Y)),
+            @"width":@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_WIDTH)),
+            @"height":@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_HEIGHT))} mutableCopy];
+        int32_t type=ui_frame_semantic_value(self.frameHandle,index,MC_UI_SEM_VALUE_TYPE);
+        if (type==MC_UI_VALUE_NUMBER) item[@"value"]=@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_VALUE));
+        else if (type==MC_UI_VALUE_BOOL) item[@"value"]=@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_VALUE)!=0);
+        else if (type==MC_UI_VALUE_TEXT) item[@"value"]=MCCanvasOwnedString(ui_frame_semantic_text(self.frameHandle,index,MC_UI_SEM_VALUE_TEXT));
+        if (ui_frame_semantic_value(self.frameHandle,index,MC_UI_SEM_HAS_MIN)==1) item[@"min"]=@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_MIN));
+        if (ui_frame_semantic_value(self.frameHandle,index,MC_UI_SEM_HAS_MAX)==1) item[@"max"]=@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_MAX));
+        if (ui_frame_semantic_value(self.frameHandle,index,MC_UI_SEM_HAS_STEP)==1) item[@"step"]=@(ui_frame_semantic_number(self.frameHandle,index,MC_UI_SEM_STEP));
+        [descriptors addObject:item];
+    }
     NSMutableDictionary<NSString *, MCCanvasAccessibilityElement *> *previous = [NSMutableDictionary dictionary];
     for (MCCanvasAccessibilityElement *element in self.semanticElements) previous[element.accessibilityIdentifier] = element;
     NSMutableArray<MCCanvasAccessibilityElement *> *elements = [NSMutableArray array];
@@ -432,7 +486,7 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
     for (id entry in descriptors) {
         if (![entry isKindOfClass:NSDictionary.class]) continue;
         NSString *identifier = MCCanvasString(entry[@"id"]); NSRect rect;
-        if (!identifier.length || [identifiers containsObject:identifier] || !MCCanvasRect(entry, &rect)) continue;
+        if (!identifier.length || [identifiers containsObject:identifier] || !MCCanvasDecodeRect(entry, &rect)) continue;
         [identifiers addObject:identifier];
         MCCanvasAccessibilityElement *element = previous[identifier];
         NSDictionary *old = element.descriptor;
@@ -462,7 +516,7 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
         NSDictionary *descriptor = element.descriptor;
         NSString *label = MCCanvasString(descriptor[@"tooltip"]) ?: MCCanvasString(descriptor[@"label"]);
         NSRect rect;
-        if (!label.length || !MCCanvasRect(descriptor, &rect)) continue;
+        if (!label.length || !MCCanvasDecodeRect(descriptor, &rect)) continue;
         rect = NSIntersectionRect(rect, self.bounds);
         if (NSIsEmptyRect(rect)) continue;
         // Keep disabled controls discoverable too. The shared component owns
@@ -489,5 +543,6 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     _videoLayer.player = nil;
+    if (_frameHandle) ui_frame_close(_frameHandle);
 }
 @end

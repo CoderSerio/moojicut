@@ -300,3 +300,19 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 本批本地验证：MoonBit native/Wasm 各 212 项、构建/归属/文件策略 33 项与 macOS 完整原生回归通过。新增真实工具栏、复合图元 PNG 导出/撤销、配置停用不丢内容与分组末尾拖拽回归；排序边界测试证明修复前失败、修复后通过。Windows main/capture/pinning 使用 LLVM-MinGW 严格编译，Linux main/capture 使用 Ubuntu 22.04 真实头文件与 Linux target 严格检查；交叉检查不代替下方目标平台运行结果。Windows/Linux 实机输入、DPI、Wayland 和硬件验收仍由用户后续组织，不以本地交叉编译代替。
 
 提交 `2e37903` 已通过 [Native desktop previews #44157505710](https://github.com/CoderSerio/moojicut/actions/runs/44157505710)：Windows 2022/MSVC 和 Ubuntu 22.04/Xvfb 构建、平台 smoke、打包与生成接口检查均成功，包括本批工具启停/排序、复合命令与贴图配置事务回归。代码集中推送一次；此验证记录为文档更新，不另触发构建。尚未发布新包。
+
+### 2026-11-18：E0 共享画布与媒体可行性（实施中，尚未发布）
+
+本批从 `a8e8ab5` 继续，补齐跨平台编辑器的底层消费者；不因此关闭 E1 生产视频编辑器，也不关闭 B2 完整截图属性/选区 UI。
+
+- MoonBit `shared/ui/frame` 校验整个绘图与语义快照，提供不可变、不复用的有界句柄；非法命令、重复语义 ID、非有限值、超限及不合法滑块数据使整帧失败，不让不同系统各自静默跳过。原生输入通过同一 MoonBit 编码器进入功能 UI。协议仅含通用图元、光标、语义、输入和媒体矩形，不含片段、截图工具或插件 ID 的业务分支。
+- `bindings/c/ui_frame.h` 声明类型、单位和字符串所有权；`platform/shared/graphics/canvas.c` 统一遍历，平台只执行矩形、线段和文字原语。保持底图→视频表面→覆盖层次序；媒体资源不由画布拥有。原生按键、鼠标捕获、系统外观、tooltip 和无障碍接口负责翻译系统事实，命中、编辑命令和历史继续由 MoonBit 决定。此画布不是 IME 文本编辑器，也不是完整 GUI 框架。
+- macOS 生产编辑器已经消费原始 MoonBit frame；AppKit 不再解析绘图命令，保留 AVPlayerLayer 嵌入和原有 AX 对象生命周期。校验失败保留上一帧，成功替换关闭旧句柄；调试字典只在需要时延迟生成。真实切分、拖开空隙、撤销、裁剪与媒体导出回归通过。
+- Windows 的 GDI/输入/MSAA 与 Linux 的 Cairo/Pango/GTK/ATK 适配器放在 `platform/<os>/graphics`，独立 fixture 直接消费真实 v2 工程及其 UI；尚未替换 Windows 旧编辑器或将 Linux 录制完成接入生产编辑器。无障碍能力不能由“有 semantics JSON”推断，必须调用平台接口验证。新增源、头及共享 C 遍历进入构建归属清单；历史 include 例外没有增加。
+- 有界 frame 验证暴露并修复了共享波形的极端开销：列间距按输出像素计算，重叠音频跳过随后不透明片段完全遮住的列，保留圆角边缘、全部片段语义和输入。部分重叠逐柱对照保持可见输出，最大合法 512 片段/256 重叠音频和极端宽矮窗口通过实际 producer→decoder 检查；不以扩到百万绘图命令掩盖不可见计算。
+
+本地共享核心 native/Wasm 各 **219/219**、构建/归属/文件策略 **33/33**、macOS 完整原生回归、共享画布/实际媒体与导出专项、隔离身份的完整 App 构建均已通过。Windows 新适配器和 fixture 已严格交叉编译，Linux 使用 Ubuntu 22.04 真实 GTK/ATK/Pango 头严格检查通过；本批目标运行与 CI 待集中推送后记录，不能复用上批绿灯。源码状态和发布仍分开记账。
+
+E0 媒体探针使用隔离的官方 GStreamer/GES 1.28.9，在 macOS arm64 实际调用公共 C ABI，没有改变系统安装或生产依赖。八组真实 preview/seek→Matroska VP8/FLAC 导出→独立 FFmpeg 解码通过：黑屏/静音空隙、独立偏移音频、音频长于视频、1.5×/3×保音调、4500 ticks 源入点及重叠音频；另验真实取消到 NULL 及同进程再次导出。时间线来自共享编辑计划，不引入第二份可编辑文档。
+
+**MP4 仍未通过该探针**：H.264/AAC 虽可完成封装、视频帧数正确，末尾音频标记校验失败。AAC priming/尾端处理、Windows/Linux 目标运行库、解码取消代次、裁剪及原子发布继续是正式媒体端口的接入条件，不降低断言，不声称 GES 媒体后端已交付。完整探针与失败证据保留在本地 `.artifacts/e0-ges/E0-RESULTS.md`，该临时目录不随仓库/发布包交付；后续选定后端时将必要可复现 fixture 正式纳入测试。

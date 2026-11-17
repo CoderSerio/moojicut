@@ -227,9 +227,9 @@ static BOOL MCExportSync(AVComposition *composition, AVVideoComposition *videoCo
 - (void)render {
     if (self.closed || !self.canvas || self.ui < 0) return;
     CGSize size = self.canvas.bounds.size;
-    NSDictionary *frame = MCVideoDecode(video_ui_frame(self.ui, size.width, size.height));
-    if ([frame[@"ok"] boolValue]) self.canvas.frameDescription = frame;
-    else self.lastError = MCVideoError(frame[@"error"][@"message"]);
+    moonbit_string_t frame = video_ui_frame(self.ui,size.width,size.height);
+    if ([self.canvas setFrameJSON:frame]) moonbit_decref(frame);
+    else self.lastError = MCVideoError(MCVideoDecode(frame)[@"error"][@"message"]);
 }
 - (void)seekOutput:(double)milliseconds {
     if (self.closed || !self.mediaSynchronized) return;

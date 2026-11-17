@@ -18,6 +18,7 @@ SHARED_PREFIXES = {
     "shared.icons": "components/icons/shared/",
     "shared.media": "platform/shared/media/",
     "shared.image": "platform/shared/image/",
+    "shared.graphics": "platform/shared/graphics/",
 }
 
 

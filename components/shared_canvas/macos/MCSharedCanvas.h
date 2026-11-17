@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
+#include "bindings/c/ui_frame.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -10,6 +11,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSDictionary *frameDescription;
 @property (nonatomic, copy, nullable) void (^onEvent)(NSDictionary *event);
 @property (nonatomic, copy, nullable) void (^onFrameNeeded)(CGSize size);
+
+// Borrowed producer JSON. The common MoonBit frame boundary validates an
+// immutable snapshot before replacing the current frame. Failure preserves it.
+// frameDescription remains a lazy debug/fixture view of that same snapshot.
+- (BOOL)setFrameJSON:(moonbit_string_t)json;
 
 // Displays native video above the command plane, within videoRect. The media
 // surface does not handle input and has no playback controls. The host owns
