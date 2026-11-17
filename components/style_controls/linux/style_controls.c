@@ -594,6 +594,29 @@ static void smoke_dialog_destroyed(GtkWidget *widget, gpointer data) {
   (void)widget;
   *(gboolean *)data = TRUE;
 }
+typedef struct { gboolean painted, timed_out; } StyleFrameProbe;
+static void smoke_style_painted(GdkFrameClock *clock, gpointer data) {
+  (void)clock;
+  ((StyleFrameProbe *)data)->painted = TRUE;
+}
+static gboolean smoke_style_timeout(gpointer data) {
+  ((StyleFrameProbe *)data)->timed_out = TRUE;
+  return G_SOURCE_REMOVE;
+}
+static gboolean smoke_style_settled(GtkWidget *window) {
+  GdkFrameClock *clock = gtk_widget_get_frame_clock(window);
+  if (!clock) return FALSE;
+  StyleFrameProbe probe = {0};
+  gulong handler = g_signal_connect(clock, "after-paint", G_CALLBACK(smoke_style_painted), &probe);
+  guint timeout = g_timeout_add(2000, smoke_style_timeout, &probe);
+  gtk_widget_queue_draw(window);
+  gdk_frame_clock_request_phase(clock, GDK_FRAME_CLOCK_PHASE_AFTER_PAINT);
+  while (!probe.painted && !probe.timed_out) g_main_context_iteration(NULL, TRUE);
+  g_signal_handler_disconnect(clock, handler);
+  if (!probe.timed_out) g_source_remove(timeout);
+  if (!probe.painted) g_printerr("Style controls: initial GTK layout/paint did not complete.\n");
+  return probe.painted;
+}
 static gboolean smoke_property_spacing(MCStyleControls *controls, const double *values) {
   const int tools[] = {MC_STYLE_TOOL_RECTANGLE, MC_STYLE_TOOL_ARROW, MC_STYLE_TOOL_TEXT,
                        MC_STYLE_TOOL_COVER, MC_STYLE_TOOL_COVER};
@@ -670,6 +693,11 @@ gboolean mc_style_controls_smoke(void) {
                                                   smoke_style_finished, &b);
   gtk_box_pack_start(GTK_BOX(box), first->row, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), second->row, FALSE, FALSE, 0);
+  // Match the production HUD: install its subtree provider before mapping.
+  // Styling an already mapped window and measuring in the same call stack
+  // observes the previous theme's cached requisition until GTK lays out again.
+  gtk_style_context_add_class(gtk_widget_get_style_context(window), "mc-capture-hud");
+  mc_style_hud_apply(window);
   double initial[] = {0xF26769, 1, 4, 32, 0, 12};
   mc_style_controls_sync(first, 15, initial);
   mc_style_controls_sync(second, 15, initial);
@@ -724,8 +752,7 @@ gboolean mc_style_controls_smoke(void) {
   // and switching to mosaic must not retain gaps for detached color controls.
   if (!ok) g_printerr("Style controls: interaction assertions failed before geometry.\n");
   gtk_widget_show_all(window);
-  gtk_style_context_add_class(gtk_widget_get_style_context(window), "mc-capture-hud");
-  mc_style_hud_apply(window);
+  ok = smoke_style_settled(window) && ok;
   ok = smoke_property_spacing(first, initial) && ok;
   mc_style_controls_set_tool(first, MC_STYLE_TOOL_RECTANGLE);
   mc_style_controls_sync(first, editor_style_visible_mask(MC_STYLE_TOOL_RECTANGLE, 0), initial);
