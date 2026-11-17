@@ -386,8 +386,8 @@ gboolean mc_gst_capture_smoke(const char *directory) {
             passed = !s.success && s.path && smoke_decode(s.path) &&
                 g_strcmp0(original, "existing original") == 0 && passed; g_free(original);
         } else {
-            GStatBuf stat;
-            passed = !s.success && s.path && g_stat(s.path, &stat) == 0 &&
+            GStatBuf file_status;
+            passed = !s.success && s.path && g_stat(s.path, &file_status) == 0 &&
                 !g_file_test(target, G_FILE_TEST_EXISTS) && passed;
         }
         g_free(target); g_free(s.path); g_main_loop_unref(s.loop); g_free(folder);
