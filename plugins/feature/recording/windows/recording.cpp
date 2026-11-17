@@ -9,6 +9,7 @@
 #include "recording.h"
 #include "native/windows/resource.h"
 #include "native/shared/recording_plan.h"
+#include "platform/shared/media/output_file.h"
 #include "moonbit.h"
 #include <mfapi.h>
 #include <mfidl.h>
@@ -133,6 +134,7 @@ std::wstring fromUtf8(const std::string &value) {
 
 struct Encoder {
     ComPtr<IMFSinkWriter> writer;
+    bool finalizeAttempted = false;
     DWORD stream = 0;
     UINT32 width, height;
     Encoder(const fs::path &path, UINT32 w, UINT32 h, UINT32 frameRate) : width(w), height(h) {
@@ -171,7 +173,21 @@ struct Encoder {
         check(sample->SetSampleDuration(std::max<LONGLONG>(duration, 1)), L"无法设置视频时长");
         check(writer->WriteSample(stream, sample.Get()), L"视频写入失败，请检查磁盘空间");
     }
-    void finish() { check(writer->Finalize(), L"无法完成 MP4 文件，请检查磁盘空间"); writer.Reset(); }
+    void finish() {
+        finalizeAttempted = true;
+        HRESULT result = writer->Finalize();
+        writer.Reset();
+        check(result, L"无法完成 MP4 文件，请检查磁盘空间");
+    }
+    void finishAfterFailure() noexcept {
+        // Best effort: Finalize writes container headers. Preserve the primary
+        // capture error and never retry a failed Finalize on the same writer.
+        if (!finalizeAttempted && writer) {
+            finalizeAttempted = true;
+            writer->Finalize();
+            writer.Reset();
+        }
+    }
 };
 
 struct Decoder {
@@ -327,43 +343,49 @@ struct DesktopSurface {
     ~DesktopSurface() { cleanup(); }
 };
 void recordDesktop(const fs::path &target, RECT bounds, UINT32 width, UINT32 height, UINT32 frameRate, std::atomic<bool> &stop) {
-    Encoder encoder(target,width,height,frameRate); DesktopSurface surface(width,height);
-    // Let the start dialog disappear from the compositor before the first frame.
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
-    std::vector<BYTE> pending(static_cast<size_t>(width)*height*4);
-    LARGE_INTEGER frequency,origin,now; QueryPerformanceFrequency(&frequency); QueryPerformanceCounter(&origin);
-    LONGLONG last=0; bool haveFrame=false;
-    auto next=std::chrono::steady_clock::now();
-    do {
-        if(!StretchBlt(surface.memory,0,0,static_cast<int>(width),static_cast<int>(height),surface.screen,bounds.left,bounds.top,
-            bounds.right-bounds.left,bounds.bottom-bounds.top,SRCCOPY|CAPTUREBLT)) throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法读取主显示器；安全桌面或受保护内容不可录制"};
-        CURSORINFO cursor={};cursor.cbSize=sizeof(cursor);
-        if(GetCursorInfo(&cursor)&&(cursor.flags&CURSOR_SHOWING)&&PtInRect(&bounds,cursor.ptScreenPos)) {
-            ICONINFO icon={};
-            if(GetIconInfo(cursor.hCursor,&icon)) {
-                double sx=static_cast<double>(width)/(bounds.right-bounds.left),sy=static_cast<double>(height)/(bounds.bottom-bounds.top);
-                DrawIconEx(surface.memory,static_cast<int>((cursor.ptScreenPos.x-bounds.left-static_cast<LONG>(icon.xHotspot))*sx),
-                    static_cast<int>((cursor.ptScreenPos.y-bounds.top-static_cast<LONG>(icon.yHotspot))*sy),cursor.hCursor,
-                    std::max(1,static_cast<int>(GetSystemMetrics(SM_CXCURSOR)*sx)),std::max(1,static_cast<int>(GetSystemMetrics(SM_CYCURSOR)*sy)),0,nullptr,DI_NORMAL);
-                if(icon.hbmMask)DeleteObject(icon.hbmMask);if(icon.hbmColor)DeleteObject(icon.hbmColor);
+    Encoder encoder(target,width,height,frameRate);
+    try {
+        DesktopSurface surface(width,height);
+        // Let the start dialog disappear from the compositor before the first frame.
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        std::vector<BYTE> pending(static_cast<size_t>(width)*height*4);
+        LARGE_INTEGER frequency,origin,now; QueryPerformanceFrequency(&frequency); QueryPerformanceCounter(&origin);
+        LONGLONG last=0; bool haveFrame=false;
+        auto next=std::chrono::steady_clock::now();
+        do {
+            if(!StretchBlt(surface.memory,0,0,static_cast<int>(width),static_cast<int>(height),surface.screen,bounds.left,bounds.top,
+                bounds.right-bounds.left,bounds.bottom-bounds.top,SRCCOPY|CAPTUREBLT)) throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法读取主显示器；安全桌面或受保护内容不可录制"};
+            CURSORINFO cursor={};cursor.cbSize=sizeof(cursor);
+            if(GetCursorInfo(&cursor)&&(cursor.flags&CURSOR_SHOWING)&&PtInRect(&bounds,cursor.ptScreenPos)) {
+                ICONINFO icon={};
+                if(GetIconInfo(cursor.hCursor,&icon)) {
+                    double sx=static_cast<double>(width)/(bounds.right-bounds.left),sy=static_cast<double>(height)/(bounds.bottom-bounds.top);
+                    DrawIconEx(surface.memory,static_cast<int>((cursor.ptScreenPos.x-bounds.left-static_cast<LONG>(icon.xHotspot))*sx),
+                        static_cast<int>((cursor.ptScreenPos.y-bounds.top-static_cast<LONG>(icon.yHotspot))*sy),cursor.hCursor,
+                        std::max(1,static_cast<int>(GetSystemMetrics(SM_CXCURSOR)*sx)),std::max(1,static_cast<int>(GetSystemMetrics(SM_CYCURSOR)*sy)),0,nullptr,DI_NORMAL);
+                    if(icon.hbmMask)DeleteObject(icon.hbmMask);if(icon.hbmColor)DeleteObject(icon.hbmColor);
+                }
             }
-        }
-        GdiFlush(); QueryPerformanceCounter(&now);
-        LONGLONG timestamp=(now.QuadPart-origin.QuadPart)*second/frequency.QuadPart;
-        if(!haveFrame) { origin=now; timestamp=0; }
-        else encoder.frame(pending.data(),last,std::max<LONGLONG>(1,timestamp-last));
-        memcpy(pending.data(),surface.pixels,pending.size()); last=timestamp; haveFrame=true;
-        next+=std::chrono::microseconds(1000000/frameRate);
-        while(!stop.load() && std::chrono::steady_clock::now()<next) Sleep(5);
-    } while(!stop.load());
-    QueryPerformanceCounter(&now);
-    LONGLONG end=(now.QuadPart-origin.QuadPart)*second/frequency.QuadPart;
-    if(haveFrame) encoder.frame(pending.data(),last,std::max<LONGLONG>(10000,end-last));
-    encoder.finish();
+            GdiFlush(); QueryPerformanceCounter(&now);
+            LONGLONG timestamp=(now.QuadPart-origin.QuadPart)*second/frequency.QuadPart;
+            if(!haveFrame) { origin=now; timestamp=0; }
+            else encoder.frame(pending.data(),last,std::max<LONGLONG>(1,timestamp-last));
+            memcpy(pending.data(),surface.pixels,pending.size()); last=timestamp; haveFrame=true;
+            next+=std::chrono::microseconds(1000000/frameRate);
+            while(!stop.load() && std::chrono::steady_clock::now()<next) Sleep(5);
+        } while(!stop.load());
+        QueryPerformanceCounter(&now);
+        LONGLONG end=(now.QuadPart-origin.QuadPart)*second/frequency.QuadPart;
+        if(haveFrame) encoder.frame(pending.data(),last,std::max<LONGLONG>(10000,end-last));
+        encoder.finish();
+    } catch (...) {
+        encoder.finishAfterFailure();
+        throw;
+    }
 }
 
 enum class JobKind { None, Recording, Preview, Confirm };
-struct JobResult { JobKind kind; bool success=false,cancelled=false; std::wstring error; fs::path path; UINT32 width=0,height=0; int32_t duration=0; };
+struct JobResult { JobKind kind; bool success=false,cancelled=false,published=false; std::wstring error; fs::path path; UINT32 width=0,height=0; int32_t duration=0; };
 struct RecordingState {
     HINSTANCE instance=nullptr; HWND owner=nullptr,host=nullptr,editor=nullptr,status=nullptr,summary=nullptr;
     HFONT font=nullptr; HWND fields[8]={}; std::vector<HWND> controls;
@@ -430,7 +452,11 @@ void complete(JobResult *raw) {
     std::unique_ptr<JobResult> result(raw);if(state.worker.joinable())state.worker.join();
     state.kind=JobKind::None;notify();
     for(HWND control:state.controls)EnableWindow(control,TRUE);
-    if(result->kind!=JobKind::Recording && state.cancel.load()) { result->cancelled=true;result->success=false;std::error_code ignored;fs::remove(result->path,ignored); }
+    if(result->kind!=JobKind::Recording && state.cancel.load()) {
+        result->cancelled=true;result->success=false;
+        // The final path may belong to a pre-existing file if publication failed.
+        if(result->published){std::error_code ignored;fs::remove(result->path,ignored);}
+    }
     if(!result->success) {
         if(result->cancelled)setStatus(L"导出已取消，原片与草稿仍然保留。");else showFailure(result->error);
         if(state.closeAfter&&state.editor){state.closeAfter=false;DestroyWindow(state.editor);}return;
@@ -441,6 +467,11 @@ void complete(JobResult *raw) {
     if(copyFile(state.editor,result->path)){DestroyWindow(state.editor);}
     else { setStatus(L"视频已保存，但剪贴板正被占用；已打开文件所在目录。");ShellExecuteW(state.editor,L"open",result->path.parent_path().c_str(),nullptr,nullptr,SW_SHOWNORMAL); }
 }
+void publishOutput(const fs::path &partial,const fs::path &target) {
+    // No REPLACE_EXISTING: a collision must preserve both the original and target.
+    if(!MoveFileExW(partial.c_str(),target.c_str(),MOVEFILE_WRITE_THROUGH))
+        throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法保存完成的视频"};
+}
 void launchJob(JobKind kind,fs::path target,Plan plan,RECT bounds={},UINT32 width=0,UINT32 height=0,UINT32 frameRate=0) {
     // Resolve policy on the host/core thread; media workers consume values only.
     if(!frameRate)frameRate=static_cast<UINT32>(recordingPlan(2,2).frames_per_second);
@@ -450,18 +481,30 @@ void launchJob(JobKind kind,fs::path target,Plan plan,RECT bounds={},UINT32 widt
     notify();
     try { state.worker=std::thread([kind,target,plan,bounds,width,height,frameRate,source,host]{
         auto result=std::make_unique<JobResult>();result->kind=kind;result->path=target;
-        fs::path partial=target.parent_path()/(L"partial-"+target.filename().wstring());
+        moojicut::media::OutputFile output(target,kind==JobKind::Recording?
+            moojicut::media::OutputKind::Original:moojicut::media::OutputKind::Derived);
         try {
             MediaRuntime runtime;
-            if(kind==JobKind::Recording)recordDesktop(partial,bounds,width,height,frameRate,state.stop);
-            else exportVideo(source,partial,plan,frameRate,state.cancel,state.progress);
+            if(kind==JobKind::Recording)recordDesktop(output.partial(),bounds,width,height,frameRate,state.stop);
+            else exportVideo(source,output.partial(),plan,frameRate,state.cancel,state.progress);
             if(kind!=JobKind::Recording&&state.cancel.load())throw Failure{HRESULT_FROM_WIN32(ERROR_CANCELLED),L"导出已取消"};
-            if(!MoveFileExW(partial.c_str(),target.c_str(),MOVEFILE_WRITE_THROUGH))throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法保存完成的视频"};
+            output.publish(publishOutput);result->published=true;
             if(kind==JobKind::Recording){Decoder decoder(target,frameRate);result->width=decoder.width;result->height=decoder.height;result->duration=static_cast<int32_t>(std::min<LONGLONG>(604800000,decoder.duration/10000));}
             result->success=true;
-        }catch(const Failure &error){result->cancelled=error.code==HRESULT_FROM_WIN32(ERROR_CANCELLED);result->error=description(error);}
+        }catch(const Failure &error){
+            // Recording has stop/finalize, not disposable-export cancellation.
+            // Even ERROR_CANCELLED from a capture backend must show its retained path.
+            result->cancelled=kind!=JobKind::Recording&&error.code==HRESULT_FROM_WIN32(ERROR_CANCELLED);
+            result->error=description(error);
+        }
         catch(const std::exception &){result->error=L"视频处理失败，请检查磁盘空间与文件权限。";}
-        std::error_code ignored;fs::remove(partial,ignored);
+        if(kind==JobKind::Recording&&!result->success){
+            std::error_code statusError;
+            if(fs::is_regular_file(output.retained(),statusError))
+                result->error+=L"\n\n录制文件已保留，完整性尚未验证：\n"+output.retained().wstring();
+            else if(statusError)
+                result->error+=L"\n\n录制文件未被自动清理，请检查输出位置：\n"+output.retained().wstring();
+        }
         JobResult *raw=result.release();if(!PostMessageW(host,doneMessage,0,reinterpret_cast<LPARAM>(raw)))delete raw;
     }); } catch (...) { state.kind=JobKind::None;for(HWND control:state.controls)EnableWindow(control,TRUE);notify();throw; }
 }
@@ -654,6 +697,37 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
                 for(UINT32 y=0;y<240;y++)for(UINT32 x=0;x<320;x++){size_t offset=(static_cast<size_t>(y)*320+x)*4;pixels[offset]=static_cast<BYTE>(y);pixels[offset+1]=static_cast<BYTE>(x);pixels[offset+2]=static_cast<BYTE>(frame*4);pixels[offset+3]=255;}
                 LONGLONG now=static_cast<LONGLONG>(frame)*second/frameRate,next=static_cast<LONGLONG>(frame+1)*second/frameRate;encoder.frame(pixels.data(),now,next-now);
             }encoder.finish();}
+        // Inject an error after real samples were written. The recording error
+        // path must attempt container finalization without masking that error.
+        fs::path interrupted=directory/L"interrupted.mp4",retained;
+        bool captureFailed=false;
+        try {
+            moojicut::media::OutputFile file(interrupted,moojicut::media::OutputKind::Original);
+            retained=file.partial();Encoder encoder(retained,320,240,frameRate);
+            try {
+                std::vector<BYTE> frame(320*240*4,127);
+                for(UINT32 i=0;i<15;i++)encoder.frame(frame.data(),static_cast<LONGLONG>(i)*second/frameRate,second/frameRate);
+                throw Failure{E_ABORT,L"injected capture failure"};
+            }catch(...){encoder.finishAfterFailure();encoder.finishAfterFailure();throw;}
+        }catch(const Failure &error){captureFailed=error.code==E_ABORT;}
+        if(!captureFailed||fs::exists(interrupted)||!fs::is_regular_file(retained))
+            throw Failure{E_FAIL,L"录制错误被覆盖或未完成原片丢失"};
+        {Decoder recovered(retained,frameRate);std::vector<BYTE> frame;LONGLONG t=0,d=0;
+            if(!recovered.next(frame,t,d))throw Failure{E_FAIL,L"故障收尾后原片没有可读取的画面"};}
+        // Exercise the exact Windows no-replace publication used by launchJob.
+        fs::path collision=directory/L"collision.mp4";{std::ofstream file(collision,std::ios::binary);file<<"existing target";}
+        bool renameFailed=false;
+        {
+            moojicut::media::OutputFile file(collision,moojicut::media::OutputKind::Original);
+            retained=file.partial();fs::copy_file(source,retained);
+            try{file.publish(publishOutput);}catch(const Failure &){renameFailed=true;}
+            if(file.published()||file.retained()!=retained)throw Failure{E_FAIL,L"失败的改名被报告为成功"};
+        }
+        if(!renameFailed||fs::file_size(retained)!=fs::file_size(source))throw Failure{E_FAIL,L"改名失败后原片丢失"};
+        {std::ifstream file(collision,std::ios::binary);std::string text((std::istreambuf_iterator<char>(file)),{});
+            if(text!="existing target")throw Failure{E_FAIL,L"改名覆盖了已有文件"};}
+        {Decoder recovered(retained,frameRate);std::vector<BYTE> frame;LONGLONG t=0,d=0;
+            if(!recovered.next(frame,t,d))throw Failure{E_FAIL,L"改名失败后保留的原片无法读取"};}
         session=native_video_open(4000,320,240,0);
         if(!session||!native_video_trim(session,500,3500)||!native_video_cut(session,1000,1500)||!native_video_cut(session,2000,2500)||!native_video_crop(session,20,30,160,100))throw Failure{E_FAIL,L"MoonBit 视频编辑状态测试失败"};
         Plan plan=planFor(session);std::atomic<bool> cancel{false};std::atomic<int> progress{0};exportVideo(source,output,plan,frameRate,cancel,progress);
@@ -684,10 +758,14 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
         DWORD clipboardSequence=GetClipboardSequenceNumber();
         state.kind=JobKind::Confirm;state.cancel.store(false);state.closeAfter=false;
         mc_recording_close();
-        auto completed=std::make_unique<JobResult>();completed->kind=JobKind::Confirm;completed->success=true;completed->path=cancelled;
+        auto completed=std::make_unique<JobResult>();completed->kind=JobKind::Confirm;completed->success=true;completed->published=true;completed->path=cancelled;
         SendMessageW(state.host,doneMessage,0,reinterpret_cast<LPARAM>(completed.release()));
         if(mc_recording_busy()||fs::exists(cancelled)||GetClipboardSequenceNumber()!=clipboardSequence)
             throw Failure{E_FAIL,L"关闭后的完成回调仍然发布了视频"};
+        // A late cancel after failed publication must not delete a foreign path.
+        auto failed=std::make_unique<JobResult>();failed->kind=JobKind::Confirm;failed->path=source;
+        SendMessageW(state.host,doneMessage,0,reinterpret_cast<LPARAM>(failed.release()));
+        if(!fs::is_regular_file(source))throw Failure{E_FAIL,L"取消失败导出误删了未发布的文件"};
         wchar_t ci[16];DWORD ciLength=GetEnvironmentVariableW(L"CI",ci,16);
         if(ciLength&&ciLength<16&&_wcsicmp(ci,L"true")==0){
             HWND clipboardOwner=CreateWindowExW(0,L"STATIC",L"Mooji Cut clipboard test",WS_POPUP,0,0,0,0,nullptr,nullptr,instance,nullptr);

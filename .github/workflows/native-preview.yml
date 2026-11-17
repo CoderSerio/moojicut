@@ -16,12 +16,14 @@ on:
       - native/windows/**
       - native/linux/**
       - native/shared/**
+      - platform/**
       - plugins/**
       - components/**
       - scripts/desktop.py
       - scripts/native_modules.py
       - scripts/check_module_boundaries.py
       - test/build/**
+      - test/native/**
       - scripts/install_moon.py
       - scripts/generate_icons.py
       - assets/icons/**
