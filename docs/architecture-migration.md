@@ -297,4 +297,6 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 - 新增默认关闭的“编号框”内置声明案例。三端通过通用 `dragRect` 交互调用 MoonBit 命令，不为其 ID 新建三套原生按钮分支；共享处理器生成核心已有的矩形与文字，一个命令、一次撤销。取消、过小拖框、陈旧文档版本不提交；多位编号按框内宽高限制字号，JSON 适配拒绝画布外矩形。停用贡献保留已生成图元、导出与历史。
 - 编号框目前复用矩形颜色/粗细/透明度样式库并隐藏形状选择。这是有限模板，不是任意自绘 UI、任意图元或完整属性 Schema。现有六属性原生控件、IME 桥、工具栏布局还有产品逻辑；`shared/ui` 的完整迁移继续保持未完成。用户 ZIP 仍是已有 v1 元信息/文本协议，v2 的效果权限、安装、三端 worker 和像素端口留在 D1。
 
-本批本地验证：MoonBit native/Wasm 各 212 项、构建/归属/文件策略 33 项与 macOS 完整原生回归通过。新增真实工具栏、复合图元 PNG 导出/撤销、配置停用不丢内容与分组末尾拖拽回归；排序边界测试证明修复前失败、修复后通过。Windows/Linux 目标 CI 待本批提交后记录。Windows/Linux 实机输入、DPI、Wayland 和硬件验收仍由用户后续组织，不以本地交叉编译代替。
+本批本地验证：MoonBit native/Wasm 各 212 项、构建/归属/文件策略 33 项与 macOS 完整原生回归通过。新增真实工具栏、复合图元 PNG 导出/撤销、配置停用不丢内容与分组末尾拖拽回归；排序边界测试证明修复前失败、修复后通过。Windows main/capture/pinning 使用 LLVM-MinGW 严格编译，Linux main/capture 使用 Ubuntu 22.04 真实头文件与 Linux target 严格检查；交叉检查不代替下方目标平台运行结果。Windows/Linux 实机输入、DPI、Wayland 和硬件验收仍由用户后续组织，不以本地交叉编译代替。
+
+提交 `2e37903` 已通过 [Native desktop previews #44157505710](https://github.com/CoderSerio/moojicut/actions/runs/44157505710)：Windows 2022/MSVC 和 Ubuntu 22.04/Xvfb 构建、平台 smoke、打包与生成接口检查均成功，包括本批工具启停/排序、复合命令与贴图配置事务回归。代码集中推送一次；此验证记录为文档更新，不另触发构建。尚未发布新包。
