@@ -8,70 +8,77 @@
 
 <p align="center"><strong>Consider it captured.</strong></p>
 
-<p align="center">A simple screenshot and screen recording app, powered by MoonBit. Capture your screen, highlight what matters, and edit recordings with straightforward tools.</p>
+<p align="center">An open-source screenshot and screen recording app built with MoonBit. Annotate screenshots, edit recordings, add plugins, and explore automation designed for AI agents.</p>
 
-<p align="center"><a href="https://coderserio.github.io/moojicut/">Website</a> · <a href="https://github.com/CoderSerio/moojicut/releases/latest">Download Latest</a> · <a href="https://github.com/CoderSerio/moojicut/issues">Report an Issue</a> · <a href="https://github.com/CoderSerio/moojicut">Source Code</a></p>
+<p align="center"><a href="https://coderserio.github.io/moojicut/">Website</a> · <a href="https://github.com/CoderSerio/moojicut/releases/latest">Download Latest</a> · <a href="docs/guide.zh-CN.md">User Guide</a> · <a href="https://github.com/CoderSerio/moojicut/issues">Report an Issue</a></p>
 
-## Download and Get Started
+## Screenshots and Annotations
 
-Current release: **[0.1.0-alpha.20](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.20)**. Mooji Cut is still in alpha, and features differ across platforms.
+Select an area, highlight what matters, and copy the result into a chat, document, or presentation.
 
-| System | Download | Requirements and installation |
+- **Mark the details:** Add rectangles, ellipses, arrows, and text. Adjust colors, line widths, font sizes, and opacity.
+- **Cover parts of an image:** Use solid rectangles, filled ellipses, or mosaic pixelation with adjustable block size.
+- **Keep editing:** Select existing annotations to move or resize them, edit text again, and undo or redo changes.
+- **Keep a reference on screen:** Pin a screenshot as a floating image. Resize it, adjust its opacity, hide it, or let clicks pass through it. Pinned images can appear in your next screenshot, too.
+
+## Screen Recording and Editing
+
+Choose what to record and start after a countdown. Continue in the editor to turn a recording into a walkthrough you can share.
+
+- **Cut the extra footage:** Split clips, trim their boundaries, reorder or delete them, and select gaps to close them.
+- **Find the right moment:** Zoom and pan the timeline, move frame by frame, or jump forward and backward.
+- **Set the pace:** Change clip speed to fit a three-minute task into one minute. Preview speed controls playback separately.
+- **Work with audio:** View waveforms, expand audio tracks, unlink audio from video to move it independently, or mute everything with one click.
+- **Preserve the original:** Preview edits immediately and export the finished video when you save. Undo, redo, and resume editing drafts.
+
+## AI and Automation
+
+**Read text from images.** Use OCR to turn screenshot content into text you can edit and copy, then choose a target language to translate it. Recognition and translation run locally, and you can revise the results before using them.
+
+**Let agents reuse the editing core.** The MoonBit core already provides structured video editing commands, session snapshots, export plans, and recording capability queries. These library-level interfaces form the foundation for programmatic use and automation.
+
+A complete interface for AI agents is being developed with a **CLI-first** approach: discover capabilities, find sessions, submit edits, and query or cancel tasks. Scripts and agents will use the same operation rules as the UI. The standalone CLI is not yet included in release packages. See the [automation design (简体中文)](docs/architecture.md#cli-和-agent) for the interfaces and implementation status.
+
+## Plugins: Put Your Tools in the Toolbar
+
+Enable, disable, and reorder tools in Settings → Plugin Management to suit the way you work. Built-in screenshot tools and imported user tools share one list. New tools are appended, and settings are saved automatically.
+
+**Write MoonBit → compile to Wasm → package as ZIP → import and use.**
+
+- **One plugin, multiple tools:** Declare plugin details and tool entry points in a manifest. Each tool can be enabled, disabled, and reordered separately.
+- **Follow a defined contract:** Implement a fixed entry point, accept host parameters, and return a result. No project-specific SDK is required. Distribute the manifest, Wasm module, and optional icon together.
+- **Use it after import:** Import the ZIP, then run its tools from the screenshot toolbar. A result window displays text and offers a copy action. Installing a plugin does not require rebuilding the app.
+- **Run in a separate process:** Plugins execute in a dedicated worker process. The host validates packages, enforces invocation limits, handles cancellation, and checks results.
+
+The repository includes a working [Capture Info example](plugins/examples/capture-info/README.md): one MoonBit plugin provides two tools, “Capture Info” and “View Dimensions.” Use it as a starting point for your own extension. See the [plugin runtime and protocol guide (简体中文)](plugins/user-runtime/README.md) for details.
+
+User plugins currently accept screenshot metadata and return text. Pixel processing, annotation changes, and recording and video editing extensions are planned around the same plugin system. See the [plugin design (简体中文)](docs/architecture.md#插件机制).
+
+## Downloads and Compatibility
+
+Current release: **[0.1.0-alpha.20](https://github.com/CoderSerio/moojicut/releases/latest)**. The project is still in alpha. The sections above describe the full product feature set; the table below shows what is currently available on each system.
+
+| Platform and download | Requirements | Current features |
 | --- | --- | --- |
-| macOS | [Apple Silicon · ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-macos-arm64.zip) | macOS 26+; unzip and move Mooji Cut to Applications. |
-| Windows | [Intel / AMD x64 · ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-windows-x64.zip) | Windows 10/11; extract all files and run `MoojiCut.exe`. |
-| Linux | [x86_64 · tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-linux-x64.tar.gz) | An Ubuntu 22.04+ compatible environment; install the [system dependencies (简体中文)](docs/guide.zh-CN.md#下载与开始使用), extract the archive, and run `./launch.sh`. |
+| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-macos-arm64.zip) | macOS 26+ | Screenshot annotations, pinned images, OCR and translation, plugin management and import; region, window, and full-screen recording with system audio, plus the timeline editing features described above. |
+| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-windows-x64.zip) | Windows 10/11, Intel / AMD | Screenshot annotations, pinned images, and silent region recording. The existing editor supports trimming the start and end, removing sections, and cropping the frame. |
+| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-linux-x64.tar.gz) | An Ubuntu 22.04+ compatible environment with the [system dependencies (简体中文)](docs/guide.zh-CN.md#下载与开始使用) | Screenshot annotations, pinned images, and silent WebM recording. Select a region on X11 or choose a source through the system portal on Wayland. No video editor is integrated yet. |
 
-You do not need to install MoonBit, Node.js, or Python. SHA256 checksum files accompany the packages. The macOS app is signed with a development certificate but is not yet notarized by Apple. The Windows app is unsigned. Your system may ask for confirmation when you first open either app.
+Windows and Linux do not yet include OCR, translation, user plugins, or the shared timeline editor. Recording supports up to 1920 × 1080 at 15 fps, without audio or pause support. On Wayland, keeping windows on top, positioning, and input depend on the desktop environment. System authorization, multiple displays, and mixed DPI setups still need testing on physical devices.
 
-Installed macOS versions can upgrade through Settings → Updates → Check for Updates. Windows and Linux can check for, download, and verify updates; then quit the old version and manually extract the new package to replace it. See the [usage and build guide (简体中文)](docs/guide.zh-CN.md) for details.
+Scrolling capture is currently disabled. Video editing uses a single recording; importing multiple source files, subtitles, transitions, and zoom-and-pan keyframes are not yet supported. User plugins cannot currently access image pixels, the network, or files, or provide custom interfaces. The CLI and recording and editing plugin extensions are still in development.
 
-## Why Mooji Cut
+The downloaded app does not require MoonBit, Node.js, or Python. SHA256 checksum files accompany the packages. On macOS, unzip the app and move it to Applications; check for and install updates in Settings. On Windows and Linux, download and verify an update, then manually extract it to replace the old version. The macOS app is signed with a development certificate but is not yet notarized by Apple; the Windows app is unsigned. See the [user guide (简体中文)](docs/guide.zh-CN.md) for installation and permissions.
 
-- **Simple by default.** Focus on everyday capture, annotation, and basic editing. Mooji Cut stays in your menu bar or system tray, ready when you need it.
-- **Tools your way.** On macOS, enable, disable, and reorder screenshot tools individually to keep frequent actions within reach.
-- **Processed locally.** Capture and edit on your computer. You choose how to save and share the results.
+## Built with MoonBit
 
-## Capture and Edit
+MoonBit handles shared interactions, image documents, recording state, and video editing rules. Platform adapters provide windowing, input, capture, and media capabilities. User plugins compile to WebAssembly and run in the runtime bundled with the app.
 
-| Task | With Mooji Cut |
-| --- | --- |
-| Explain with a screenshot | Select an area, add arrows, rectangles, ellipses, and text, cover or pixelate parts of the image, then copy the result into a chat or document. |
-| Keep a reference visible | Pin a screenshot on screen and adjust its size and opacity while you work. |
-| Extract text | On macOS, use local OCR and system translation, then edit and copy the results. |
-| Record a walkthrough | Choose what to record and start after a countdown. Continue editing on macOS or Windows; save a WebM file on Linux. |
+- [Build from source (简体中文)](docs/guide.zh-CN.md#从源码构建)
+- [Architecture and implementation plan (简体中文)](docs/architecture.md)
+- [Create your first plugin (简体中文)](plugins/examples/capture-info/README.md)
 
-Undo and redo let you make adjustments as you go.
-
-### Screen Recording and Video Editing
-
-| Platform | Recording | Editing after recording |
-| --- | --- | --- |
-| macOS | Record a region, window, or full screen, with optional system audio; save as MP4 | Split, reorder, and delete clips; close gaps; expand or unlink audio tracks; view audio waveforms; change clip speed; crop, mute, and export. |
-| Windows | Select a region and cancel the countdown if needed; silent MP4, up to 1920 × 1080 at 15 fps | The existing native editor supports trimming the start and end, removing sections, cropping, undo, and redo. |
-| Linux | Select a region on X11 or choose a source through the system recording portal on Wayland; silent WebM, up to 1920 × 1080 at 15 fps | Save the recording file; a video editor is not yet integrated. |
-
-The macOS timeline supports zoom, undo, and redo. Editing and previewing preserve the original recording; saving exports the edited video. Preview speed only changes playback, while clip speed changes the exported duration. Editing currently uses a single recording, without multiple source files, subtitles, transitions, or zoom-and-pan keyframes.
-
-Windows and Linux share MoonBit recording state and countdown rules. Neither currently supports audio recording or pausing. Automated recording and media checks have passed on Windows and Linux X11. Wayland authorization, multiple displays, and mixed DPI setups still need testing on physical devices. Scrolling capture remains disabled by default.
-
-## Tools and Plugins
-
-On macOS, go to Settings → Plugin Management → Screenshot Tools to manage rectangles, arrows, text, solid covers, and pinning. Toggle each tool or select it and use Move Up / Move Down to change its position. Settings are saved automatically. Annotation and user plugin tools appear in the left toolbar group; Pin, Cancel, and Done appear in the right action group.
-
-Use Import Plugin to import a precompiled plugin ZIP. Its tools appear in the same list, where you can enable, disable, and reorder them. After selecting a screenshot area, run a plugin from the screenshot toolbar, view its text result, and click Copy Text when needed. Plugins currently receive only screenshot metadata, such as dimensions and format. They cannot read image pixels, access the network or files, or provide custom interfaces.
-
-**The user plugin host has been verified only on Apple Silicon Macs.** Windows and Linux do not yet integrate user plugins or this management interface. Recording controls and video editing are not yet open to user plugin extensions. See the [usage and build guide (简体中文)](docs/guide.zh-CN.md#插件管理选择工具和导入插件) for import steps and instructions for packaging the example plugin.
-
-## Development and Contributions
-
-Mooji Cut uses **MoonBit** for shared UI, interaction, and editing logic. Platform adapters provide windows, drawing, capture, and media capabilities. Some native product interfaces still need to be migrated.
-
-See the [build instructions (简体中文)](docs/guide.zh-CN.md#从源码构建) to get started.
-
-The [architecture and implementation plan (简体中文)](docs/architecture.md) documents the directory structure, plugin system, platform boundaries, and CLI-first automation. It distinguishes the current implementation from its goals and serves as the reference for future architecture discussions and migration work.
-
-Bug reports, UI improvements, and code contributions are welcome. We'd also love to discuss how plugins could fit into your everyday workflow.
+Bug reports, interaction improvements, plugins, and code contributions are welcome.
 
 ## License
 

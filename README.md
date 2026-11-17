@@ -8,70 +8,77 @@
 
 <p align="center"><strong>这一幕，我截下了。</strong></p>
 
-<p align="center">简洁的截图与录屏工具，MoonBit 驱动。截取画面、标出重点、剪辑录屏，让日常操作保持直接。</p>
+<p align="center">用 MoonBit 构建的开源截图与录屏工具。截图标注、视频剪辑、插件扩展，以及面向 AI Agent 的自动化设计。</p>
 
-<p align="center"><a href="https://coderserio.github.io/moojicut/">官网</a> · <a href="https://github.com/CoderSerio/moojicut/releases/latest">下载最新版</a> · <a href="https://github.com/CoderSerio/moojicut/issues">反馈问题</a> · <a href="https://github.com/CoderSerio/moojicut">查看源码</a></p>
+<p align="center"><a href="https://coderserio.github.io/moojicut/">官网</a> · <a href="https://github.com/CoderSerio/moojicut/releases/latest">下载最新版</a> · <a href="docs/guide.zh-CN.md">使用指南</a> · <a href="https://github.com/CoderSerio/moojicut/issues">反馈问题</a></p>
 
-## 下载与开始使用
+## 截图与标注
 
-当前版本：**[0.1.0-alpha.20](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.20)**。Mooji Cut 仍处于 alpha 阶段，三端功能尚未完全对齐。
+框选画面，直接标出重点，完成后复制到聊天、文档或演示稿。
 
-| 系统 | 下载 | 运行要求与安装 |
+- **画出重点**：矩形、椭圆、箭头和文字，调整颜色、线宽、字号与不透明度。
+- **处理遮挡**：实心矩形、椭圆覆盖与马赛克，可调整马赛克颗粒大小。
+- **继续修改**：选中已有标注，移动、缩放、重新编辑文字，支持撤销与重做。
+- **贴在屏幕上**：把截图固定为浮动参考图，缩放、调透明度、隐藏或启用鼠标穿透；再次截图也能把贴图截进去。
+
+## 录屏与剪辑
+
+选好录制范围，倒计时后开始。录完直接进入编辑，把一次操作整理成能分享的演示。
+
+- **剪掉多余**：切分片段、修剪边界、调整顺序、删除片段，选中空隙即可合拢。
+- **看清细节**：缩放和移动时间轴，逐帧定位，快速前进或后退。
+- **调整节奏**：设置片段实际倍率，把三分钟的操作压缩成一分钟；预览倍率单独控制观看速度。
+- **处理声音**：查看音频波形、展开音轨、解除音视频关联并独立调整位置，也可以一键静音。
+- **保留原片**：剪辑即时预览，保存时导出成片；支持撤销、重做和继续编辑草稿。
+
+## AI 与自动化
+
+**识别画面中的文字。** 对截图进行 OCR，把图片里的内容变成可编辑、可复制的文本；继续选择目标语言即可翻译。识别与翻译在本机处理，结果可以修改后再使用。
+
+**让 Agent 复用编辑能力。** MoonBit 核心已提供结构化的视频编辑命令、会话快照、导出计划与录制能力查询接口，为代码调用和自动化提供基础。
+
+面向 AI Agent 的完整操作入口正在按 **CLI first** 推进：发现可用功能、定位会话、提交编辑、查询或取消任务，让脚本和 Agent 使用与界面一致的操作规则。独立 CLI 尚未随安装包发布；接口与实施进度见[自动化设计](docs/architecture.md#cli-和-agent)。
+
+## 插件：把常用能力放进工具栏
+
+在「设置 → 插件管理」中启用、停用和排列工具，让工具栏符合自己的工作习惯。内置截图工具和导入的用户工具在同一个列表中管理，新增工具默认追加，设置会自动保存。
+
+**编写 MoonBit → 编译为 Wasm → 打包 ZIP → 导入使用。**
+
+- **一个插件，多个工具**：通过清单声明插件信息和工具入口，每个工具可以分别开关、排序。
+- **按约定扩展**：实现固定入口，接收宿主参数并返回结果，无需依赖项目私有 SDK。清单、Wasm 和可选图标一起分发。
+- **即装即用**：导入 ZIP 后从截图工具栏调用，结果窗口展示并支持复制文本；安装插件无需重新编译应用。
+- **独立执行**：插件运行在单独的 worker 进程中，宿主负责包校验、调用限额、取消与结果检查。
+
+仓库提供可运行的 [Capture Info 示例](plugins/examples/capture-info/README.md)：一个 MoonBit 插件提供「截图信息」和「查看尺寸」两个工具。可以从它开始制作自己的扩展，详见[插件运行与协议说明](plugins/user-runtime/README.md)。
+
+目前用户插件支持截图元信息输入和文本输出。像素处理、标注写入，以及录屏和视频编辑扩展将继续沿统一插件机制推进，详见[插件设计](docs/architecture.md#插件机制)。
+
+## 下载与兼容性
+
+当前版本：**[0.1.0-alpha.20](https://github.com/CoderSerio/moojicut/releases/latest)**。项目仍在 alpha 阶段，各系统的已交付能力如下；上文介绍完整产品功能，具体可用范围以此表为准。
+
+| 平台与下载 | 运行要求 | 当前功能范围 |
 | --- | --- | --- |
-| macOS | [Apple Silicon · ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-macos-arm64.zip) | macOS 26+；解压后将 Mooji Cut 放入「应用程序」。 |
-| Windows | [Intel / AMD x64 · ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-windows-x64.zip) | Windows 10/11；解压全部文件，运行 `MoojiCut.exe`。 |
-| Linux | [x86_64 · tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-linux-x64.tar.gz) | Ubuntu 22.04+ 兼容环境；安装[系统依赖](docs/guide.zh-CN.md#下载与开始使用)，解压后运行 `./launch.sh`。 |
+| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-macos-arm64.zip) | macOS 26+ | 截图标注、贴图、OCR/翻译、插件管理与导入；区域/窗口/整屏录制、系统声音及上述时间线编辑。 |
+| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-windows-x64.zip) | Windows 10/11，Intel / AMD | 截图标注、贴图、区域静音录屏；现有编辑器支持修剪首尾、删除片段和裁画面。 |
+| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-linux-x64.tar.gz) | Ubuntu 22.04+ 兼容环境及[系统依赖](docs/guide.zh-CN.md#下载与开始使用) | 截图标注、贴图、静音 WebM 录屏；X11 自由框选，Wayland 通过系统门户选源。尚无录后编辑器。 |
 
-无需安装 MoonBit、Node.js 或 Python。安装包附带 SHA256 校验文件。macOS 包已使用开发证书签名，尚未完成 Apple 公证；Windows 包尚未签名，首次打开可能出现系统确认提示。
+Windows / Linux 暂未接入 OCR/翻译、用户插件或共享时间线编辑器；录屏最高 1920 × 1080 / 15 fps，暂不支持录制声音或暂停。Wayland 的置顶、定位与输入受桌面环境约束；系统授权、多显示器和混合 DPI 仍待实机验收。
 
-已安装的 macOS 版本可在「设置 → 更新 → 检查更新」中升级。Windows / Linux 可检查、下载并校验更新，之后退出旧版本，手动解压换装。详细操作见[使用与构建指南](docs/guide.zh-CN.md)。
+滚动截图入口暂时关闭。视频编辑目前使用单一录屏，暂未支持导入多个素材、字幕、转场或缩放聚焦关键帧。当前用户插件不开放图像像素、网络、文件或自定义界面能力；CLI 和录屏/剪辑插件扩展仍在开发中。
 
-## 为什么选择 Mooji Cut
+下载的应用无需安装 MoonBit、Node.js 或 Python，安装包附带 SHA256 校验文件。macOS 解压后移入「应用程序」，可在设置中检查并安装更新；Windows / Linux 下载校验后需手动解压换装。macOS 包使用开发证书签名，尚未 Apple 公证；Windows 包尚未签名。安装步骤与权限设置见[使用指南](docs/guide.zh-CN.md)。
 
-- **简洁优先。** 围绕截图、标注和基础剪辑，做好每天都会用到的操作。平时留在菜单栏或托盘，需要时随手唤起。
-- **工具按需调整。** macOS 可独立启用、停用和排列截图工具，让常用操作更顺手。
-- **本地完成。** 截图、录屏与编辑在本机进行，处理后的内容由你决定如何保存和分享。
+## 用 MoonBit 构建
 
-## 捕捉与编辑
+MoonBit 承载共享交互、图像文档、录制状态和视频编辑规则，平台适配层提供窗口、输入、采集与媒体能力。用户插件编译为 WebAssembly，在应用自带的运行时中执行。
 
-| 场景 | 用 Mooji Cut |
-| --- | --- |
-| 截图说明 | 框选画面，用箭头、矩形、椭圆和文字标出重点，通过实心覆盖或马赛克处理画面，复制到聊天或文档。 |
-| 贴图参考 | 将截图固定在屏幕上，调整大小和透明度，方便对照与参考。 |
-| 提取文字 | macOS 支持本机 OCR 与系统翻译，结果可编辑并复制。 |
-| 录屏演示 | 选取录制范围，倒计时后开始录制；macOS / Windows 可继续剪辑，Linux 保存 WebM 文件。 |
+- [源码构建](docs/guide.zh-CN.md#从源码构建)
+- [架构与实施规划](docs/architecture.md)
+- [制作第一个插件](plugins/examples/capture-info/README.md)
 
-编辑支持撤销与重做，可以边试边调整。
-
-### 录屏与视频编辑
-
-| 平台 | 录屏 | 录后编辑 |
-| --- | --- | --- |
-| macOS | 区域、窗口或整屏，可选系统声音，输出 MP4 | 片段切分、调序、删除与合拢空隙，音轨展开/解除关联、音频波形、片段变速、裁画面、静音和导出。 |
-| Windows | 自由框选、可取消倒计时；静音 MP4，最高 1920 × 1080 / 15 fps | 原有原生编辑器：修剪首尾、删除片段、裁画面、撤销与重做。 |
-| Linux | X11 自由框选；Wayland 使用系统录屏门户选源；静音 WebM，最高 1920 × 1080 / 15 fps | 保存录制文件，尚未接入视频编辑器。 |
-
-macOS 时间线支持缩放与撤销/重做，编辑预览保留原片，保存时才导出成片。预览倍率只改变观看速度，片段倍率会改变导出时长。当前围绕单一录屏编辑，尚未支持导入多个素材、字幕、转场或缩放聚焦关键帧。
-
-Windows / Linux 的录制流程共用 MoonBit 状态与倒计时规则，暂不支持音频录制或暂停。Windows 与 Linux X11 的自动录制和媒体检查已通过；Wayland 系统授权、多显示器和混合 DPI 仍需实机验收。滚动截图入口继续默认关闭。
-
-## 工具与插件
-
-macOS 可在「设置 → 插件管理 → 截图工具」中管理矩形、箭头、文字、遮挡和贴图。勾选启用，选中一项后用「上移」「下移」调整顺序，设置自动保存。标注与用户工具排列在左侧功能组；贴图、取消和完成位于右侧操作组。
-
-点击「导入插件…」可导入预编译的插件 ZIP，新增工具也可在同一列表中启停和排序。选好截图区域后，从截图工具栏运行插件，在结果窗口查看文本，需要时点击「复制文本」。当前插件只接收截图尺寸、格式等信息，不读取图像像素，不支持网络访问、文件访问或自定义界面。
-
-**用户插件宿主目前仅在 macOS Apple Silicon 上验证。** Windows / Linux 尚未接入用户插件与此管理界面，录制控制和视频编辑也尚未开放用户插件扩展。导入步骤与示例打包方法见[使用与构建指南](docs/guide.zh-CN.md#插件管理选择工具和导入插件)。
-
-## 开发与贡献
-
-Mooji Cut 使用 **MoonBit** 实现共享界面、交互与编辑核心，平台适配层提供窗口、绘图、采集和媒体能力；目前仍有原生产品界面需要迁移。
-
-开始开发前，请参考[源码构建说明](docs/guide.zh-CN.md#从源码构建)。
-
-目录、插件机制、跨平台边界和 CLI 优先的自动化方案统一记录在[架构与实施规划](docs/architecture.md)。文档区分当前实现与目标，后续架构讨论和迁移以此为依据。
-
-欢迎提交问题、改进交互、贡献代码，也欢迎一起讨论插件应该怎样融入日常使用。
+欢迎提交问题、改进交互、开发插件或贡献代码。
 
 ## 许可
 
