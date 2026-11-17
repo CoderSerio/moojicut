@@ -281,4 +281,6 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 
 剩余主线仍包括：共享截图工具栏/属性/输入与贡献描述、三端用户插件新契约和宿主、独立 CLI/IPC、Windows/Linux v2 视频编辑与媒体端口、OCR/翻译、音频/暂停及完整运行时能力。Linux 真实 Wayland 授权、混合 DPI、硬件音视频与用户设备体验由后续实机验收覆盖。
 
-本批本地验证：构建/归属/文件策略 33 项、MoonBit native 197 项及 macOS 完整原生回归通过；包括实际 AVFoundation 编辑/导出、插件 worker 与 Vision OCR。ScreenCaptureKit 回执乱序使用故障 fixture，Apple Translation fixture 不触发真实模型下载。Windows 全部 9 个生产单元严格交叉编译为 AMD64 COFF；这不代替 MSVC 链接/运行。Linux X11 真按键、私有 D-Bus portal fixture 与目标打包验证待本批 CI；真实 compositor 授权留实机。
+本批本地验证：构建/归属/文件策略 33 项、MoonBit native 197 项及 macOS 完整原生回归通过；包括实际 AVFoundation 编辑/导出、插件 worker 与 Vision OCR。ScreenCaptureKit 回执乱序使用故障 fixture，Apple Translation fixture 不触发真实模型下载。Windows 全部 9 个生产单元严格交叉编译为 AMD64 COFF；这不代替 MSVC 链接/运行。Linux X11 真按键、私有 D-Bus portal fixture、目标编译与打包已经通过本批 CI；真实 compositor 授权留实机。
+
+提交 `e1424e0` 已通过 [Native desktop previews #44150074776](https://github.com/CoderSerio/moojicut/actions/runs/44150074776)：Windows 2022/MSVC 与 Ubuntu 22.04/Xvfb 两项均成功，包含构建、核心/平台回归、打包及生成接口一致性。此批合并推送一次，尚未发布新版本。CI 成功不关闭上文实机验收和剩余能力工作包。
