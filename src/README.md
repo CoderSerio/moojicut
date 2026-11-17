@@ -1,77 +1,73 @@
 # MoonBit 核心代码
 
+本页记录当前源码与 ABI。目标目录、插件边界和实施顺序以[架构与实施规划](../docs/architecture.md)为准：按功能组织 core/ui/extensions，第一阶段仅提供 CLI 自动化入口，MCP 后置。截图与录屏核心已完成第一批目录迁移，其他包仍在逐步归位。Alpha 用户插件不要求兼容旧 v1，新协议实施时直接替换，不增加兼容层。
+
 共享业务逻辑优先用 MoonBit 实现。复杂编辑组件的目标是由同一套 MoonBit 代码负责布局、外观描述和交互，平台宿主负责系统 API、底层输入/渲染接入和媒体执行。
 目前核心编译为原生静态库，由 macOS、Windows 和 Linux 宿主链接；不是通过 Wasm 运行。
 
 macOS 正式视频编辑器已采用共享 MoonBit UI，应用其他界面仍有平台实现。Windows 保留旧编辑窗，Linux 尚无视频编辑链；共享核心不代表三端共享 UI 已完成。视频编辑器按[共享编辑组件约定](../docs/shared-editor-ui.zh-CN.md)推进，不继续分别扩展三套复杂界面。
 
-正式 macOS 编辑窗与独立样例共用同一套组件，已贯通单素材切分、多段按钮调序/拼接、修剪、删除与撤销、实际片段加速、关联音频解除和独立偏移，以及真实导出；时间轴可缩放/横移，空隙可选中删除合拢。全片静音与画面裁剪进入 v2 文档、预览及导出，裁剪候选在应用前仅为 UI 暂态。观看用的预览倍率与改变成片的片段倍率分开。v2 核心还提供目标时长、版本检查、批量事务和请求重试去重；多文件素材导入、字幕/效果、视频 MCP/CLI 入口及 Windows/Linux 媒体宿主仍按[视频编辑器推进计划](../docs/video-editor-roadmap.zh-CN.md)推进。
+正式 macOS 编辑窗与独立样例共用同一套组件，已贯通单素材切分、多段按钮调序/拼接、修剪、删除与撤销、实际片段加速、关联音频解除和独立偏移，以及真实导出；时间轴可缩放/横移，空隙可选中删除合拢。全片静音与画面裁剪进入 v2 文档、预览及导出，裁剪候选在应用前仅为 UI 暂态。观看用的预览倍率与改变成片的片段倍率分开。v2 核心还提供目标时长、版本检查、批量事务和请求重试去重；多文件素材导入、字幕/效果、视频 CLI 入口及 Windows/Linux 媒体宿主仍按[视频编辑器推进计划](../docs/video-editor-roadmap.zh-CN.md)推进。
 
 macOS 应用接入层负责原子保存 `edit-v2.json`，保留原片与旧 `edit.json`。恢复时严格校验已有 v2，仅不存在时才读取旧版并在内存迁移；无效的新草稿不会被旧版覆盖。最近草稿恢复跳过无效候选，不改写文件。保存失败时保留内存状态并拒绝关闭、退出和导出，允许修复后重试。这些路径有隔离媒体与文件回归，不代表人工录屏或更新验收已经完成。
 
-## 目录与边界
+## 当前目录与边界
 
 ```text
 src/
-├── moon.pkg                  # foreign_library：原生静态库入口
-├── api_desktop.mbt            # 快捷键 C ABI / MoonBit 兼容入口
-├── api_editor_style.mbt       # 编辑样式兼容入口
-├── api_image.mbt              # 图像与图像会话兼容入口
-├── api_selection.mbt         # 三平台共享选区几何 C ABI
-├── api_pin.mbt               # 三平台贴图数值和可见性规则 C ABI
-├── api_updates.mbt           # GitHub 发布版本与平台资产选择 C ABI
-├── api_feature_runtime.mbt   # 内置功能启停规则 C ABI
-├── api_tool_registry.mbt     # 内置工具目录、显示开关与排序 C ABI
-├── api_video.mbt              # 视频、剪辑计划与录制规则兼容入口
-├── api_video_project.mbt      # v2 多片段文档/事务 C ABI，保留旧接口
-├── api_video_ui.mbt           # 共享编辑组件的批量绘制/事件接口
-├── preview.mbt               # 原生程序启动时的跨模块自检
-├── preview_wbtest.mbt
-├── pkg.generated.mbti        # 保持兼容的根包公开接口
+├── moon.pkg                  # native foreign_library 根入口
+├── api_*.mbt                 # 宿主 C ABI，薄转发
+├── preview.mbt               # 原生启动自检
+├── pkg.generated.mbti
 └── internal/
-    ├── desktop/              # 平台无关的快捷键规则
-    ├── pin/                  # 三平台贴图缩放、透明度和显隐恢复规则
-    ├── editor_style/         # 属性范围、默认值、每个编辑器的样式状态
-    ├── image/                # 图像文档、标注、裁剪、历史与会话
-    ├── selection/            # 选区/标注的数值几何，保留 macOS 基准
-    ├── updates/              # 版本比较、渠道与平台安装包筛选
-    ├── feature_runtime/      # 启用、停用中、已停用状态与调用门控
-    ├── tool_registry/        # 稳定工具 ID、版本化布局、启用与排序校验
-    ├── video/                # 视频文档、时间线、导出配置、录制规则与会话
-    ├── video_project/        # v2 片段、链接、恒速、版本事务与媒体计划
-    ├── video_ui/             # 正式 macOS 编辑窗与样例共用：布局、主题、命中、手势和语义
-    ├── protocol/             # 共享 JSON 校验、数值边界与错误响应
-    └── test_support/         # 测试使用的 JSON 断言与结果读取
+    ├── features/
+    │   ├── capture/
+    │   │   ├── session.mbt          # 图片文档与手势协调，句柄保持私有
+    │   │   ├── style_session.mbt    # 每个编辑器的工具样式状态
+    │   │   ├── core/               # 图片文档、命令、历史、命中与值域
+    │   │   ├── ui/                 # 形状手势、工具栏定位与属性显隐
+    │   │   └── extensions/annotations/ # 内置工具属性与创建默认值
+    │   └── recording/core/         # 独立录屏状态、参数与能力策略
+    ├── desktop/              # 快捷键规则，后续迁到 app
+    ├── pin/                  # 贴图数值与可见性规则，后续迁到 capture 扩展
+    ├── selection/            # 共用选区几何，后续迁到 shared
+    ├── updates/              # 版本/渠道/平台安装包筛选
+    ├── feature_runtime/      # 现有启停门控，后续合入插件运行时
+    ├── tool_registry/        # 现有目录、开关、排序，动态贡献待泛化
+    ├── plugin_protocol/      # 当前用户插件 v1，允许直接被新协议替换
+    ├── video/                # v1 视频兼容、共用几何，已移出录屏核心
+    ├── video_project/        # v2 片段、链接、恒速、事务、RenderPlan
+    ├── video_ui/             # 共享编辑器 UI，后续归 video_editor/ui
+    ├── protocol/             # 共享 JSON 校验和错误
+    └── test_support/         # 仅测试依赖
 ```
 
 各包通过自己的 `moon.pkg` 声明依赖，并提交生成的接口文件；业务测试与实现放在同一个包中。
 MoonBit 以目录为包边界；`internal` 下的包仅供本模块使用，跨包依赖仍须显式导入。
 
-视频沿用截图的分层：`internal/image` 对应新 `internal/video_project` 文档核心，旧 `internal/video` 保留录制、v1 兼容和共用几何；复杂组件统一在 `internal/video_ui`，播放条、时间线和属性面板作为包内模块；`plugins/feature/video_editor` 做应用和媒体接线，`components/shared_canvas` 做通用绘制/输入适配。`plugins/system/builtins.json` 描述原生装配依赖，不代表用户 Wasm 插件接口；当前 Windows 编辑窗仍在 `recording.cpp`，Linux 视频媒体链尚缺。详见[实际目录与目标职责](../docs/shared-editor-ui.zh-CN.md#沿用截图的目录分层)。
+截图按 `features/capture` 的 core/ui/extensions 与根会话组织，录屏 core 已独立。视频文档和界面当前仍在 `video_project`、`video_ui`，旧 `video` 保留视频 v1 兼容。`plugins/feature/video_editor` 与 `components/shared_canvas` 仍是迁移前的原生接线路径；构建清单不等于用户插件机制。后续归属见[迁移映射与顺序](../docs/architecture.md#迁移映射与顺序)。
 
 根包保留现有 `#export_name` 名称和参数类型，`api_*.mbt` 只做转发。
 业务规则和会话状态保留在内部包中，原生宿主链接同一个根包静态库。
 
 本轮进一步共享了三平台标注命中和箭头翼几何、贴图数值与恢复规则、平台录屏配置，以及 macOS 快捷键偏好规则和录屏生命周期。相关宿主实际调用新增 C ABI，原生层保留窗口、键盘布局、系统权限、媒体资源和文件操作。完整交互与边界见[截图编辑与录屏体验](../docs/interaction-design.zh-CN.md)。
 
-依赖方向如下：
+当前主要依赖如下：
 
 ```text
-根包兼容入口 / 启动自检
-    ├── desktop
-    ├── pin
-    ├── editor_style
-    ├── image ──→ editor_style、protocol、selection
-    ├── video ──→ protocol
-    ├── video_project ──→ video（v1迁移）、protocol
-    ├── video_ui ──→ video、protocol
-    ├── selection
-    ├── updates
-    ├── feature_runtime
-    └── tool_registry ──→ protocol
-
-image / video 的白盒测试 ──→ test_support（仅测试导入）
+根 ABI
+  ├─ capture 根会话 ──→ capture/core、capture/ui、annotations
+  ├─ capture/ui ──→ capture/core、annotations、protocol
+  ├─ annotations ──→ capture/core
+  ├─ capture/core ──→ protocol、selection
+  ├─ recording/core ──→ protocol
+  ├─ video_project ──→ video（草稿迁移）、protocol
+  └─ tool_registry ──→ plugin_protocol、protocol
 ```
+
+截图 core 不再依赖 UI；会话表和手势状态仍然私有。样式持久字段的校验在 core，工具默认值在 annotations，属性显隐在 ui。当前内置工具还是静态接线，通用动态贡献协议尚未实施。
+
+构建前运行 `python3 scripts/check_module_boundaries.py`。规则同时识别新目录和未迁移的旧包，防止 core→UI、shared→功能、通用插件运行时→具体功能以及内部包→CLI/根入口的反向依赖。
 
 图像文档与样式控件使用同一份样式规则。图像、视频会话的原生参数转换留在各自业务包，
 可以直接调用包内私有实现；不为适配或测试额外公开内部状态。

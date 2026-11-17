@@ -145,13 +145,13 @@ pub fn event(request : String) -> String {
         let opacity = number(fields, "opacity")
         let color = text(fields, "color")
         let shape = if fields.contains("shape") { @protocol.integer_field(fields, "shape", 0, 2).to_int() } else { 0 }
-        let block = if fields.contains("blockSize") { number(fields, "blockSize") } else { @style.editor_style_default(5) }
-        if (shape != 0 && shape >= @style.editor_style_shape_count(kind)) ||
-          !@style.editor_style_value_valid(5, block) {
+        let block = if fields.contains("blockSize") { number(fields, "blockSize") } else { @annotation_tools.editor_style_default(5) }
+        if (shape != 0 && shape >= @annotation_tools.editor_style_shape_count(kind)) ||
+          !@image.editor_style_value_valid(5, block) {
           raise InputError("invalid_style", "Invalid screenshot shape or mosaic size")
         }
-        if !@style.editor_style_value_valid(2, stroke) ||
-          !@style.editor_style_value_valid(1, opacity) ||
+        if !@image.editor_style_value_valid(2, stroke) ||
+          !@image.editor_style_value_valid(1, opacity) ||
           color.length() != 7 ||
           !color.has_prefix("#") {
           raise InputError("invalid_style", "Invalid screenshot tool style")

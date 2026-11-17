@@ -74,6 +74,7 @@ class DesktopBuild:
         self.moon_command("test", "--target", "native", "--release", "--deny-warn")
 
     def build(self):
+        self.run(sys.executable, ROOT / "scripts/check_module_boundaries.py")
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check")
         sources = native_sources(self.system)
         output = self.moon_command("build", "--target", "native", "--release", "--deny-warn", "--output-json")

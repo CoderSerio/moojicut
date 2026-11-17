@@ -1,18 +1,14 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "moojicut/core/internal/image"
+package "moojicut/core/internal/features/capture"
 
 // Values
-pub fn crop_rect(String) -> String
+pub fn editor_style_create() -> Int32
 
-pub fn image_apply(String) -> String
+pub fn editor_style_dispose(Int32) -> Unit
 
-pub fn image_arrowhead_value(Double, Double, Double, Double, Double, Int32) -> Double
+pub fn editor_style_get(Int32, Int32, Int32) -> Double
 
-pub fn image_create(String) -> String
-
-pub fn image_finalize(String) -> String
-
-pub fn image_selection(String) -> String
+pub fn editor_style_set(Int32, Int32, Int32, Double) -> Int32
 
 pub fn image_session_add(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 

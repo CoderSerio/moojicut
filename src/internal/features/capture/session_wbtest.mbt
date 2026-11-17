@@ -207,7 +207,7 @@ test "typed and JSON hit queries share geometry, paint order and read-only histo
       for text_only in [0, 1] {
         let hit = image_session_hit(id, x, y, 4, text_only)
         let expected = if hit < 0 { Json::null() } else { native_image_annotation(id, hit).unwrap()["id"] }
-        let result = @test_support.model_test_result(image_selection(Json::object({
+        let result = @test_support.model_test_result(@image.image_selection(Json::object({
           "action": Json("hit"), "annotations": Json::array(annotations), "x": Json(x), "y": Json(y),
           "tolerance": Json(4), "textOnly": Json(text_only == 1),
         }).stringify()))

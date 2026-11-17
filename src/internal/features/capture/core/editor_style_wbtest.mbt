@@ -14,7 +14,7 @@ test "document style validation shares domains while preserving legacy defaults 
   assert_eq(@test_support.model_test_field(saved, "fontSize"), Json(31.25))
   for (property, key) in [(1, "opacity"), (2, "stroke"), (3, "fontSize")] {
     let previous = annotation[key]
-    for value in [@style.editor_style_min(property) - 0.1, @style.editor_style_max(property) + 0.1] {
+    for value in [editor_style_min(property) - 0.1, editor_style_max(property) + 0.1] {
       annotation[key] = Json(value)
       @test_support.expect_error(image_apply(Json::object({ "document": base, "command": make_command() }).stringify()), "invalid_annotation")
     }

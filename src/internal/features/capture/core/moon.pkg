@@ -1,10 +1,9 @@
 import {
-  "moojicut/core/internal/capture_ui" @capture_ui,
   "moojicut/core/internal/protocol" @protocol,
-  "moojicut/core/internal/editor_style" @style,
   "moojicut/core/internal/selection" @selection,
   "moonbitlang/core/math",
   "moonbitlang/core/json",
+  "moonbitlang/core/double",
 }
 
 import {

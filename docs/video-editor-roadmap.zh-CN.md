@@ -3,7 +3,7 @@
 2026-11-17 增补：音频片段接入真实源音频包络，MoonBit 负责裁剪/变速/偏移/缩放后的
 波形映射与绘制；macOS 后台解码，关闭取消，失败不阻塞剪辑。当前是单素材、最多
 16,384 个均匀峰值的概览，不是频谱或无限缩放精度。三端复用边界和迁移次序统一以
-[共享架构与迁移计划](architecture.md) 为准。
+[架构与实施规划](architecture.md) 为准。自动化第一阶段只提供 CLI，MCP 暂不实现；本文保留视频编辑语义与范围。
 
 2026-11-16 更新。目标是提取专业编辑器最常用的剪辑能力，服务录屏讲解和科技内容制作。复杂界面、编辑规则和 Agent 操作共用 MoonBit 实现；底层窗口、绘图、媒体处理和语音识别可以复用库。
 
@@ -23,8 +23,8 @@
 - 音画默认联动；解除后可以独立移动、修剪、变速或删除音频。普通删除片段保留间隙；选中间隙按 Delete/Backspace 或点删除，后片合拢；Shift+Delete/Backspace 可一步删除片段并合拢。独立音频操作不挤动视频；音频跨越待删间隙时原子拒绝，不暗中切掉声音。变速/修剪仍默认调整后片，尚无相应 UI 策略开关。
 - 时间轴视口是 UI 暂态，缩放和平移不修改草稿或撤销历史。Command/Ctrl 加 `+` / `-` 以可见播放头为锚点缩放，否则以视口中心为锚点；加 `0` 适应全片。Command/Ctrl 加滚轮以指针为锚点缩放，普通滚轮横移。工具栏不显示缩放按钮，自动化 `project-zoom-*` 动作保持可用。裁剪不再缩短时间轴视口，保留恢复源片段的空间。最小视窗为三帧；左右方向键按一帧定位，Shift 为十帧。放大后裁剪把手只出现在真实且可见的片段边界。
 - 全片静音与画面裁剪写入 v2 文档和媒体计划，同时作用于预览与导出，可撤销并随草稿恢复。画面裁剪先在共享画布上调整候选范围，应用时提交一次；取消不改文档，重置恢复完整画面。它不是逐片段关键帧裁剪或聚焦效果。
-- 多段调序目前通过前移/后移按钮，尚无自由拖动重排；无重新关联、波形、缩略图缓存、字幕和转场。
-- 原生 ABI 已提供同一套带 revision、批量事务和 requestId 的编辑命令，但正式视频 MCP/CLI 服务尚未接入。macOS 正式入口已接入 v2 原子保存、恢复和退出保护；自动回归使用生成素材验证，不代替人工录屏与更新验收。
+- 多段调序目前通过前移/后移按钮，尚无自由拖动重排；无重新关联、缩略图缓存、字幕和转场；波形已按上方 2026-11-17 更新接入 macOS，其他平台待补。
+- 原生 ABI 已提供同一套带 revision、批量事务和 requestId 的编辑命令，但正式视频 CLI 与本地应用服务尚未接入。macOS 正式入口已接入 v2 原子保存、恢复和退出保护；自动回归使用生成素材验证，不代替人工录屏与更新验收。
 - Windows 仍用旧录制/编辑宿主，Linux 尚无视频媒体链；新共享界面的对应宿主未接入，native/wasm 的核心测试不代表三个系统均已实装。
 
 旧 `src/internal/video` 继续提供 v1 API。`src/internal/video_project` 承载 v2 文档与命令。正式编辑器优先严格校验 `edit-v2.json`，只有该文件不存在时才读取并迁移旧 `edit.json`；已有 v2 损坏或不可读时不退回旧版。新编辑写入独立 v2 文件，保留原片与旧文件。最近草稿恢复跳过无效候选且不改写它们；保存失败保留内存编辑，阻止关闭、退出与导出并允许重试。`MCVideoMedia` 同时接受 v1/v2 计划，不再要求 v2 区间按原片顺序排列。以下章节保留完整目标设计，其中字幕、效果、多素材等仍是后续计划。
@@ -94,7 +94,7 @@ v1→v2 迁移按现有保留区间生成有序片段，保留静音和裁画面
 ```mermaid
 flowchart TD
     UI[共享 MoonBit UI：轨道 / 波形布局 / 手势 / 属性] --> Commands[共享命令与事务]
-    Agent[CLI / MCP / Agent] --> Commands
+    Agent[Agent / CLI] --> Commands
     Commands --> Document[MoonBit 项目文档与撤销历史]
     Document --> UI
     Document --> Plan[统一 RenderPlan]
@@ -109,7 +109,7 @@ flowchart TD
 
 共享范围包括片段编辑、链接、吸附规则、缓动、字幕时间映射、布局、绘制描述和交互。平台后端只接窗口、原始输入、绘制表面、权限、设备与编码器；不会出现三套 timeline、三套字幕布局或三套关键帧曲线。
 
-目录分工沿用截图实际已有的组件、功能接入与共享核心层次，但不复制截图遗留的三端原生界面。`src/internal/video_ui` 承载复杂 UI，`src/internal/video_project` 承载 v2 文档与 RenderPlan，`src/internal/video` 保留 v1 兼容；macOS 的 `plugins/feature/video_editor` 已拆为应用接线与媒体适配，`components/shared_canvas` 解释通用绘制/输入。播放条、时间线和属性面板目前是 `video_ui` 包内职责，不虚构已经存在的独立包。完整现状与目标映射见[共享编辑组件的目录约定](shared-editor-ui.zh-CN.md#沿用截图的目录分层)。
+以下路径描述迁移前接线；目标按功能组织 core/ui/extensions，详见[架构与实施规划](architecture.md#目标目录)。不复制截图遗留的三端原生界面。`src/internal/video_ui` 承载复杂 UI，`src/internal/video_project` 承载 v2 文档与 RenderPlan，`src/internal/video` 保留 v1 兼容；macOS 的 `plugins/feature/video_editor` 已拆为应用接线与媒体适配，`components/shared_canvas` 解释通用绘制/输入。播放条、时间线和属性面板目前是 `video_ui` 包内职责，不虚构已经存在的独立包。完整现状与目标映射见[共享编辑组件的目录约定](shared-editor-ui.zh-CN.md#沿用截图的目录分层)。
 
 FFmpeg 可执行裁剪、拼接、滤镜和输出；项目规则仍由 MoonBit 产生。RenderPlan 是结构化数据，不是让 Agent 或 UI 拼接 shell 命令。后端将其编译成受控参数/滤镜图。
 
@@ -140,9 +140,9 @@ FFmpeg 已有 `trim/atrim/concat`、字幕滤镜、`zoompan` 和 `xfade/acrossfa
 
 ## Agent 从基础层接入
 
-v2 共享核心已实现 expectedRevision、原子批量事务、requestId 重试去重及共同撤销历史，UI 已调用这些命令。正式视频 Agent 服务仍待接入，下一阶段是把相同协议接到实际 MCP/CLI 传输入口。
+v2 共享核心已实现 expectedRevision、原子批量事务、requestId 重试去重及共同撤销历史，UI 已调用这些命令。正式视频 Agent 服务仍待接入，下一阶段将相同命令接到本地应用服务与 CLI，连接用户正在操作的同一会话。MCP 等有明确客户端需求再评估，不作为当前交付条件。
 
-传输层保留少量能力入口（以下不是当前已注册工具名；对应编辑核心已有实现）：
+CLI 复用少量语义能力入口（以下为目标命名，不是已注册命令；切分/修剪/变速等核心已有实现，重新关联、字幕、效果和部分任务入口仍待实现）：
 
 - `project.inspect`：读取 revision、素材、片段 ID、轨道、链接和能力。
 - `timeline.apply`：按稳定 ID 提交 split、trim、insert/move、remove、link/unlink、setSpeed、caption、effect 等操作；携带 expectedRevision 和 requestId。
@@ -150,11 +150,11 @@ v2 共享核心已实现 expectedRevision、原子批量事务、requestId 重�
 - `job.start/status/cancel`：转写、波形、代理预览及导出，带来源版本、进度和取消标识。
 - `project.undo/redo`：人工与 Agent 共用历史，批量操作形成一次撤销。
 
-一次批量编辑要么全部成功、revision 增加一次，要么保持原文档。过期版本返回冲突；相同 requestId 的重试不得重复切分或导出。异步分析只应用到仍匹配的素材与文档版本，迟到结果不能覆盖用户新编辑。
+一次批量编辑要么全部成功、revision 增加一次，要么保持原文档。过期版本返回冲突；编辑请求在会话的去重范围内重试不得重复切分；导出等异步任务另需任务级幂等处理，不能由编辑请求缓存代替。异步分析只应用到仍匹配的素材与文档版本，迟到结果不能覆盖用户新编辑。
 
 核心 `setSpeed` 协议已包含 `clipId`、`rate` 或 `targetDuration` 二选一、`preservePitch`、明确的 linked 范围与 ripple 策略。响应回报规范化倍率、实际时长、后片位移和受影响的关联对象；同一批次只撤销一次。另行控制预览播放时，只调用观看会话的 transport，不伪装成 `timeline.apply` 或修改项目 revision。
 
-例如“删除第二段，将第三段放到开头，生成中文字幕，并在讲按钮时放大右下角”，Agent 应先读片段 ID，提交可验证的编辑事务，再发起转写任务和聚焦效果请求。结果可预览、可撤销；同一组命令也可用于无窗口批处理。MCP/CLI 是传输适配，不另写一套剪辑规则。
+例如“删除第二段，将第三段放到开头，生成中文字幕，并在讲按钮时放大右下角”，Agent 应先读片段 ID，提交可验证的编辑事务，再发起转写任务和聚焦效果请求。结果可预览、可撤销；同一组命令也可用于无窗口批处理。CLI 只适配同一应用服务和命令，不另写剪辑规则；未来 MCP 如需接入也遵守这一边界。
 
 ## 推进次序与验收
 

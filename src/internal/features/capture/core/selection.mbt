@@ -88,7 +88,7 @@ fn annotation_contains(m : Map[String, Json], px : Double, py : Double, toleranc
 
 ///|
 // Both front ends pass annotations validated by the same document reducer.
-fn annotation_hit_index(
+pub fn image_hit_index(
   annotations : Array[Json], px : Double, py : Double, tolerance : Double, text_only : Bool,
 ) -> Int {
   // Filled covers are painted above other annotations on every platform.
@@ -115,7 +115,7 @@ pub fn image_selection(request : String) -> String {
       if tolerance < 0 { raise InputError("invalid_input", "Invalid hit tolerance") }
       let annotations = image_array(fields, "annotations").map(annotation => image_annotation(annotation))
       let text_only = fields.get("textOnly") == Some(Json(true))
-      let index = annotation_hit_index(annotations, px, py, tolerance, text_only)
+      let index = image_hit_index(annotations, px, py, tolerance, text_only)
       if index >= 0 {
         let annotation = match annotations[index] { Object(m) => m; _ => Map([]) }
         return Json::object({ "ok": Json(true), "document": Json::object({ "id": annotation.get("id").unwrap() }) })

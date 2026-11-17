@@ -1,0 +1,17 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/features/capture/extensions/annotations"
+
+// Values
+pub fn editor_style_default(Int32) -> Double
+
+pub fn editor_style_property_mask(Int32) -> Int32
+
+pub fn editor_style_shape_count(Int32) -> Int32
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

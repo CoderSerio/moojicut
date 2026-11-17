@@ -201,13 +201,13 @@ pub fn export_profile(request : String) -> String {
 ///|
 #export_name("recording_transition")
 pub fn recording_transition(state : String, event : String) -> String {
-  @video.recording_transition(state, event)
+  @recording.recording_transition(state, event)
 }
 
 ///|
 #export_name("recording_plan")
 pub fn recording_plan(request : String) -> String {
-  @video.recording_plan(request)
+  @recording.recording_plan(request)
 }
 
 ///|
@@ -218,11 +218,11 @@ pub fn native_recording_plan(
   height : Int32,
   system_audio : Int32,
 ) -> FixedArray[Int32] {
-  @video.native_recording_plan(platform, width, height, system_audio)
+  @recording.native_recording_plan(platform, width, height, system_audio)
 }
 
 ///|
 #export_name("recording_status")
 pub fn recording_status(state : String) -> String {
-  @video.recording_status(state)
+  @recording.recording_status(state)
 }

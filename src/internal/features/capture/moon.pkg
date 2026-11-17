@@ -1,0 +1,10 @@
+import {
+  "moojicut/core/internal/features/capture/core" @image,
+  "moojicut/core/internal/features/capture/ui" @capture_ui,
+  "moojicut/core/internal/features/capture/extensions/annotations" @annotation_tools,
+  "moonbitlang/core/json",
+}
+
+import {
+  "moojicut/core/internal/test_support" @test_support,
+} for "wbtest"

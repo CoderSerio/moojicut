@@ -1,3 +1,15 @@
+using @json {type Json}
+
+///|
+fn image_string(m : Map[String, Json], key : String, fallback : String) -> String {
+  match m.get(key) { Some(String(s)) => s; _ => fallback }
+}
+
+///|
+fn image_number(m : Map[String, Json], key : String, fallback : Double) -> Double {
+  match m.get(key) { Some(Number(n, ..)) => n; _ => fallback }
+}
+
 ///|
 // A small typed C ABI for hosts without a JSON library. All mutations still
 // pass through the same image reducer used by the macOS editor.
@@ -27,7 +39,7 @@ fn native_image_document(result : String) -> Map[String, Json]? {
 ///|
 fn native_image_create(request : Json) -> Int {
   if native_image_sessions.length() >= 16 { return 0 }
-  let document = match native_image_document(image_create(request.stringify())) {
+  let document = match native_image_document(@image.image_create(request.stringify())) {
     Some(document) => document
     None => return 0
   }
@@ -61,7 +73,7 @@ fn native_image_command(session : NativeImageSession, command : Json) -> Int {
     "document": Json::object(session.document),
     "expectedRevision": session.document["revision"], "command": command,
   })
-  match native_image_document(image_apply(request.stringify())) {
+  match native_image_document(@image.image_apply(request.stringify())) {
     Some(document) => { session.document = document; 1 }
     None => 0
   }
@@ -223,7 +235,7 @@ pub fn image_session_count(id : Int) -> Int { native_image_annotations(id).lengt
 pub fn image_session_hit(id : Int, x : Double, y : Double, tolerance : Double, text_only : Int) -> Int {
   if !(x >= -65536 && x <= 65536 && y >= -65536 && y <= 65536 &&
        tolerance >= 0 && tolerance <= 65536) || (text_only != 0 && text_only != 1) { return -1 }
-  annotation_hit_index(native_image_annotations(id), x, y, tolerance, text_only == 1)
+  @image.image_hit_index(native_image_annotations(id), x, y, tolerance, text_only == 1)
 }
 
 ///|
@@ -332,10 +344,10 @@ pub fn image_session_preview_value(id : Int, field : Int) -> Double {
 pub fn image_session_set_variant(id : Int, index : Int, field : Int, value : Double) -> Int {
   let s = match native_image_sessions.get(id) { Some(s) => s; None => return 0 }
   let annotation = match native_image_annotation(id, index) { Some(a) => a; None => return 0 }
-  if !@style.editor_style_value_valid(field, value) { return 0 }
+  if !@image.editor_style_value_valid(field, value) { return 0 }
   let kind = native_annotation_value(annotation, 0).to_int()
   if field == 4 {
-    if value >= @style.editor_style_shape_count(kind).to_double() { return 0 }
+    if value >= @annotation_tools.editor_style_shape_count(kind).to_double() { return 0 }
     if native_annotation_value(annotation, 9) == value { return 1 }
     native_image_command(s, Json::object({ "type": Json("setShape"), "id": annotation["id"], "shape": Json(value) }))
   } else if field == 5 && image_string(annotation, "type", "") == "mosaic" {

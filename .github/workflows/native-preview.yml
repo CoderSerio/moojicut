@@ -20,6 +20,7 @@ on:
       - components/**
       - scripts/desktop.py
       - scripts/native_modules.py
+      - scripts/check_module_boundaries.py
       - test/build/**
       - scripts/install_moon.py
       - scripts/generate_icons.py

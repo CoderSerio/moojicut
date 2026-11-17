@@ -1,0 +1,19 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/features/recording/core"
+
+// Values
+pub fn native_recording_plan(Int32, Int32, Int32, Int32) -> FixedArray[Int32]
+
+pub fn recording_plan(String) -> String
+
+pub fn recording_status(String) -> String
+
+pub fn recording_transition(String, String) -> String
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

@@ -1,6 +1,6 @@
-# Shared screenshot interactions
+# Shared screenshot feature
 
-macOS, Windows and Linux use this package for rectangle/ellipse, arrow and
+macOS, Windows and Linux use `features/capture/ui` for rectangle/ellipse, arrow and
 cover/mosaic gestures and floating toolbar placement. Text input, window hit
 testing and control painting still use native adapters. Tool/property rules,
 shape variants and undoable documents belong to MoonBit. This is not yet a
@@ -8,7 +8,9 @@ single shared renderer for every screenshot control.
 
 `src/api_capture_ui.mbt` exports the C ABI in `native/shared/capture_ui.h`.
 All calls run on the UI thread. Sessions are per editor, disposable, and never
-reuse handles. The image document and undo history stay in `internal/image`.
+reuse handles. The image document and undo history stay in `features/capture/core`.
+The feature root owns native and style sessions and composes the core with UI;
+the core never imports UI or concrete annotation tools.
 
 ## Gesture contract
 
@@ -31,8 +33,8 @@ expected revision; an agent can submit that same command directly.
 
 `shape` defaults to 0: outline supports 0 rectangle / 1 ellipse; cover supports
 0 rectangle / 1 ellipse / 2 mosaic. `blockSize` defaults to 12 source pixels
-(4–48). Shared `editor_style` owns per-tool defaults and conditional property
-visibility. Mosaic is opaque and uses the block-size control, not RGBA controls.
+(4–48). The core owns persistent style value validation; `extensions/annotations` owns
+per-tool defaults and `ui` owns conditional property visibility. Mosaic is opaque and uses the block-size control, not RGBA controls.
 An existing object changes through `image_apply` command
 `{type:"setShape",id,shape}`, preserving identity and bounds with one undo entry.
 Outline and cover families cannot be interchanged by this command.
@@ -54,7 +56,7 @@ Windows and Linux use `image_session_shape_begin/event/preview_value` in
 `native/shared/image_session.h`; this adapter calls the same `capture_ui.event`
 reducer, then applies its command through `image_apply`. It does not reimplement
 shape normalization or minimum drag thresholds. `begin` freezes style, `move`
-only previews, `end` commits once, and `cancel` discards the draft. Closing the
+only previews, `end` commits once, and `cancel` discards the draft. The feature root coordinates document commands and interaction state. Closing the
 image session also releases its interaction session.
 
 Scalar annotation fields retain family IDs (ellipse=outline, mosaic=cover),
@@ -69,7 +71,7 @@ document state. Both preview and flattened export render that same scene.
 `capture_ui_toolbar_frame` takes positive finite surface dimensions, a region
 in top-left logical points, and renderer-measured toolbar/property widths. It
 returns an owned four-double array `[x,y,width,height]`; release it with
-`moonbit_decref`. The shared policy anchors below the region's right edge, moves
+`moonbit_decref`. The shared UI policy anchors below the region's right edge, moves
 above when necessary, clamps to the display and omits an empty property row.
 The host converts AppKit's bottom-left coordinates only at this boundary.
 `capture_ui_measured_toolbar_frame` accepts full measured panel width/height
@@ -84,7 +86,7 @@ for GTK/theme/accessibility fonts and uses the same placement/clamping policy.
 - Two toolbar groups: editing, OCR/translation and history on the left;
   pin/cancel/confirm on the right. Pin is never a selected annotation tool.
 
-Run `moon test --target native --deny-warn -p moojicut/core/internal/capture_ui`
+Run `moon test --target native --deny-warn -p moojicut/core/internal/features/capture/ui`
 and the equivalent `--target js` for the same shared event tests.
 `python3 scripts/native.py test` includes the real macOS `tool-layout` and
 `capture-overlay` regressions. Set `MOOJICUT_TOOLBAR_PREVIEW_DIR` when running

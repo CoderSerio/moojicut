@@ -11,12 +11,12 @@ priv struct EditorStyleValues {
 ///|
 fn editor_style_initial(tool : Int) -> EditorStyleValues {
   {
-    color: if tool == 4 { 0x111111 } else { editor_style_default(0).to_int() },
-    opacity: editor_style_default(1),
-    stroke: editor_style_default(2),
-    font: editor_style_default(3),
-    shape: editor_style_default(4),
-    block: editor_style_default(5),
+    color: if tool == 4 { 0x111111 } else { @annotation_tools.editor_style_default(0).to_int() },
+    opacity: @annotation_tools.editor_style_default(1),
+    stroke: @annotation_tools.editor_style_default(2),
+    font: @annotation_tools.editor_style_default(3),
+    shape: @annotation_tools.editor_style_default(4),
+    block: @annotation_tools.editor_style_default(5),
   }
 }
 
@@ -68,9 +68,9 @@ pub fn editor_style_get(handle : Int, tool : Int, property : Int) -> Double {
 
 ///|
 pub fn editor_style_set(handle : Int, tool : Int, property : Int, value : Double) -> Int {
-  if !editor_style_value_valid(property, value) { return 0 }
-  if (editor_style_property_mask(tool) & (1 << property)) == 0 { return 0 }
-  if property == 4 && value >= editor_style_shape_count(tool).to_double() { return 0 }
+  if !@image.editor_style_value_valid(property, value) { return 0 }
+  if (@annotation_tools.editor_style_property_mask(tool) & (1 << property)) == 0 { return 0 }
+  if property == 4 && value >= @annotation_tools.editor_style_shape_count(tool).to_double() { return 0 }
   let values = match editor_style_values(handle, tool) { Some(values) => values; None => return 0 }
   match property {
     0 => values.color = value.to_int()

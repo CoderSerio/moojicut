@@ -1,12 +1,12 @@
 ///|
 test "editor tool capabilities expose the shared style domains" {
-  assert_eq(editor_style_property_mask(0), 0)
-  assert_eq(editor_style_property_mask(1), 23)
-  assert_eq(editor_style_property_mask(2), 7)
-  assert_eq(editor_style_property_mask(3), 11)
-  assert_eq(editor_style_property_mask(4), 51)
-  assert_eq(editor_style_property_mask(-1), 0)
-  assert_eq(editor_style_property_mask(5), 0)
+  assert_eq(@annotation_tools.editor_style_property_mask(0), 0)
+  assert_eq(@annotation_tools.editor_style_property_mask(1), 23)
+  assert_eq(@annotation_tools.editor_style_property_mask(2), 7)
+  assert_eq(@annotation_tools.editor_style_property_mask(3), 11)
+  assert_eq(@annotation_tools.editor_style_property_mask(4), 51)
+  assert_eq(@annotation_tools.editor_style_property_mask(-1), 0)
+  assert_eq(@annotation_tools.editor_style_property_mask(5), 0)
   let domains : Array[(Double, Double, Double, Double)] = [
     (0, 16777215, 1, (0xf26769).to_double()),
     (0, 1, 0.01, 1),
@@ -15,16 +15,16 @@ test "editor tool capabilities expose the shared style domains" {
   ]
   for property in 0..<4 {
     let (minimum, maximum, step, initial) = domains[property]
-    assert_eq(editor_style_min(property), minimum)
-    assert_eq(editor_style_max(property), maximum)
-    assert_eq(editor_style_step(property), step)
-    assert_eq(editor_style_default(property), initial)
+    assert_eq(@image.editor_style_min(property), minimum)
+    assert_eq(@image.editor_style_max(property), maximum)
+    assert_eq(@capture_ui.editor_style_step(property), step)
+    assert_eq(@annotation_tools.editor_style_default(property), initial)
   }
   for property in [-1, 6, 2147483647] {
-    assert_eq(editor_style_min(property), 0)
-    assert_eq(editor_style_max(property), 0)
-    assert_eq(editor_style_step(property), 0)
-    assert_eq(editor_style_default(property), 0)
+    assert_eq(@image.editor_style_min(property), 0)
+    assert_eq(@image.editor_style_max(property), 0)
+    assert_eq(@capture_ui.editor_style_step(property), 0)
+    assert_eq(@annotation_tools.editor_style_default(property), 0)
   }
 }
 
@@ -34,7 +34,7 @@ test "editor styles are isolated per tool and per editor" {
   let second = editor_style_create()
   assert_true(first > 0 && second > 0 && first != second)
   for tool in 0..<5 {
-    assert_eq(editor_style_get(first, tool, 0), if tool == 4 { (0x111111).to_double() } else { editor_style_default(0) })
+    assert_eq(editor_style_get(first, tool, 0), if tool == 4 { (0x111111).to_double() } else { @annotation_tools.editor_style_default(0) })
     assert_eq(editor_style_get(first, tool, 1), 1)
     assert_eq(editor_style_get(first, tool, 2), 4)
     assert_eq(editor_style_get(first, tool, 3), 32)
@@ -46,11 +46,11 @@ test "editor styles are isolated per tool and per editor" {
   assert_eq(editor_style_get(first, 1, 0), (0x225577).to_double())
   assert_eq(editor_style_get(first, 1, 1), 0.35)
   assert_eq(editor_style_get(first, 1, 2), 12)
-  assert_eq(editor_style_get(first, 2, 0), editor_style_default(0))
+  assert_eq(editor_style_get(first, 2, 0), @annotation_tools.editor_style_default(0))
   assert_eq(editor_style_get(first, 2, 1), 1)
   assert_eq(editor_style_get(first, 2, 2), 4)
   assert_eq(editor_style_get(first, 3, 3), 48)
-  assert_eq(editor_style_get(second, 1, 0), editor_style_default(0))
+  assert_eq(editor_style_get(second, 1, 0), @annotation_tools.editor_style_default(0))
   assert_eq(editor_style_get(second, 1, 1), 1)
   assert_eq(editor_style_get(second, 1, 2), 4)
   assert_eq(editor_style_get(second, 3, 3), 32)
@@ -65,8 +65,8 @@ test "editor styles are isolated per tool and per editor" {
   assert_eq(editor_style_set(first, 4, 0, 0xffffff), 1)
   assert_eq(editor_style_get(second, 4, 0), (0x111111).to_double())
   for property in 0..<4 {
-    assert_eq(editor_style_set(first, 0, property, editor_style_min(property)), 0)
-    assert_eq(editor_style_get(first, 0, property), editor_style_default(property))
+    assert_eq(editor_style_set(first, 0, property, @image.editor_style_min(property)), 0)
+    assert_eq(editor_style_get(first, 0, property), @annotation_tools.editor_style_default(property))
   }
   editor_style_dispose(first)
   editor_style_dispose(second)
@@ -79,15 +79,15 @@ test "editor style updates reject invalid numbers atomically and allow domain bo
   for property in 0..<4 {
     let tool = tools[property]
     let original = editor_style_get(handle, tool, property)
-    for value in [editor_style_min(property) - 0.1, editor_style_max(property) + 0.1,
+    for value in [@image.editor_style_min(property) - 0.1, @image.editor_style_max(property) + 0.1,
                   0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0] {
       assert_eq(editor_style_set(handle, tool, property, value), 0)
       assert_eq(editor_style_get(handle, tool, property), original)
     }
-    assert_eq(editor_style_set(handle, tool, property, editor_style_min(property)), 1)
-    assert_eq(editor_style_get(handle, tool, property), editor_style_min(property))
-    assert_eq(editor_style_set(handle, tool, property, editor_style_max(property)), 1)
-    assert_eq(editor_style_get(handle, tool, property), editor_style_max(property))
+    assert_eq(editor_style_set(handle, tool, property, @image.editor_style_min(property)), 1)
+    assert_eq(editor_style_get(handle, tool, property), @image.editor_style_min(property))
+    assert_eq(editor_style_set(handle, tool, property, @image.editor_style_max(property)), 1)
+    assert_eq(editor_style_get(handle, tool, property), @image.editor_style_max(property))
   }
   assert_eq(editor_style_set(handle, 1, 0, 65535.5), 0)
   assert_eq(editor_style_get(handle, 1, 0), 16777215)
@@ -121,6 +121,6 @@ test "disposed and invalid style handles cannot access another editor" {
     assert_eq(editor_style_get(current, 1, property), 0)
     assert_eq(editor_style_set(current, 1, property, 0), 0)
   }
-  assert_eq(editor_style_get(current, 1, 0), editor_style_default(0))
+  assert_eq(editor_style_get(current, 1, 0), @annotation_tools.editor_style_default(0))
   editor_style_dispose(current)
 }

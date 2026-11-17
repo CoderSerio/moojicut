@@ -1,9 +1,0 @@
-import {
-  "moojicut/core/internal/protocol" @protocol,
-  "moojicut/core/internal/editor_style" @style,
-  "moonbitlang/core/json",
-}
-
-import {
-  "moojicut/core/internal/image",
-} for "wbtest"

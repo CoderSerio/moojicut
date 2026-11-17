@@ -1,5 +1,5 @@
 // Stable MoonBit and C ABI entry points for image documents, native sessions,
-// and source-pixel cropping. Implementations and state live in internal/image.
+// and source-pixel cropping. Implementations and state live in internal/features/capture.
 
 ///|
 #export_name("image_create")
@@ -22,7 +22,7 @@ pub fn image_finalize(request : String) -> String {
 ///|
 #export_name("image_session_create")
 pub fn image_session_create(width : Int, height : Int) -> Int {
-  @image.image_session_create(width, height)
+  @capture.image_session_create(width, height)
 }
 
 ///|
@@ -30,7 +30,7 @@ pub fn image_session_create(width : Int, height : Int) -> Int {
 pub fn image_session_create_viewport(
   width : Int, height : Int, x : Int, y : Int, viewport_width : Int, viewport_height : Int,
 ) -> Int {
-  @image.image_session_create_viewport(width, height, x, y, viewport_width, viewport_height)
+  @capture.image_session_create_viewport(width, height, x, y, viewport_width, viewport_height)
 }
 
 ///|
@@ -39,7 +39,7 @@ pub fn image_session_add(
   id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int,
 ) -> Int {
-  @image.image_session_add(id, kind, x, y, width, height, color, stroke)
+  @capture.image_session_add(id, kind, x, y, width, height, color, stroke)
 }
 
 ///|
@@ -48,7 +48,7 @@ pub fn image_session_add_styled(
   id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int,
 ) -> Int {
-  @image.image_session_add_styled(id, kind, x, y, width, height, color, stroke, font_size)
+  @capture.image_session_add_styled(id, kind, x, y, width, height, color, stroke, font_size)
 }
 
 ///|
@@ -57,7 +57,7 @@ pub fn image_session_add_rgba(
   id : Int, kind : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int, opacity : Double,
 ) -> Int {
-  @image.image_session_add_rgba(id, kind, x, y, width, height, color, stroke, font_size, opacity)
+  @capture.image_session_add_rgba(id, kind, x, y, width, height, color, stroke, font_size, opacity)
 }
 
 ///|
@@ -66,7 +66,7 @@ pub fn image_session_update(
   id : Int, index : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int,
 ) -> Int {
-  @image.image_session_update(id, index, x, y, width, height, color, stroke, font_size)
+  @capture.image_session_update(id, index, x, y, width, height, color, stroke, font_size)
 }
 
 ///|
@@ -75,67 +75,67 @@ pub fn image_session_update_rgba(
   id : Int, index : Int, x : Int, y : Int, width : Int, height : Int,
   color : Int, stroke : Int, font_size : Int, opacity : Double,
 ) -> Int {
-  @image.image_session_update_rgba(id, index, x, y, width, height, color, stroke, font_size, opacity)
+  @capture.image_session_update_rgba(id, index, x, y, width, height, color, stroke, font_size, opacity)
 }
 
 ///|
 #export_name("image_session_remove")
 pub fn image_session_remove(id : Int, index : Int) -> Int {
-  @image.image_session_remove(id, index)
+  @capture.image_session_remove(id, index)
 }
 
 ///|
 #export_name("image_session_crop")
 pub fn image_session_crop(id : Int, x : Int, y : Int, width : Int, height : Int) -> Int {
-  @image.image_session_crop(id, x, y, width, height)
+  @capture.image_session_crop(id, x, y, width, height)
 }
 
 ///|
 #export_name("image_session_viewport_value")
 pub fn image_session_viewport_value(id : Int, field : Int) -> Double {
-  @image.image_session_viewport_value(id, field)
+  @capture.image_session_viewport_value(id, field)
 }
 
 ///|
 #export_name("image_session_set_text")
 pub fn image_session_set_text(id : Int, text : String) -> Int {
-  @image.image_session_set_text(id, text)
+  @capture.image_session_set_text(id, text)
 }
 
 ///|
 #export_name("image_session_undo")
 pub fn image_session_undo(id : Int) -> Int {
-  @image.image_session_undo(id)
+  @capture.image_session_undo(id)
 }
 
 ///|
 #export_name("image_session_redo")
 pub fn image_session_redo(id : Int) -> Int {
-  @image.image_session_redo(id)
+  @capture.image_session_redo(id)
 }
 
 ///|
 #export_name("image_session_count")
 pub fn image_session_count(id : Int) -> Int {
-  @image.image_session_count(id)
+  @capture.image_session_count(id)
 }
 
 ///|
 #export_name("image_session_value")
 pub fn image_session_value(id : Int, index : Int, field : Int) -> Double {
-  @image.image_session_value(id, index, field)
+  @capture.image_session_value(id, index, field)
 }
 
 ///|
 #export_name("image_session_text")
 pub fn image_session_text(id : Int, index : Int) -> String {
-  @image.image_session_text(id, index)
+  @capture.image_session_text(id, index)
 }
 
 ///|
 #export_name("image_session_dispose")
 pub fn image_session_dispose(id : Int) -> Unit {
-  @image.image_session_dispose(id)
+  @capture.image_session_dispose(id)
 }
 
 ///|
@@ -159,7 +159,7 @@ pub fn image_session_hit(
   tolerance : Double,
   text_only : Int,
 ) -> Int {
-  @image.image_session_hit(id, x, y, tolerance, text_only)
+  @capture.image_session_hit(id, x, y, tolerance, text_only)
 }
 
 ///|
@@ -178,23 +178,23 @@ pub fn image_arrowhead_value(
 ///|
 #export_name("image_session_shape_begin")
 pub fn image_session_shape_begin(id : Int, kind : Int, x : Double, y : Double, color : Int, stroke : Double, opacity : Double, shape : Int, block : Double) -> Int {
-  @image.image_session_shape_begin(id, kind, x, y, color, stroke, opacity, shape, block)
+  @capture.image_session_shape_begin(id, kind, x, y, color, stroke, opacity, shape, block)
 }
 
 ///|
 #export_name("image_session_shape_event")
 pub fn image_session_shape_event(id : Int, phase : Int, x : Double, y : Double) -> Int {
-  @image.image_session_shape_event(id, phase, x, y)
+  @capture.image_session_shape_event(id, phase, x, y)
 }
 
 ///|
 #export_name("image_session_preview_value")
 pub fn image_session_preview_value(id : Int, field : Int) -> Double {
-  @image.image_session_preview_value(id, field)
+  @capture.image_session_preview_value(id, field)
 }
 
 ///|
 #export_name("image_session_set_variant")
 pub fn image_session_set_variant(id : Int, index : Int, field : Int, value : Double) -> Int {
-  @image.image_session_set_variant(id, index, field, value)
+  @capture.image_session_set_variant(id, index, field, value)
 }

@@ -148,6 +148,7 @@ class NativeBuild:
                 *("-L" + path for path in runtime_paths), "-Wl,-rpath,/usr/lib/swift"])
 
     def archive(self, directory):
+        self.run(sys.executable, ROOT / "scripts/check_module_boundaries.py", quiet=True)
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check", quiet=True)
         directory.mkdir(parents=True, exist_ok=True)
         output = self.moon_command(directory, "build", "--target", "native", "--release",
