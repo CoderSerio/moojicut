@@ -108,7 +108,7 @@ def require_private_file(home, relative):
     return path
 
 
-def plugin_metadata(output, home, version):
+def plugin_metadata(output, home, package):
     fields = {}
     # Factory output starts with Factory Details, then Plugin Details. These
     # unlocalized field names are forced by the subprocess C locale.
@@ -116,6 +116,9 @@ def plugin_metadata(output, home, version):
         match = re.search(r"^\s+" + re.escape(key) + r"\s+(.+?)\s*$", output, re.M)
         if match:
             fields[key] = match[1]
+    # The SHA-locked Windows SDK has GES 1.28.8.1 alongside GStreamer
+    # 1.28.8. Keep exact component versions; a shared prefix is not sufficient.
+    version = package.get("component_versions", {}).get(fields.get("Source module"), package["version"])
     if fields.get("Version") != version or not fields.get("License") or not fields.get("Filename"):
         raise ValueError("SDK factory lacks the expected version/license/path: " + repr(fields))
     path = Path(fields["Filename"]).resolve()
@@ -152,6 +155,10 @@ int main(void) {
     guint major, minor, micro, nano;
     ges_version(&major, &minor, &micro, &nano);
     printf("GES %u.%u.%u.%u\n", major, minor, micro, nano);
+    printf("GES headers %u.%u.%u.%u\n", (guint)GES_VERSION_MAJOR,
+        (guint)GES_VERSION_MINOR, (guint)GES_VERSION_MICRO, (guint)GES_VERSION_NANO);
+    if (major != GES_VERSION_MAJOR || minor != GES_VERSION_MINOR ||
+        micro != GES_VERSION_MICRO || nano != GES_VERSION_NANO) return 6;
     GstElement *sink = gst_element_factory_make("appsink", NULL);
     if (!sink || !GST_IS_APP_SINK(sink)) return 2;
     gst_object_unref(sink);
@@ -197,7 +204,7 @@ def verify_sdk(home, package, execute=run):
     factories = {}
     for factory in package["required_factories"]:
         text = execute([inspector, factory], env=environment)
-        factories[factory] = plugin_metadata(text, home, package["version"])
+        factories[factory] = plugin_metadata(text, home, package)
     codecs = {}
     for codec, candidates in package["encoder_alternatives"].items():
         codecs[codec] = []
@@ -206,7 +213,7 @@ def verify_sdk(home, package, execute=run):
                 text = execute([inspector, candidate], env=environment)
             except RuntimeError:
                 continue
-            factories[candidate] = plugin_metadata(text, home, package["version"])
+            factories[candidate] = plugin_metadata(text, home, package)
             codecs[codec].append(candidate)
         if not codecs[codec]:
             raise ValueError("No private SDK encoder available for " + codec)
@@ -221,7 +228,8 @@ def verify_sdk(home, package, execute=run):
              "/Fo" + str(scratch / "sdk-probe.obj"), "/Fe" + str(executable),
              "/link", *libraries], cwd=scratch)
     probe_output = execute([executable], env=environment)
-    if "GES " + package["version"] + ".0" not in probe_output:
+    ges_version = package["component_versions"]["gst-editing-services"]
+    if not re.search(r"^GES " + re.escape(ges_version) + r"\s*$", probe_output, re.M):
         raise ValueError("Wrong GES ABI/runtime version: " + probe_output)
     majors = package["libav"]["abi_majors"]
     expected = "libav ABI " + " ".join(str(majors[name]) for name in ("avformat", "avcodec", "avutil"))

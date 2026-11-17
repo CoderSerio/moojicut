@@ -305,8 +305,9 @@ class GStreamerRuntimeTest(unittest.TestCase):
             self.assertEqual(len(candidates), 1, "only bounded declared factory queries are allowed")
             plugin = candidates[0]
         filename = stage / runtime.PLUGIN_DIR / ("gst" + plugin + ".dll")
+        version = self.package.get("component_versions", {}).get(self.modules[plugin], self.package["version"])
         return ("Plugin Details:\n  Name " + plugin + "\n  Filename " + str(filename) +
-                "\n  Version " + self.package["version"] + "\n  License LGPL\n  Source module " +
+                "\n  Version " + version + "\n  License LGPL\n  Source module " +
                 self.modules[plugin] + "\n")
 
     def test_packaging_copies_only_closure_beside_exe_and_checks_actual_factories(self):
@@ -316,6 +317,8 @@ class GStreamerRuntimeTest(unittest.TestCase):
             report = runtime.prepare_runtime(self.home, destination, package, execute=self.inspect)
         self.assertTrue(self.calls)
         self.assertEqual(set(report["plugins"]), set(self.plugin_factories))
+        self.assertEqual(report["plugins"]["nle"]["Version"], "1.28.8.1")
+        self.assertEqual(report["plugins"]["ges"]["Version"], "1.28.8.1")
         self.assertEqual(set(report["factories"]),
                          {factory for factories in self.plugin_factories.values() for factory in factories})
         self.assertFalse(report["redistribution_approved"])

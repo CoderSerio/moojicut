@@ -42,9 +42,14 @@ class GStreamerSDKTest(unittest.TestCase):
         plugin.touch()
         return home, plugin
 
-    def plugin_output(self, plugin, version=None):
+    def plugin_output(self, plugin, version=None, module="gst-plugins-base"):
+        expected = self.package.get("component_versions", {}).get(module, self.package["version"])
         return ("Plugin Details:\n  Name fixture\n  Filename " + str(plugin) +
-                "\n  Version " + (version or self.package["version"]) + "\n  License LGPL\n")
+                "\n  Version " + (version or expected) + "\n  License LGPL\n  Source module " + module + "\n")
+
+    def factory_output(self, plugin, factory):
+        module = "gst-editing-services" if factory in {"nlecomposition", "gesdemux"} else "gst-plugins-base"
+        return self.plugin_output(plugin, module=module)
 
     def test_installer_is_portable_and_never_sets_machine_or_ci_environment(self):
         command = sdk.installer_command("verified.exe", self.root / "sdk path", self.root / "install.log")
@@ -138,16 +143,27 @@ class GStreamerSDKTest(unittest.TestCase):
 
     def test_plugin_discovery_rejects_external_or_wrong_version_libraries(self):
         home, plugin = self.fixture_sdk()
-        metadata = sdk.plugin_metadata(self.plugin_output(plugin), home, self.package["version"])
+        metadata = sdk.plugin_metadata(self.plugin_output(plugin), home, self.package)
         self.assertEqual(metadata["Filename"], "lib/gstreamer-1.0/gstfixture.dll")
         with self.assertRaisesRegex(ValueError, "outside"):
-            sdk.plugin_metadata(self.plugin_output(self.root / "machine-plugin.dll"), home, self.package["version"])
+            sdk.plugin_metadata(self.plugin_output(self.root / "machine-plugin.dll"), home, self.package)
         with self.assertRaisesRegex(ValueError, "expected version"):
-            sdk.plugin_metadata(self.plugin_output(plugin, "1.20.0"), home, self.package["version"])
+            sdk.plugin_metadata(self.plugin_output(plugin, "1.20.0"), home, self.package)
+
+    def test_actual_ges_patch_is_locked_without_relaxing_other_plugins(self):
+        home, plugin = self.fixture_sdk()
+        actual = self.plugin_output(plugin, "1.28.8.1", "gst-editing-services")
+        self.assertEqual(sdk.plugin_metadata(actual, home, self.package)["Version"], "1.28.8.1")
+        for version, module in (("1.28.8", "gst-editing-services"),
+                                ("1.28.8.10", "gst-editing-services"),
+                                ("1.28.8.1", "gst-plugins-base")):
+            with self.subTest(version=version, module=module), self.assertRaisesRegex(ValueError, "expected version"):
+                sdk.plugin_metadata(self.plugin_output(plugin, version, module), home, self.package)
 
     def test_compile_and_runtime_probe_are_required_and_license_inventory_is_recorded(self):
         home, plugin = self.fixture_sdk()
         calls = []
+        probe_version = self.package["component_versions"]["gst-editing-services"]
         def execute(command, **kwargs):
             calls.append((command, kwargs))
             if command[0] == "cl":
@@ -159,10 +175,10 @@ class GStreamerSDKTest(unittest.TestCase):
                 return "compiled"
             self.assertNotIn("machine-untrusted", kwargs["env"]["PATH"])
             if str(command[0]).endswith("sdk-probe.exe"):
-                return "GES " + self.package["version"] + ".0\nlibav ABI 61 61 59; mov demux/mp4 mux available\n"
+                return "GES " + probe_version + "\nlibav ABI 61 61 59; mov demux/mp4 mux available\n"
             if command[-1] == "--version":
                 return "GStreamer " + self.package["version"] + "\n"
-            return self.plugin_output(plugin)
+            return self.factory_output(plugin, command[-1])
         report = sdk.verify_sdk(home, self.package, execute=execute)
         self.assertFalse(report["redistribution_approved"])
         self.assertEqual(set(report["encoder_candidates"]), {"h264", "aac"})
@@ -170,6 +186,10 @@ class GStreamerSDKTest(unittest.TestCase):
         self.assertEqual(len(report["licenses"]), len(self.package["required_license_dirs"]))
         self.assertTrue(any(command[0] == "cl" for command, _ in calls))
         self.assertTrue(any(str(command[0]).endswith("sdk-probe.exe") for command, _ in calls))
+        self.assertEqual(report["factories"]["nlecomposition"]["Version"], "1.28.8.1")
+        probe_version = "1.28.8.10"
+        with self.assertRaisesRegex(ValueError, "Wrong GES ABI/runtime version"):
+            sdk.verify_sdk(home, self.package, execute=execute)
 
     def test_missing_codec_or_nonportable_install_is_rejected(self):
         home, plugin = self.fixture_sdk()
@@ -179,7 +199,7 @@ class GStreamerSDKTest(unittest.TestCase):
                 return "GStreamer " + self.package["version"]
             if command[-1] in candidates:
                 raise RuntimeError("factory unavailable")
-            return self.plugin_output(plugin)
+            return self.factory_output(plugin, command[-1])
         with self.assertRaisesRegex(ValueError, "encoder"):
             sdk.verify_sdk(home, self.package, execute=execute)
         (home / "unins000.exe").touch()

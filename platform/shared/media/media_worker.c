@@ -397,7 +397,9 @@ static gboolean service_timer(gpointer unused) {
     (void)unused; return G_SOURCE_CONTINUE;
 }
 
-static gpointer service_main(gpointer context) {
+// Process-lifetime executor: declare this explicitly for GCC and MSVC rather
+// than adding an unreachable return to the GThread entry point.
+static G_NORETURN gpointer service_main(gpointer context) {
     Service *executor = context;
     g_main_context_push_thread_default(executor->context);
     char initialization_error[1024] = {0};

@@ -324,7 +324,7 @@ def _select(index, *names):
 
 
 def _plugin_metadata(text, stage, package, expected_path):
-    metadata = sdk.plugin_metadata(text, stage, package["version"])
+    metadata = sdk.plugin_metadata(text, stage, package)
     if (stage / metadata["Filename"]).resolve() != expected_path.resolve():
         raise ValueError("Factory resolved outside its selected runtime plugin")
     if metadata["License"] not in {"LGPL", "LGPLv2", "LGPLv2+", "LGPLv2.1", "LGPLv2.1+", "BSD", "MIT", "MPL", "MPL-2.0", "Apache-2.0", "Zlib"}:
