@@ -9,6 +9,7 @@
 #include <string.h>
 #include "platform/linux/app/video_editor.h"
 #include "platform/linux/graphics/shared_canvas.h"
+#include "platform/linux/media/runtime.h"
 
 static int failures, criticals;
 static void check(gboolean passed, const char *message) {
@@ -230,6 +231,10 @@ static gboolean waveform_visible(GtkWidget *window) {
 }
 
 int main(int argc, char **argv) {
+    char runtime_error[512];
+    if (!mc_linux_media_runtime_init(runtime_error, sizeof runtime_error)) {
+        fprintf(stderr, "%s\n", runtime_error); return 2;
+    }
     if (argc != 3) { fprintf(stderr, "usage: linux-video-editor SOURCE OUTPUT_DIR\n"); return 2; }
     gtk_init(&argc, &argv); moonbit_init();
     const char *domains[] = {"GLib-GObject", "Gtk", "Gdk"}; guint handlers[G_N_ELEMENTS(domains)];

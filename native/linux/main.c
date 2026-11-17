@@ -13,6 +13,7 @@
 #include "updates.h"
 #include "platform/linux/input/global_shortcuts.h"
 #include "platform/linux/app/video_editor.h"
+#include "platform/linux/media/runtime.h"
 #include "bindings/c/tool_registry.h"
 
 #ifndef MOOJICUT_VERSION
@@ -1149,6 +1150,11 @@ static int command_line(GApplication *application, GApplicationCommandLine *comm
 int main(int argc, char **argv) {
   /* ximagesrc uses Xlib on media threads. This must precede GTK/Xlib work. */
   XInitThreads();
+  char media_error[512];
+  if (!mc_linux_media_runtime_init(media_error, sizeof media_error)) {
+    g_printerr("%s\n", media_error);
+    return 1;
+  }
   gboolean self_test = FALSE;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--self-test")) self_test = TRUE;

@@ -463,7 +463,8 @@
           "feature.pin",
           "feature.recording",
           "platform.input",
-          "platform.app"
+          "platform.app",
+          "platform.media"
         ],
         "files": [
           "native/linux/launch.sh",
@@ -592,6 +593,15 @@
         "includes": [
           "shared.bindings"
         ]
+      },
+      "platform.media": {
+        "sources": [
+          "platform/linux/media/runtime.c"
+        ],
+        "files": [
+          "platform/linux/media/runtime.h"
+        ],
+        "requires": []
       }
     }
   },

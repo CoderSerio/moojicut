@@ -92,6 +92,10 @@ class DesktopBuild:
             return
         from media_tests import MediaTests
         self.media = MediaTests(self.directory / "media-tests", self.env)
+        if self.system == "linux":
+            # GTK/GIO remain the system's libraries; all GStreamer/libav .pc
+            # files must resolve through the same private SDK used by fixtures.
+            self.env["PKG_CONFIG_PATH"] = self.media.env["PKG_CONFIG_PATH"]
 
     def build(self):
         self.run(sys.executable, ROOT / "scripts/check_module_boundaries.py")
@@ -153,7 +157,8 @@ class DesktopBuild:
                          "-I", ROOT, *self.media.includes, *sources, archive, *flags,
                          *self.media.libraries, "-lm", "-o", executable)
                 self.run("strip", executable)
-                dependencies = self.run("ldd", executable)
+                shutil.copytree(self.media.runtime_payload, staging, dirs_exist_ok=True)
+                dependencies = self.run("ldd", executable, env=self.app_test_environment())
                 if "not found" in dependencies:
                     raise RuntimeError("Native Linux dependency is missing.")
                 shutil.copy2(source / "launch.sh", staging / "launch.sh")
@@ -206,16 +211,15 @@ class DesktopBuild:
         if self.system == "linux":
             expected.add("launch.sh")
         directories = set()
-        if self.system == "windows":
-            for item in self.media.runtime_payload.rglob("*"):
-                relative = item.relative_to(self.media.runtime_payload).as_posix()
-                if item.is_dir():
-                    directories.add(relative)
-                else:
-                    expected.add(relative)
-                    copied = directory / relative
-                    if not copied.is_file() or hashlib.sha256(copied.read_bytes()).digest() != hashlib.sha256(item.read_bytes()).digest():
-                        raise RuntimeError("Packaged media runtime differs from verified payload: " + relative)
+        for item in self.media.runtime_payload.rglob("*"):
+            relative = item.relative_to(self.media.runtime_payload).as_posix()
+            if item.is_dir():
+                directories.add(relative)
+            else:
+                expected.add(relative)
+                copied = directory / relative
+                if not copied.is_file() or hashlib.sha256(copied.read_bytes()).digest() != hashlib.sha256(item.read_bytes()).digest():
+                    raise RuntimeError("Packaged media runtime differs from verified payload: " + relative)
         actual = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_file()}
         if actual != expected:
             raise RuntimeError("Unexpected package contents: extra={}, missing={}.".format(
@@ -256,10 +260,10 @@ class DesktopBuild:
                              "免安装，无需 Node、Python 或 MoonBit 工具链。程序未进行代码签名，\n"
                              "Windows 可能显示未知发布者提示。仅从项目 Release 下载并核对 SHA256。\n"
                              "命令行 MoojiCut.exe --preferences 可直接打开设置。\n")
-        return shared + ("本包针对 Ubuntu 22.04 x86_64 构建；需要该版本的 FFmpeg 58/58/56 ABI。\n"
-                         "Ubuntu 24.04 的媒体库 ABI 不同，不能直接使用本包。\n"
-                         "需要 GTK 3、Ayatana AppIndicator、libcurl、GStreamer/GES、FFmpeg 与 libportal：\n"
-                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 libportal-gtk3-1 libges-1.0-0 libavformat58 libavcodec58 libavutil56 libgstreamer-plugins-base1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire\n"
+        return shared + ("本包针对 Ubuntu 22.04 x86_64 构建，随包提供固定版本的媒体运行库。\n"
+                         "请完整解压，保留 runtime 文件夹。其它发行版的实际运行按发布说明验收。\n"
+                         "需要 GTK 3、Ayatana AppIndicator、libcurl、libportal 和系统音频服务：\n"
+                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 libportal-gtk3-1 libpulse0 libpipewire-0.3-0\n"
                          "解压后运行 ./launch.sh 打开设置；./moojicut 仅启动托盘。\n"
                          "从托盘菜单或设置中启动截图，也可运行 ./moojicut --capture。\n"
                          "X11 支持桌面框选；Wayland 使用系统截图门户，需要可用的\n"
@@ -284,6 +288,13 @@ class DesktopBuild:
 
     def app_test_environment(self):
         environment = dict(self.env)
+        for key in tuple(environment):
+            if key.startswith(("GST_", "GSTREAMER_", "LD_")):
+                environment.pop(key)
+        invalid = str(self.directory / "unavailable-system-sdk")
+        environment.update(GST_PLUGIN_PATH_1_0=invalid, GST_PLUGIN_SYSTEM_PATH_1_0=invalid,
+                           GST_PLUGIN_SCANNER_1_0=invalid, GST_REGISTRY_1_0=invalid,
+                           GST_REGISTRY_UPDATE="no", GST_PLUGIN_FEATURE_RANK="openh264enc:NONE,avenc_aac:NONE")
         if self.system == "windows":
             windows = Path(environment.get("SystemRoot", r"C:\Windows"))
             environment["PATH"] = os.pathsep.join(map(str, (windows / "System32", windows)))
@@ -299,7 +310,7 @@ class DesktopBuild:
 
     def smoke(self):
         self.verify_binary(self.executable)
-        self.run(self.executable, "--smoke")
+        self.run(self.executable, "--smoke", env=self.app_test_environment())
         self.canvas_smoke()
         self.video_smoke()
 
@@ -307,7 +318,7 @@ class DesktopBuild:
         if not hasattr(self.media, "fixtures"):
             self.media_tests()
         directory = Path(tempfile.mkdtemp(prefix="video-editor-", dir=self.directory))
-        sources = native_sources(self.system, "platform.app", *( ["platform.media"] if self.system == "windows" else [] ))
+        sources = native_sources(self.system, "platform.app", "platform.media")
         fixture = ROOT / "test/native" / (self.system + "-video-editor.c")
         executable = self.media.executables / ("video-editor.exe" if self.system == "windows" else "video-editor")
         if self.system == "windows":

@@ -84,6 +84,11 @@ wintrust.dll winusb.dll ws2_32.dll wsock32.dll wtsapi32.dll
 """.split())
 BANNED_DLL_PARTS = ("x264", "x265", "fdk", "faac", "faad", "voaac", "vo-aac",
                     "mpeg2", "lame", "dvdcss")
+SHARED_GSTREAMER_LICENSE = "share/licenses/gstreamer-1.0/LGPL-2.0-or-later.txt"
+# Cerbero adds common licenses to files_devel; the good/libav packages select
+# plugin categories without that directory. Their recipes use the same
+# LGPLv2Plus enum/text as core. Preserve their source component in the report.
+SHARED_GSTREAMER_LICENSE_COMPONENTS = frozenset(("gst-plugins-good-1.0", "gst-libav-1.0"))
 
 
 def _system(name):
@@ -277,7 +282,8 @@ def _component(path, plugin_metadata=None):
         (r"pcre2-[0-9-]+\.dll", ("pcre2",)),
         (r"(?:z|zlib1)\.dll", ("zlib",)),
         (r"bz2(?:-\d+)?\.dll", ("bzip2",)),
-        (r"(?:intl|gettextlib|gettextsrc)(?:-[0-9.]+)?\.dll", ("gettext",)),
+        (r"intl(?:-[0-9.]+)?\.dll", ("proxy-libintl",)),
+        (r"(?:gettextlib|gettextsrc)(?:-[0-9.]+)?\.dll", ("gettext",)),
         (r"iconv(?:-\d+)?\.dll", ("libiconv",)),
         (r"xml2(?:-\d+)?\.dll", ("libxml2",)),
         (r"orc-0\.4-0\.dll", ("orc",)),
@@ -298,6 +304,42 @@ def _component(path, plugin_metadata=None):
     raise ValueError("No reviewed license/source mapping for runtime DLL: " + path.name)
 
 
+def _license_sources(home, candidates, plugin):
+    for component in candidates:
+        directory = home / "share/licenses" / component
+        if directory.is_dir():
+            return component, sorted(path for path in directory.rglob("*") if path.is_file()), {
+                "license_source": directory.relative_to(home).as_posix()}
+    component = candidates[0]
+    if (component in SHARED_GSTREAMER_LICENSE_COMPONENTS and plugin and
+            plugin.get("License") in {"LGPL", "LGPLv2", "LGPLv2+"}):
+        license_file = sdk.require_private_file(home, SHARED_GSTREAMER_LICENSE)
+        return component, [license_file], {
+            "license_source": SHARED_GSTREAMER_LICENSE,
+            "license_evidence": [
+                "https://github.com/GStreamer/cerbero/blob/1.28.8/recipes/" + component + ".recipe",
+                "https://github.com/GStreamer/cerbero/blob/1.28.8/recipes/custom.py",
+                "https://github.com/GStreamer/cerbero/blob/1.28.8/cerbero/build/recipe.py",
+                "https://github.com/GStreamer/cerbero/blob/1.28.8/cerbero/build/filesprovider.py",
+                "https://github.com/GStreamer/cerbero/blob/1.28.8/cerbero/packages/package.py",
+            ]}
+    raise ValueError("Missing SDK license directory: " + "/".join(candidates))
+
+
+def _safe_libav_configuration(configuration):
+    # Official Cerbero builds FFmpeg with Meson; other verified SDK records
+    # can carry upstream configure flags. Accept exact disabled options, not
+    # substring matches, and reject contradictory/unknown licensing values.
+    tokens = configuration.split()
+    for name in ("gpl", "nonfree", "version3"):
+        if any(token == "--enable-" + name or token.startswith("--enable-" + name + "=") or
+               (token.startswith("-D" + name + "=") and token != "-D" + name + "=disabled")
+               for token in tokens):
+            return False
+    return ("--disable-nonfree" in tokens or
+            ("-Dnonfree=disabled" in tokens and "-Dversion3=disabled" in tokens))
+
+
 def _load_report(home, package):
     report = json.loads(sdk.require_private_file(home, sdk.REPORT).read_text(encoding="utf-8"))
     if (report.get("schema_version") != 1 or report.get("version") != package["version"] or
@@ -310,8 +352,7 @@ def _load_report(home, package):
         if not re.search(r"^" + library + r" license: LGPL version 2\.1 or later\s*$", probe, re.M):
             raise ValueError("Disallowed or absent libav license evidence")
     configuration = re.search(r"^libavformat configuration: (.+)$", probe, re.M)
-    if not configuration or "--disable-nonfree" not in configuration[1] or re.search(
-            r"--enable-(?:gpl|nonfree|version3)(?:\s|$)", configuration[1]):
+    if not configuration or not _safe_libav_configuration(configuration[1]):
         raise ValueError("Missing safe FFmpeg build configuration evidence")
     return report
 
@@ -403,14 +444,10 @@ def prepare_runtime(sdk_home, destination, package=None, execute=sdk.run):
         for name, source in sorted(final_closure.items()):
             plugin = next((plugins[key] for key, value in selected.items() if value == source), None)
             candidates = _component(source, plugin)
-            component = next((item for item in candidates if (home / "share/licenses" / item).is_dir()), None)
-            if component is None:
-                raise ValueError("Missing SDK license directory: " + "/".join(candidates))
+            component, license_sources, license_evidence = _license_sources(home, candidates, plugin)
             if component not in licenses:
                 inventory = []
-                for license_file in sorted((home / "share/licenses" / component).rglob("*")):
-                    if not license_file.is_file():
-                        continue
+                for license_file in license_sources:
                     relative = license_file.relative_to(home).as_posix()
                     sdk.require_private_file(home, relative)
                     checksum = sdk.digest(license_file)
@@ -422,7 +459,8 @@ def prepare_runtime(sdk_home, destination, package=None, execute=sdk.run):
                     inventory.append({"path": target.relative_to(stage).as_posix(), "sha256": checksum})
                 if not inventory:
                     raise ValueError("Empty runtime license component: " + component)
-                licenses[component] = {"files": inventory, "recipe": "https://raw.githubusercontent.com/GStreamer/cerbero/" + package["version"] + "/recipes/" + component + ".recipe"}
+                licenses[component] = {"files": inventory, **license_evidence,
+                    "recipe": "https://raw.githubusercontent.com/GStreamer/cerbero/" + package["version"] + "/recipes/" + component + ".recipe"}
             target = copied[name]
             dependencies = sorted(pe_dependencies(source))
             files.append({"path": target.relative_to(stage).as_posix(), "sdk_path": source.relative_to(home).as_posix(),

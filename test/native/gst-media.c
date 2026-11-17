@@ -380,6 +380,20 @@ static void case_test(const char *directory, const char *source, const char *nam
             barcode(frame.pixels, frame.width, frame.stride), p[2], p[1], p[0], (double)frame.pts_ns / GST_MSECOND);
         check(matches && frame.width == plan->crop_width && frame.height == plan->crop_height, label);
     }
+    if (ready && g_str_has_prefix(name, "speed-")) {
+        /* The midpoint alone misses a backend that incorrectly truncates the
+         * source at the shorter output duration, then repeats its last frame. */
+        double late = (double)plan->duration / 90 * 0.9;
+        double source_late = (double)plan->video[0].source_start / 90 +
+            (double)(plan->video[0].source_end - plan->video[0].source_start) / 90 * 0.9;
+        mc_gst_frame_clear(&frame);
+        gboolean received = frame_at(preview, late, &frame);
+        int actual = received ? barcode(frame.pixels, frame.width, frame.stride) : -1;
+        g_snprintf(label, sizeof label, "%s preview maps the final source portion", name);
+        if (received) g_snprintf(error_text, sizeof error_text,
+            "at %.0fms barcode=%d expected source %.0fms", late, actual, source_late);
+        check(received && abs(actual - (int)(source_late * FPS / 1000)) <= 1, label);
+    }
     mc_gst_frame_clear(&frame); mc_gst_engine_free(preview);
     g_snprintf(label, sizeof label, "%s reaches real render EOS", name);
     if (!check(render(source, path, plan, FALSE, NULL), label)) { g_free(path); return; }
@@ -392,6 +406,12 @@ static void case_test(const char *directory, const char *source, const char *nam
             fabs(last->ms + 1000.0 / FPS - duration_ms) < 35 && fabs(decoded.end_ms - duration_ms) < 35, label);
         g_snprintf(label, sizeof label, "%s pixels follow immutable plan", name);
         check(video_matches(&decoded, at, source_at, crop), label);
+        if (g_str_has_prefix(name, "speed-")) {
+            double source_late = (double)plan->video[0].source_start / 90 +
+                (double)(plan->video[0].source_end - plan->video[0].source_start) / 90 * 0.9;
+            g_snprintf(label, sizeof label, "%s export includes the final source portion", name);
+            check(video_matches(&decoded, duration_ms * 0.9, source_late, FALSE), label);
+        }
         g_snprintf(label, sizeof label, "%s audio content and pitch follow explicit audio clips", name);
         check(tone_at(&decoded, at, audible), label);
         if (!strcmp(name, "identity") || !strcmp(name, "speed-1.5") || !strcmp(name, "speed-3")) {
@@ -457,6 +477,12 @@ static void mp4_test(const char *directory, const char *source, const char *name
             fabs(decoded.end_ms - duration_ms) < 35, label);
         g_snprintf(label, sizeof label, "%s MP4 video still follows source-time mapping", name);
         check(video_matches(&decoded, 1000, source_ms, FALSE), label);
+        if (g_str_has_prefix(name, "speed-")) {
+            double source_late = (double)plan->video[0].source_start / 90 +
+                (double)(plan->video[0].source_end - plan->video[0].source_start) / 90 * 0.9;
+            g_snprintf(label, sizeof label, "%s MP4 includes the final source portion", name);
+            check(video_matches(&decoded, duration_ms * 0.9, source_late, FALSE), label);
+        }
         check(tone_at(&decoded, 1000, TRUE), "final MP4 preserves audible 440Hz pitch");
         check(edge_tone(&decoded, 0), "final MP4 preserves the first 10ms of source audio");
         check(edge_tone(&decoded, duration_ms - 10), "final MP4 preserves the last 10ms of source audio");

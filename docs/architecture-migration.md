@@ -349,8 +349,16 @@ E0 媒体探针使用隔离的官方 GStreamer/GES 1.28.9，在 macOS arm64 实�
 - Windows 录制模块已删除旧表单、外部播放器预览和旧剪辑导出，改为 App 的完成回调打开共享编辑窗口；Linux 录制后也经 App 回调交接，并可恢复最近草稿。退出必须等保存与媒体完成，保存失败撤回退出并保留编辑状态。新增两端真实窗口 fixture 已登记，尚待目标系统执行。
 - Windows 构建接固定官方 SDK、经过依赖闭包/许可证清单核验的最小运行库；最终包带 DLL、插件与 scanner，生产启动使用 EXE 相对路径和独立缓存。CI 同时验证被搬迁包、污染环境、无 SDK PATH 的加载，不以开发 SDK 可运行代替发行包验证。
 - 新增媒体源文件已纳入构建归属清单；MoonBit 依赖检查与原生文件/include 检查均通过，仍只有原先 12 对历史例外。业务/UI 会话在 MoonBit，解码、编码、线程与原子文件发布在共享底层 C，不在 Windows/Linux 各复制一套剪辑逻辑。
-- **本批尚未跑 Windows/Linux 目标 CI。** 两端窗口与录制交接已接线；macOS 仍用现有宿主会话。上节绿色 CI 不覆盖本批改动；发行包仍为 alpha.20。Linux 新媒体链暂按 Ubuntu 22.04 的 FFmpeg 58/58/56 ABI 构建，不能据 glibc 版本声称同包支持 Ubuntu 24.04；后者的构建/制品及更新选包仍待补齐，不能做 SONAME 软链接冒充兼容。
+- 两端窗口与录制交接已接线；macOS 仍用现有宿主会话。上节绿色 CI 不覆盖本批改动；发行包仍为 alpha.20。初始 Linux 媒体链使用 Ubuntu 22.04 的 GStreamer/GES 1.20 与 FFmpeg 58/58/56 ABI，下文目标运行已证明该旧依赖组合不能交付；正在改为随包提供固定私有媒体运行库。Ubuntu 24.04 的真实包运行仍单独验收，不根据 glibc 版本或改 SONAME 软链接推断兼容。
 
 下一交付边界是本批正式录后编辑流程与运行库合批通过目标 CI。截图完整共享属性 UI、用户插件 v2、独立 CLI、OCR/翻译、录屏音源/暂停、Ubuntu 24.04 交付及旧原生职责迁移继续保留为未完成项；用户后续组织实机效果验收。
 
 E1 首轮目标运行已经暴露实际差异，**目前仍未通过**：[429b14e 的 CI](https://github.com/CoderSerio/moojicut/actions/runs/44187534573) 中 Linux 严格编译成功，但 GES 1.20 下的 3× 视频时间映射、MP4 尾端音频共 6 项断言失败，取消释放另触发 GObject critical；Windows 暂停在官方 SDK 子组件精确版本校验，尚未进入本批媒体编译。后续运行收齐独立媒体 fixture 的结果，并保留取消栈与生成媒体作诊断；不关闭断言或放宽版本/资源校验来换取绿灯。
+
+### Linux 私有媒体依赖（正在接入，目标 CI 待验）
+
+[7793422 的诊断运行](https://github.com/CoderSerio/moojicut/actions/runs/44188745337) 收齐了独立媒体检查：Ubuntu 22 下的 MP4 包复制、波形及共享宿主回归通过，取消/导出 worker 和媒体综合检查仍失败。调用栈确认 GES 1.20.3 在 NLE 释放 `GstEvent` 时错误调用 GObject 释放函数，对应[上游修复 ef9962d](https://github.com/GStreamer/gstreamer/commit/ef9962d66aadf5ca32aa684bd8eb146af4c5af27)。末尾 AAC 包完整存在、时间戳正确；旧 qtdemux 重复计算 edit-list 偏移而提前 EOS，对应[上游修复 3d3d2ed](https://github.com/GStreamer/gstreamer/commit/3d3d2ed447cb98e2eb61bda650d363d5adf03677)。同一产物在新解码器中尾音完整，不能通过破坏正确 MP4 格式来兼容旧解码器。另有 1.5×/3× 真实尾段冻结，已增加预览及导出末段条码断言；Mac 隔离 SDK 下媒体检查增至 148 项并全部通过。
+
+当前实现将 Linux 的 GStreamer/GES 固定为 1.28.9，与固定的 FFmpeg、ORC 和 PipeWire 插件源码一起在私有前缀构建。源码、构建工具、配置及安装文件均校验；失败不发布可复用 SDK。Gst/FFmpeg/ORC 和所需编解码插件随包提供，系统 GLib/GTK、显示与音频服务仍共用桌面环境。X11 `ximagesrc`、Wayland `pipewiresrc` 与 PulseAudio 输出显式纳入清单，不能以重新扫描系统旧插件作为缺依赖兜底。
+
+运行库按 ELF 依赖闭包收集并记录来源/许可证，以执行文件相对路径加载；应用启动重建自己的媒体环境，测试使用移动后的包和独立 registry。私有 SDK 成功后缓存复用，后续应用代码修改无需重建底层依赖。新构建、ELF 实际加载、全媒体与窗口回归、完整包启动仍需下一轮目标 CI 证明，本节不表示已交付或 Ubuntu 24 实机通过。

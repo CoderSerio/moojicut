@@ -1,13 +1,12 @@
 """Build and run the real shared media fixtures on Windows/Linux.
 
-Windows runs against a relocated minimal runtime, never the development SDK's
-plugin directory. Linux uses the distribution's development/runtime packages.
+Both platforms run against relocated private media runtimes, never a developer
+SDK's plugin directory or the distribution's older GStreamer plugins.
 All outputs are retained under a new private artifact directory for diagnosis.
 """
 import json
 import os
 from pathlib import Path
-import shlex
 import shutil
 import subprocess
 import sys
@@ -46,7 +45,13 @@ class MediaTests:
             self.runtime_env = runtime.runtime_environment(
                 self.executables, self.directory / "registry.bin", self.env)
         else:
-            raw = shlex.split(self.run("pkg-config", "--cflags", *PACKAGES))
+            import install_linux_gstreamer as linux_sdk
+            import linux_media_runtime
+            home = self.env.get("MOOJICUT_LINUX_MEDIA_SDK")
+            if not home:
+                raise RuntimeError("Set MOOJICUT_LINUX_MEDIA_SDK to the verified private Linux SDK directory")
+            self.env = linux_sdk.sdk_environment(home, self.env)
+            raw, self.libraries = linux_sdk.compiler_arguments(home, PACKAGES)
             # Only third-party includes are system headers. Keep strict warnings
             # on our own code; some GES versions annotate const return values.
             self.includes = []
@@ -55,10 +60,13 @@ class MediaTests:
                     self.includes.extend(("-isystem", flag[2:]))
                 else:
                     self.includes.append(flag)
-            self.libraries = shlex.split(self.run("pkg-config", "--libs", *PACKAGES))
-            self.runtime_env = {key: value for key, value in self.env.items()
-                                if not key.upper().startswith(("GST_", "GSTREAMER_"))}
-            self.runtime_env.update(GST_PLUGIN_PATH_1_0="", GST_REGISTRY_1_0=str(self.directory / "registry.bin"))
+            self.libraries.extend(("-Wl,--disable-new-dtags", "-Wl,-rpath,$ORIGIN/runtime/lib",
+                                   "-Wl,-rpath-link," + str(Path(home) / "lib")))
+            self.runtime_payload = self.directory / "runtime-payload"
+            linux_media_runtime.prepare_runtime(home, self.runtime_payload)
+            shutil.copytree(self.runtime_payload, self.executables, dirs_exist_ok=True)
+            self.runtime_env = linux_media_runtime.runtime_environment(
+                self.executables, self.directory / "registry.bin", self.env)
         self.runtime_env.update(G_DEBUG="fatal-criticals", GST_DEBUG="0", LC_ALL="C", LANG="C")
 
     def run(self, *command, runtime=False, log=None):
@@ -170,7 +178,7 @@ class MediaTests:
             attempt("video-editor-host", lambda: self.host_test(core_archive, moon_home))
         result = {"platform": self.system, "checks": checks, "result": "failed" if failures else "passed",
                   "failures": failures,
-                  "runtime": "relocated private subset" if self.system == "windows" else "distribution packages",
+                  "runtime": "relocated private subset",
                   "scope": "Actual media and worker behavior; GUI, capture devices and permissions are separate gates."}
         (self.directory / "results.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         if failures:

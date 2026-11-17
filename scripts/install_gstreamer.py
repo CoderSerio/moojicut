@@ -153,6 +153,12 @@ int main(void) {
     gst_init(NULL, NULL);
     if (!ges_init()) return 1;
     guint major, minor, micro, nano;
+    gst_version(&major, &minor, &micro, &nano);
+    printf("GStreamer ABI %u.%u.%u.%u\n", major, minor, micro, nano);
+    printf("GStreamer headers %u.%u.%u.%u\n", (guint)GST_VERSION_MAJOR,
+        (guint)GST_VERSION_MINOR, (guint)GST_VERSION_MICRO, (guint)GST_VERSION_NANO);
+    if (major != GST_VERSION_MAJOR || minor != GST_VERSION_MINOR ||
+        micro != GST_VERSION_MICRO || nano != GST_VERSION_NANO) return 7;
     ges_version(&major, &minor, &micro, &nano);
     printf("GES %u.%u.%u.%u\n", major, minor, micro, nano);
     printf("GES headers %u.%u.%u.%u\n", (guint)GES_VERSION_MAJOR,
@@ -268,6 +274,9 @@ def verify_sdk(home, package, execute=run):
                      "/link", *libraries], cwd=scratch)
             probe_output = execute([executable], env=environment)
             print("SDK ABI probe:\n" + probe_output.rstrip(), flush=True)
+            gst_version = package["component_versions"]["gstreamer"]
+            if not re.search(r"^GStreamer ABI " + re.escape(gst_version) + r"\s*$", probe_output, re.M):
+                errors.append("Wrong GStreamer ABI/runtime version: " + probe_output)
             ges_version = package["component_versions"]["gst-editing-services"]
             if not re.search(r"^GES " + re.escape(ges_version) + r"\s*$", probe_output, re.M):
                 errors.append("Wrong GES ABI/runtime version: " + probe_output)

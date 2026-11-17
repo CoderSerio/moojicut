@@ -52,6 +52,8 @@ class GStreamerSDKTest(unittest.TestCase):
         module = "gst-plugins-base"
         if factory in {"nlecomposition", "gesdemux"}:
             module = "gst-editing-services"
+        elif factory == "queue":
+            module = "gstreamer"
         elif factory in {"pitch", "h264parse", "openh264enc", "mfh264enc"}:
             module = "gst-plugins-bad"
         return self.plugin_output(plugin, module=module)
@@ -157,13 +159,14 @@ class GStreamerSDKTest(unittest.TestCase):
 
     def test_actual_component_patches_are_locked_without_relaxing_other_plugins(self):
         home, plugin = self.fixture_sdk()
-        for module in ("gst-editing-services", "gst-plugins-bad"):
+        for module in ("gstreamer", "gst-editing-services", "gst-plugins-base", "gst-plugins-good", "gst-plugins-bad", "gst-libav"):
             actual = self.plugin_output(plugin, "1.28.8.1", module).replace("\n", "\r\n")
             self.assertEqual(sdk.plugin_metadata(actual, home, self.package)["Version"], "1.28.8.1")
         for version, module in (("1.28.8", "gst-editing-services"),
                                 ("1.28.8.10", "gst-editing-services"),
                                 ("1.28.8.10", "gst-plugins-bad"),
-                                ("1.28.8.1", "gst-plugins-base")):
+                                ("1.28.8.10", "gst-plugins-base"),
+                                ("1.28.8.1", "unlocked-module")):
             with self.subTest(version=version, module=module), self.assertRaisesRegex(ValueError, "expected version"):
                 sdk.plugin_metadata(self.plugin_output(plugin, version, module), home, self.package)
 
@@ -175,7 +178,7 @@ class GStreamerSDKTest(unittest.TestCase):
             if command[0] == "cl":
                 return "compiled"
             if str(command[0]).endswith("sdk-probe.exe"):
-                return "GES 1.28.8.1\nGES headers 1.28.8.1\nlibav ABI 61 61 59; mov demux/mp4 mux available\n"
+                return "GStreamer ABI 1.28.8.1\nGES 1.28.8.1\nGES headers 1.28.8.1\nlibav ABI 61 61 59; mov demux/mp4 mux available\n"
             query = command[-1]
             if query == "--version":
                 return "GStreamer 1.28.8\n"
@@ -195,7 +198,7 @@ class GStreamerSDKTest(unittest.TestCase):
         for candidates in self.package["encoder_alternatives"].values():
             for candidate in candidates:
                 self.assertTrue(any(command[-1] == candidate for command in calls), candidate)
-        self.assertIn("SDK ABI probe:\nGES 1.28.8.1", output.getvalue())
+        self.assertIn("SDK ABI probe:\nGStreamer ABI 1.28.8.1", output.getvalue())
         self.assertFalse((home / sdk.REPORT).exists())
 
     def test_verification_reports_all_missing_inputs_and_actual_license_directories(self):
@@ -236,7 +239,7 @@ class GStreamerSDKTest(unittest.TestCase):
                 return "compiled"
             self.assertNotIn("machine-untrusted", kwargs["env"]["PATH"])
             if str(command[0]).endswith("sdk-probe.exe"):
-                return "GES " + probe_version + "\nlibav ABI 61 61 59; mov demux/mp4 mux available\n"
+                return "GStreamer ABI 1.28.8.1\nGES " + probe_version + "\nlibav ABI 61 61 59; mov demux/mp4 mux available\n"
             if command[-1] == "--version":
                 return "GStreamer " + self.package["version"] + "\n"
             return self.factory_output(plugin, command[-1])

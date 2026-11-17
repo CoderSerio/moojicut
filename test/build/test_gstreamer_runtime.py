@@ -240,7 +240,11 @@ class GStreamerRuntimeTest(unittest.TestCase):
         for name in ("soundtouch", "videoparsersbad", "openh264", "wasapi2"):
             self.modules[name] = "gst-plugins-bad"
         for name in runtime.ROOT_DLLS:
-            self.binary("bin/" + name, ["KERNEL32.dll"])
+            imports = ["KERNEL32.dll"]
+            if name == "glib-2.0-0.dll":
+                imports.append("intl-8.dll")
+            self.binary("bin/" + name, imports)
+        self.binary("bin/intl-8.dll", ["KERNEL32.dll"])
         for name in self.plugin_factories:
             imports = ["gstreamer-1.0-0.dll"]
             if name == "soundtouch":
@@ -258,13 +262,16 @@ class GStreamerRuntimeTest(unittest.TestCase):
         self.binary("bin/ffmpeg.exe", data=b"developer command line must never ship")
         components = ("gstreamer-1.0", "gst-editing-services-1.0", "gst-plugins-base-1.0",
                       "gst-plugins-good-1.0", "gst-plugins-bad-1.0", "gst-libav-1.0",
-                      "glib", "ffmpeg", "soundtouch", "openh264")
+                      "glib", "ffmpeg", "soundtouch", "openh264", "proxy-libintl")
         licenses = []
         for component in components:
             path = self.home / "share/licenses" / component / "COPYING"
             path.parent.mkdir(parents=True)
             path.write_text("Fixture license text for " + component, encoding="utf-8")
             licenses.append({"path": path.relative_to(self.home).as_posix(), "sha256": sdk.digest(path)})
+        carrier = self.home / runtime.SHARED_GSTREAMER_LICENSE
+        carrier.write_text("Fixture for the exact shared LGPL-2.0-or-later text", encoding="utf-8")
+        licenses.append({"path": runtime.SHARED_GSTREAMER_LICENSE, "sha256": sdk.digest(carrier)})
         probe = "libav ABI 61 61 59; mov demux/mp4 mux available\n"
         probe += "\n".join(name + " license: LGPL version 2.1 or later"
                            for name in ("libavformat", "libavcodec", "libavutil"))
@@ -339,12 +346,47 @@ class GStreamerRuntimeTest(unittest.TestCase):
             target = destination / record["path"]
             self.assertEqual(sdk.digest(target), record["sha256"])
             self.assertEqual(target.read_bytes(), (self.home / record["sdk_path"]).read_bytes())
-        for component in ("soundtouch", "openh264", "ffmpeg", "glib"):
+        for component in ("soundtouch", "openh264", "ffmpeg", "glib", "proxy-libintl"):
             self.assertIn(component, report["licenses"])
+        self.assertEqual(next(item for item in report["files"] if item["path"] == "intl-8.dll")["component"], "proxy-libintl")
         for stage in self.stage_roots:
             self.assertNotIn(str(stage), json.dumps(report))
             self.assertFalse(stage.exists())
         self.assertEqual(list(self.root.glob(".gstreamer-runtime-*")), [])
+
+    def test_sdk_plugin_license_omissions_use_exact_verified_text_without_changing_source_ownership(self):
+        package = self.fixture_sdk()
+        for component in ("gst-plugins-good-1.0", "gst-libav-1.0"):
+            directory = self.home / "share/licenses" / component
+            (directory / "COPYING").unlink()
+            directory.rmdir()
+        carrier = self.home / runtime.SHARED_GSTREAMER_LICENSE
+        original = carrier.read_bytes()
+        carrier.write_bytes(b"changed after verification")
+        destination = self.root / "app"
+        with self.assertRaisesRegex(ValueError, "license inventory changed"):
+            runtime.prepare_runtime(self.home, destination, package, execute=self.inspect)
+        self.assertFalse(destination.exists())
+        carrier.write_bytes(original)
+        report = runtime.prepare_runtime(self.home, destination, package, execute=self.inspect)
+        for component in ("gst-plugins-good-1.0", "gst-libav-1.0"):
+            license_record = report["licenses"][component]
+            self.assertEqual(license_record["license_source"], runtime.SHARED_GSTREAMER_LICENSE)
+            self.assertEqual(len(license_record["files"]), 1)
+            self.assertTrue(license_record["recipe"].endswith("/" + component + ".recipe"))
+        self.assertEqual(next(item for item in report["files"] if item["path"].endswith("gstlibav.dll"))["component"], "gst-libav-1.0")
+
+    def test_actual_cerbero_meson_configuration_is_accepted_with_lgpl_runtime_evidence(self):
+        package = self.fixture_sdk()
+        report_path = self.home / sdk.REPORT
+        verified = json.loads(report_path.read_text())
+        verified["probe"] = verified["probe"].replace(
+            "--disable-nonfree --disable-programs --disable-network",
+            "-Ddebug=true -Dprograms=disabled -Dprotocols=disabled -Dnetwork=disabled "
+            "-Dnonfree=disabled -Dversion3=disabled -Dprefix=C:/projects/repos/cerbero.git/1.28/build/dist/msvc_x86_64")
+        report_path.write_text(json.dumps(verified), encoding="utf-8")
+        report = runtime.prepare_runtime(self.home, self.root / "app", package, execute=self.inspect)
+        self.assertIn("-Dnonfree=disabled", report["sdk_probe"])
 
     def test_packaging_rejects_missing_or_changed_license_and_cleans_own_staging(self):
         package = self.fixture_sdk()
@@ -393,6 +435,11 @@ class GStreamerRuntimeTest(unittest.TestCase):
                                       "libavcodec license: GPL version 2 or later"),
             verified["probe"].replace("--disable-nonfree", "--enable-nonfree"),
             verified["probe"].replace("--disable-nonfree", "--disable-nonfree --enable-gpl"),
+            verified["probe"].replace("--disable-nonfree", "-Dnonfree=enabled -Dversion3=disabled"),
+            verified["probe"].replace("--disable-nonfree", "-Dnonfree=disabled -Dversion3=enabled"),
+            verified["probe"].replace("--disable-nonfree", "-Dnonfree=disabled -Dversion3=disabled -Dgpl=enabled"),
+            verified["probe"].replace("--disable-nonfree", "-Dnonfree=disabled -Dversion3=disabled -Dnonfree=enabled"),
+            verified["probe"].replace("--disable-nonfree", "-Dprefix=contains--disable-nonfree"),
         )
         for index, probe in enumerate(invalid_probes):
             with self.subTest(index=index):

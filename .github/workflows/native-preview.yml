@@ -29,6 +29,8 @@ on:
       - scripts/install_gstreamer.py
       - scripts/gstreamer_runtime.py
       - scripts/media_tests.py
+      - scripts/install_linux_gstreamer.py
+      - scripts/linux_media_runtime.py
       - scripts/generate_icons.py
       - assets/icons/**
       - assets/brand/mooji-cut/**
@@ -51,7 +53,7 @@ jobs:
           - platform: linux
             runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 50
     env:
       PREVIEW_VERSION: ${{ inputs.version || '0.1.0-alpha.16' }}
       MOOJICUT_SMOKE_SCREENSHOT: ${{ github.workspace }}/.artifacts/${{ matrix.platform }}/smoke.${{ matrix.platform == 'windows' && 'bmp' || 'png' }}
@@ -76,14 +78,51 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          # LLVM's slotted development package conflicts with GStreamer's
-          # libunwind-dev dependency on the Ubuntu 22.04 runner. Keep runtimes.
-          dpkg-query -W 'libunwind*' 'libc++*' || true
-          mapfile -t llvm_unwind_devel < <(dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package}\n' 'libunwind-*-dev' 2>/dev/null | awk '$1 == "ii" && $2 ~ /^libunwind-[0-9]+-dev(:[^ ]+)?$/ {print $2}')
-          if ((${#llvm_unwind_devel[@]})); then
-            sudo apt-get remove -y "${llvm_unwind_devel[@]}"
-          fi
-          sudo apt-get install -y build-essential pkg-config gdb libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev xvfb dbus-x11 fonts-noto-cjk libxtst6 libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libges-1.0-dev libavformat-dev libavcodec-dev libavutil-dev libportal-dev libportal-gtk3-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire
+          sudo apt-get install -y build-essential pkg-config gdb bison flex nasm patchelf libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev xvfb dbus-x11 fonts-noto-cjk libxtst-dev libportal-dev libportal-gtk3-dev libvpx-dev libflac-dev libsoundtouch-dev libopenh264-dev libpulse-dev libx11-dev libxext-dev libxfixes-dev libxdamage-dev libpipewire-0.3-dev libspa-0.2-dev
+      - name: Set up pinned Linux media build tools
+        if: runner.os == 'Linux'
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'media-build-tools'
+          lock = json.loads(pathlib.Path('build/linux-media-sdk.json').read_text())
+          subprocess.run([sys.executable, '-m', 'venv', root], check=True)
+          subprocess.run([root / 'bin/python', '-m', 'pip', 'install', '--disable-pip-version-check',
+                          *[name + '==' + version for name, version in lock['tools'].items()]], check=True)
+          with open(os.environ['GITHUB_PATH'], 'a') as out:
+              out.write(str(root / 'bin') + '\n')
+          PY
+      - name: Restore private Linux media SDK
+        if: runner.os == 'Linux'
+        id: linux_media_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/linux-media-sdk
+          key: linux-media-ubuntu22-x64-${{ hashFiles('build/linux-media-sdk.json', 'scripts/install_linux_gstreamer.py') }}
+      - name: Restore locked Linux media sources
+        if: runner.os == 'Linux'
+        id: linux_sources_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/linux-media-sources
+          key: linux-media-sources-${{ hashFiles('build/linux-media-sdk.json') }}
+      - name: Build and validate private Linux media SDK
+        if: runner.os == 'Linux'
+        run: |
+          python scripts/install_linux_gstreamer.py --prefix "$RUNNER_TEMP/linux-media-sdk" --cache "$RUNNER_TEMP/linux-media-sources" --jobs 4
+          echo "MOOJICUT_LINUX_MEDIA_SDK=$RUNNER_TEMP/linux-media-sdk" >> "$GITHUB_ENV"
+      - name: Save validated Linux media SDK
+        if: runner.os == 'Linux' && steps.linux_media_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/linux-media-sdk
+          key: ${{ steps.linux_media_cache.outputs.cache-primary-key }}
+      - name: Save locked Linux media sources
+        if: runner.os == 'Linux' && steps.linux_sources_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/linux-media-sources
+          key: ${{ steps.linux_sources_cache.outputs.cache-primary-key }}
       - name: Install pinned MoonBit compiler and core
         id: moon_install
         run: python scripts/install_moon.py "${{ runner.temp }}/moonbit"
