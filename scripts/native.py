@@ -525,7 +525,7 @@ class NativeBuild:
                  "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath," + str(sparkle),
                  *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                  "-o", termination)
-        for mode in ("idle-gcd", "async-event", "worker-event"):
+        for mode in ("idle-gcd", "async-event", "worker-event", "editor-close-gcd", "editor-failure"):
             self.run(termination, mode)
         self.text_tests()
 

@@ -74,6 +74,14 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
     recording_flow_value(self.flowHandle,MC_RECORDING_CAN_STOP) == 1); }
 - (BOOL)exporting { return self.editor.exporting; }
 - (NSSet<NSNumber *> *)visibleEditorWindowNumbers { return self.editor.visibleWindowNumbers ?: [NSSet set]; }
+- (void)requestTermination:(void (^)(NSError *))completion {
+    if (self.captureInProgress) { completion(MCRecordingError(@"请先结束录屏。")); return; }
+    if (!self.editor) { completion(nil); return; }
+    [self.editor requestTermination:^(NSError *error) {
+        if (error) [self.editor show];
+        completion(error);
+    }];
+}
 - (BOOL)prepareForTermination:(NSError **)error {
     if (self.captureInProgress || self.exporting) {
         if (error) *error = MCRecordingError(@"请先结束录屏或导出。");

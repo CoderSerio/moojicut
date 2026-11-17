@@ -328,7 +328,10 @@ bool mc_gst_engine_seek(MCGstEngine *engine, double milliseconds, double rate, b
         GST_MESSAGE_ASYNC_DONE | GST_MESSAGE_ERROR);
     if (!done) return fail(error, capacity, "Preview seek timed out", NULL);
     if (GST_MESSAGE_TYPE(done) == GST_MESSAGE_ERROR) {
-        GError *failure = NULL; gst_message_parse_error(done, &failure, NULL); gst_message_unref(done);
+        GError *failure = NULL; gchar *debug = NULL;
+        gst_message_parse_error(done, &failure, &debug);
+        if (debug) g_printerr("GStreamer seek error from %s: %s\n", GST_OBJECT_NAME(GST_MESSAGE_SRC(done)), debug);
+        g_free(debug); gst_message_unref(done);
         return fail(error, capacity, "Preview seek failed", failure);
     }
     gst_message_unref(done);
@@ -407,7 +410,10 @@ int mc_gst_engine_poll(MCGstEngine *engine, char *error, size_t capacity) {
     while ((message = gst_bus_pop(engine->bus))) {
         GstMessageType type = GST_MESSAGE_TYPE(message);
         if (type == GST_MESSAGE_ERROR) {
-            GError *failure = NULL; gst_message_parse_error(message, &failure, NULL);
+            GError *failure = NULL; gchar *debug = NULL;
+            gst_message_parse_error(message, &failure, &debug);
+            if (debug) g_printerr("GStreamer processing error from %s: %s\n", GST_OBJECT_NAME(GST_MESSAGE_SRC(message)), debug);
+            g_free(debug);
             fail(error, capacity, "Media processing failed", failure); gst_message_unref(message); return MC_GST_ERROR;
         }
         gst_message_unref(message);

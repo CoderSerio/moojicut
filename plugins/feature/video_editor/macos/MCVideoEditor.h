@@ -12,6 +12,8 @@ NS_ASSUME_NONNULL_BEGIN
 // Retries durable draft persistence without closing the editor. A failed write
 // keeps the in-memory document available and cancels application termination.
 - (BOOL)prepareForTermination:(NSError **)error;
+// Completion follows root CLOSE_MEDIA and all actual native cleanup; errors keep edits open.
+- (void)requestTermination:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)runSmokeInDirectory:(NSURL *)directory error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

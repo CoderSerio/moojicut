@@ -161,9 +161,16 @@ class MSVCRedist:
         if not source.is_file() or source.is_symlink() or source.resolve().parent != directory:
             raise ValueError("Missing official VS Redist dependency: " + str(source))
         if name not in self.records:
-            environment = dict(self.environment, MOOJICUT_CRT_FILE=str(source))
             powershell = Path(self.environment_lookup.get("systemroot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+            # pwsh 7 -> Python -> powershell.exe otherwise inherits PS7's
+            # incompatible modules. Use only this Windows PowerShell's modules,
+            # removing every case variant before setting the child-only value.
+            environment = {key: value for key, value in self.environment.items()
+                           if key.casefold() != "psmodulepath"}
+            environment.update(MOOJICUT_CRT_FILE=str(source), PSMODULEPATH=str(powershell.parent / "Modules"))
             script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+                      "$env:PSModulePath=$PSHOME+'\\Modules'; "
+                      "Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop; "
                       "$p=$env:MOOJICUT_CRT_FILE; $s=Get-AuthenticodeSignature -LiteralPath $p; "
                       "$v=(Get-Item -LiteralPath $p).VersionInfo; "
                       "@{status=$s.Status.ToString(); signer=$s.SignerCertificate.Subject; "

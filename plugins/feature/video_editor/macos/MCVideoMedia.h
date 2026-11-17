@@ -36,21 +36,30 @@ NS_ASSUME_NONNULL_BEGIN
 // When the item is loading, queues this intent until ready. pause/item changes/
 // close cancel it. Playback errors are reported by previewPlaybackError.
 - (void)play;
+// Terminal main-thread result, including cancellation while waiting for readiness.
+- (void)playWithCompletion:(void (^)(NSError * _Nullable error))completion;
 - (void)pause;
 // Output/composition time. A newer seek, plan or close invalidates older callbacks.
 // Only the current request delivers completion, on the main thread.
 - (void)seekOutputMilliseconds:(double)milliseconds completion:(nullable void (^)(BOOL finished))completion;
+// Orchestrator variant: every accepted request delivers once, even when superseded.
+- (void)seekOutputMilliseconds:(double)milliseconds terminal:(void (^)(BOOL finished))completion;
 // Temporary source preview, for dragging a trim boundary outside the kept plan.
 // The authoritative composition is retained. While previewingSource, the host
 // should not use currentOutputMilliseconds to update its composed playhead.
 - (void)previewSourceMilliseconds:(double)milliseconds completion:(nullable void (^)(BOOL finished))completion;
 - (void)restorePlanPreview;
 // Writes a temporary sibling, validates actual media, then publishes atomically.
-// Requires applyPlan first. Never modifies the original input file.
+// Requires applyPlan first. Never modifies the original input file. Completion
+// always delivers exactly once, including cancellation and close cleanup.
 - (void)exportToURL:(NSURL *)url completion:(void (^)(NSURL * _Nullable, NSError * _Nullable))completion;
 - (void)cancelExport;
-// Idempotent. Cancels pending work and suppresses callbacks after closing.
+// Idempotent cancellation. Legacy seek presentation callbacks are suppressed;
+// terminal seek/play/export callbacks still acknowledge their resources.
 - (void)close;
+// Internal lifecycle barrier: waits for seeks/export cleanup and readiness delivery.
+// Unlike presentation callbacks, this completion is never suppressed by close.
+- (void)closeWithCompletion:(void (^)(void))completion;
 @end
 
 NS_ASSUME_NONNULL_END

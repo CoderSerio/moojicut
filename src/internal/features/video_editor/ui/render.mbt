@@ -610,19 +610,21 @@ pub fn frame(id : Int32, width : Double, height : Double) -> String {
       "",
     )
     semantics.push(semantic(s, "playhead", "slider", Json(s.source_time)))
-    if s.message != "" {
+    let message = if s.persistence_error != "" { s.persistence_error } else { s.message }
+    let message_error = s.persistence_error != "" || s.message_error
+    if message != "" {
       draw_text(
         commands,
         s,
         { x: 40, y: s.height - 47, width: s.width - 80, height: 18, },
-        s.message,
-        if s.message_error {
+        message,
+        if message_error {
           p.text
         } else {
           p.muted
         },
         11,
-        if s.message_error {
+        if message_error {
           "medium"
         } else {
           "regular"

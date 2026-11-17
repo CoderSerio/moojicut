@@ -434,7 +434,9 @@ fn project_frame(s : UI) -> Json {
     )
   }
   semantics.push(semantic(s, "playhead", "slider", Json(s.source_time)))
-  let status = if s.crop_mode {
+  let status = if s.persistence_error != "" {
+    s.persistence_error
+  } else if s.crop_mode {
     "\{s.crop_candidate.width.to_int()}×\{s.crop_candidate.height.to_int()} · Enter 应用 · Esc 取消"
   } else if s.clip_drag_active {
     if s.clip_move_valid {
@@ -455,7 +457,7 @@ fn project_frame(s : UI) -> Json {
       s,
       { x: 40, y: s.height - 44, width: s.width - 330, height: 18, },
       status,
-      if s.message_error {
+      if s.persistence_error != "" || s.message_error {
         p.text
       } else {
         p.muted

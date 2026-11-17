@@ -43,6 +43,7 @@ priv struct UI {
   mut saved_time : Double
   mut message : String
   mut message_error : Bool
+  mut persistence_error : String
   mut export_busy : Bool
   mut appearance : String
   mut preview_rate : Double
@@ -269,6 +270,7 @@ pub fn open(snapshot : String) -> Int32 {
     saved_time: s.start,
     message: "",
     message_error: false,
+    persistence_error: "",
     export_busy: false,
     appearance: "dark",
     preview_rate: 1,

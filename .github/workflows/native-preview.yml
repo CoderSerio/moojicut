@@ -79,7 +79,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config gdb bison flex nasm patchelf libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev xvfb dbus-x11 fonts-noto-cjk libxtst-dev libportal-dev libportal-gtk3-dev libvpx-dev libflac-dev libsoundtouch-dev libopenh264-dev libpulse-dev libx11-dev libxext-dev libxfixes-dev libxdamage-dev libpipewire-0.3-dev libspa-0.2-dev
+          sudo apt-get install -y build-essential pkg-config gdb bison flex nasm patchelf libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev xvfb dbus-x11 fonts-noto-cjk libxtst-dev libportal-dev libportal-gtk3-dev libvpx-dev libsoundtouch-dev libopenh264-dev libpulse-dev libx11-dev libxext-dev libxfixes-dev libxdamage-dev libpipewire-0.3-dev libspa-0.2-dev
       - name: Set up pinned Linux media build tools
         if: runner.os == 'Linux'
         run: |
@@ -189,6 +189,7 @@ jobs:
         with:
           name: media-${{ matrix.platform }}-x64
           path: |
+            .artifacts/${{ matrix.platform }}/runtime-checks.json
             .artifacts/${{ matrix.platform }}/media-tests/**/results.json
             .artifacts/${{ matrix.platform }}/media-tests/**/*.log
             .artifacts/${{ matrix.platform }}/media-tests/**/runtime/manifest.json

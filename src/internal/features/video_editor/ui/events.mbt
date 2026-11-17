@@ -343,6 +343,12 @@ pub fn event(id : Int32, event_json : String) -> String {
           s.focus = "play"
         }
       }
+      "persistenceStatus" => {
+        let message = string(input, "message")
+        // Persistence is an independent host fact. A transport result or a
+        // new gesture cannot dismiss it; only durable save acknowledgement can.
+        s.persistence_error = message
+      }
       "previewRateStatus" => {
         let rate = number(input, "rate")
         let message = string(input, "message")

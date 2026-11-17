@@ -26,8 +26,10 @@ static gboolean check(gboolean condition, const char *message) {
 
 static gboolean bus_error(GstMessage *message) {
     if (GST_MESSAGE_TYPE(message) != GST_MESSAGE_ERROR) return FALSE;
-    GError *error = NULL;
-    gst_message_parse_error(message, &error, NULL);
+    GError *error = NULL; gchar *debug = NULL;
+    gst_message_parse_error(message, &error, &debug);
+    if (debug) fprintf(stderr, "GStreamer fixture error from %s: %s\n", GST_OBJECT_NAME(GST_MESSAGE_SRC(message)), debug);
+    g_free(debug);
     g_snprintf(error_text, sizeof error_text, "%s", error ? error->message : "GStreamer error");
     g_clear_error(&error);
     return TRUE;

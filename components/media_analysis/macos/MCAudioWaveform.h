@@ -8,5 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)readURL:(NSURL *)url durationMilliseconds:(double)duration
     completion:(void (^)(NSArray<NSNumber *> * _Nullable peaks, NSError * _Nullable error))completion;
 - (void)cancel;
+// Always delivered on main after the reader and its buffers have been released.
+- (void)cancelWithCompletion:(void (^)(void))completion;
 @end
 NS_ASSUME_NONNULL_END

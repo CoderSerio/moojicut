@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)stopRecording;
 - (void)resumeLastDraft;
 - (BOOL)prepareForTermination:(NSError **)error;
+- (void)requestTermination:(void (^)(NSError * _Nullable error))completion;
 + (BOOL)runSmokeInDirectory:(NSURL *)directory error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

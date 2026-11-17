@@ -42,6 +42,15 @@
       "root": "orc-0.4.44",
       "archive": "orc-0.4.44.tar.xz",
       "max_unpacked_bytes": 8000000
+    },
+    "flac": {
+      "url": "https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0.tar.xz",
+      "bytes": 1078872,
+      "sha256": "f2c1c76592a82ffff8413ba3c4a1299b6c7ab06c734dee03fd88630485c2b920",
+      "version": "1.5.0",
+      "root": "flac-1.5.0",
+      "archive": "flac-1.5.0.tar.xz",
+      "max_unpacked_bytes": 20000000
     }
   },
   "meson_options": [
@@ -234,7 +243,10 @@
     "lib/pkgconfig/libavfilter.pc",
     "bin/orcc",
     "lib/liborc-0.4.so.0",
-    "lib/pkgconfig/orc-0.4.pc"
+    "lib/pkgconfig/orc-0.4.pc",
+    "include/FLAC/stream_encoder.h",
+    "lib/libFLAC.so.14",
+    "lib/pkgconfig/flac.pc"
   ],
   "licenses": {
     "gstreamer": [
@@ -258,6 +270,9 @@
     ],
     "orc": [
       "COPYING"
+    ],
+    "flac": [
+      "COPYING.Xiph"
     ]
   },
   "pipewire_sources": [
@@ -278,7 +293,6 @@
     "nasm",
     "libglib2.0-dev",
     "libvpx-dev",
-    "libflac-dev",
     "libsoundtouch-dev",
     "libopenh264-dev",
     "libpulse-dev",
@@ -291,6 +305,7 @@
     "libspa-0.2-dev"
   ],
   "policy": {
+    "flac": "Private FLAC 1.5.0 provides the 32-bit PCM advertised by GStreamer 1.28. Only the BSD codec library and headers are installed; no system libFLAC fallback or CLI. The ABI probe performs real S32 FLAC encoding.",
     "glib": "System GLib >= 2.64; GTK and media must share the process GLib. No bundled GLib.",
     "pipewire": "Only the unmodified upstream GStreamer plugin sources are compiled; OS PipeWire client/SPA and daemon remain system integration dependencies.",
     "redistribution": "SDK is not a release payload. Packaging must resolve ELF dependency closure, include dependency licenses/sources, relocate and revalidate.",
@@ -306,6 +321,17 @@
     "default_library=shared",
     "buildtype=release",
     "b_ndebug=false"
+  ],
+  "flac_options": [
+    "--enable-shared",
+    "--disable-static",
+    "--with-pic",
+    "--disable-cpplibs",
+    "--disable-programs",
+    "--disable-examples",
+    "--disable-doxygen-docs",
+    "--disable-ogg",
+    "--disable-version-from-git"
   ],
   "tool_artifacts": {
     "meson": {

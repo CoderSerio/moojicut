@@ -319,8 +319,10 @@ class DesktopBuild:
         self.canvas_smoke()
         self.video_smoke()
 
-    def video_smoke(self):
+    def video_smoke(self, prepared=False):
         if not hasattr(self.media, "fixtures"):
+            if prepared:
+                raise RuntimeError("Media fixtures did not compile; cannot run the editor window fixture.")
             self.media_tests()
         directory = Path(tempfile.mkdtemp(prefix="video-editor-", dir=self.directory))
         sources = native_sources(self.system, "platform.app", "platform.media")
@@ -381,16 +383,38 @@ class DesktopBuild:
     def test(self):
         self.core_tests()
         self.build()
-        self.media_tests()
-        self.verify_binary(self.executable)
-        self.canvas_smoke()
-        self.video_smoke()
+        self.runtime_tests()
+
+    def runtime_tests(self, app_smoke=False):
+        # Each gate owns its process/window/output. Run independent GUI checks
+        # even if one media fixture fails, then reject the whole build. This
+        # collects target-platform failures in one CI run without shipping a
+        # partially tested package or recompiling a failed fixture twice.
+        checks = [("media", self.media_tests),
+                  ("native-core", lambda: self.verify_binary(self.executable))]
+        if app_smoke:
+            checks.append(("native-ui-smoke", lambda: self.run(self.executable, "--smoke", env=self.app_test_environment())))
+        checks.extend((("shared-canvas", self.canvas_smoke),
+                       ("video-editor", lambda: self.video_smoke(prepared=True))))
+        results, failures = {}, []
+        for name, action in checks:
+            try:
+                action()
+            except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+                results[name] = {"result": "failed", "error": str(error)}
+                failures.append(name)
+                print("FAILED " + name + ": " + str(error), file=sys.stderr, flush=True)
+            else:
+                results[name] = {"result": "passed"}
+        report = {"result": "failed" if failures else "passed", "checks": results}
+        (self.directory / "runtime-checks.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        if failures:
+            raise RuntimeError("Desktop runtime checks failed: " + ", ".join(failures))
 
     def release(self):
         self.core_tests()
         self.build()
-        self.media_tests()
-        self.smoke()
+        self.runtime_tests(app_smoke=True)
         self.verify_bundle(self.bundle)
         releases = ROOT / "dist/releases"
         releases.mkdir(parents=True, exist_ok=True)

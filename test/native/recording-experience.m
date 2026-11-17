@@ -15,12 +15,11 @@
 - (void)cancelExportKeepingDraft;
 - (void)buildWindow;
 - (void)sendUIEvent:(NSDictionary *)event;
-- (BOOL)applyCommand:(NSDictionary *)command error:(NSError **)error;
 - (BOOL)applyMediaPlan:(NSDictionary *)plan error:(NSError **)error;
 - (BOOL)saveDraft:(NSError **)error;
 - (void)tick;
 - (BOOL)confirmCancelExport;
-- (NSURL *)chooseExportDestination;
+- (void)chooseExportDestinationWithCompletion:(void (^)(NSURL *))completion;
 - (NSString *)defaultExportName;
 @end
 @interface MCMacRecordingController (RecordingExperienceFixture)
@@ -118,10 +117,10 @@ static BOOL Wait(BOOL (^condition)(void), double seconds) {
 @property BOOL rejectNextPlan;
 @end
 @implementation FixtureVideoEditor
-- (NSURL *)chooseExportDestination {
-    // Cancel only the OS dialog; all production busy/status logic still runs.
+- (void)chooseExportDestinationWithCompletion:(void (^)(NSURL *))completion {
+    // Cancel only the OS dialog; all production root busy/status logic runs.
     assert(self.exporting);NSError *error=nil;assert(![self prepareForTermination:&error] && error);
-    return nil;
+    completion(nil);
 }
 - (BOOL)confirmCancelExport {
     // A modal close confirmation can finish the current real encoder.
@@ -547,12 +546,13 @@ static void CheckProductionEditor(NSURL *directory) {
     assert([[NSData dataWithContentsOfURL:sourceURL] isEqual:source]);
     NSDictionary *planBefore=State(editor)[@"plan"];
     editor.rejectNextPlan=YES;Click(editor,@"project-mute");
+    assert(Wait(^BOOL{return !editor.rejectNextPlan;},10));
     assert(![[editor valueForKey:@"mediaSynchronized"] boolValue] && !media.playbackRequested);
     assert(![Node(editor,@"play")[@"enabled"] boolValue] && ![Node(editor,@"export")[@"enabled"] boolValue]);
     __block BOOL refused=NO;
     [editor exportToURL:[directory URLByAppendingPathComponent:@"must-not-export.mp4"] copyToPasteboard:NO completion:^(NSURL *url,NSError *problem){refused=YES;assert(!url && problem);}];
     assert(refused && ![files fileExistsAtPath:[directory URLByAppendingPathComponent:@"must-not-export.mp4"].path]);
-    Click(editor,@"undo");assert([[editor valueForKey:@"mediaSynchronized"] boolValue]);assert([State(editor)[@"plan"] isEqual:planBefore]);
+    Click(editor,@"undo");assert(Wait(^BOOL{return [[editor valueForKey:@"mediaSynchronized"] boolValue] && ![[editor valueForKey:@"pendingSeek"] boolValue];},10));assert([State(editor)[@"plan"] isEqual:planBefore]);
 
     // Real filesystem failure after a core commit keeps the authoritative edit
     // in memory; window close, app termination and export all remain retryable.
@@ -564,7 +564,7 @@ static void CheckProductionEditor(NSURL *directory) {
     assert([State(editor)[@"revision"] integerValue]>revision.integerValue && [[editor valueForKey:@"draftDirty"] boolValue]);
     NSDictionary *unsaved=State(editor)[@"document"];
     // Playback status/rate acknowledgements must not erase the unsaved warning.
-    assert(Wait(^BOOL{return media.player.currentItem.status==AVPlayerItemStatusReadyToPlay;},10));
+    assert(Wait(^BOOL{return media.player.currentItem.status==AVPlayerItemStatusReadyToPlay && ![[editor valueForKey:@"pendingSeek"] boolValue];},10));
     Click(editor,@"preview-rate");Click(editor,@"rate-1");[editor tick];
     BOOL savedWarning=NO;
     for(NSDictionary *draw in Canvas(editor).frameDescription[@"commands"])
@@ -606,12 +606,13 @@ static void CheckProductionEditor(NSURL *directory) {
     assert(done && !editor.exporting);
     done=NO;[editor exportToURL:[directory URLByAppendingPathComponent:@"missing/result.mp4"] copyToPasteboard:NO completion:^(NSURL *url,NSError *problem){assert(!url && problem);done=YES;}];
     assert(Wait(^BOOL{return done;},30) && !editor.exporting);
+    __block NSUInteger closed=0;editor.onClose=^{closed++;};
     done=NO;[editor exportToURL:[directory URLByAppendingPathComponent:@"close-race.mp4"] copyToPasteboard:NO completion:^(NSURL *url,NSError *problem){assert(url && !problem);done=YES;}];
-    assert([editor windowShouldClose:window] && done && !editor.exporting);
-    done=NO;[editor exportToURL:[directory URLByAppendingPathComponent:@"after-close-race.mp4"] copyToPasteboard:NO completion:^(NSURL *url,NSError *problem){assert(url && !problem);done=YES;}];
-    assert(Wait(^BOOL{return done;},30) && [editor valueForKey:@"window"]==window);
-    __block NSUInteger closed=0;editor.onClose=^{closed++;};[window close];
-    assert(closed==1 && ![editor valueForKey:@"timer"] && [[editor valueForKey:@"ui"] intValue]==-1 && [[editor valueForKey:@"session"] intValue]==-1);
+    // A real export can finish inside the close confirmation. The root then
+    // closes only after that ticket and every native callback have drained.
+    assert(![editor windowShouldClose:window] && done && !editor.exporting);
+    assert(Wait(^BOOL{return closed==1;},10));
+    assert(![editor valueForKey:@"timer"] && [[editor valueForKey:@"editor"] intValue]==0);
     [editor tick];[editor sendUIEvent:@{@"type":@"activate",@"id":@"play"}];assert(!media.playbackRequested);
     assert([[NSData dataWithContentsOfURL:sourceURL] isEqual:source] && [[NSData dataWithContentsOfURL:legacyURL] isEqual:legacy]);
     CancelClosingEditor *cancelEditor=[[CancelClosingEditor alloc] initWithDraftDirectory:directory error:&error];assert(cancelEditor);[cancelEditor buildWindow];
@@ -625,18 +626,38 @@ static void CheckProductionEditor(NSURL *directory) {
     MCVideoMedia *forcedMedia=[forced valueForKey:@"media"];__block NSUInteger late=0;
     [forced exportToURL:cancelTarget copyToPasteboard:NO completion:^(__unused NSURL *url,__unused NSError *problem){late++;}];
     [[forced valueForKey:@"window"] close];
-    assert(!forced.exporting && ![forced valueForKey:@"timer"]);
-    assert(Wait(^BOOL{return !forcedMedia.exporting;},30) && late==0);
+    assert(forced.exporting); // Cancellation request is not encoder completion.
+    assert(Wait(^BOOL{return [[forced valueForKey:@"closed"] boolValue];},30));
+    assert(!forced.exporting && !forcedMedia.exporting && ![forced valueForKey:@"timer"] && late==0);
     assert([[NSData dataWithContentsOfURL:cancelTarget] isEqual:original]);
     for(NSString *name in [files contentsOfDirectoryAtPath:directory.path error:&error])assert(![name hasPrefix:@".MoojiCut-media-"]);
 }
+static void CheckChooserDrain(NSURL *directory) {
+    // Both a queued panel and an actually presented AppKit panel are cancelled
+    // before the root begins closing. No late chooser may start an export.
+    for(NSUInteger shown=0;shown<2;shown++) {
+        NSError *error=nil;
+        MCVideoEditor *editor=[[MCVideoEditor alloc] initWithDraftDirectory:directory error:&error];assert(editor);
+        [editor buildWindow]; Click(editor,@"export");
+        NSSavePanel *panel=[editor valueForKey:@"savePanel"];assert(panel && editor.exporting);
+        panel.directoryURL=directory;
+        if(shown)assert(Wait(^BOOL{return panel.visible;},10));
+        __block NSUInteger completions=0;
+        [editor requestTermination:^(NSError *failure){assert(!failure);completions++;}];
+        assert(Wait(^BOOL{return completions==1;},10));
+        assert(!editor.exporting && !panel.visible && [[editor valueForKey:@"editor"] intValue]==0);
+        __block BOOL lateTurn=NO;CFRunLoopPerformBlock(CFRunLoopGetMain(),kCFRunLoopCommonModes,^{lateTurn=YES;});
+        assert(Wait(^BOOL{return lateTurn;},1) && completions==1);
+    }
+}
+
 int main(int argc,const char *argv[]) {
     @autoreleasepool {
         assert(argc==2);moonbit_init();[NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];CheckLifecycle();CheckSelection();CheckSelectionEntry();
         NSURL *directory=[NSURL fileURLWithPath:@(argv[1]) isDirectory:YES];NSError *error=nil;
         CheckMediaAcknowledgements(directory);
         if(![MCVideoEditor runSmokeInDirectory:directory error:&error]){NSLog(@"Production media smoke: %@",error);return 1;}
-        CheckDraftRecovery(directory);CheckProductionEditor(directory);
+        CheckDraftRecovery(directory);CheckChooserDrain(directory);CheckProductionEditor(directory);
         puts("PASS: shared recording flow/UI, asynchronous start/stop/encoder acknowledgements, v2 input/core/media, v1 migration/recovery, durable retries/termination refusal and export close races; source/legacy retained");
     }
 }

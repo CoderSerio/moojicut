@@ -15,6 +15,7 @@ static NSString *FixtureMode, *DefaultsSuite;
 static NSURL *FixtureDirectory;
 static atomic_int ChildPID;
 static BOOL TerminationDelegateReturned;
+static NSUInteger EditorCloseCalls, EditorSaveFailures;
 
 static void Cleanup(void) {
     if (DefaultsSuite) [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:DefaultsSuite];
@@ -31,10 +32,12 @@ static void Check(BOOL condition, NSString *message) {
 
 @interface MCHostCaptureFixture : MCCaptureController
 @property BOOL fixtureBusy;
+@property NSUInteger captureRequests;
 @property NSString *lastNotice;
 @end
 @implementation MCHostCaptureFixture
 - (BOOL)busy { return self.fixtureBusy; }
+- (void)capture { self.captureRequests++; }
 - (void)showEditingNotice:(NSString *)message { self.lastNotice = message; }
 @end
 
@@ -48,11 +51,28 @@ static void Check(BOOL condition, NSString *message) {
 - (void)startRecording { self.starts++; }
 - (void)resumeLastDraft { self.resumes++; }
 - (void)stopRecording { self.stops++; }
+- (void)requestTermination:(void (^)(NSError *))completion {
+    NSError *error=nil; [self prepareForTermination:&error]; completion(error);
+}
 - (BOOL)prepareForTermination:(NSError **)error {
     if (!self.fixtureSaveFailure) return YES;
     if (error) *error = [NSError errorWithDomain:@"DraftFixture" code:1
         userInfo:@{NSLocalizedDescriptionKey:@"Cannot save the retained editing draft"}];
     return NO;
+}
+@end
+
+@interface MCHostDelayedRecordingFixture : MCMacRecordingController
+@end
+@implementation MCHostDelayedRecordingFixture
+- (void)requestTermination:(void (^)(NSError *))completion {
+    EditorCloseCalls++;
+    CFRunLoopPerformBlock(CFRunLoopGetMain(),kCFRunLoopCommonModes,^{
+        Check(TerminationDelegateReturned,@"editor terminal result follows AppKit delegate return");
+        BOOL fail=[FixtureMode isEqual:@"editor-failure"] && EditorCloseCalls==1;
+        completion(fail ? [NSError errorWithDomain:@"DraftFixture" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Retained unsaved draft"}]:nil);
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 @end
 
@@ -93,6 +113,11 @@ static void CheckRecordingEntryRouting(void) {
     [host startRecording:nil]; [host resumeRecordingDraft:nil]; [host updateRecordingState];
     Check(recording.starts == 1 && recording.resumes == 1 && host.recordMenuItem.enabled,
           @"recording entries become available after the screenshot finishes");
+    host.terminationPending=YES;
+    [host capture:nil]; [host startRecording:nil]; [host resumeRecordingDraft:nil];
+    Check(capture.captureRequests==0 && recording.starts==1 && recording.resumes==1,@"draining app rejects new capture work");
+    host.terminationPending=NO; [host capture:nil];
+    Check(capture.captureRequests==1,@"cancelled termination restores capture entry");
     recording.fixtureBusy = YES;
     [host updateRecordingState];
     Check(resume.enabled && !host.recordMenuItem.enabled,
@@ -115,7 +140,13 @@ static void CheckRecordingEntryRouting(void) {
 @end
 @implementation MCTerminationApplication
 - (void)replyToApplicationShouldTerminate:(BOOL)shouldTerminate {
-    Check(NSThread.isMainThread && shouldTerminate,@"termination reply must approve on the main thread");
+    Check(NSThread.isMainThread,@"termination reply must run on main");
+    if(!shouldTerminate) {
+        Check([FixtureMode isEqual:@"editor-failure"] && EditorSaveFailures==1 && self.replyCount==0,@"only the first failed save vetoes quit");
+        [super replyToApplicationShouldTerminate:NO];
+        [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:NO block:^(__unused NSTimer *timer){ [NSApp terminate:nil]; }];
+        return;
+    }
     Check(TerminationDelegateReturned,@"termination reply must follow the delegate's return");
     Check(++self.replyCount==1,@"termination must be approved exactly once");
     [super replyToApplicationShouldTerminate:shouldTerminate];
@@ -149,6 +180,9 @@ static void CheckRecordingEntryRouting(void) {
     self.pendingCompletion=completion;
     if ([FixtureMode isEqual:@"idle-gcd"]) {
         [super shutdownWithCompletion:^{ [self finishFixtureShutdown]; }];
+    } else if ([FixtureMode hasPrefix:@"editor-"]) {
+        CFRunLoopPerformBlock(CFRunLoopGetMain(),kCFRunLoopCommonModes,^{ [self finishFixtureShutdown]; });
+        CFRunLoopWakeUp(CFRunLoopGetMain());
     } else if ([FixtureMode isEqual:@"async-event"]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
             [self finishFixtureShutdown];
@@ -170,7 +204,8 @@ static void CheckRecordingEntryRouting(void) {
 - (void)applicationDidFinishLaunching:(__unused NSNotification *)notification {
     // Intentionally skip normal startup: no capture, clipboard, windows, tray,
     // shortcuts, updates, or access to the user's real preferences/packages.
-    if ([FixtureMode isEqual:@"idle-gcd"]) {
+    if ([FixtureMode hasPrefix:@"editor-"]) self.recordingController=[MCHostDelayedRecordingFixture new];
+    if ([FixtureMode isEqual:@"idle-gcd"] || [FixtureMode isEqual:@"editor-close-gcd"]) {
         dispatch_async(dispatch_get_main_queue(),^{ [NSApp terminate:nil]; });
         return;
     }
@@ -212,8 +247,13 @@ static void CheckRecordingEntryRouting(void) {
         [NSApp terminate:nil];
     }];
 }
+- (void)showVideoDraftSaveError:(NSError *)error {
+    Check([FixtureMode isEqual:@"editor-failure"] && error && self.fixtureManager.shutdownCalls==0 && !self.terminationPending,@"failed editor save must restore app before plugin shutdown");
+    EditorSaveFailures++;
+}
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
-    Check(++self.terminationCalls==1,@"termination delegate must be called once");
+    Check(++self.terminationCalls<=([FixtureMode isEqual:@"editor-failure"] ? 2u:1u),@"unexpected termination attempt");
+    TerminationDelegateReturned=NO;
     // This is the production implementation, not a copy of its algorithm.
     self.fixtureReply=[super applicationShouldTerminate:sender];
     self.fixtureManager.terminateReturned=YES;
@@ -231,6 +271,7 @@ static void CheckRecordingEntryRouting(void) {
     Check(idle ? replies<=1 : replies==1,@"deferred shutdown must receive exactly one AppKit reply");
     if ([FixtureMode isEqual:@"worker-event"])
         Check(manager.workerReaped && !manager.fixtureWorker.running,@"app must not exit before worker cleanup");
+    if([FixtureMode hasPrefix:@"editor-"])Check(EditorCloseCalls==([FixtureMode isEqual:@"editor-failure"] ? 2u:1u),@"every quit must wait for its editor terminal result");
     Check(NSApp.windows.count==0,@"termination fixture must not create windows");
     Cleanup();
     printf("App termination [%s]: passed.\n",FixtureMode.UTF8String);
@@ -251,9 +292,9 @@ int main(int argc,const char **argv) {
                 encoding:NSUTF8StringEncoding error:NULL],@"write worker readiness");
             for (;;) pause();
         }
-        Check(argc==2,@"usage: app-termination-test idle-gcd|async-event|worker-event");
+        Check(argc==2,@"usage: app-termination-test idle-gcd|async-event|worker-event|editor-close-gcd|editor-failure");
         FixtureMode=[NSString stringWithUTF8String:argv[1]];
-        Check([@[@"idle-gcd",@"async-event",@"worker-event"] containsObject:FixtureMode],@"unknown fixture mode");
+        Check([@[@"idle-gcd",@"async-event",@"worker-event",@"editor-close-gcd",@"editor-failure"] containsObject:FixtureMode],@"unknown fixture mode");
         FixtureDirectory=[NSURL fileURLWithPath:[NSTemporaryDirectory()
             stringByAppendingPathComponent:[@"moojicut-termination-" stringByAppendingString:NSUUID.UUID.UUIDString]] isDirectory:YES];
         Check([NSFileManager.defaultManager createDirectoryAtURL:FixtureDirectory withIntermediateDirectories:YES

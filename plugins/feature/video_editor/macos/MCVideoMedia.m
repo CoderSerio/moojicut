@@ -1,10 +1,26 @@
 #import "MCVideoMedia.h"
 #include <math.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 static void *MCMediaItemStatusContext=&MCMediaItemStatusContext;
+// AppKit termination may enter a nested run loop from a main-queue callback.
+// Resource terminal deliveries must still run there to complete CLOSE_MEDIA.
+static void MCMediaOnMain(void (^block)(void)) {
+    CFRunLoopPerformBlock(CFRunLoopGetMain(),kCFRunLoopCommonModes,block); CFRunLoopWakeUp(CFRunLoopGetMain());
+}
 
 static NSError *MCMediaError(NSString *message) {
     return [NSError errorWithDomain:@"MoojiCut.VideoMedia" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
+}
+static BOOL MCMediaDistinctDestination(NSURL *source, NSURL *destination) {
+    if(!destination.isFileURL || ![destination.pathExtension.lowercaseString isEqual:@"mp4"] ||
+        [destination.URLByResolvingSymlinksInPath.path isEqual:source.URLByResolvingSymlinksInPath.path])return NO;
+    struct stat original,target,entry;
+    if(stat(source.fileSystemRepresentation,&original)!=0)return NO;
+    if(lstat(destination.fileSystemRepresentation,&entry)!=0)return errno==ENOENT;
+    if(stat(destination.fileSystemRepresentation,&target)!=0 || !S_ISREG(target.st_mode))return NO;
+    return original.st_dev!=target.st_dev || original.st_ino!=target.st_ino;
 }
 static NSArray<AVAssetTrack *> *MCMediaTracks(AVAsset *asset, AVMediaType type) {
     NSMutableArray *result = [NSMutableArray array];
@@ -78,6 +94,13 @@ static BOOL MCMediaDecodeBoundary(AVAsset *asset, AVAssetTrack *track, BOOL tail
 @property double savedOutputPosition;
 @property AVPlayerItem *observedItem;
 @property BOOL pendingPlayback;
+@property (copy) void (^playCompletion)(NSError *);
+@property NSMutableArray *closeCompletions;
+@property NSUInteger pendingSeeks, statusDeliveries;
+@property BOOL exportCallbackActive, drainScheduled;
+- (void)finishCloseIfDrained;
+- (void)finishPlay:(NSError *)error;
+- (void)seekMilliseconds:(double)milliseconds limit:(double)limit terminal:(BOOL)terminal completion:(void (^)(BOOL))completion;
 @end
 
 @implementation MCVideoMedia
@@ -96,7 +119,7 @@ static BOOL MCMediaDecodeBoundary(AVAsset *asset, AVAssetTrack *track, BOOL tail
         _metadata = @{@"durationMs":@(floor(duration)), @"width":@(llround(width)), @"height":@(llround(height)),
             @"hasAudio":MCMediaTracks(_asset,AVMediaTypeAudio).count>0 ? @YES : @NO};
         _outputDurationMilliseconds = floor(duration);
-        _previewRate = 1;
+        _previewRate = 1; _closeCompletions = [NSMutableArray array];
         _player = [AVPlayer playerWithPlayerItem:nil];
         _player.actionAtItemEnd = AVPlayerActionAtItemEndPause;
         [self replacePreviewItem:[AVPlayerItem playerItemWithAsset:_asset]];
@@ -361,28 +384,40 @@ invalid:
     if (playing) { self.pendingPlayback=NO; [self startAtPreviewRate]; }
     return YES;
 }
+- (void)finishPlay:(NSError *)error {
+    void (^completion)(NSError *) = self.playCompletion; self.playCompletion = nil;
+    if (completion) completion(error);
+}
+- (void)playWithCompletion:(void (^)(NSError *))completion {
+    [self finishPlay:[NSError errorWithDomain:NSCocoaErrorDomain code:NSUserCancelledError userInfo:nil]];
+    self.playCompletion = completion;
+    [self play];
+}
 - (void)play {
-    if (self.closed) return;
+    if (self.closed) { [self finishPlay:MCMediaError(@"媒体已关闭。")]; return; }
     AVPlayerItem *item=self.player.currentItem;
     if (item && item.status==AVPlayerItemStatusUnknown) {
         self.previewPlaybackError=nil; self.pendingPlayback=YES; return;
     }
     NSError *failure=[self rateError:self.previewRate forItem:item];
-    if (failure) { [self pause]; self.previewPlaybackError=failure; return; }
-    self.previewPlaybackError=nil; self.pendingPlayback=NO; [self startAtPreviewRate];
+    if (failure) { self.pendingPlayback=NO; [self.player pause]; self.previewPlaybackError=failure; [self finishPlay:failure]; return; }
+    self.previewPlaybackError=nil; self.pendingPlayback=NO; [self startAtPreviewRate]; [self finishPlay:nil];
 }
-- (void)pause { self.pendingPlayback=NO; [self.player pause]; }
+- (void)pause {
+    self.pendingPlayback=NO; [self.player pause];
+    [self finishPlay:[NSError errorWithDomain:NSCocoaErrorDomain code:NSUserCancelledError userInfo:nil]];
+}
 - (BOOL)playbackRequested { return self.pendingPlayback || self.player.rate!=0; }
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
     change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
     if (context!=MCMediaItemStatusContext) {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context]; return;
     }
-    __weak MCVideoMedia *weakSelf=self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        MCVideoMedia *strongSelf=weakSelf;
-        if (!strongSelf || strongSelf.closed || object!=strongSelf.observedItem) return;
-        if (strongSelf.pendingPlayback && strongSelf.observedItem.status!=AVPlayerItemStatusUnknown) [strongSelf play];
+    @synchronized(self) { self.statusDeliveries++; }
+    MCMediaOnMain(^{
+        if (!self.closed && object==self.observedItem && self.pendingPlayback && self.observedItem.status!=AVPlayerItemStatusUnknown) [self play];
+        @synchronized(self) { self.statusDeliveries--; }
+        [self finishCloseIfDrained];
     });
 }
 - (double)currentOutputMilliseconds {
@@ -393,19 +428,26 @@ invalid:
     if (self.previewingSource) [self restorePlanPreview];
     [self seekMilliseconds:milliseconds limit:self.outputDurationMilliseconds completion:completion];
 }
+- (void)seekOutputMilliseconds:(double)milliseconds terminal:(void (^)(BOOL))completion {
+    if (self.previewingSource) [self restorePlanPreview];
+    [self seekMilliseconds:milliseconds limit:self.outputDurationMilliseconds terminal:YES completion:completion];
+}
 - (void)seekMilliseconds:(double)milliseconds limit:(double)limit completion:(void (^)(BOOL))completion {
-    if (self.closed) return;
+    [self seekMilliseconds:milliseconds limit:limit terminal:NO completion:completion];
+}
+- (void)seekMilliseconds:(double)milliseconds limit:(double)limit terminal:(BOOL)terminal completion:(void (^)(BOOL))completion {
+    if (self.closed) { if (terminal && completion) completion(NO); return; }
     if (!isfinite(milliseconds) || milliseconds<0 || milliseconds>limit) {
         if(completion)completion(NO); return;
     }
     NSUInteger generation=++self.generation; AVPlayerItem *item=self.player.currentItem;
     [item cancelPendingSeeks];
-    __weak MCVideoMedia *weakSelf=self;
+    self.pendingSeeks++;
     [self.player seekToTime:CMTimeMakeWithSeconds(milliseconds/1000,1000000) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero completionHandler:^(BOOL finished) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            MCVideoMedia *strongSelf=weakSelf;
-            if (!strongSelf || strongSelf.closed || strongSelf.generation!=generation || strongSelf.player.currentItem!=item) return;
-            if(completion)completion(finished);
+        MCMediaOnMain(^{
+            BOOL current=!self.closed && self.generation==generation && self.player.currentItem==item;
+            if (completion && (terminal || current)) completion(current && finished);
+            self.pendingSeeks--; [self finishCloseIfDrained];
         });
     }];
 }
@@ -457,8 +499,7 @@ invalid:
     if (self.closed || self.exporting || !self.composition) {
         completion(nil,MCMediaError(@"请先应用剪辑计划，并等待当前媒体任务完成。")); return;
     }
-    if (!url.isFileURL || ![url.pathExtension.lowercaseString isEqual:@"mp4"] ||
-        [url.URLByResolvingSymlinksInPath.path isEqual:self.asset.URL.URLByResolvingSymlinksInPath.path]) {
+    if (!MCMediaDistinctDestination(self.asset.URL,url)) {
         completion(nil,MCMediaError(@"请选择新的 MP4 保存位置，不能覆盖原片。")); return;
     }
     NSURL *temporary=[url.URLByDeletingLastPathComponent URLByAppendingPathComponent:[NSString stringWithFormat:@".MoojiCut-media-%@.mp4",NSUUID.UUID.UUIDString]];
@@ -469,12 +510,13 @@ invalid:
     exporter.timeRange=CMTimeRangeMake(kCMTimeZero,CMTimeMakeWithSeconds(self.outputDurationMilliseconds/1000,90000));
     exporter.outputURL=temporary; exporter.outputFileType=AVFileTypeMPEG4;
     exporter.shouldOptimizeForNetworkUse=YES; self.exporter=exporter; self.exportCancelled=NO; [self pause];
-    [exporter exportAsynchronouslyWithCompletionHandler:^{ dispatch_async(dispatch_get_main_queue(), ^{
+    [exporter exportAsynchronouslyWithCompletionHandler:^{ MCMediaOnMain(^{
         NSError *error=nil;
         if (self.closed || self.exportCancelled || exporter.status==AVAssetExportSessionStatusCancelled)
             error=[NSError errorWithDomain:NSCocoaErrorDomain code:NSUserCancelledError userInfo:@{NSLocalizedDescriptionKey:@"导出已取消，原片和目标文件未改动。"}];
         else if (exporter.status!=AVAssetExportSessionStatusCompleted) error=exporter.error ?: MCMediaError(@"视频导出失败。");
         else if (![self validateExport:temporary error:&error]) error=error ?: MCMediaError(@"无法读取导出结果。");
+        if(!error && !MCMediaDistinctDestination(self.asset.URL,url))error=MCMediaError(@"保存目标关联到原片或无法确认文件身份，未替换。");
         if (!error) {
             BOOL exists=[NSFileManager.defaultManager fileExistsAtPath:url.path];
             BOOL saved=exists ? [NSFileManager.defaultManager replaceItemAtURL:url withItemAtURL:temporary backupItemName:nil options:0 resultingItemURL:NULL error:&error] :
@@ -483,10 +525,27 @@ invalid:
         }
         [NSFileManager.defaultManager removeItemAtURL:temporary error:NULL];
         self.exporter=nil; self.exportCancelled=NO;
-        if (!self.closed) completion(error ? nil : url,error);
+        self.exportCallbackActive=YES; completion(error ? nil : url,error); self.exportCallbackActive=NO;
+        [self finishCloseIfDrained];
     }); }];
 }
 - (void)cancelExport { self.exportCancelled=YES; [self.exporter cancelExport]; }
+- (void)finishCloseIfDrained {
+    if (!self.closed || self.pendingSeeks || self.exporter || self.playCompletion || self.exportCallbackActive ||
+        self.drainScheduled || !self.closeCompletions.count) return;
+    @synchronized(self) { if (self.statusDeliveries) return; }
+    self.drainScheduled=YES;
+    MCMediaOnMain(^{
+        self.drainScheduled=NO;
+        if(self.pendingSeeks || self.exporter || self.playCompletion || self.exportCallbackActive)return;
+        @synchronized(self) { if(self.statusDeliveries)return; }
+        NSArray *callbacks=[self.closeCompletions copy]; [self.closeCompletions removeAllObjects];
+        for(void (^completion)(void) in callbacks)completion();
+    });
+}
+- (void)closeWithCompletion:(void (^)(void))completion {
+    [self.closeCompletions addObject:[completion copy]]; [self close]; [self finishCloseIfDrained];
+}
 - (void)close {
     if(self.closed)return; self.closed=YES; self.generation++;
     self.planSchemaVersion=0;
@@ -494,6 +553,7 @@ invalid:
     [self.observedItem removeObserver:self forKeyPath:@"status" context:MCMediaItemStatusContext]; self.observedItem=nil;
     [self.player replaceCurrentItemWithPlayerItem:nil];
     [self cancelExport];
+    [self finishCloseIfDrained];
 }
 - (void)dealloc {
     [_observedItem removeObserver:self forKeyPath:@"status" context:MCMediaItemStatusContext];

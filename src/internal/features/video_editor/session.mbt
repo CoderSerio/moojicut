@@ -37,6 +37,7 @@ priv struct Editor {
   mut playing : Bool
   mut rate : Double
   mut error : String
+  mut save_error : String
   mut request_serial : Int32
 }
 
@@ -152,6 +153,17 @@ fn show_error(s : Editor, message : String) -> Unit {
   s.error = message
   ui_event(s, Json::object({ "type": Json("error"), "message": Json(message) }))
   s.capture = false
+}
+
+///|
+fn current_error(s : Editor) -> String {
+  if s.save_error != "" { s.save_error } else { s.error }
+}
+
+///|
+fn persistence_status(s : Editor, message : String) -> Unit {
+  s.save_error = message
+  ui_event(s, Json::object({ "type": Json("persistenceStatus"), "message": Json(message) }))
 }
 
 ///|
@@ -389,6 +401,7 @@ pub fn open(
     playing: false,
     rate: 1,
     error: "",
+    save_error: "",
     request_serial: 0,
   }
   let id = next_editor.val

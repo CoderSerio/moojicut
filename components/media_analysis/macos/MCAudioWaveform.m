@@ -8,22 +8,34 @@ static NSError *MCWaveformError(void) {
 }
 @interface MCAudioWaveform ()
 @property (atomic) BOOL cancelled;
+@property BOOL finished;
+@property NSMutableArray *drainCompletions;
 @end
 
 @implementation MCAudioWaveform
 + (instancetype)readURL:(NSURL *)url durationMilliseconds:(double)duration
     completion:(void (^)(NSArray<NSNumber *> *, NSError *))completion {
-    MCAudioWaveform *task = [self new];
+    MCAudioWaveform *task = [self new]; task.drainCompletions=[NSMutableArray array];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
-        @autoreleasepool {
-            NSError *error = nil;
-            NSArray *peaks = [task readURL:url duration:duration error:&error];
-            dispatch_async(dispatch_get_main_queue(), ^{ if (!task.cancelled) completion(peaks,error); });
-        }
+        NSError *error=nil;
+        NSArray *peaks=nil;
+        @autoreleasepool { peaks=[task readURL:url duration:duration error:&error]; }
+        // No AVAssetReader/asset/autoreleased PCM remains when the UI sees drain.
+        CFRunLoopPerformBlock(CFRunLoopGetMain(),kCFRunLoopCommonModes,^{
+            task.finished=YES;
+            if (!task.cancelled) completion(peaks,error);
+            NSArray *callbacks=[task.drainCompletions copy]; [task.drainCompletions removeAllObjects];
+            for (void (^drained)(void) in callbacks) drained();
+        });
+        CFRunLoopWakeUp(CFRunLoopGetMain());
     });
     return task;
 }
 - (void)cancel { self.cancelled = YES; }
+- (void)cancelWithCompletion:(void (^)(void))completion {
+    self.cancelled=YES;
+    if (self.finished) completion(); else [self.drainCompletions addObject:[completion copy]];
+}
 - (NSArray<NSNumber *> *)readURL:(NSURL *)url duration:(double)duration error:(NSError **)error {
     if (!url.isFileURL || !isfinite(duration) || duration < 1 || duration > 604800000) {
         *error = MCWaveformError(); return nil;

@@ -24,7 +24,10 @@ static bool finish_pipeline(GstElement *pipeline) {
     GstMessage *message = gst_bus_timed_pop_filtered(bus, 30 * GST_SECOND, GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
     bool success = message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS;
     if (message && !success) {
-        GError *failure = NULL; gst_message_parse_error(message, &failure, NULL);
+        GError *failure = NULL; gchar *debug = NULL;
+        gst_message_parse_error(message, &failure, &debug);
+        if (debug) fprintf(stderr, "GStreamer waveform fixture error from %s: %s\n", GST_OBJECT_NAME(GST_MESSAGE_SRC(message)), debug);
+        g_free(debug);
         g_strlcpy(error_text, failure ? failure->message : "source pipeline failed", sizeof error_text);
         g_clear_error(&failure);
     }

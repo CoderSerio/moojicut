@@ -188,13 +188,18 @@ class GStreamerRuntimeTest(unittest.TestCase):
         (vc / "Redist/MSVC/14.99.99999/x64/Microsoft.VC143.CRT").mkdir(parents=True)
         # Windows os.environ normalizes keys to uppercase. A plain dict copy
         # must retain case-insensitive lookup for the active toolchain.
-        environment = {"VCTOOLSINSTALLDIR": str(tools), "SYSTEMROOT": "D:/Windows", "PATH": "untrusted"}
+        environment = {"VCTOOLSINSTALLDIR": str(tools), "SYSTEMROOT": "D:/Windows", "PATH": "untrusted",
+                       "PSMODULEPATH": "C:/Program Files/PowerShell/7/Modules",
+                       "PSModulePath": "user modules must not survive either"}
         return directory, environment
 
     def signed_crt(self, command, **kwargs):
         self.assertEqual(Path(command[0]).name, "powershell.exe")
         self.assertEqual(Path(command[0]), Path("D:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"))
         self.assertEqual(command[1:4], ["-NoProfile", "-NonInteractive", "-Command"])
+        module_paths = [value for key, value in kwargs["env"].items() if key.casefold() == "psmodulepath"]
+        self.assertEqual(module_paths, [str(Path(command[0]).parent / "Modules")])
+        self.assertIn("Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1')", command[4])
         source = Path(kwargs["env"]["MOOJICUT_CRT_FILE"])
         self.assertEqual(source.parent.name, "Microsoft.VC143.CRT")
         self.assertEqual(source.parent.parent.name, "x64")

@@ -145,6 +145,19 @@ class LinuxMediaRuntimeTest(unittest.TestCase):
         self.assertIn(str(first), message)
         self.assertIn(str(self.home / "lib/libgstapp-1.0.so.0"), message)
 
+    def test_flac_32_bit_encoder_requires_the_private_abi_not_system_flac8(self):
+        seed = self.binary("bin/probe", ["libFLAC.so.14"])
+        with self.assertRaisesRegex(ValueError, "system fallback forbidden"):
+            runtime.dependency_closure(self.home, [seed], self.tools,
+                lambda *args: self.fail("FLAC must not resolve a system provider"))
+        flac = self.binary("lib/libFLAC.so.14", ["libm.so.6"], "libFLAC.so.14")
+        closure, _ = runtime.dependency_closure(self.home, [seed], self.tools)
+        self.assertEqual(closure["libFLAC.so.14"][0], flac)
+        self.binary("bin/probe", ["libFLAC.so.8"])
+        self.binary("lib/libFLAC.so.8", [], "libFLAC.so.8")
+        with self.assertRaisesRegex(ValueError, "Wrong private FLAC ABI"):
+            runtime.dependency_closure(self.home, [seed], self.tools)
+
     def test_codec_provenance_checks_actual_dpkg_owner_hash_source_and_baseline(self):
         codec = self.root / "usr/lib/libvpx.so.7.0.0"
         codec.parent.mkdir(parents=True); codec.write_bytes(elf_bytes("vpx"))

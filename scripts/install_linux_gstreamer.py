@@ -208,6 +208,9 @@ def inventory(home):
             component = "orc"
         elif relative == "lib/gstreamer-1.0/libgstpipewire.so" or relative.startswith(LICENSE_DIR + "/pipewire/"):
             component = "pipewire"
+        elif (relative.startswith(LICENSE_DIR + "/flac/") or relative.startswith("include/FLAC/") or
+              relative.startswith("lib/libFLAC.") or relative in {"lib/pkgconfig/flac.pc", "share/aclocal/libFLAC.m4"}):
+            component = "flac"
         elif (relative.startswith(LICENSE_DIR + "/ffmpeg/") or
               re.match(r"(?:include/lib|lib/(?:lib|pkgconfig/lib))(?:avcodec|avformat|avutil|avfilter|swscale|swresample)(?:/|[.])", relative)):
             component = "ffmpeg"
@@ -228,6 +231,7 @@ PROBE = r'''#include <ges/ges.h>
 #include <gst/app/gstappsink.h>
 #include <gst/pbutils/pbutils.h>
 #include <libavformat/avformat.h>
+#include <FLAC/stream_encoder.h>
 #include <libavcodec/avcodec.h>
 #include <libavfilter/avfilter.h>
 #include <libavutil/avutil.h>
@@ -263,7 +267,29 @@ int main(void) {
     GstDiscoverer *discoverer = gst_discoverer_new(GST_SECOND, &error);
     if (!discoverer) { g_clear_error(&error); return 10; }
     g_object_unref(discoverer);
+    if (FLAC_API_VERSION_CURRENT != 14 || strcmp(FLAC__VERSION_STRING, "1.5.0")) return 11;
+    /* A factory listing alone missed old libFLAC rejecting the S32 format
+     * advertised by Gst 1.28. Exercise actual conversion/encoding to EOS. */
+    GstElement *audio = gst_parse_launch("audiotestsrc num-buffers=8 ! "
+        "audio/x-raw,format=F32LE,rate=48000,channels=2 ! audioconvert ! "
+        "audio/x-raw,format=S32LE ! flacenc ! fakesink", &error);
+    if (!audio || error) { g_clear_error(&error); if (audio) gst_object_unref(audio); return 12; }
+    GstBus *bus = gst_element_get_bus(audio);
+    gboolean started = gst_element_set_state(audio, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
+    GstMessage *message = started ? gst_bus_timed_pop_filtered(bus, 10 * GST_SECOND,
+        GST_MESSAGE_ERROR | GST_MESSAGE_EOS) : NULL;
+    gboolean encoded = message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS;
+    if (message && !encoded) {
+        gchar *debug = NULL;
+        gst_message_parse_error(message, &error, &debug);
+        g_printerr("FLAC S32 probe failed: %s; %s\n", error ? error->message : "error", debug ? debug : "");
+        g_clear_error(&error); g_free(debug);
+    }
+    if (message) gst_message_unref(message);
+    gst_element_set_state(audio, GST_STATE_NULL); gst_object_unref(bus); gst_object_unref(audio);
+    if (!encoded) return 13;
     printf("GStreamer/GES 1.28.9; FFmpeg ABI 61/61/59/10; LGPL2.1; no protocols\n");
+    printf("Private FLAC %s; F32 to S32 FLAC encoding reached EOS\n", FLAC__VERSION_STRING);
     printf("FFmpeg configuration: %s\n", avformat_configuration());
     printf("GLib runtime %u.%u.%u; headers %u.%u.%u\n", glib_major_version,
         glib_minor_version, glib_micro_version, GLIB_MAJOR_VERSION, GLIB_MINOR_VERSION, GLIB_MICRO_VERSION);
@@ -292,6 +318,13 @@ def plugin_metadata(output, home, lock):
     fields["Filename"] = path.relative_to(home).as_posix()
     private_file(home, fields["Filename"])
     return fields
+
+
+def verify_flac_dependency(home, lock, environment, execute=run):
+    prefix = execute(["pkg-config", "--variable=prefix", "flac"], env=environment).strip()
+    version = execute(["pkg-config", "--modversion", "flac"], env=environment).strip()
+    if Path(prefix).resolve() != Path(home).resolve() or version != lock["sources"]["flac"]["version"]:
+        raise ValueError("FLAC pkg-config must resolve the pinned private SDK library")
 
 
 def verify_sdk(home, lock=None, *, execute=run, require_receipt=True):
@@ -324,7 +357,8 @@ def verify_sdk(home, lock=None, *, execute=run, require_receipt=True):
         raise ValueError("SDK scratch must be a private directory")
     scratch.mkdir(exist_ok=True)
     environment["G_DEBUG"] = "fatal-criticals"
-    packages = lock["packages"] + ["libavfilter", "gstreamer-1.0"]
+    verify_flac_dependency(home, lock, environment, execute)
+    packages = lock["packages"] + ["libavfilter", "gstreamer-1.0", "flac"]
     versions = {}
     for name in packages:
         prefix = execute(["pkg-config", "--variable=prefix", name], env=environment).strip()
@@ -350,7 +384,8 @@ def verify_sdk(home, lock=None, *, execute=run, require_receipt=True):
             "lock_sha256": digest(LOCK), "configuration_sha256": configuration_digest(lock), "sources": sources,
             "configuration": {"tools": lock["tools"], "tool_versions": lock["tool_versions"],
                               "tool_artifacts": lock["tool_artifacts"],
-                              "orc_options": lock["orc_options"], "meson_options": lock["meson_options"],
+                              "orc_options": lock["orc_options"], "flac_options": lock["flac_options"],
+                              "meson_options": lock["meson_options"],
                               "ffmpeg_options": lock["ffmpeg_options"], "pipewire_sources": lock["pipewire_sources"]},
             "licenses": lock["licenses"], "license_root": LICENSE_DIR,
             "pkgconfig_versions": versions, "factories": factories, "abi_probe": probe,
@@ -393,6 +428,16 @@ def build_sdk(home, sources, work, lock, jobs, execute=run):
              *lock["ffmpeg_options"]], env=environment, cwd=ffmpeg_build)
     execute(["make", "-j", str(jobs)], env=environment, cwd=ffmpeg_build)
     execute(["make", "install"], env=environment, cwd=ffmpeg_build)
+    flac_build = work / "flac-build"
+    flac_build.mkdir()
+    execute([sources["flac"] / "configure", "--prefix=" + str(home), "--libdir=" + str(home / "lib"),
+             *lock["flac_options"]], env=environment, cwd=flac_build)
+    # Install only the BSD library, headers and .pc file; FLAC's other tools,
+    # examples and documentation have separate licenses and are not payload.
+    execute(["make", "-C", "src/libFLAC", "-j", str(jobs)], env=environment, cwd=flac_build)
+    execute(["make", "-C", "src/libFLAC", "install"], env=environment, cwd=flac_build)
+    execute(["make", "-C", "include/FLAC", "install"], env=environment, cwd=flac_build)
+    verify_flac_dependency(home, lock, environment, execute)
     gst_build = work / "gst-build"
     execute([tools["meson"], "setup", gst_build, sources["gstreamer"], "--prefix=" + str(home),
              "--libdir=lib", "--libexecdir=libexec", "--wrap-mode=nofallback",

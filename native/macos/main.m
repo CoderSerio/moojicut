@@ -70,6 +70,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @property NSMenuItem *recordMenuItem;
 @property NSMenuItem *stopMenuItem;
 @property BOOL choosingImage;
+@property BOOL terminationPending;
 @end
 
 @implementation MCNativeHost
@@ -88,6 +89,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [data writeToFile:[self.outputDirectory stringByAppendingPathComponent:@"report.json"] atomically:YES];
 }
 - (void)showPreferences:(__unused id)sender {
+    if (self.terminationPending) return;
     if (!self.preferences) {
         NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoonBitCoreVersion"] ?: @"开发版本";
         self.preferences = [[MCPreferencesController alloc] initWithDefaults:self.defaults coreVersion:version diagnostics:self.diagnostics];
@@ -112,7 +114,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     self.report[@"windowNumber"] = @(self.preferences.window.windowNumber); [self writeReport];
 }
 - (void)capture:(__unused id)sender {
-    if (self.updateController.installationPending || self.scrollCapture.busy) return;
+    if (self.terminationPending || self.updateController.installationPending || self.scrollCapture.busy) return;
     [self.captureController capture];
 }
 - (void)applyPinToolConfiguration {
@@ -142,7 +144,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 - (void)restorePinnedImages:(__unused id)sender { [self.pinnedImages restoreHiddenPins]; }
 - (void)unlockPinnedImages:(__unused id)sender { [self.pinnedImages disableClickThrough]; }
 - (void)openImage:(__unused id)sender {
-    if (self.updateController.installationPending || self.scrollCapture.busy) return;
+    if (self.terminationPending || self.updateController.installationPending || self.scrollCapture.busy) return;
     self.choosingImage = YES;
     [self updateRecordingState];
     [self.updateController operationStateDidChange];
@@ -151,7 +153,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     panel.canChooseDirectories = NO; panel.prompt = @"标注图片";
     [NSApp activateIgnoringOtherApps:YES];
     NSModalResponse response = [panel runModal];
-    if (response == NSModalResponseOK && !self.updateController.installationPending) {
+    if (response == NSModalResponseOK && !self.terminationPending && !self.updateController.installationPending) {
         NSError *error = nil;
         if (![self.captureController showEditorForPNGURL:panel.URL error:&error]) [[NSAlert alertWithError:error] runModal];
     }
@@ -160,7 +162,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [self.updateController operationStateDidChange];
 }
 - (BOOL)canOpenRecording {
-    if (self.updateController.installationPending || self.choosingImage) return NO;
+    if (self.terminationPending || self.updateController.installationPending || self.choosingImage) return NO;
     if (self.captureController.busy) {
         [self.captureController showEditingNotice:@"请先完成或取消当前截图，再打开录屏。"];
         return NO;
@@ -171,7 +173,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 - (void)stopRecording:(__unused id)sender { [self.recordingController stopRecording]; }
 - (void)resumeRecordingDraft:(__unused id)sender { if ([self canOpenRecording]) [self.recordingController resumeLastDraft]; }
 - (void)updateRecordingState {
-    BOOL canOpenRecording = !self.captureController.busy && !self.choosingImage && !self.updateController.installationPending;
+    BOOL canOpenRecording = !self.terminationPending && !self.captureController.busy && !self.choosingImage && !self.updateController.installationPending;
     self.recordMenuItem.enabled = !self.recordingController.busy && canOpenRecording;
     self.stopMenuItem.enabled = self.recordingController.canStop;
     self.stopMenuItem.title = self.recordingController.stopActionTitle;
@@ -196,6 +198,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [self.updateController operationStateDidChange];
 }
 - (void)runUserTool:(NSString *)identifier inEditor:(MCImageEditorController *)editor {
+    if (self.terminationPending) return;
     NSDictionary *capture = editor.pluginCaptureMetadata;
     if (!capture) { [editor showPluginMessage:@"请先选择截图区域。"]; return; }
     NSString *owner = editor.pluginContextIdentifier;
@@ -220,7 +223,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         }];
 }
 - (void)runTextToolInEditor:(MCImageEditorController *)editor translate:(BOOL)translate {
-    if (self.updateController.installationPending || self.scrollCapture.busy) return;
+    if (self.terminationPending || self.updateController.installationPending || self.scrollCapture.busy) return;
     NSError *error = nil;
     NSData *png = [editor capturePNGData:&error];
     NSDictionary *snapshot = png ? editor.captureContentSnapshot : nil;
@@ -231,7 +234,7 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         isCurrent:^BOOL{ return [weakEditor.captureContentSnapshot isEqual:snapshot]; } translate:translate];
 }
 - (void)startScrollingFromEditor:(MCImageEditorController *)editor {
-    if (self.updateController.installationPending || self.scrollCapture.busy) return;
+    if (self.terminationPending || self.updateController.installationPending || self.scrollCapture.busy) return;
     NSError *error = nil;
     NSRect rect = editor.captureScreenFrame;
     // Validate any live text/property edit before hiding it. Cancellation keeps
@@ -486,35 +489,38 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         [alert addButtonWithTitle:@"继续使用"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
         return NSTerminateCancel;
     }
-    if (self.recordingController.captureInProgress || self.recordingController.exporting) {
+    if (self.recordingController.captureInProgress) {
         NSAlert *alert = [NSAlert new]; alert.messageText = @"录屏还未完成";
         alert.informativeText = @"请先停止录屏，或等待视频导出完成，再退出 Mooji Cut，以免损坏视频文件。";
         [alert addButtonWithTitle:@"继续使用"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
         return NSTerminateCancel;
     }
-    NSError *draftError = nil;
-    if (self.recordingController && ![self.recordingController prepareForTermination:&draftError]) {
-        [self showVideoDraftSaveError:draftError];
-        return NSTerminateCancel;
-    }
-    self.scrollCapture.onCompletion = nil;
-    self.scrollCapture.onStateChange = nil;
-    [self.scrollCapture cancel];
-    self.scrollCapture = nil;
-    [self.textTools cancelAll];
-    if (!self.userPlugins) return NSTerminateNow;
-    __block BOOL completed = NO;
-    __block BOOL waitingForShutdown = NO;
-    [self.userPlugins shutdownWithCompletion:^{
-        completed = YES;
-        // Asynchronous completions arrive on the main thread after AppKit has
-        // received NSTerminateLater. Do not enqueue a second main-queue hop.
-        if (waitingForShutdown) [NSApp replyToApplicationShouldTerminate:YES];
-    }];
-    // An idle manager drains synchronously. Returning Later here would enter
-    // AppKit's nested modal loop, which cannot re-enter a main GCD callback
-    // that initiated terminate: just to deliver a queued confirmation.
-    if (completed) return NSTerminateNow;
+    if (self.terminationPending) return NSTerminateLater;
+    self.terminationPending = YES;
+    [self updateRecordingState];
+    __block BOOL completed = NO, approved = NO, waitingForShutdown = NO;
+    void (^finish)(NSError *) = ^(NSError *error) {
+        if (error) {
+            self.terminationPending = NO;
+            [self updateRecordingState];
+            [self showVideoDraftSaveError:error];
+            completed = YES;
+            if (waitingForShutdown) [NSApp replyToApplicationShouldTerminate:NO];
+            return;
+        }
+        self.scrollCapture.onCompletion = nil;
+        self.scrollCapture.onStateChange = nil;
+        [self.scrollCapture cancel]; self.scrollCapture = nil;
+        [self.textTools cancelAll];
+        void (^drained)(void) = ^{
+            completed = YES; approved = YES;
+            if (waitingForShutdown) [NSApp replyToApplicationShouldTerminate:YES];
+        };
+        if (self.userPlugins) [self.userPlugins shutdownWithCompletion:drained]; else drained();
+    };
+    if (self.recordingController) [self.recordingController requestTermination:finish]; else finish(nil);
+    // Synchronous idle drain must not enter AppKit's nested termination loop.
+    if (completed) return approved ? NSTerminateNow : NSTerminateCancel;
     waitingForShutdown = YES;
     return NSTerminateLater;
 }

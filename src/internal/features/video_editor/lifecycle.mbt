@@ -60,12 +60,19 @@ pub fn ack(
         // The save lane is serial: this can advance only to the bytes that the
         // host just durably committed, never to a newer in-memory document.
         s.saved_revision = e.revision
+        if s.saved_revision == s.revision {
+          persistence_status(s, "")
+        }
       } else {
-        s.error = failed_message
+        persistence_status(s, failed_message)
         s.closing = false
-        show_error(s, failed_message)
+        // End the current gesture, but keep persistence separate from an
+        // unrelated transport error (which may have the exact same wording).
+        ui_event(s, Json::object({ "type": Json("cancel") }))
         if s.export_busy {
-          fail_export(s, failed_message, true)
+          // Abort the waiting export, while the persistence channel retains
+          // its cause until SAVE succeeds. Do not duplicate it as a new error.
+          fail_export(s, "", false)
         }
       }
     3 | 4 =>
@@ -367,7 +374,7 @@ pub fn text(handle : Int32, key : Int32) -> String {
   match key {
     0 => s.source_path
     1 => document(s)
-    2 => s.error
+    2 => current_error(s)
     _ => ""
   }
 }
@@ -389,6 +396,6 @@ pub fn state(handle : Int32) -> String {
   result["generation"] = Json(s.generation)
   result["savedRevision"] = Json(s.saved_revision)
   result["mediaRevision"] = Json(s.media_revision)
-  result["error"] = Json(s.error)
+  result["error"] = Json(current_error(s))
   Json::object(result).stringify()
 }

@@ -131,8 +131,10 @@ static void CheckRateCapabilities(NSURL *source) {
     MCRateLimitedItem *limited=[MCRateLimitedItem playerItemWithAsset:asset]; limited.forceUnknown=YES;
     [media replacePreviewItem:limited];
     error=nil; assert(![media setPreviewRate:1 error:&error] && error && media.previewRate==3);
-    [media play]; assert(media.player.rate==0 && media.playbackRequested); // Ready callback must honor pause.
-    [media pause]; assert(!media.playbackRequested); [limited finishLoading];
+    __block NSUInteger playReplies=0;
+    [media playWithCompletion:^(NSError *failure){assert(failure.code==NSUserCancelledError);playReplies++;}];
+    assert(playReplies==0 && media.player.rate==0 && media.playbackRequested);
+    [media pause]; assert(playReplies==1 && !media.playbackRequested); [limited finishLoading];
     assert(Wait(^BOOL{return limited.status==AVPlayerItemStatusReadyToPlay;},15));
     assert(media.player.rate==0 && !media.playbackRequested && media.previewRate==3 && !media.previewPlaybackError);
     // 1–2x does not depend on canPlayFastForward. 0.5x and 3x do.
@@ -150,8 +152,10 @@ static void CheckRateCapabilities(NSURL *source) {
     assert(Wait(^BOOL{return media.player.currentItem.status==AVPlayerItemStatusReadyToPlay;},15));
     assert([media setPreviewRate:3 error:NULL]);
     limited=[MCRateLimitedItem playerItemWithAsset:asset]; limited.forceUnknown=YES;
-    [media replacePreviewItem:limited]; [media play]; [limited finishLoading];
-    assert(Wait(^BOOL{return media.previewPlaybackError!=nil;},15));
+    [media replacePreviewItem:limited]; playReplies=0;
+    [media playWithCompletion:^(NSError *failure){assert(failure && failure.code!=NSUserCancelledError);playReplies++;}];
+    assert(playReplies==0); [limited finishLoading];
+    assert(Wait(^BOOL{return playReplies==1 && media.previewPlaybackError!=nil;},15));
     assert(media.player.rate==0 && !media.playbackRequested && media.previewRate==3);
     assert([media setPreviewRate:1 error:NULL] && !media.previewPlaybackError);
     [media play]; assert(Wait(^BOOL{return media.currentOutputMilliseconds>50;},5)); [media close];
@@ -235,6 +239,10 @@ int main(int argc,const char *argv[]) {
         [media exportToURL:muted completion:^(NSURL *url,NSError *failure){assert(url && !failure);exported=YES;}];
         assert(Wait(^BOOL{return exported;},30));CheckExport(muted,NO);assert(oldSeeks==0);
         __block BOOL protected=NO;[media exportToURL:source completion:^(NSURL *url,NSError *failure){assert(!url && failure);protected=YES;}];assert(protected);
+        NSURL *alias=[directory URLByAppendingPathComponent:@"source-hardlink.mp4"];
+        assert([NSFileManager.defaultManager linkItemAtURL:source toURL:alias error:&error]);
+        protected=NO;[media exportToURL:alias completion:^(NSURL *url,NSError *failure){assert(!url && failure);protected=YES;}];
+        assert(protected && [[NSData dataWithContentsOfURL:alias] isEqual:originalSource]);
         NSData *existing=[@"keep the existing destination" dataUsingEncoding:NSUTF8StringEncoding];
         NSURL *cancelled=[directory URLByAppendingPathComponent:@"cancelled.mp4"];assert([existing writeToURL:cancelled options:0 error:&error]);
         __block BOOL cancellation=NO;[media exportToURL:cancelled completion:^(NSURL *url,NSError *failure){assert(!url && failure.code==NSUserCancelledError);cancellation=YES;}];
@@ -242,15 +250,18 @@ int main(int argc,const char *argv[]) {
         __block NSUInteger closedCallbacks=0;
         [media seekOutputMilliseconds:500 completion:^(__unused BOOL finished){closedCallbacks++;}];
         [media exportToURL:cancelled completion:^(__unused NSURL *url,__unused NSError *failure){closedCallbacks++;}];
-        [media close];[media close];assert(!media.player.currentItem && ![media applyPlan:plan error:NULL]);
+        __block NSUInteger terminalSeeks=0,drains=0;
+        [media seekOutputMilliseconds:600 terminal:^(BOOL finished){assert(!finished);terminalSeeks++;}];
+        [media closeWithCompletion:^{assert(terminalSeeks==1 && closedCallbacks==1);drains++;}];
+        [media close];assert(!media.player.currentItem && ![media applyPlan:plan error:NULL]);
         error=nil; assert(![media setPreviewRate:1 error:&error] && error && media.previewRate==3);
-        assert(Wait(^BOOL{return !media.exporting;},30));assert(closedCallbacks==0 && [[NSData dataWithContentsOfURL:cancelled] isEqual:existing]);
+        assert(Wait(^BOOL{return drains==1;},30));assert(closedCallbacks==1 && [[NSData dataWithContentsOfURL:cancelled] isEqual:existing]);
         assert([[NSData dataWithContentsOfURL:source] isEqual:originalSource]);
         NSURL *bad=[directory URLByAppendingPathComponent:@"invalid.mp4"];assert([existing writeToURL:bad options:0 error:&error]);
         assert(![[MCVideoMedia alloc] initWithURL:bad error:NULL]);
         for(NSString *file in [NSFileManager.defaultManager contentsOfDirectoryAtPath:directory.path error:&error])assert(![file hasPrefix:@".MoojiCut-media-"]);
         video_dispose(session);
-        NSDictionary *report=@{@"passed":@YES,@"source":source.path,@"sourceDurationMs":@4000,@"outputDurationMs":@2000,@"outputWidth":@160,@"outputHeight":@100,@"audioAndMutedReadback":@YES,@"truncatedTailRejected":@YES,@"seekGeneration":@YES,@"sourcePreviewRestore":@YES,@"atomicExportCancellation":@YES,@"closedCallbacksSuppressed":@YES,@"sourceUnchanged":@YES,@"previewRateMeasurements":rateMeasurements,@"previewRatePreserved":@YES,@"pausedRateDoesNotPlay":@YES,@"rateCapabilityRefusal":@YES,@"exportDurationIgnoresPreviewRate":@YES};
+        NSDictionary *report=@{@"passed":@YES,@"source":source.path,@"sourceDurationMs":@4000,@"outputDurationMs":@2000,@"outputWidth":@160,@"outputHeight":@100,@"audioAndMutedReadback":@YES,@"truncatedTailRejected":@YES,@"seekGeneration":@YES,@"sourcePreviewRestore":@YES,@"atomicExportCancellation":@YES,@"legacySeekCallbacksSuppressed":@YES,@"terminalCallbacksDrained":@YES,@"sourceUnchanged":@YES,@"previewRateMeasurements":rateMeasurements,@"previewRatePreserved":@YES,@"pausedRateDoesNotPlay":@YES,@"rateCapabilityRefusal":@YES,@"exportDurationIgnoresPreviewRate":@YES};
         assert([[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:&error] writeToURL:[directory URLByAppendingPathComponent:@"report.json"] atomically:YES]);
         puts("PASS: real media rates/preview/seek/source preview/plan replacement; cropped audio/muted MP4 readback, atomic cancellation, source protection and close");
     }

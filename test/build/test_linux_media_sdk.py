@@ -221,13 +221,28 @@ class LinuxMediaSDKTest(unittest.TestCase):
         (home / "lib/libavcodec.so.61").symlink_to("libavcodec.so.61.1")
         (home / "include/libavcodec").mkdir(parents=True)
         (home / "include/libavcodec/avcodec.h").write_text("header", encoding="utf-8")
+        (home / "lib/libFLAC.so.14").write_bytes(b"flac")
+        (home / "include/FLAC").mkdir()
+        (home / "include/FLAC/stream_encoder.h").write_text("header", encoding="utf-8")
+        (home / "lib/pkgconfig").mkdir()
+        (home / "lib/pkgconfig/flac.pc").write_text("private prefix", encoding="utf-8")
         entries = {x["path"]: x for x in sdk.inventory(home)}
         self.assertEqual(entries["lib/libavcodec.so.61"]["symlink"], "libavcodec.so.61.1")
         self.assertEqual(entries["lib/libavcodec.so.61.1"]["component"], "ffmpeg")
         self.assertEqual(entries["include/libavcodec/avcodec.h"]["component"], "ffmpeg")
+        for path in ("lib/libFLAC.so.14", "include/FLAC/stream_encoder.h", "lib/pkgconfig/flac.pc"):
+            self.assertEqual(entries[path]["component"], "flac")
         (home / "lib/external").symlink_to(self.root / "outside")
         with self.assertRaisesRegex(ValueError, "external or dangling"):
             sdk.inventory(home)
+
+    def test_flac_build_dependency_rejects_system_prefix_or_old_codec(self):
+        for prefix, version in (("/usr", "1.5.0"), (str(self.root), "1.3.3")):
+            with self.subTest(prefix=prefix, version=version), self.assertRaisesRegex(ValueError, "FLAC pkg-config"):
+                sdk.verify_flac_dependency(self.root, self.lock, {},
+                    lambda command, **kwargs: prefix if "--variable=prefix" in command else version)
+        sdk.verify_flac_dependency(self.root, self.lock, {},
+            lambda command, **kwargs: str(self.root) if "--variable=prefix" in command else "1.5.0")
 
     def test_build_commands_forbid_fallback_and_keep_pipewire_system_client(self):
         home, work = self.root / "sdk", self.root / "build"
@@ -242,6 +257,8 @@ class LinuxMediaSDKTest(unittest.TestCase):
         commands = []
         def execute(command, **kwargs):
             commands.append(list(map(str, command)))
+            if command == ["pkg-config", "--variable=prefix", "flac"]: return str(home)
+            if command == ["pkg-config", "--modversion", "flac"]: return "1.5.0"
             return ""
         with patch.object(sdk, "tool_environment", return_value=({"meson": "/venv/meson", "ninja": "/venv/ninja"}, {})):
             sdk.build_sdk(home, sources, work, self.lock, 2, execute)
@@ -249,6 +266,13 @@ class LinuxMediaSDKTest(unittest.TestCase):
         self.assertIn("--wrap-mode=nofallback", setup)
         self.assertIn("--libdir=lib", setup)
         self.assertIn("--libexecdir=libexec", setup)
+        flac_configure = next(x for x in commands if x[0] == str(sources["flac"] / "configure"))
+        self.assertIn("--disable-programs", flac_configure)
+        self.assertIn("--disable-cpplibs", flac_configure)
+        self.assertIn("--disable-static", flac_configure)
+        self.assertIn("--libdir=" + str(home / "lib"), flac_configure)
+        self.assertLess(commands.index(["make", "-C", "src/libFLAC", "install"]), commands.index(setup))
+        self.assertLess(commands.index(["pkg-config", "--variable=prefix", "flac"]), commands.index(setup))
         self.assertTrue(any("libpipewire-0.3" in x for x in commands))
         plugin = next(x for x in commands if "-shared" in x)
         self.assertEqual(sum(item.endswith(".c") for item in plugin), 8)

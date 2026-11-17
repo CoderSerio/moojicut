@@ -66,7 +66,6 @@ libpipewire-0.3.so.0 libpulse.so.0 libpulse-mainloop-glib.so.0 libasound.so.2
 # checked against dpkg's recorded MD5 before its SHA256 is put in our manifest.
 SYSTEM_BUNDLES = {
     "libvpx.so.7": ("libvpx7", "libvpx", "main", ()),
-    "libFLAC.so.8": ("libflac8", "flac", "main", ()),
     "libogg.so.0": ("libogg0", "libogg", "main", ()),
     "libSoundTouch.so.1": ("libsoundtouch1", "soundtouch", "universe", ("LGPL-2.1",)),
     "libopenh264.so.6": ("libopenh264-6", "openh264", "universe", ()),
@@ -81,7 +80,7 @@ SYSTEM_BUNDLES = {
     "libdw.so.1": ("libdw1", "elfutils", "main", ("LGPL-3", "GPL-2")),
     "libelf.so.1": ("libelf1", "elfutils", "main", ("LGPL-3", "GPL-2")),
 }
-PRIVATE_MEDIA = re.compile(r"lib(?:gst[^/]*|ges-1\.0|orc-0\.4|avcodec|avformat|avutil|avfilter|avdevice|swscale|swresample)\.so(?:\..*)?$")
+PRIVATE_MEDIA = re.compile(r"lib(?:gst[^/]*|ges-1\.0|orc-0\.4|FLAC|avcodec|avformat|avutil|avfilter|avdevice|swscale|swresample)\.so(?:\..*)?$")
 LIBAV_ABI = {"avformat": 61, "avcodec": 61, "avutil": 59, "swresample": 5, "swscale": 8, "avfilter": 10}
 
 
@@ -123,6 +122,8 @@ def library_basename(name):
 
 def library_name(name):
     library_basename(name)
+    if name.startswith("libFLAC.so.") and name != "libFLAC.so.14":
+        raise ValueError("Wrong private FLAC ABI: " + name)
     if any(x in name.lower() for x in ("x264", "x265", "fdk", "faac", "faad", "vo-aac", "voaac", "dvdcss")):
         raise ValueError("Unapproved codec dependency: " + name)
     match = re.fullmatch(r"lib(av\w+|swscale|swresample)\.so\.(\d+)", name)
