@@ -323,7 +323,7 @@ fn validate(p : Project) -> Unit raise @protocol.InputError {
   for c in sorted {
     if c.start < previous_end {
       raise @protocol.InputError(
-        "overlap", "视频片段发生重叠，请启用合拢或调整位置。",
+        "overlap", "视频片段不能重叠，请调整位置。",
       )
     }
     previous_end = c.start + c.duration

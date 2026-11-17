@@ -10,6 +10,7 @@ fn project_close_speed(s : UI) -> Unit {
 fn project_cancel(s : UI, effects : Array[Json]) -> Unit {
   let gesture = s.gesture
   s.gesture = ""
+  s.clip_drag_active = false
   if gesture == "project-crop-region" {
     s.crop_candidate = s.crop_saved
   }
@@ -265,7 +266,16 @@ fn project_pointer(
     s.focus = s.gesture
     s.saved_time = s.source_time
     match project_clip_target(s, s.gesture) {
-      Some(c) => project_select(s, c.id)
+      Some(c) => {
+        project_select(s, c.id)
+        s.clip_drag_x = x
+        s.clip_drag_ticks_per_pixel = s.viewport_span *
+          90 /
+          project_track(s, c.kind).width
+        s.clip_move_start = c.start
+        s.clip_move_valid = true
+        s.clip_drag_active = false
+      }
       None => ()
     }
     if s.gesture == "project-trim-start" || s.gesture == "project-trim-end" {
@@ -281,10 +291,32 @@ fn project_pointer(
       project_update_trim(s, x)
     } else if s.gesture == "playhead" {
       seek(s, effects, project_time(s, x), false)
+    } else if project_clip_target(s, s.gesture) is Some(_) {
+      project_update_move(s, effects, x)
     }
   } else {
     let gesture = s.gesture
-    if gesture == "project-trim-start" || gesture == "project-trim-end" {
+    if project_clip_target(s, gesture) is Some(c) {
+      project_update_move(s, effects, x)
+      let moved = s.clip_drag_active
+      s.gesture = ""
+      s.clip_drag_active = false
+      if moved {
+        if s.clip_move_valid && s.clip_move_start != c.start {
+          project_command(s, effects, {
+            "type": Json("move"),
+            "clipId": Json(c.id),
+            "startTicks": Json(s.clip_move_start),
+            "linked": Json(true),
+          })
+        } else if !s.clip_move_valid {
+          s.message = "视频片段不能重叠，请调整位置。"
+          s.message_error = true
+        }
+      } else if gesture == s.hover {
+        activate(s, effects, gesture)
+      }
+    } else if gesture == "project-trim-start" || gesture == "project-trim-end" {
       project_update_trim(s, x)
       s.gesture = ""
       match project_selected(s) {

@@ -58,6 +58,10 @@ priv struct UI {
   mut clip_trim_start : Double
   mut clip_trim_end : Double
   mut clip_drag_x : Double
+  mut clip_drag_ticks_per_pixel : Double
+  mut clip_drag_active : Bool
+  mut clip_move_start : Double
+  mut clip_move_valid : Bool
   mut crop_mode : Bool
   mut crop_candidate : Rect
   mut crop_saved : Rect
@@ -280,6 +284,10 @@ pub fn open(snapshot : String) -> Int32 {
     clip_trim_start: 0,
     clip_trim_end: 0,
     clip_drag_x: 0,
+    clip_drag_ticks_per_pixel: 0,
+    clip_drag_active: false,
+    clip_move_start: 0,
+    clip_move_valid: true,
     crop_mode: false,
     crop_candidate: { x: 0, y: 0, width: 0, height: 0, },
     crop_saved: { x: 0, y: 0, width: 0, height: 0, },

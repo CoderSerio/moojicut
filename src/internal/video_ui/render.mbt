@@ -389,6 +389,17 @@ pub fn frame(id : Int32, width : Double, height : Double) -> String {
         "invalid_viewport", "Viewport must be finite and positive",
       )
     }
+    if is_project(s) &&
+      s.framed &&
+      project_clip_target(s, s.gesture) is Some(_) &&
+      (
+        (width - s.width * s.scale).abs() > 0.001 ||
+        (height - s.height * s.scale).abs() > 0.001
+      ) {
+      // A new native frame changes logical pointer coordinates. Revoke the
+      // pending body drag instead of committing it with a different mapping.
+      project_cancel(s, [])
+    }
     s.scale = @protocol.smaller(1, @protocol.smaller(width / 720, height / 480))
     s.width = width / s.scale
     s.height = height / s.scale

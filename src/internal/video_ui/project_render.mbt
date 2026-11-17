@@ -182,7 +182,10 @@ fn project_draw_row(
     if r.width <= 0 {
       continue
     }
-    let selected = s.selected_gap == "" && c.id == s.selected_clip
+    let moving = s.clip_drag_active &&
+      project_selected(s) is Some(selected) &&
+      project_moves_with(c, selected)
+    let selected = s.selected_gap == "" && (c.id == s.selected_clip || moving)
     draw_rect(
       commands,
       s,
@@ -193,7 +196,9 @@ fn project_draw_row(
       } else {
         p.clip
       },
-      if selected {
+      if moving && !s.clip_move_valid {
+        p.disabled
+      } else if selected {
         p.focus
       } else {
         p.clip_border
@@ -224,7 +229,8 @@ fn project_draw_row(
     }
     if c.link_group != "" && r.width > 130 {
       // Two overlapping outlines mark the actual linked video/audio group.
-      let link_y = r.y + (if kind == "audio" && has_waveform(s) { 3.0 } else { 10.0 })
+      let link_y = r.y +
+        (if kind == "audio" && has_waveform(s) { 3.0 } else { 10.0 })
       draw_rect(
         commands,
         s,
@@ -348,7 +354,7 @@ fn project_frame(s : UI) -> Json {
           ("project-trim-start", c.source_start),
           ("project-trim-end", c.source_end),
         ] {
-        if !project_handle_visible(s, id) {
+        if s.clip_drag_active || !project_handle_visible(s, id) {
           continue
         }
         let r = control_rect(s, id)
@@ -422,6 +428,12 @@ fn project_frame(s : UI) -> Json {
   semantics.push(semantic(s, "playhead", "slider", Json(s.source_time)))
   let status = if s.crop_mode {
     "\{s.crop_candidate.width.to_int()}×\{s.crop_candidate.height.to_int()} · Enter 应用 · Esc 取消"
+  } else if s.clip_drag_active {
+    if s.clip_move_valid {
+      fine_time(s.clip_move_start / 90)
+    } else {
+      "视频片段不能重叠"
+    }
   } else if s.message != "" {
     s.message
   } else if s.gesture == "project-trim-start" || s.gesture == "project-trim-end" {

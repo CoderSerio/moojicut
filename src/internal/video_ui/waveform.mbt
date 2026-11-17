@@ -118,13 +118,14 @@ fn project_waveform_peak(
     None => 0
     Some(wave) => {
       let rate = clip_rate(c)
+      let display_start = project_display_start(s, c)
       let start = clamp(
-        c.source_start + (project_time(s, left) * 90 - c.start) * rate,
+        c.source_start + (project_time(s, left) * 90 - display_start) * rate,
         c.source_start,
         c.source_end,
       )
       let end = clamp(
-        c.source_start + (project_time(s, right) * 90 - c.start) * rate,
+        c.source_start + (project_time(s, right) * 90 - display_start) * rate,
         c.source_start,
         c.source_end,
       )

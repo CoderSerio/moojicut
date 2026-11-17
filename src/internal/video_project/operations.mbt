@@ -303,6 +303,24 @@ fn move_clip(
   op : Map[String, Json],
 ) -> Unit raise @protocol.InputError {
   let selected = targets(p, c, boolean(op, "linked", default=true))
+  if op.contains("startTicks") {
+    if op.contains("beforeClipId") {
+      raise @protocol.InputError(
+        "invalid_input", "Provide startTicks or beforeClipId, exclusively",
+      )
+    }
+    let start = quantized(op, "startTicks", 0, max_ticks - c.duration)
+    // Absolute placement leaves the vacated range empty and never ripples
+    // neighbours. Linked AV members retain their common timing atomically.
+    p.clips = p.clips.map(item => {
+      if includes(selected, item.id) {
+        shifted(item, start - c.start)
+      } else {
+        item
+      }
+    })
+    return
+  }
   if !selected.any(item => item.kind == "video") {
     raise @protocol.InputError(
       "independent_audio_move", "独立音频请使用时间偏移，不参与视频重排。",

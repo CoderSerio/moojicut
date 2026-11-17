@@ -53,7 +53,11 @@ fn project_viewport_sync(s : UI) -> Unit {
   // trimmed clip back into its source, including after a slow-motion edit.
   s.viewport_extent = @protocol.larger(
     s.viewport_extent,
-    @protocol.larger(total, project(s).source_duration / 90),
+    @protocol.smaller(
+      604800000,
+      @protocol.larger(total, project(s).source_duration / 90) +
+      @protocol.larger(1000, total * 0.2),
+    ),
   )
   if s.viewport_span <= 0 {
     s.viewport_start = 0
@@ -152,7 +156,10 @@ fn project_scroll(
     y: row.y - 24,
     width: row.width,
     height: if s.audio_expanded {
-      project_track(s, "audio").y + project_track(s, "audio").height - row.y + 24
+      project_track(s, "audio").y +
+      project_track(s, "audio").height -
+      row.y +
+      24
     } else {
       54
     },

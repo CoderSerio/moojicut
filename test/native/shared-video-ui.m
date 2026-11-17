@@ -542,6 +542,43 @@ static void ProjectSmoke(SharedVideoHarness *host, NSURL *directory) {
     Click(host,@"project-split"); ProjectSettle(host);
     NSCAssert(ProjectClips(host,@"video").count == 2 && ProjectClips(host,@"audio").count == 2, @"Split edits both linked streams");
     NSString *second = ProjectClips(host,@"video")[1][@"id"];
+    // Exercise native pointer input through the shared UI, core transaction and
+    // real media port. Reordering buttons cannot stand in for position dragging.
+    SelectClip(host,second);
+    NSDictionary *beforeMove=host.snapshot[@"document"];
+    NSUInteger beforeMoveCommands=host.commands;
+    NSString *secondTarget=[@"clip:" stringByAppendingString:second];
+    NSPoint clipBody=Center(Semantic(host,secondTarget));
+    double clipLeft=[Semantic(host,secondTarget)[@"x"] doubleValue];
+    double span=[host.canvas.frameDescription[@"viewport"][@"spanMs"] doubleValue];
+    double pixelsPerSecond=[Semantic(host,@"playhead")[@"width"] doubleValue]*1000/span;
+    NSPoint movedBody=NSMakePoint(clipBody.x+pixelsPerSecond,clipBody.y);
+    Mouse(host,NSEventTypeLeftMouseDown,clipBody); Mouse(host,NSEventTypeLeftMouseDragged,movedBody);
+    NSCAssert(host.commands==beforeMoveCommands && [host.snapshot[@"document"] isEqual:beforeMove],
+              @"Moving a clip previews its position without committing or modifying the source");
+    NSCAssert(fabs([Semantic(host,secondTarget)[@"x"] doubleValue]-clipLeft-pixelsPerSecond)<1,
+              @"The actual shared canvas displays the dragged clip at its candidate position");
+    Key(host,@"\x1b",53);
+    NSCAssert(host.commands==beforeMoveCommands && [host.snapshot[@"document"] isEqual:beforeMove],
+              @"Escape cancels clip movement without a history entry");
+    NSCAssert(fabs(Center(Semantic(host,secondTarget)).x-clipBody.x)<1,
+              @"Cancelling restores the original clip geometry");
+    Mouse(host,NSEventTypeLeftMouseDown,clipBody); Mouse(host,NSEventTypeLeftMouseDragged,movedBody);
+    Mouse(host,NSEventTypeLeftMouseUp,movedBody); ProjectSettle(host);
+    NSCAssert(host.commands==beforeMoveCommands+1 && !host.lastError &&
+              [ProjectClips(host,@"video")[1][@"startTicks"] longLongValue]==180000 &&
+              [ProjectClips(host,@"audio")[1][@"startTicks"] longLongValue]==180000,
+              @"One drag moves the second linked pair to two seconds and preserves the intervening gap: %@",host.lastError);
+    NSCAssert(fabs(host.media.outputDurationMilliseconds-5000)<1 &&
+              [Semantic(host,@"gap:90000:180000")[@"enabled"] boolValue],
+              @"The media duration extends and the new one-second gap can be selected");
+    [host seekOutput:1500]; ProjectSettle(host);
+    SaveLayout(host,[directory URLByAppendingPathComponent:@"project-editor-drag-gap.png"]);
+    Click(host,@"undo"); ProjectSettle(host);
+    NSMutableDictionary *restoredMove=[beforeMove mutableCopy];
+    restoredMove[@"revision"]=@([beforeMove[@"revision"] integerValue]+2);
+    NSCAssert([host.snapshot[@"document"] isEqual:restoredMove] && fabs(host.media.outputDurationMilliseconds-4000)<1,
+              @"One undo restores the original linked clips and media duration while advancing revision");
     SelectClip(host,second); [host seekOutput:2000]; ProjectSettle(host);
     Click(host,@"project-split"); ProjectSettle(host);
     NSCAssert(ProjectClips(host,@"video").count == 3, @"UI splits source into three clips");
@@ -680,6 +717,7 @@ static void ProjectSmoke(SharedVideoHarness *host, NSURL *directory) {
     video_project_close([reopened[@"session"] intValue]);
     NSDictionary *report=@{@"ok":@YES,@"split":@YES,@"reorder":@YES,@"linkedAudio":@YES,@"clipSpeed":@YES,
         @"removeUndo":@YES,@"trimCancelCommitUndo":@YES,@"timelineZoomPan":@YES,@"gapSelectRemoveUndo":@YES,
+        @"nativeClipDragPreviewCancelCommitUndo":@YES,@"linkedDragGapExtendsMedia":@YES,
         @"unlinkOffset":@YES,@"saveReopen":@YES,@"actualExport":@YES,@"disabledIconHelp":@YES,@"cropMuteExportUndo":@YES,
         @"outputDurationMs":@(CMTimeGetSeconds(saved.duration)*1000),@"previewRateDoesNotChangeExport":@YES,
         @"scope":@"Single source; shared MoonBit UI with macOS media adapter; not production integration"};

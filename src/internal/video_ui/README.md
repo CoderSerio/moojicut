@@ -102,6 +102,18 @@ preserved exactly, including non-frame boundaries produced by a speeded split.
 Core rejection restores authoritative metadata through the normal error/snapshot
 path. Closing or invalidating media cancels UI capture without restore recursion.
 
+Dragging a clip body previews absolute placement, keeping linked audio/video
+together and leaving independent audio unchanged. Movement starts after three
+logical points; compatible clip edges snap within six points at the current
+zoom. The pointer-down time mapping stays fixed during the gesture, including
+beyond the right viewport edge. Candidates clamp at zero and the project limit;
+video collisions are shown as invalid, never resolved by silently moving other
+clips. Release emits at most one `move` with `startTicks` and `linked:true`;
+ordinary clicks retain their select/seek behavior. Escape, cancel, media failure,
+authoritative snapshots, or a frame-size change discard the pending placement.
+The body and its waveform move together; no temporary media composition is
+installed while dragging. Existing reorder buttons still use `beforeClipId`.
+
 Project interaction/rendering is isolated in `project_*.mbt` and reuses shared
 palette, transport, icons, drawing helpers and semantics. No native controls or
 platform symbols are required. `waveform.mbt` draws the audio envelope inside
@@ -131,7 +143,10 @@ constraints. Preview 0.5× remains available and does not modify the document.
 ## V2 timeline viewport and gaps
 
 `project-zoom-out`, `project-zoom-in`, and `project-zoom-fit` change only the UI
-viewport. The default shows the whole output; maximum zoom shows three frames
+viewport. The default shows the whole output; pan/zoom-out extent also reserves
+at least one second (or 20% of output) after the larger of source/output duration,
+within the seven-day limit. Committing a drag beyond output extends the project
+and refits an already-fitted viewport. Maximum zoom shows three frames
 (100ms), or the entire output when it is shorter. Buttons anchor the visible
 playhead or viewport center. `frame.viewport` reports `{startMs,spanMs,totalMs}`.
 

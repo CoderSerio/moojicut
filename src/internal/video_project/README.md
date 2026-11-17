@@ -58,7 +58,7 @@ Clip 的源范围与输出范围均为左闭右开。倍率仅由 `(sourceEndTic
 | `split` | `clipId,atTicks`，位置为时间线绝对 ticks；左右至少各一源帧/输出帧。左侧保留 ID，右侧分配新的 vN/aN/gN。 |
 | `remove` | `clipId,ripple?:true,linked?:true`；默认关联音视频一起删除、后片合拢；`ripple:false` 保留空隙。拒绝删掉最后一个视频。 |
 | `removeGap` | `startTicks,endTicks`，必须精确匹配当前视频轨一个完整空隙的整数输出帧边界；可删除前置或中间空隙，所有在 end 及之后的音视频片段一起前移。不接受局部范围、旧空隙或输出结束后的区域；音频与空隙有任何正长度交集时以 `ambiguous_ripple` 原子拒绝，恰好在 start 结束或 end 开始则允许。 |
-| `move` | `clipId,beforeClipId:null或视频ID,linked?:true`；先取出再插入，null 表示视频末尾。关联 audio ID 也可选中整组；独立音频必须用 offset。 |
+| `move` | `clipId,linked?:true`；位置二选一：`startTicks` 绝对放置，不移动邻片、保留空隙，适用于视频、关联组及独立音频；`beforeClipId:null或视频ID` 取出再插入重排，null 表示视频末尾，关联 audio ID 也可选中整组。两种位置不能同时提供；独立音频不参与重排。 |
 | `setSpeed` | `clipId,rate:{num,den}` 或 `targetDurationTicks` 二选一，`linked?:true,ripple?:true`；固定源范围和输出起点，改变时长。 |
 | `trim` | `clipId,sourceStartTicks,sourceEndTicks,linked?:true,ripple?:true`；固定输出起点，按原倍率重算输出时长。普通修剪不会变成速度拉伸。 |
 | `unlink` | `clipId`，解除整组关系，保留成员 ID 与原有时间范围。 |
@@ -67,7 +67,7 @@ Clip 的源范围与输出范围均为左闭右开。倍率仅由 `(sourceEndTic
 | `offset` | `clipId,deltaTicks`，仅独立音频；可向前/后移动，但结果不能负数或超过时长上限。 |
 | `undo/redo` | 必须为单独事务，不与其他操作混合。 |
 
-`linked:false` 不会隐式拆掉已有链接组，须先显式 `unlink`。独立音频自身编辑可用 `ripple:false`，不会移动视频。调整或搬移视频时，若另一个独立片段跨过受影响范围/插入边界，首版返回 `ambiguous_ripple`，不擅自剪掉声音或改变其速度。无 ripple 的延长若产生同轨视频重叠，原子拒绝。
+`linked:false` 不会隐式拆掉已有链接组，须先显式 `unlink`。独立音频自身编辑可用 `ripple:false`，不会移动视频。带合拢的调整或重排视频时，若另一个独立片段跨过受影响范围/插入边界，首版返回 `ambiguous_ripple`，不擅自剪掉声音或改变其速度。绝对放置只改变所选片段/关联组的输出起点；源范围、时长及独立音频保持不变。无 ripple 的延长或绝对放置若产生同轨视频重叠，原子拒绝。视频空隙按计划显示黑场；其中是否有声音由独立音轨决定。
 
 ## 时间与事务保证
 
@@ -82,7 +82,7 @@ v1 迁移调用既有 `@video.edit_plan` 得到真实保留区间，再生成片
 
 ## 验证边界
 
-本包回归覆盖 180 秒→60 秒、三段调序/删除/撤销、独立音频偏移、保存重开、v1 迁移、批量失败、旧 revision、重复请求、撤销后的 ID、长时间精确舍入和空隙。可定向运行：
+本包回归覆盖 180 秒→60 秒、三段调序/删除/撤销、绝对放置及关联组随动、重叠拒绝与空隙删除、独立音频偏移、保存重开、v1 迁移、批量失败、旧 revision、重复请求、撤销后的 ID、长时间精确舍入和空隙。可定向运行：
 
 ```sh
 moon test src/internal/video_project --target native --deny-warn

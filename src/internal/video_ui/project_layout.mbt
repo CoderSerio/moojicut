@@ -4,7 +4,11 @@ fn project_track(s : UI, kind : String) -> Rect {
     x: 80,
     y: s.height - (if kind == "audio" { 86.0 } else { 126.0 }),
     width: s.width - 120,
-    height: if kind == "audio" { 42.0 } else { 30.0 },
+    height: if kind == "audio" {
+      42.0
+    } else {
+      30.0
+    },
   }
 }
 
@@ -28,7 +32,8 @@ fn project_time(s : UI, x : Double) -> Double {
 
 ///|
 fn project_clip_rect(s : UI, c : ProjectClip) -> Rect {
-  project_interval_rect(s, c.start, c.start + c.duration, c.kind)
+  let start = project_display_start(s, c)
+  project_interval_rect(s, start, start + c.duration, c.kind)
 }
 
 ///|

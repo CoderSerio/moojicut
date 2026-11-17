@@ -116,12 +116,13 @@ static void ColorAt(AVAsset *asset,AVVideoComposition *composition,double second
         assert(correct);
     }
 }
-static NSData *ReadAudio(NSURL *url,double duration) {
-    AVURLAsset *asset=[AVURLAsset URLAssetWithURL:url options:nil]; NSError *error=nil;
+static NSData *ReadAudioAsset(AVAsset *asset,AVAudioMix *mix,double duration) {
+    NSError *error=nil;
     NSMutableData *samples=[NSMutableData dataWithLength:(NSUInteger)ceil(duration*48000)*sizeof(float)];
-    AVAssetTrack *track=Tracks(asset,AVMediaTypeAudio).firstObject; if(!track)return samples;
+    NSArray *tracks=Tracks(asset,AVMediaTypeAudio); if(!tracks.count)return samples;
     AVAssetReader *reader=[[AVAssetReader alloc] initWithAsset:asset error:&error];
-    AVAssetReaderTrackOutput *output=[[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:@{AVFormatIDKey:@(kAudioFormatLinearPCM),AVSampleRateKey:@48000,AVNumberOfChannelsKey:@1,AVLinearPCMBitDepthKey:@32,AVLinearPCMIsFloatKey:@YES,AVLinearPCMIsNonInterleaved:@NO}];
+    AVAssetReaderAudioMixOutput *output=[[AVAssetReaderAudioMixOutput alloc] initWithAudioTracks:tracks audioSettings:@{AVFormatIDKey:@(kAudioFormatLinearPCM),AVSampleRateKey:@48000,AVNumberOfChannelsKey:@1,AVLinearPCMBitDepthKey:@32,AVLinearPCMIsFloatKey:@YES,AVLinearPCMIsNonInterleaved:@NO}];
+    output.audioMix=mix;
     assert(reader && [reader canAddOutput:output]); [reader addOutput:output]; assert([reader startReading]);
     CMSampleBufferRef sample=NULL;
     while ((sample=[output copyNextSampleBuffer])) {
@@ -135,6 +136,9 @@ static NSData *ReadAudio(NSURL *url,double duration) {
     }
     assert(reader.status==AVAssetReaderStatusCompleted); return samples;
 }
+static NSData *ReadAudio(NSURL *url,double duration) {
+    return ReadAudioAsset([AVURLAsset URLAssetWithURL:url options:nil],nil,duration);
+}
 static double RMS(NSData *data,double start,double end) {
     const float *samples=data.bytes; size_t first=(size_t)(start*48000),last=(size_t)(end*48000); assert(last*sizeof(float)<=data.length);
     double sum=0; for(size_t i=first;i<last;i++)sum+=samples[i]*samples[i]; return sqrt(sum/(last-first));
@@ -147,6 +151,71 @@ static double Frequency(NSData *data,double start,double end) {
 static void Seek(MCVideoMedia *media,double ms) {
     __block BOOL done=NO; [media seekOutputMilliseconds:ms completion:^(BOOL finished){assert(finished);done=YES;}];
     assert(Wait(^BOOL{return done;},15)); assert(fabs(media.currentOutputMilliseconds-ms)<1);
+}
+static void PreviewColorAt(MCVideoMedia *media,double seconds,int index) {
+    // Read the actual player's output after seeking, so a correct exported
+    // composition cannot hide a stale frame in the on-screen preview item.
+    AVPlayerItemVideoOutput *output=[[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:
+        @{(NSString *)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_32BGRA)}];
+    AVPlayerItem *item=media.player.currentItem; [item addOutput:output];
+    Seek(media,seconds*1000);
+    CMTime time=CMTimeMakeWithSeconds(seconds,90000); __block CVPixelBufferRef pixel=NULL; __block CMTime displayTime=kCMTimeInvalid;
+    assert(Wait(^BOOL {
+        pixel=[output copyPixelBufferForItemTime:time itemTimeForDisplay:&displayTime];
+        if (!pixel) return NO;
+        // A seek completion can precede the compositor publishing its frame.
+        // Ignore the prior frame instead of mistaking it for the requested one.
+        if (!CMTIME_IS_NUMERIC(displayTime) || fabs(CMTimeGetSeconds(displayTime)-seconds)>1.0/30) {
+            CVPixelBufferRelease(pixel); pixel=NULL; return NO;
+        }
+        return YES;
+    },15));
+    CVPixelBufferLockBaseAddress(pixel,kCVPixelBufferLock_ReadOnly);
+    const uint8_t *bytes=CVPixelBufferGetBaseAddress(pixel);
+    const uint8_t *center=bytes+(CVPixelBufferGetHeight(pixel)/2)*CVPixelBufferGetBytesPerRow(pixel)+(CVPixelBufferGetWidth(pixel)/2)*4;
+    for(int channel=0;channel<3;channel++) {
+        int actual=center[2-channel];
+        BOOL correct=index<0 ? actual<20 : Colors[index][channel]>128 ? actual>180 : actual<120;
+        if(!correct)NSLog(@"player frame %g component %d actual %d palette %d",seconds,channel,actual,index);
+        assert(correct);
+    }
+    assert(center[3]>250);
+    CVPixelBufferUnlockBaseAddress(pixel,kCVPixelBufferLock_ReadOnly); CVPixelBufferRelease(pixel); [item removeOutput:output];
+}
+static void LinkedMoveGap(MCVideoMedia *media,NSURL *directory) {
+    NSMutableDictionary *leftV=[Clip(@"left-v",@"video",0,90000,0,90000) mutableCopy];
+    NSMutableDictionary *leftA=[Clip(@"left-a",@"audio",0,90000,0,90000) mutableCopy];
+    NSMutableDictionary *rightV=[Clip(@"right-v",@"video",90000,270000,90000,180000) mutableCopy];
+    NSMutableDictionary *rightA=[Clip(@"right-a",@"audio",90000,270000,90000,180000) mutableCopy];
+    leftV[@"linkGroup"]=leftA[@"linkGroup"]=@"left";
+    rightV[@"linkGroup"]=rightA[@"linkGroup"]=@"right";
+    NSDictionary *closed=Plan(media,@[leftV,rightV],@[leftA,rightA],270000);
+    Apply(media,closed); PreviewColorAt(media,1.5,1);
+    NSData *beforeAudio=ReadAudioAsset(media.player.currentItem.asset,media.player.currentItem.audioMix,3);
+    assert(RMS(beforeAudio,1.2,1.8)>0.02);
+    AVPlayerItem *before=media.player.currentItem;
+    [media play]; assert(Wait(^BOOL{return media.player.rate>0;},5));
+
+    // This is the media plan produced by a non-ripple linked move: both parts
+    // move by one second and the old location must retain neither picture nor sound.
+    rightV=[rightV mutableCopy]; rightA=[rightA mutableCopy];
+    rightV[@"startTicks"]=rightA[@"startTicks"]=@180000;
+    Apply(media,Plan(media,@[leftV,rightV],@[leftA,rightA],360000));
+    assert(media.player.currentItem!=before && !media.playbackRequested && media.player.rate==0);
+    PreviewColorAt(media,0.5,0); PreviewColorAt(media,1.5,-1); PreviewColorAt(media,2.5,1);
+    NSData *previewAudio=ReadAudioAsset(media.player.currentItem.asset,media.player.currentItem.audioMix,4);
+    assert(RMS(previewAudio,0.2,0.8)>0.02 && RMS(previewAudio,1.1,1.9)<0.001 && RMS(previewAudio,2.2,2.8)>0.02);
+    NSURL *url=[directory URLByAppendingPathComponent:@"linked-move-gap.mp4"]; Export(media,url,4);
+    AVURLAsset *asset=[AVURLAsset URLAssetWithURL:url options:nil];
+    ColorAt(asset,nil,0.5,0); ColorAt(asset,nil,1.5,-1); ColorAt(asset,nil,2.5,1);
+    NSData *exportAudio=ReadAudio(url,4);
+    assert(RMS(exportAudio,0.2,0.8)>0.02 && RMS(exportAudio,1.1,1.9)<0.001 && RMS(exportAudio,2.2,2.8)>0.02);
+
+    // Undo/closing the gap replaces the preview again; it must restore sound
+    // instead of retaining the moved plan's silence at that output position.
+    Apply(media,closed); PreviewColorAt(media,1.5,1);
+    NSData *restoredAudio=ReadAudioAsset(media.player.currentItem.asset,media.player.currentItem.audioMix,3);
+    assert(RMS(restoredAudio,1.2,1.8)>0.02);
 }
 static NSURL *ShortenTail(NSURL *source,NSURL *directory) {
     NSURL *url=[directory URLByAppendingPathComponent:@"readable-short-video-tail.mp4"];
@@ -236,6 +305,8 @@ int main(int argc,const char *argv[]) {
         assert(RMS(reorderedAudio,0.1,0.3)<0.001 && RMS(reorderedAudio,1.8,2.2)<0.001);
         assert(singleRMS>0.02 && singleRMS<0.035 && RMS(reorderedAudio,6.2,6.7)>0.02);
 
+        LinkedMoveGap(media,directory);
+
         // Leading black and muted audio-tail duration are not discarded.
         NSMutableDictionary *leading=Plan(media,@[Clip(@"v",@"video",0,90000,90000,90000)],@[],270000); leading[@"muted"]=@YES;
         Apply(media,leading); NSURL *leadingURL=[directory URLByAppendingPathComponent:@"leading-muted-tail.mp4"]; Export(media,leadingURL,3);
@@ -277,9 +348,9 @@ int main(int argc,const char *argv[]) {
         [media cancelExport]; assert(Wait(^BOOL{return done;},30)); assert([[NSData dataWithContentsOfURL:cancelled] isEqual:sentinel]);
         __block BOOL protected=NO; [media exportToURL:source completion:^(NSURL *url,NSError *failure){assert(!url && failure);protected=YES;}]; assert(protected);
         [media close]; assert([[NSData dataWithContentsOfURL:source] isEqual:original]);
-        NSDictionary *report=@{@"passed":@YES,@"source":source.path,@"sourceDurationMs":@6000,@"threeTimesOutputMs":@2000,@"pitchHzAfterThreeTimes":@(frequency),@"videoOnlySlowMotion":@YES,@"slowAudioRejectedAtomically":@YES,@"audioTailMeasurements":audioTailMeasurements,@"fourTimesPitchHz":@(fourFrequency),@"sourceAudioOffsetScaled":@YES,@"independentAudioRMS":@(singleRMS),@"reorderedRepeatedFrames":@YES,@"blackGapsAndAudioTail":@YES,@"fractionalSourceTicks":@YES,@"previewRateIndependent":@YES,@"atomicInvalidPlan":@YES,@"cancelPreservesDestination":@YES,@"sourceUnchanged":@YES,@"readableShortVideoTailRejected":@YES,@"legacyValidationRestored":@YES};
+        NSDictionary *report=@{@"passed":@YES,@"source":source.path,@"sourceDurationMs":@6000,@"threeTimesOutputMs":@2000,@"pitchHzAfterThreeTimes":@(frequency),@"videoOnlySlowMotion":@YES,@"slowAudioRejectedAtomically":@YES,@"audioTailMeasurements":audioTailMeasurements,@"fourTimesPitchHz":@(fourFrequency),@"sourceAudioOffsetScaled":@YES,@"independentAudioRMS":@(singleRMS),@"reorderedRepeatedFrames":@YES,@"blackGapsAndAudioTail":@YES,@"linkedMoveGapPlayerFrames":@YES,@"linkedMoveGapPreviewAndExportSilence":@YES,@"linkedMoveGapUndo":@YES,@"fractionalSourceTicks":@YES,@"previewRateIndependent":@YES,@"atomicInvalidPlan":@YES,@"cancelPreservesDestination":@YES,@"sourceUnchanged":@YES,@"readableShortVideoTailRejected":@YES,@"legacyValidationRestored":@YES};
         assert([[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:&error] writeToURL:[directory URLByAppendingPathComponent:@"report.json"] atomically:YES]);
-        puts("PASS: v2 real 3x export/pitch, reorder/repeat, independent audio/gaps/tail, fractional source, validation, cancellation and source protection");
+        puts("PASS: v2 real 3x export/pitch, reorder/repeat, independent audio/gaps/tail, linked move player frames/silence/undo, fractional source, validation, cancellation and source protection");
     }
     return 0;
 }

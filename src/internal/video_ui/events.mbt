@@ -396,6 +396,7 @@ pub fn event(id : Int32, event_json : String) -> String {
           s.clip_speed_menu = false
           project_sync_selection(s)
           s.gesture = ""
+          s.clip_drag_active = false
           s.hover = ""
           s.preview_start = s.snapshot.start
           s.preview_end = s.snapshot.end
