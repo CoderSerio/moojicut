@@ -8,6 +8,24 @@
 
 平台矩阵分 macOS、Windows、Linux/X11、Linux/Wayland。具体系统版本、显示服务、后端、输入法和运行证据随验收记录，不能只写一个 Linux 勾选框。功能的实际可用性包含后端支持、依赖是否安装、设备、权限、会话状态，不能只有操作系统名称。
 
+## 当前源码速览（2026-11-18，尚未发布）
+
+以下是当前实现，不与后文初始审计混用；各批验证证据见末尾实施记录。最新发行包仍为 alpha.20，不能由 main 的进度推断安装包已包含这些变化。
+
+| 能力 | macOS 生产入口 | Windows 生产入口 | Linux 生产入口 |
+| --- | --- | --- | --- |
+| 截图标注、贴图 | 已接；复制、滚轮/边界等比缩放 | 已接同类基础操作 | 已接；Wayland 位置/置顶受桌面后端约束 |
+| 工具贡献、启停和排序 | 共享 MoonBit 目录 | 共享 MoonBit 目录 | 共享 MoonBit 目录 |
+| 二级属性与圆色块 | 共享尺寸/间距值，原生控件 | 共享尺寸/间距值，原生控件 | 共享尺寸/间距值，原生控件 |
+| 基础录屏 | 区域/窗口/整屏及系统音频 | 区域 MP4，静音 | X11 区域与 Wayland ScreenCast/PipeWire，静音 WebM |
+| v2 视频编辑 | 共享 UI、正式预览/导出与波形 | 仍使用旧编辑器 | 尚无录后编辑器 |
+| OCR、翻译、用户 ZIP 插件 | 已有后端；用户插件仍为元信息输入/文本输出 v1 | 未接对应后端 | 未接对应后端 |
+| 更新安装 | 内置安装链 | 下载校验后手动换装 | 下载校验后手动换装 |
+
+Windows/Linux 的新共享画布已实现，并通过独立宿主调用真实 v2 MoonBit 工程；这与生产录制后编辑流程是两项交付。画布不拥有第二份剪辑模型，切分、空隙、历史和视口规则仍由 MoonBit 决定。三端麦克风/暂停、完整属性 Schema、用户插件 v2、独立 CLI/IPC，以及 Windows/Linux 的正式媒体编辑链仍未完成。
+
+结构约束仍在构建入口执行，新增画布没有增加原生跨层 include 例外。现有 12 对历史例外、旧 components/plugins/feature 和宿主混合职责仍按下表迁移；目录归位、生产接入、自动回归和实机效果分别验收。
+
 ## 三端能力历史基线（14bbbea）
 
 以下保留最初源码审计，**不是当前完成度**；后续已补区域录制等能力，见末尾实施记录。它不代表本轮实机通过。macOS 的既有自动回归与 Windows/Linux 历史 CI 只作为各自证据，未重新执行的环境不补勾。
@@ -37,17 +55,17 @@
 
 ## 旧原生功能逐项归属
 
-这里列全当前 `plugins/feature` 的 8 个模块。这些是静态构建模块，尚不是统一的运行时贡献机制。
+这里列全 `plugins/feature` 的 8 个静态模块与混合职责。当前截图贡献目录已共享，但静态模块本身不等于完整的统一运行时插件；后续接入状态以本页速览与实施记录为准。
 
 | 旧模块 | 当前实现与混合职责 | MoonBit 目标 | 平台部分与验收 |
 | --- | --- | --- | --- |
 | `plugins/feature/capture` | 三端都有；Windows/Linux 同时含图片编辑、工具 UI 与采集，Linux 还含 Screenshot portal | `features/capture` 会话、core、ui；共用框选到 `shared/selection` | `platform/<os>/capture` 接采集，`windowing` 接浮层；截屏与标注分别验收，保留贴图和可见编辑器入画行为 |
 | `plugins/feature/image_editor` | 独立目录只有 macOS；另两端编辑器在 capture 中 | 标注、输入事务、工具条、属性栏归 capture 的共享会话/UI；插件结果应用经核心命令 | 原生文本输入桥、绘制及剪贴板到平台；不能只搬 macOS 文件而漏掉另两端嵌入代码 |
 | `plugins/feature/select` | Windows/Linux 有目录；macOS 在 components/selection | 几何到 `shared/geometry`，框选/hover/调整到 `shared/selection` | 窗口枚举、坐标/DPI、输入捕获到 `windowing`；Wayland 的系统选源单独处理 |
-| `plugins/feature/pin` | 三端有窗口实现；MoonBit 数值/缩放规则已归 features/capture/extensions/pin | `capture/extensions/pin` 后续接贡献、命令、设置、生命周期 | `windowing` 管置顶、穿透和窗口资源，`graphics` 管图片；停用按既有窗口关闭/菜单退役策略释放，不能把资源回收解释为删除原始图片 |
+| `plugins/feature/pin` | 三端有窗口实现；MoonBit 数值/缩放规则已归 features/capture/extensions/pin | `capture/extensions/pin` 贡献与设置已接；通用命令与完整资源租约继续提取 | `windowing` 管置顶、穿透和窗口资源，`graphics` 管图片；停用按既有窗口关闭/菜单退役策略释放，不能把资源回收解释为删除原始图片 |
 | `plugins/feature/capture_text` | macOS Vision OCR、Apple Translation、结果窗口与任务控制 | `capture/extensions/ocr`、`translation` 管工作流、输入输出、可编辑结果、取消；通用结果控件归 shared/ui | `platform/<os>/text_services` 执行 OCR/翻译；三端实现与模型资源待分别验证，不能在无后端时承诺同等可用 |
 | `plugins/feature/scroll_capture` | 仅 macOS 原型；默认关闭；采集、HUD、重叠拼接混合 | `capture/extensions/scroll_capture` 管会话/UI与拼接计划；重叠算法优先共享 MoonBit | 获取帧留 capture；实测若需底层像素计算，才提到 platform/shared/image；继续默认关闭，独立页面稳定性验收 |
-| `plugins/feature/recording` | macOS 采集/选区；Windows 同文件包含采集、编码、草稿、旧编辑器；Linux 缺失 | `recording/core` 已归位；会话/UI后续提取，编辑职责移到 video_editor | `recording`、`audio` 管采集和时间戳，媒体执行归 `media`；Windows 先拆责任再接共享选区，Linux 单独补录制流 |
+| `plugins/feature/recording` | macOS 采集/选区；Windows 同文件包含采集、编码、草稿、旧编辑器；Linux 宿主已接 platform/linux/recording | `recording/core` 与倒计时 UI 已共享；完整会话编排、音源和编辑交接仍需提取 | `recording`、`audio` 管采集和时间戳，媒体执行归 `media`；Windows 区域选区与 Linux 基础视频流已接，音频/暂停待补 |
 | `plugins/feature/video_editor` | 独立目录仅 macOS；Windows 旧编辑器仍在 recording.cpp；Linux 缺失 | `video_editor/core`、ui、根会话统一三端 | `media` 管 probe/preview/seek/export/waveform；`graphics/windowing` 提供嵌入表面；无后端时共享 UI 报不可用，不能继续造平台专用简化编辑器 |
 
 截图扩展清单必须覆盖矩形、箭头、文字、实心/马赛克覆盖、OCR、翻译、贴图、滚动截图及用户自定义贡献。选择、取消、确认是宿主会话控制；撤销重做消费文档历史。每个按钮可配置，不意味着每个按钮都要独立 Wasm 包或三份系统代码。
@@ -301,7 +319,7 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 
 提交 `2e37903` 已通过 [Native desktop previews #44157505710](https://github.com/CoderSerio/moojicut/actions/runs/44157505710)：Windows 2022/MSVC 和 Ubuntu 22.04/Xvfb 构建、平台 smoke、打包与生成接口检查均成功，包括本批工具启停/排序、复合命令与贴图配置事务回归。代码集中推送一次；此验证记录为文档更新，不另触发构建。尚未发布新包。
 
-### 2026-11-18：E0 共享画布与媒体可行性（实施中，尚未发布）
+### 2026-11-18：E0 共享画布与媒体可行性（画布已验证，媒体端口未接，尚未发布）
 
 本批从 `a8e8ab5` 继续，补齐跨平台编辑器的底层消费者；不因此关闭 E1 生产视频编辑器，也不关闭 B2 完整截图属性/选区 UI。
 
@@ -311,7 +329,11 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 - Windows 的 GDI/输入/MSAA 与 Linux 的 Cairo/Pango/GTK/ATK 适配器放在 `platform/<os>/graphics`，独立 fixture 直接消费真实 v2 工程及其 UI；尚未替换 Windows 旧编辑器或将 Linux 录制完成接入生产编辑器。无障碍能力不能由“有 semantics JSON”推断，必须调用平台接口验证。新增源、头及共享 C 遍历进入构建归属清单；历史 include 例外没有增加。
 - 有界 frame 验证暴露并修复了共享波形的极端开销：列间距按输出像素计算，重叠音频跳过随后不透明片段完全遮住的列，保留圆角边缘、全部片段语义和输入。部分重叠逐柱对照保持可见输出，最大合法 512 片段/256 重叠音频和极端宽矮窗口通过实际 producer→decoder 检查；不以扩到百万绘图命令掩盖不可见计算。
 
-本地共享核心 native/Wasm 各 **219/219**、构建/归属/文件策略 **33/33**、macOS 完整原生回归、共享画布/实际媒体与导出专项、隔离身份的完整 App 构建均已通过。Windows 新适配器和 fixture 已严格交叉编译，Linux 使用 Ubuntu 22.04 真实 GTK/ATK/Pango 头严格检查通过；本批目标运行与 CI 待集中推送后记录，不能复用上批绿灯。源码状态和发布仍分开记账。
+本地共享核心 native/Wasm 各 **219/219**、构建/归属/文件策略 **33/33**、macOS 完整原生回归、共享画布/实际媒体与导出专项、隔离身份的完整 App 构建均已通过。Windows 新适配器和 fixture 已严格交叉编译，Linux 使用 Ubuntu 22.04 真实 GTK/ATK/Pango 头严格检查通过。
+
+本批最终源码 `38e45e4` 已通过 [Native desktop previews #44170592200](https://github.com/CoderSerio/moojicut/actions/runs/44170592200)：Windows 2022/MSVC 与 Ubuntu 22.04/Xvfb 构建、生产宿主 smoke、共享画布真实 v2 输入/绘制/无障碍回归、打包及生成接口检查均成功。目标运行期间修正 Windows MSAA 枚举器的 COM 身份/独立克隆，并修复 Linux 设置开关回调同步销毁自身控件的问题：界面刷新延至可取消的 idle，设置事务仍同步，关闭重开及 GObject critical 回归通过。测试也修正了切分前未定位播放头、将保留视口当作当前输出时长，以及检查不存在缩放按钮的错误假设；缩放仍只由快捷键/滚轮操作，继续验证完整文档快照和历史不变。
+
+这次绿灯只关闭共享画布的目标平台自动验证，不关闭 E1 生产编辑器、通用 IME 输入、真实 Wayland/混合 DPI/设备及权限验收。未发布、安装或替换用户应用；发行包仍为 alpha.20。
 
 E0 媒体探针使用隔离的官方 GStreamer/GES 1.28.9，在 macOS arm64 实际调用公共 C ABI，没有改变系统安装或生产依赖。八组真实 preview/seek→Matroska VP8/FLAC 导出→独立 FFmpeg 解码通过：黑屏/静音空隙、独立偏移音频、音频长于视频、1.5×/3×保音调、4500 ticks 源入点及重叠音频；另验真实取消到 NULL 及同进程再次导出。时间线来自共享编辑计划，不引入第二份可编辑文档。
 
