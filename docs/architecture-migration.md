@@ -226,7 +226,7 @@ B2 在扩大迁移之前先通过 macOS+Windows 的同一完整切片（声明�
 - Windows `launchJob` 已改用 `platform/shared/media/output_file.h` 的文件所有权策略：原始录制的 partial 不自动删除，即使无法立即证明可以解码。只有派生预览/导出的中间文件可自动清理。
 - 采集失败时对已经开始写入的 MF writer 尝试一次 Finalize；保留原始错误，Finalize 失败不重试。最终改名禁止覆盖已有目标；改名后探测失败保留最终文件。错误提示携带实际保留路径并注明完整性未验证，录制错误不会被当成静默导出取消。
 - 派生任务迟到的取消回调仅删除本次确已发布的目标，发布失败时不删除目标路径上原有的文件。
-- 便携 C++ 文件故障测试已通过：中途失败、发布冲突、发布后探测失败、派生清理及原文件不变。Windows 原有 MF smoke 已增加真实样本写入后失败收尾、保留文件解码、真实 MoveFileEx 冲突和迟到取消检查；本轮在 macOS 开发，**尚未运行 Windows MF smoke**，不可据此宣称 Windows 实机验收完成。
+- 便携 C++ 文件故障测试已通过：中途失败、发布冲突、发布后探测失败、派生清理及原文件不变。Windows 原有 MF smoke 已增加真实样本写入后失败收尾、保留文件解码、真实 MoveFileEx 冲突和迟到取消检查；后续已通过 Windows CI（见本页 C1/C2 验证记录），真实设备交互仍待用户组织验收。
 - 文件清理属于平台媒体 I/O；此 C++ 辅助类不承载 UI/录制业务状态。没有引入自动恢复承诺，也没有把 partial 标记为成功素材。
 
 ### B1：静态能力与参数计划切片
@@ -246,8 +246,8 @@ B2 在扩大迁移之前先通过 macOS+Windows 的同一完整切片（声明�
 | --- | --- | --- |
 | MoonBit core | 不复用的会话句柄、绝对单调截止点、一次启动效果、停止/取消到资源释放回执、活动 close 拒绝；四环境编码计划 | 来源能力动态快照、媒体时间轴与插件/CLI 服务协调 |
 | MoonBit UI | 同一倒计时/计时文本、面板/按钮矩形、命中与小窗字号；Windows/Linux 生产入口消费 | macOS 新 UI/flow 迁移；完整选区画布及可访问性语义统一 |
-| Windows | 自由框选→3 秒可取消倒计时→所选物理区域采集→停止/Finalize→保留 MP4/现有编辑器；截图与录屏共用提取的 selection surface | 四个源已通过 LLVM-MinGW x64 对象编译；MSVC/Windows 自动媒体 smoke 尚未运行；混合 DPI/窗口排除/实际输入留实机；跟随窗口和旧媒体/编辑器拆分仍待做 |
-| Linux X11 | 自有选区、物理像素换算、GStreamer ximagesrc→VP8/WebM、托盘与 --record/--stop | 原生编译/Xvfb 媒体 smoke 待目标平台；多显示器/DPI/桌面环境实测；选区尚非完整共用画布 |
+| Windows | 自由框选→3 秒可取消倒计时→所选物理区域采集→停止/Finalize→保留 MP4/现有编辑器；截图与录屏共用提取的 selection surface；MSVC 构建、自动媒体 smoke 与包验证通过 | 混合 DPI/窗口排除/实际输入留实机；跟随窗口和旧媒体/编辑器拆分仍待做 |
+| Linux X11 | 自有选区、物理像素换算、GStreamer ximagesrc→VP8/WebM、托盘与 --record/--stop；Ubuntu 原生编译、Xvfb 媒体 smoke 与包验证通过 | 多显示器/DPI/桌面环境实测；选区尚非完整共用画布 |
 | Linux Wayland | libportal ScreenCast 授权→PipeWire fd/node→真实视频尺寸探测→共享倒计时→录制；取消与迟到资源释放 | 目标 compositor/portal 组合与实际授权流程实测；不保证任意窗口全局坐标或自有窗口排除 |
 | 媒体/原片 | Linux worker 拥有 pipeline，EOS/NULL/FD 收尾后再完成；失败保留 partial；新目标禁止覆盖 | 与录后编辑器的正式媒体端口 E0/E1；系统音频、麦克风、暂停尚未实现 |
 | 构建交付 | 显式 platform.recording 模块；Linux 系统 GStreamer/libportal 依赖、CI 安装与包内说明更新 | Windows/Linux 更新仍为下载校验后手动换装；本批没有改变发行包签名与自动替换能力 |
@@ -258,4 +258,6 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 
 本轮已运行：MoonBit native/Wasm 各 **187/187**、构建与文件策略 **22/22**、原生 C ABI 重复调用与所有权检查。LLVM-MinGW 20260908 / Clang 23.1.1 将 `surface.c`、`capture.c`、`main.c`、`recording.cpp` 编译为 Windows x64 COFF；新增源与 main 使用 `-Wall -Wextra -Werror` 通过，截图旧文件保留 5 个既有聚合初始化警告。它不等同 MSVC 链接或 Windows 运行。
 
-新增 Windows 选区输入/实际区域裁剪与完整媒体 worker 闭环、Linux X11/合成视频解码/原片失败保留/迟到回调取消自动 fixture 已加入目标平台 smoke；Ubuntu 编译、这批目标平台 smoke 尚未执行，实际执行状态以对应构建记录为准。两路实现与独立审查已收口：tooltip 捕获、回调跨线程、起录前来源尺寸变化、无效小选区扩大为全屏均已修正。Wayland 当前采用无鼠标的通用 cursor mode，不持久化授权；这些限制需要在后续体验与能力扩展中继续处理。
+新增 Windows 选区输入/实际区域裁剪与完整媒体 worker 闭环、Linux X11/合成视频解码/原片失败保留/迟到回调取消自动 fixture 已加入目标平台 smoke，并随 `dfd817d` 通过 [Native desktop previews #44038639327](https://github.com/CoderSerio/moojicut/actions/runs/44038639327)：Windows 2022/MSVC 与 Ubuntu 22.04/Xvfb 两项构建、测试、打包及生成接口检查全部成功。修复涉及 Ubuntu runner 的 LLVM/GStreamer libunwind 开发包冲突、Windows fixture 使用真实鼠标捕获转移，以及 Linux fixture 的局部变量遮蔽 `stat`；未跳过录制测试或缩小断言范围。
+
+两路实现与独立审查已收口：tooltip 捕获、回调跨线程、起录前来源尺寸变化、无效小选区扩大为全屏均已修正。上述 CI 不覆盖真实 Wayland compositor/portal 授权、多显示器与混合 DPI、用户设备上的快捷键或发布更新；这些继续由实机验收记录。Wayland 当前采用无鼠标的通用 cursor mode，不持久化授权；这些限制需要在后续体验与能力扩展中继续处理。
