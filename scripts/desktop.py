@@ -122,7 +122,8 @@ class DesktopBuild:
                 shutil.copy2(linked_executable, executable)
                 dependencies = self.run("dumpbin", "/nologo", "/dependents", executable)
             else:
-                flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1", "libcurl"))
+                flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1", "libcurl",
+                                            "gstreamer-1.0", "gstreamer-pbutils-1.0", "libportal-gtk3", "gio-unix-2.0", "x11"))
                 self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                          '-DMOOJICUT_VERSION="' + self.version + '"', "-I", self.home / "include",
                          "-I", ROOT, *sources, archive, *flags, "-lm", "-o", executable)
@@ -164,12 +165,13 @@ class DesktopBuild:
             return ("Native tray and configurable global shortcuts; frozen-desktop inline screenshot editing, "
                     "editable text, RGBA annotation styles, in-place pinned images with configurable zoom/opacity "
                     "and global hide/recover/click-through keys, confirmed image copy; "
-                    "silent main-display recording, trim, cuts, crop and confirmed MP4 file copy.")
+                    "silent selected-region recording with shared countdown/controls, trim, cuts, crop and confirmed MP4 file copy.")
         return ("Native tray and preferences; X11 frozen-desktop inline editing or Wayland portal image editing; "
                 "editable text, RGBA annotation styles, pinned images with configurable zoom/opacity keys "
                 "and X11 global hide/recover/click-through keys, confirmed image copy. "
                 "Wayland positioning/keep-above is compositor-dependent; click-through is disabled. "
-                "Capture global shortcuts and recording are not connected.")
+                "Silent X11 selected-region or Wayland ScreenCast/PipeWire recording to WebM; "
+                "shared countdown/stop controls. Capture global shortcuts and video editor are not connected.")
 
     def verify_bundle(self, directory):
         expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt"}
@@ -203,7 +205,8 @@ class DesktopBuild:
             return shared + ("适用 Windows 10/11 x64（Intel/AMD）。解压全部文件，双击 MoojiCut.exe。\n"
                              "在任务栏隐藏图标区找到 Mooji Cut，双击或右键打开设置。\n"
                              "从托盘菜单或可配置的全局快捷键启动截图、开始录屏和停止录屏。\n"
-                             "录屏支持主显示器，最高 1920 × 1080 / 15 fps；本版不录声音。\n"
+                             "录屏先自由框选区域，3 秒倒计时后开始；倒计时可按 Esc 取消。\n"
+                             "最高 1920 × 1080 / 15 fps；本版不录声音。托盘或停止快捷键结束录制。\n"
                              "停止后可裁剪时长、删除片段和裁画面。修改需点击对应的应用按钮。\n"
                              "确认后复制 MP4 文件，可粘贴到接受文件的应用；关闭编辑器保留草稿。\n"
                              "草稿和成片保存在 %LOCALAPPDATA%\\MoojiCut 的 Drafts 与 Exports 文件夹。\n"
@@ -212,8 +215,8 @@ class DesktopBuild:
                              "Windows 可能显示未知发布者提示。仅从项目 Release 下载并核对 SHA256。\n"
                              "命令行 MoojiCut.exe --preferences 可直接打开设置。\n")
         return shared + ("适用 Ubuntu 22.04/24.04 x86_64 及兼容发行版（glibc >= 2.35）。\n"
-                         "需要 GTK 3、Ayatana AppIndicator 和 libcurl：\n"
-                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4\n"
+                         "需要 GTK 3、Ayatana AppIndicator、libcurl、GStreamer 与 libportal：\n"
+                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 libportal-gtk3-1 libgstreamer-plugins-base1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire\n"
                          "解压后运行 ./launch.sh 打开设置；./moojicut 仅启动托盘。\n"
                          "从托盘菜单或设置中启动截图，也可运行 ./moojicut --capture。\n"
                          "X11 支持桌面框选；Wayland 使用系统截图门户，需要可用的\n"
@@ -221,8 +224,11 @@ class DesktopBuild:
                          "Wayland 门户返回图片后在无边框界面编辑；窗口位置、跨工作区与置顶效果\n"
                          "由桌面合成器决定，无法保证与 X11 的桌面原位编辑完全相同。\n"
                          "Wayland 暂不启用鼠标穿透；全局贴图恢复按键仅支持 X11。\n"
-                         "本版尚不支持 Linux 录屏或应用内注册全局截图快捷键。可在桌面系统设置中\n"
-                         "将快捷键绑定到解压目录下 moojicut --capture 的完整路径。\n"
+                         "录屏：X11 自由框选区域；Wayland 通过系统录屏门户选择屏幕/窗口，\n"
+                         "需要当前桌面的 ScreenCast portal 后端与 PipeWire。3 秒倒计时后开始，\n"
+                         "可从托盘停止，保存静音 WebM 原片；最高 1920×1080 / 15fps。\n"
+                         "本版 Linux 尚无录后编辑器，也未在应用内注册全局截图/录屏快捷键。可在桌面设置中\n"
+                         "将快捷键绑定到解压目录下 moojicut --capture、--record 或 --stop 的完整路径。\n"
                          "部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘；没有扩展也可用\n"
                          "./launch.sh 重新打开设置。包不自动安装依赖或修改桌面配置。\n")
 

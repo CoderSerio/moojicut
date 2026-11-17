@@ -94,6 +94,8 @@ pub fn recording_plan(request : String) -> String {
     let platform = match fields.get("platform") {
       None | Some(String("macOS")) => 0
       Some(String("windows")) => 1
+      Some(String("linux-x11")) => 2
+      Some(String("linux-wayland")) => 3
       _ =>
         raise @protocol.InputError(
           "invalid_input", "Unsupported recording platform",

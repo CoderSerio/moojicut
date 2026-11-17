@@ -124,6 +124,8 @@ static const MCCaptureHost capture_services = {&instance, capture_pin_image, cap
 static void start_capture(void) {
     if (update_exit_pending) return;
     if (mc_capture_busy()) { mc_capture_activate(); return; }
+    if (mc_recording_preparing()) { mc_recording_activate(); return; }
+    KillTimer(host, RECORD_TIMER);
     if (settings) ShowWindow(settings, SW_HIDE);
     mc_pins_hide(TRUE);
     SetTimer(host, CAPTURE_TIMER, 160, NULL);
@@ -131,6 +133,9 @@ static void start_capture(void) {
 static void start_recording(void) {
     if (update_exit_pending) return;
     if (mc_recording_busy()) { mc_recording_activate(); return; }
+    if (mc_capture_busy()) { mc_capture_activate(); return; }
+    KillTimer(host, CAPTURE_TIMER);
+    mc_pins_hide(FALSE);
     if (settings) ShowWindow(settings, SW_HIDE);
     SetTimer(host, RECORD_TIMER, 160, NULL);
 }
@@ -458,8 +463,9 @@ static void tray_menu(void) {
     UINT chosen;
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, IDM_CAPTURE, L"截图…");
-    AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RECORD, L"开始录屏（无声音）…");
-    AppendMenuW(menu, MF_STRING | (mc_recording_recording() ? 0 : MF_GRAYED), IDM_STOP_RECORD, L"停止录屏并编辑");
+    AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RECORD, L"框选录屏（无声音）…");
+    AppendMenuW(menu, MF_STRING | ((mc_recording_recording() || mc_recording_preparing()) ? 0 : MF_GRAYED), IDM_STOP_RECORD,
+        mc_recording_preparing() ? L"取消本次录屏" : L"停止录屏并编辑");
     AppendMenuW(menu, MF_STRING | (mc_recording_busy() ? MF_GRAYED : 0), IDM_RESUME_RECORD, L"继续编辑上次录屏…");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     UINT pin_flags = MF_STRING | (mc_pin_enabled() ? 0 : MF_GRAYED);
@@ -497,7 +503,7 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         if (smoke_mode) return 0;
         if (wp == CAPTURE_HOTKEY) start_capture();
         else if (wp == RECORD_HOTKEY) start_recording();
-        else if (wp == STOP_HOTKEY) mc_recording_stop();
+        else if (wp == STOP_HOTKEY) { KillTimer(window, RECORD_TIMER); mc_recording_stop(); }
         return 0;
     case WM_REFRESH_SHORTCUTS: refresh_global_shortcuts(); return 0;
     case WM_TIMER:
@@ -510,7 +516,7 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
             if (!mc_capture_start(instance, host, &capture_services)) MessageBoxW(host,
                 L"无法读取当前桌面。请退出安全桌面或远程会话限制后重试。", L"Mooji Cut", MB_OK | MB_ICONWARNING);
         }
-        if (wp == RECORD_TIMER) { KillTimer(window, RECORD_TIMER); if (!update_exit_pending) mc_recording_start(instance, host); }
+        if (wp == RECORD_TIMER) { KillTimer(window, RECORD_TIMER); if (!update_exit_pending && !mc_capture_busy()) mc_recording_start(instance, host); }
         return 0;
     case MOOJICUT_RECORDING_STATE_CHANGED:
         if (tray_added) {

@@ -4,9 +4,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <X11/Xlib.h>
 #include "moonbit.h"
 #include "plugins/feature/capture/linux/capture.h"
 #include "plugins/feature/pin/linux/pinning.h"
+#include "plugins/feature/recording/linux/recording.h"
 #include "updates.h"
 
 #ifndef MOOJICUT_VERSION
@@ -21,6 +23,7 @@ typedef struct {
   GtkApplication *application;
   AppIndicator *indicator;
   GtkWidget *window, *notebook, *status, *recorders[3], *dark_toggle, *pin_toggle, *pin_menu[3];
+  GtkWidget *record_start_menu, *record_stop_menu;
   Shortcut shortcuts[3];
   gboolean prefer_dark, system_dark, smoke, activated, core_ok, pin_enabled, quitting;
   int recording, exit_code;
@@ -35,6 +38,8 @@ static const Shortcut defaults[] = { { '1', 5 }, { '2', 5 }, { 'X', 5 } };
 static void show_preferences(void);
 static void cancel_recording(void);
 static void menu_capture(GtkWidget *widget, gpointer data);
+static void menu_record(GtkWidget *widget, gpointer data);
+static void menu_stop(GtkWidget *widget, gpointer data);
 
 static int validate_shortcut(int index, Shortcut value) {
   Shortcut a = host.shortcuts[(index + 1) % 3];
@@ -266,6 +271,7 @@ static void quit_app(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
   if (host.quitting) return;
   host.quitting = TRUE;
+  mc_linux_recording_shutdown();
   mc_linux_capture_close();
   mc_linux_pins_set_enabled(FALSE);
   if (host.window) gtk_widget_destroy(host.window);
@@ -302,6 +308,15 @@ static void show_preferences(void) {
   gtk_widget_set_halign(capture_button, GTK_ALIGN_START);
   g_signal_connect(capture_button, "clicked", G_CALLBACK(menu_capture), NULL);
   gtk_box_pack_start(GTK_BOX(general), capture_button, FALSE, FALSE, 0);
+  GtkWidget *record_button = gtk_button_new_with_label("开始录屏…");
+  gtk_widget_set_halign(record_button, GTK_ALIGN_START);
+  g_signal_connect(record_button, "clicked", G_CALLBACK(menu_record), NULL);
+  gtk_box_pack_start(GTK_BOX(general), record_button, FALSE, FALSE, 0);
+  GtkWidget *stop_button = gtk_button_new_with_label("停止录屏并保存");
+  gtk_widget_set_halign(stop_button, GTK_ALIGN_START);
+  g_signal_connect(stop_button, "clicked", G_CALLBACK(menu_stop), NULL);
+  gtk_box_pack_start(GTK_BOX(general), stop_button, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(general), label("X11 支持区域/整个屏幕；Wayland 由系统选择显示器或窗口。当前静音录制，保存为 WebM；开始后可从托盘停止。", TRUE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(general), label("关闭设置后，Mooji Cut 继续在托盘中待命。\n从托盘菜单打开设置，或选择退出。", TRUE), FALSE, FALSE, 0);
   host.dark_toggle = gtk_check_button_new_with_label("偏好深色外观");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.dark_toggle), host.prefer_dark);
@@ -337,7 +352,7 @@ static void show_preferences(void) {
   gtk_widget_set_halign(reset, GTK_ALIGN_END);
   g_signal_connect(reset, "clicked", G_CALLBACK(reset_shortcuts), NULL);
   gtk_box_pack_start(GTK_BOX(shortcuts), reset, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(shortcuts), label("配置自动保存；截图全局快捷键尚未接入，请从托盘菜单或通用设置启动。贴图全局恢复键见“贴图按键”；录屏仍在开发中。", TRUE), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(shortcuts), label("配置自动保存；截图/录屏全局快捷键尚未接入，请从托盘菜单或通用设置启动、停止。贴图全局恢复键见“贴图按键”。", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), shortcuts, gtk_label_new("快捷键"));
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_pin_preferences(), gtk_label_new("贴图按键"));
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_update_preferences(), gtk_label_new("更新"));
@@ -352,7 +367,7 @@ static void show_preferences(void) {
   }
   gtk_box_pack_start(GTK_BOX(about), label("Mooji Cut  " MOOJICUT_VERSION, FALSE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(about), label("以 MoonBit 为核心的本地截图与录屏工具。", FALSE), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(about), label("Linux 原生预览版\n截图后原地标注、编辑文字、确认复制或固定贴图。X11 保留冻结桌面；Wayland 由系统门户提供截图，编辑位置与贴图置顶由桌面决定。录屏仍在开发中。", TRUE), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(about), label("Linux 原生预览版\n截图后原地标注、编辑文字、确认复制或固定贴图。X11 保留冻结桌面；Wayland 由系统门户提供截图，编辑位置与贴图置顶由桌面决定。录屏支持静音 WebM，录后编辑尚未接入。", TRUE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(about), label(host.core_ok ? "MoonBit native 核心已连接" : "MoonBit 核心检查失败", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), about, gtk_label_new("关于"));
 
@@ -385,17 +400,40 @@ static const MCLinuxCaptureHost capture_host = {pin_capture_result, capture_clos
 
 static gboolean begin_capture(gpointer data) {
   (void)data;
-  if (host.quitting) return G_SOURCE_REMOVE;
+  if (host.quitting || mc_linux_recording_busy()) return G_SOURCE_REMOVE;
   mc_linux_capture_start(host.application, &capture_host);
   return G_SOURCE_REMOVE;
 }
 
 static void menu_capture(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
+  if (mc_linux_recording_busy()) { set_status("请先停止录屏并等待保存完成。"); return; }
   cancel_recording();
   if (host.window) gtk_widget_hide(host.window);
   /* Keep pinned images in the source. Let only menus/settings disappear. */
   g_timeout_add(120, begin_capture, NULL);
+}
+
+static void recording_changed(gboolean busy, gboolean can_stop, const char *status, gpointer data) {
+  (void)data;
+  if (host.record_start_menu) gtk_widget_set_sensitive(host.record_start_menu, !busy && !host.quitting);
+  if (host.record_stop_menu) {
+    gtk_widget_set_sensitive(host.record_stop_menu, can_stop && !host.quitting);
+    gtk_menu_item_set_label(GTK_MENU_ITEM(host.record_stop_menu), busy ? status : "停止录屏并保存");
+  }
+  if (host.indicator) app_indicator_set_label(host.indicator, busy ? "● REC" : "", "● REC");
+  set_status(status);
+}
+static void menu_record(GtkWidget *widget, gpointer data) {
+  (void)widget; (void)data;
+  if (host.quitting || mc_linux_recording_busy()) return;
+  if (mc_linux_capture_busy()) { set_status("请先完成或取消当前截图。"); return; }
+  cancel_recording();
+  if (host.window) gtk_widget_hide(host.window);
+  mc_linux_recording_start();
+}
+static void menu_stop(GtkWidget *widget, gpointer data) {
+  (void)widget; (void)data; mc_linux_recording_stop();
 }
 
 static gboolean save_smoke_screenshot(void) {
@@ -452,6 +490,7 @@ static gboolean smoke_check(gpointer data) {
   passed = passed && host.window == NULL;
   passed = mc_linux_capture_smoke(host.application) && passed;
   passed = mc_linux_pin_smoke() && passed;
+  passed = mc_linux_recording_smoke(host.application, host.smoke_dir) && passed;
   passed = mc_linux_update_smoke() && passed;
   host.exit_code = passed ? 0 : 1;
   g_print("Linux native UI smoke %s: core, settings persistence, clear/reset, duplicate validation, five close/reopen cycles.\n", passed ? "passed" : "FAILED");
@@ -474,6 +513,7 @@ static void startup(GApplication *application, gpointer data) {
   g_application_hold(application);
   g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &host.system_dark, NULL);
   load_settings();
+  mc_linux_recording_init(host.application, recording_changed, NULL);
   mc_linux_pins_init(host.application, host.config_path);
   mc_linux_pins_set_enabled(host.pin_enabled);
   g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", host.prefer_dark || host.system_dark, NULL);
@@ -484,6 +524,13 @@ static void startup(GApplication *application, gpointer data) {
   GtkWidget *screenshot = gtk_menu_item_new_with_label("截图并标注…");
   g_signal_connect(screenshot, "activate", G_CALLBACK(menu_capture), NULL);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), screenshot);
+  host.record_start_menu = gtk_menu_item_new_with_label("开始录屏…");
+  g_signal_connect(host.record_start_menu, "activate", G_CALLBACK(menu_record), NULL);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu), host.record_start_menu);
+  host.record_stop_menu = gtk_menu_item_new_with_label("停止录屏并保存");
+  g_signal_connect(host.record_stop_menu, "activate", G_CALLBACK(menu_stop), NULL);
+  gtk_widget_set_sensitive(host.record_stop_menu, FALSE);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu), host.record_stop_menu);
   GtkWidget *restore = gtk_menu_item_new_with_label("恢复隐藏贴图");
   host.pin_menu[0] = restore;
   g_signal_connect(restore,"activate",G_CALLBACK(restore_pins),NULL);
@@ -514,6 +561,8 @@ static int command_line(GApplication *application, GApplicationCommandLine *comm
   if (host.quitting) return 0;
   GVariantDict *options = g_application_command_line_get_options_dict(command);
   if (g_variant_dict_contains(options, "capture")) menu_capture(NULL, NULL);
+  else if (g_variant_dict_contains(options, "record")) menu_record(NULL, NULL);
+  else if (g_variant_dict_contains(options, "stop")) menu_stop(NULL, NULL);
   else if (g_variant_dict_contains(options, "preferences") || host.activated || host.smoke) show_preferences();
   if (host.smoke && !host.activated) g_timeout_add(300, smoke_check, NULL);
   host.activated = TRUE;
@@ -521,6 +570,8 @@ static int command_line(GApplication *application, GApplicationCommandLine *comm
 }
 
 int main(int argc, char **argv) {
+  /* ximagesrc uses Xlib on media threads. This must precede GTK/Xlib work. */
+  XInitThreads();
   gboolean self_test = FALSE;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--self-test")) self_test = TRUE;
@@ -555,6 +606,8 @@ int main(int argc, char **argv) {
   const GOptionEntry options[] = {
     { "preferences", 0, 0, G_OPTION_ARG_NONE, NULL, "Open preferences", NULL },
     { "capture", 0, 0, G_OPTION_ARG_NONE, NULL, "Capture and annotate a screenshot", NULL },
+    { "record", 0, 0, G_OPTION_ARG_NONE, NULL, "Record a silent screen/region/window video", NULL },
+    { "stop", 0, 0, G_OPTION_ARG_NONE, NULL, "Stop/cancel recording and preserve the original", NULL },
     { "smoke", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, NULL, "Run isolated native UI checks", NULL },
     { NULL, 0, 0, G_OPTION_ARG_NONE, NULL, NULL, NULL }
   };

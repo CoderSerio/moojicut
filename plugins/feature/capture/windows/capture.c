@@ -14,6 +14,7 @@
 #include "components/style_controls/windows/style_controls.h"
 #include "moonbit.h"
 #include "plugins/feature/select/windows/selection.h"
+#include "plugins/feature/select/windows/surface.h"
 #include <commctrl.h>
 #include <math.h>
 #include <stdint.h>
@@ -52,7 +53,6 @@ typedef struct {
   HWND owner, overlay, editor, text, tooltip, buttons[12];
   MCStyleControls *style_controls;
   MCCaptureHost host;
-  MCSelection selection;
   HFONT font, text_font;
   Surface desktop, dimmed, image, rendered;
   RECT desktop_bounds, canvas, viewport, toolbar, drag_bounds, draft;
@@ -64,7 +64,6 @@ typedef struct {
 } Capture;
 static Capture capture;
 static void layout_editor(HWND window);
-static const wchar_t *OVERLAY_CLASS = L"MoojiCut.Capture.Selection";
 static const wchar_t *EDITOR_CLASS = L"MoojiCut.Capture.Editor";
 static BOOL pin_enabled(void) {
   return !capture.host.pin_enabled || capture.host.pin_enabled(capture.host.context);
@@ -1065,88 +1064,22 @@ static BOOL open_editor(void) {
   }
   return TRUE;
 }
-static LRESULT CALLBACK overlay_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
-  switch (message) {
-  case WM_ERASEBKGND:
-    return 1;
-  case WM_PAINT: {
-    PAINTSTRUCT paint;
-    HDC dc = BeginPaint(window, &paint);
-    RECT rect = mc_selection_rect(&capture.selection);
-    BitBlt(dc, 0, 0, capture.desktop.width, capture.desktop.height, capture.dimmed.dc, 0, 0, SRCCOPY);
-    if (rect.right > rect.left && rect.bottom > rect.top) {
-      BitBlt(dc, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-             capture.desktop.dc, rect.left, rect.top, SRCCOPY);
-      frame(dc, rect, FALSE);
-      region_label(dc, rect);
-    }
-    EndPaint(window, &paint);
-    return 0;
-  }
-  case WM_KEYDOWN:
-    if (wp != VK_ESCAPE)
-      return 0;
-    // Escape uses the same cancellation path as dismissing the overlay.
-    // fall through
-  case WM_RBUTTONDOWN:
-  case WM_CLOSE:
-  case WM_DISPLAYCHANGE:
-    mc_selection_update(&capture.selection, MC_SELECTION_CANCEL, (POINT){0, 0});
-    mc_capture_close();
-    return 0;
-  case WM_LBUTTONDOWN:
-    mc_selection_update(&capture.selection, MC_SELECTION_BEGIN,
-                        (POINT){GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
-    SetCapture(window);
-    return 0;
-  case WM_MOUSEMOVE: {
-    MCSelectionResult result = mc_selection_update(&capture.selection, MC_SELECTION_MOVE,
-        (POINT){GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
-    if (result.status == MC_SELECTION_CHANGED)
-      InvalidateRect(window, NULL, FALSE);
-    return 0;
-  }
-  case WM_LBUTTONUP: {
-    BOOL dragging = capture.selection.dragging;
-    MCSelectionResult result = mc_selection_update(&capture.selection, MC_SELECTION_END,
-        (POINT){GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
-    if (dragging)
-      ReleaseCapture();
-    if (result.status == MC_SELECTION_COMMITTED) {
-      capture.viewport = result.rect;
-      capture.overlay = NULL;
-      if (!open_editor()) {
-        DestroyWindow(window);
-        mc_capture_close();
-        return 0;
-      }
-      DestroyWindow(window);
-      surface_free(&capture.desktop);
-    }
-    return 0;
-  }
-  case WM_CAPTURECHANGED:
-    mc_selection_update(&capture.selection, MC_SELECTION_LOST_CAPTURE, (POINT){0, 0});
-    return 0;
-  case WM_ACTIVATE:
-    if (LOWORD(wp) == WA_INACTIVE && capture.overlay == window)
-      mc_capture_close();
-    return 0;
-  case WM_NCDESTROY:
-    if (capture.overlay == window)
-      capture.overlay = NULL;
-    break;
-  }
-  return DefWindowProcW(window, message, wp, lp);
+static void decorate_selection(void *context, HWND window, HDC dc, RECT rect) {
+  (void)context; (void)window;
+  frame(dc, rect, FALSE);
+  region_label(dc, rect);
+}
+static void finish_selection(void *context, BOOL accepted, RECT rect) {
+  (void)context;
+  capture.overlay = NULL;
+  if (!accepted) { mc_capture_close(); return; }
+  capture.viewport = rect;
+  if (!open_editor()) { mc_capture_close(); return; }
+  surface_free(&capture.desktop);
 }
 static BOOL register_windows(HINSTANCE instance) {
   WNDCLASSEXW k = {sizeof(k)};
   k.hInstance = instance;
-  k.lpfnWndProc = overlay_proc;
-  k.lpszClassName = OVERLAY_CLASS;
-  k.hCursor = LoadCursorW(NULL, IDC_CROSS);
-  if (!RegisterClassExW(&k) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
-    return FALSE;
   k.style = CS_DBLCLKS;
   k.lpfnWndProc = editor_proc;
   k.lpszClassName = EDITOR_CLASS;
@@ -1154,20 +1087,17 @@ static BOOL register_windows(HINSTANCE instance) {
   return RegisterClassExW(&k) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 static BOOL show_selection(void) {
-  mc_selection_init(&capture.selection, (RECT){0, 0, capture.desktop.width, capture.desktop.height}, 2);
-  capture.overlay =
-      CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, OVERLAY_CLASS, L"Mooji Cut · 框选", WS_POPUP,
-                      capture.desktop_bounds.left, capture.desktop_bounds.top, capture.desktop.width,
-                      capture.desktop.height, capture.owner, NULL, capture.instance, NULL);
-  if (!capture.overlay)
-    return FALSE;
-  if (!capture.smoke) {
-    ShowWindow(capture.overlay, SW_SHOW);
-    UpdateWindow(capture.overlay);
-    SetForegroundWindow(capture.overlay);
-    SetFocus(capture.overlay);
-  }
-  return TRUE;
+  MCSelectionSurfaceOptions options = {0};
+  options.desktop_bounds = capture.desktop_bounds;
+  options.desktop = capture.desktop.dc;
+  options.dimmed = capture.dimmed.dc;
+  options.hidden = capture.smoke;
+  options.decorate = decorate_selection;
+  options.finished = finish_selection;
+  capture.overlay = mc_selection_surface_open(capture.instance, capture.owner, &options);
+  if (!capture.overlay) return FALSE;
+  if (!capture.smoke) mc_selection_surface_activate(capture.overlay);
+  return capture.overlay != NULL;
 }
 static void dim_desktop(void) {
   GdiFlush();
@@ -1193,9 +1123,9 @@ bool mc_capture_start(HINSTANCE instance, HWND owner, const MCCaptureHost *servi
   capture.owner = owner;
   if (services)
     capture.host = *services;
-  int x = GetSystemMetrics(SM_XVIRTUALSCREEN), y = GetSystemMetrics(SM_YVIRTUALSCREEN),
-      w = GetSystemMetrics(SM_CXVIRTUALSCREEN), h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-  SetRect(&capture.desktop_bounds, x, y, x + w, y + h);
+  if (!mc_selection_desktop_bounds(&capture.desktop_bounds)) { mc_capture_close(); return false; }
+  int x = capture.desktop_bounds.left, y = capture.desktop_bounds.top,
+      w = capture.desktop_bounds.right - x, h = capture.desktop_bounds.bottom - y;
   if (!surface_new(&capture.desktop, w, h) || !surface_new(&capture.dimmed, w, h)) {
     mc_capture_close();
     return false;
@@ -1238,7 +1168,7 @@ void mc_capture_close(void) {
   if (GetCapture() == overlay || GetCapture() == editor)
     ReleaseCapture();
   if (overlay)
-    DestroyWindow(overlay);
+    mc_selection_surface_dismiss(overlay);
   mc_style_controls_destroy(capture.style_controls);
   capture.style_controls = NULL;
   if (editor)

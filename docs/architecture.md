@@ -30,9 +30,9 @@ Mooji Cut 以 MoonBit 实现共享界面、交互、文档和业务规则，以�
 | 范围 | 当前已经具备 | 尚未完成 |
 | --- | --- | --- |
 | 截图 | MoonBit 文档、撤销、几何和工具规则；三端接入矩形/圆框、箭头、实心覆盖/马赛克手势及工具栏定位 | 工具栏、属性控件和部分选区交互仍在原生层，尚非完整共享 UI |
-| 选区 | macOS 截图与录屏复用原生选区组件；MoonBit 已有共用几何 | 三端共用窗口 hover、选区调整与准备界面 |
+| 选区 | macOS、Windows 截图与录屏各自复用同一原生选区组件；MoonBit 共用几何 | 完整三端选区 UI、窗口 hover 与选区调整；Linux 当前仍为独立选区适配 |
 | 视频编辑 | MoonBit v2 文档、事务、时间映射、布局、图标和时间线；macOS 已接正式媒体宿主和波形 | Windows 仍有旧编辑器；Linux 尚无同等视频链；多素材、字幕、效果仍有缺口 |
-| 录屏 | MoonBit 状态转换和参数规划；macOS 实际采集；Windows 旧基础实现 | Windows 共用选区/控制条、Linux 基础录屏、统一音源和媒体能力协商 |
+| 录屏 | MoonBit live flow、倒计时/计时面板与编码计划已接 Windows/Linux；Windows 区域 MP4；Linux X11 与 Wayland ScreenCast/PipeWire→WebM 实现已接 | 新平台原生编译/实机验收按台账；macOS 迁入新 flow/panel；系统音频、麦克风、暂停与完整运行时能力快照 |
 | 用户插件 | macOS ZIP 导入、工具管理、独立 Wasm worker；v1 仅截图元信息输入和文本输出 | Windows/Linux 插件宿主；通用截图工具、自定义属性与录屏扩展协议 |
 | 插件注册 | 稳定 ID、开关、排序与共享启停门控 | 内置工具仍有固定枚举；录屏、录后编辑注册内容为空；取消/排空仍有原生策略 |
 | Agent | 图片与视频核心命令；视频 revision、批量事务和 requestId 去重 | 完整 CLI、应用通信、任务查询；现有启动参数仅覆盖少量操作 |
@@ -407,3 +407,5 @@ scripts/check_module_boundaries.py 已加入三端构建入口，检查生产导
 2026-11-17 独立评审修订：补全[迁移台账与评审处理记录](architecture-migration.md)，逐项覆盖旧原生模块、四环境能力、资源 owner、构建/资源/更新；明确贡献装配、输入法、无副作用安装、能力授权和标记持久化。Windows 原片失败清理列最高实施优先级，媒体端口窄验证提前，CLI 使用不冲突的独立名称。此轮只修订方案，不代表新协议、录屏或风险修复已实现。
 
 前次结构重构（`14bbbea`）的验证记录：MoonBit native 176/176、Wasm 176/176、构建检查 20/20，完整 macOS 原生测试通过；截图迁移与依赖检查分别经过独立复核。Windows/Linux 宿主未在本机执行，不据此标记三端录屏完成。这是既有验证记录，本次架构评审没有重新执行这些测试。
+
+2026-11-17 功能接入：Windows 选区 surface 从截图提取并由录屏复用；新增 MoonBit recording/core live flow 与 recording/ui panel，Windows/Linux 生产宿主消费同一状态、截止时间和面板描述。Linux 媒体执行进入 platform/linux/recording，通过 GStreamer 的 X11/PipeWire 来源生成静音 WebM；portal/窗口和应用入口留在适配层。构建清单允许显式 platform 模块且检验源文件归属。用户负责后续实机测试，本轮自动验证与实际平台未验项目分别记录，不因此阻塞功能实施；完整 CLI、新插件协议与共享视频编辑器仍按原工作包推进。

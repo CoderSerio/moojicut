@@ -62,6 +62,18 @@ class NativeModulesTest(unittest.TestCase):
         cpp = capture.with_suffix(".cpp")
         self.assertEqual(len({object_path(self.root, path) for path in (capture, pin, cpp)}), 3)
 
+    def test_platform_adapter_is_explicit_and_cannot_claim_feature_sources(self):
+        modules = self.manifest["platforms"]["windows"]
+        media = self.root / "platform/windows/recording/media.cpp"
+        media.parent.mkdir(parents=True)
+        media.touch()
+        modules["platform.recording"] = {"sources": [media.relative_to(self.root).as_posix()], "requires": []}
+        modules["feature.capture"]["requires"].append("platform.recording")
+        self.assertIn(media.resolve(), resolve_sources(self.root, self.manifest, "windows"))
+        modules["platform.recording"]["sources"] = ["plugins/feature/capture/windows/feature.c"]
+        with self.assertRaises(ValueError):
+            resolve_sources(self.root, self.manifest, "windows")
+
     def test_swift_is_an_explicit_macos_source_not_an_editor_dependency(self):
         modules = {
             "host": {"sources": ["native/macos/main.m"], "requires": ["feature.capture_text", "feature.image_editor"]},

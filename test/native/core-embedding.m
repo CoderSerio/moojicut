@@ -6,6 +6,7 @@
 #include "native/shared/plugin_protocol.h"
 #include "native/shared/image_session.h"
 #include "native/shared/recording_plan.h"
+#include "native/shared/recording_flow.h"
 #include <math.h>
 
 // Signatures observed in native foreign_library output from moonc 0.10.20.
@@ -170,8 +171,34 @@ static void CheckRecordingBoundary(void) {
     NSDictionary *rejected = Call(recording_request_plan, request);
     NSCAssert(![rejected[@"ok"] boolValue] && [rejected[@"error"][@"code"] isEqual:@"unsupported_audio"],
               @"Strict requests must not silently remove requested audio");
-    MCCoreRecordingPlan unsupported = mc_core_recording_plan(MC_RECORDING_LINUX_WAYLAND, 1920, 1080, 0);
-    NSCAssert(unsupported.width == 0 && unsupported.frames_per_second == 0, @"No synthetic Linux plan");
+    MCCoreRecordingPlan linuxPlan = mc_core_recording_plan(MC_RECORDING_LINUX_WAYLAND, 3840, 2160, 0);
+    NSCAssert(linuxPlan.width == 1920 && linuxPlan.height == 1080 && linuxPlan.frames_per_second == 15 &&
+              linuxPlan.countdown_seconds == 3, @"Linux plan shares bounded encoding and countdown policy");
+  }
+}
+static void CheckRecordingFlow(void) {
+  for (int iteration = 0; iteration < 64; iteration++) {
+    int32_t handle = recording_flow_open();
+    assert(handle > 0);
+    assert(recording_flow_event(handle, MC_RECORDING_BEGIN, 100) == MC_RECORDING_REQUEST_SOURCE);
+    assert(recording_flow_event(handle, MC_RECORDING_SELECTED, 100) == MC_RECORDING_NO_EFFECT);
+    moonbit_string_t text = recording_ui_text(handle);
+    assert(Moonbit_array_length(text) == 1 && text[0] == '3');
+    moonbit_decref(text);
+    double *frame = recording_ui_frame(handle, 240, 192);
+    assert(Moonbit_array_length(frame) == 14 && frame[13] == MC_RECORDING_CANCEL);
+    assert(recording_ui_hit(handle, frame[8] + 1, frame[9] + 1, 240, 192) == MC_RECORDING_CANCEL);
+    moonbit_decref(frame);
+    assert(recording_flow_close(handle) == 0);
+    assert(recording_flow_event(handle, MC_RECORDING_TICK, 3100) == MC_RECORDING_START_MEDIA);
+    assert(recording_flow_event(handle, MC_RECORDING_TICK, 3100) == MC_RECORDING_NO_EFFECT);
+    assert(recording_flow_event(handle, MC_RECORDING_STARTED, 3200) == MC_RECORDING_NO_EFFECT);
+    assert(recording_flow_value(handle, MC_RECORDING_PHASE) == MC_RECORDING_ACTIVE);
+    assert(recording_flow_event(handle, MC_RECORDING_STOP, 4200) == MC_RECORDING_STOP_MEDIA);
+    assert(recording_flow_event(handle, MC_RECORDING_STARTED, 4200) == MC_RECORDING_REJECTED);
+    assert(recording_flow_event(handle, MC_RECORDING_COMPLETE, 4500) == MC_RECORDING_DELIVER_MEDIA);
+    assert(recording_flow_value(handle, MC_RECORDING_ELAPSED_MS) == 1000);
+    assert(recording_flow_close(handle) == 1);
   }
 }
 int main(void) {
@@ -181,6 +208,7 @@ int main(void) {
     CheckImageHitBoundary();
     CheckPluginUTF16Boundary();
     CheckRecordingBoundary();
+    CheckRecordingFlow();
     moonbit_string_t unicode = MoonString(@"中文🦊");
     assert(Moonbit_array_length(unicode) == 4);
     assert(unicode[0] == 0x4e2d && unicode[1] == 0x6587 && unicode[2] == 0xd83e && unicode[3] == 0xdd8a);

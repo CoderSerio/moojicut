@@ -1,4 +1,7 @@
 ///|
+let preparation_countdown : Int32 = 3
+
+///|
 // Static implementation facts, not a probe of permissions, devices or runtime
 // dependencies. All current backends lack microphone capture and pause support.
 priv struct RecordingBackend {
@@ -24,18 +27,37 @@ fn recording_backend(platform : Int32) -> RecordingBackend? {
         max_height: 3840,
         max_long_edge: 3840,
         fps: 30,
-        countdown: 3,
+        countdown: preparation_countdown,
       })
     1 =>
       Some({
         name: "gdi-media-foundation",
-        sources: ["primary-display"],
+        sources: ["primary-display", "display", "region"],
         system_audio: false,
         max_width: 1920,
         max_height: 1080,
         max_long_edge: 0,
         fps: 15,
-        countdown: 0,
+        countdown: preparation_countdown,
+      })
+    2 | 3 =>
+      Some({
+        name: if platform == 2 {
+          "gstreamer-ximagesrc"
+        } else {
+          "portal-pipewire-gstreamer"
+        },
+        sources: if platform == 2 {
+          ["display", "region"]
+        } else {
+          ["system-picker"]
+        },
+        system_audio: false,
+        max_width: 1920,
+        max_height: 1080,
+        max_long_edge: 0,
+        fps: 15,
+        countdown: preparation_countdown,
       })
     _ => None
   }

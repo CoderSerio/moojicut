@@ -6,7 +6,7 @@ fn capability_field(platform : String, field : String) -> Json raise {
 
 ///|
 test "static capabilities distinguish implemented backends from runtime permission" {
-  for platform in ["macOS", "windows"] {
+  for platform in ["macOS", "windows", "linux-x11", "linux-wayland"] {
     assert_eq(capability_field(platform, "supported"), Json(true))
     assert_eq(capability_field(platform, "availability"), Json("unverified"))
     assert_eq(capability_field(platform, "permission"), Json("unknown"))
@@ -19,36 +19,58 @@ test "static capabilities distinguish implemented backends from runtime permissi
     Json(["display", "region", "window"]),
   )
   assert_eq(capability_field("macOS", "systemAudio"), Json(true))
-  assert_eq(capability_field("windows", "sources"), Json(["primary-display"]))
+  assert_eq(
+    capability_field("windows", "sources"),
+    Json(["primary-display", "display", "region"]),
+  )
   assert_eq(capability_field("windows", "systemAudio"), Json(false))
   @test_support.expect_error(recording_capabilities("linux"), "invalid_input")
   @test_support.expect_error(recording_capabilities("Windows"), "invalid_input")
 }
 
 ///|
-test "X11 and Wayland never receive an executable recording plan" {
-  for (platform, code) in [("linux-x11", 2), ("linux-wayland", 3)] {
-    assert_eq(capability_field(platform, "supported"), Json(false))
-    assert_eq(capability_field(platform, "availability"), Json("unsupported"))
+test "X11 and Wayland have distinct source semantics and retain runtime checks" {
+  for
+    (platform, code, source) in [
+      ("linux-x11", 2, "region"),
+      ("linux-wayland", 3, "system-picker"),
+    ] {
+    assert_eq(capability_field(platform, "supported"), Json(true))
+    assert_eq(capability_field(platform, "availability"), Json("unverified"))
     assert_eq(capability_field(platform, "permission"), Json("unknown"))
-    assert_eq(capability_field(platform, "backend"), Json::null())
-    assert_eq(capability_field(platform, "sources"), Json::array([]))
-    assert_eq(capability_field(platform, "limits"), Json::null())
+    let plan = @test_support.model_test_result(
+      recording_request_plan(
+        "{\"platform\":\"\{platform}\",\"source\":\"\{source}\",\"width\":3840,\"height\":2160,\"systemAudio\":false}",
+      ),
+    )
+    assert_eq(@test_support.model_test_field(plan, "width"), Json(1920))
+    assert_eq(@test_support.model_test_field(plan, "height"), Json(1080))
+    assert_eq(@test_support.model_test_field(plan, "countdownSeconds"), Json(3))
+    assert_eq(
+      @test_support.model_test_field(plan, "requiresHostValidation"),
+      Json(true),
+    )
+    assert_eq(native_recording_plan(code, 3840, 2160, 0)[2], 15)
     @test_support.expect_error(
       recording_request_plan(
-        "{\"platform\":\"\{platform}\",\"source\":\"display\",\"width\":1920,\"height\":1080,\"systemAudio\":false}",
+        "{\"platform\":\"\{platform}\",\"source\":\"window\",\"width\":1920,\"height\":1080,\"systemAudio\":false}",
       ),
-      "unsupported_backend",
+      "unsupported_source",
     )
-    for value in native_recording_plan(code, 1920, 1080, 0) {
-      assert_eq(value, 0)
-    }
   }
+  assert_eq(
+    capability_field("linux-x11", "sources"),
+    Json(["display", "region"]),
+  )
+  assert_eq(
+    capability_field("linux-wayland", "sources"),
+    Json(["system-picker"]),
+  )
 }
 
 ///|
 test "strict requests reject unavailable sources audio and pause instead of silently dropping intent" {
-  for source in ["display", "region", "window", "camera"] {
+  for source in ["window", "camera", "system-picker"] {
     @test_support.expect_error(
       recording_request_plan(
         "{\"platform\":\"windows\",\"source\":\"\{source}\",\"width\":320,\"height\":240,\"systemAudio\":false}",
@@ -87,6 +109,9 @@ test "capability plan and existing host ABIs share exact encoding policy" {
       ("macOS", 0, "window", false),
       ("macOS", 0, "display", true),
       ("windows", 1, "primary-display", false),
+      ("windows", 1, "region", false),
+      ("linux-x11", 2, "region", false),
+      ("linux-wayland", 3, "system-picker", false),
     ] {
     for (width, height) in [(5120, 2880), (2880, 5120), (901, 1601), (2, 32768)] {
       let request = "{\"platform\":\"\{platform}\",\"source\":\"\{source}\",\"width\":\{width},\"height\":\{height},\"systemAudio\":\{audio}}"

@@ -1,0 +1,17 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/features/recording/ui"
+
+// Values
+pub fn recording_ui_frame(Int32, Double, Double) -> FixedArray[Double]
+
+pub fn recording_ui_hit(Int32, Double, Double, Double, Double) -> Int32
+
+pub fn recording_ui_text(Int32) -> String
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

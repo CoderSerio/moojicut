@@ -24,9 +24,9 @@ int32_t *native_recording_plan(int32_t platform, int32_t width, int32_t height,
  * moonbit_decref. Call on the initialized core thread. Neither function probes
  * permissions, requests authorization, acquires a source, or starts recording.
  * A valid request plan still requires host permission/source/runtime checks.
- * Linux constants describe known unsupported environments; they do not enable
- * capture. native_recording_plan returns six zeros for them.
- * The legacy scalar API normalizes the Windows system_audio bit to zero; the
+ * Linux describes GStreamer X11 / portal-PipeWire implementations; availability
+ * still depends on runtime plugins, desktop portal, and the selected source.
+ * The scalar API normalizes Windows/Linux system_audio bits to zero; the
  * strict recording_request_plan API rejects unsupported audio/source/pause. */
 moonbit_string_t recording_capabilities(moonbit_string_t platform);
 moonbit_string_t recording_request_plan(moonbit_string_t request);

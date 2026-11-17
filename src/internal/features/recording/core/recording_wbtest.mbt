@@ -132,13 +132,13 @@ test "platform recording policies preserve Windows limits without changing macOS
     recording_plan(
       "{\"platform\":\"windows\",\"width\":5120,\"height\":2880,\"systemAudio\":true}",
     ),
-    "{\"ok\":true,\"width\":1920,\"height\":1080,\"framesPerSecond\":15,\"systemAudio\":false,\"microphone\":false,\"countdownSeconds\":0}",
+    "{\"ok\":true,\"width\":1920,\"height\":1080,\"framesPerSecond\":15,\"systemAudio\":false,\"microphone\":false,\"countdownSeconds\":3}",
   )
   @test_support.expect_json(
     recording_plan(
       "{\"platform\":\"windows\",\"width\":1080,\"height\":1920,\"systemAudio\":false}",
     ),
-    "{\"ok\":true,\"width\":606,\"height\":1080,\"framesPerSecond\":15,\"systemAudio\":false,\"microphone\":false,\"countdownSeconds\":0}",
+    "{\"ok\":true,\"width\":606,\"height\":1080,\"framesPerSecond\":15,\"systemAudio\":false,\"microphone\":false,\"countdownSeconds\":3}",
   )
   @test_support.expect_json(
     recording_plan(
@@ -161,7 +161,7 @@ test "native recording policy rejects malformed dimensions and option values" {
   for
     input in [
       (-1, 320, 240, 0),
-      (2, 320, 240, 0),
+      (4, 320, 240, 0),
       (1, 0, 240, 0),
       (1, 320, -1, 0),
       (1, 1, 240, 0),
@@ -184,7 +184,7 @@ test "native recording policy rejects malformed dimensions and option values" {
     assert_eq(values[2], if platform == 1 { 15 } else { 30 })
     assert_eq(values[3], if platform == 1 { 0 } else { 1 })
     assert_eq(values[4], 0)
-    assert_eq(values[5], if platform == 1 { 0 } else { 3 })
+    assert_eq(values[5], 3)
   }
 }
 

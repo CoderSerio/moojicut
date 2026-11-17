@@ -35,9 +35,10 @@ def resolve_sources(root, manifest, platform, modules=("host",)):
                 prefix = "native/" + platform + "/"
             else:
                 kind, separator, feature = name.partition(".")
-                if not separator or kind not in ("feature", "component"):
+                if not separator or kind not in ("feature", "component", "platform"):
                     raise ValueError("Invalid module name: " + name)
-                prefix = ("plugins/feature/" if kind == "feature" else "components/") + feature + "/" + platform + "/"
+                prefix = ("platform/" + platform + "/" + feature + "/" if kind == "platform" else
+                          ("plugins/feature/" if kind == "feature" else "components/") + feature + "/" + platform + "/")
             if not source.startswith(prefix) or path.suffix not in SUFFIXES[platform]:
                 raise ValueError("Source is outside its module: " + source)
             resolved = (root / source).resolve()

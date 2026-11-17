@@ -237,3 +237,25 @@ B2 在扩大迁移之前先通过 macOS+Windows 的同一完整切片（声明�
 - 本轮全量 MoonBit native/Wasm 各 **181/181**、构建与便携故障测试 **21/21** 通过；真实原生 C ABI 测试覆盖输入/输出引用所有权、新旧策略一致与严格拒绝音频。新增 ABI 回归已进入 `test/native/core-embedding.m`，公共接口由固定工具链重新生成。
 - B1 切片与 R0 分别由另一代理只读交叉审查，R0 的录制取消错误提示缺口已按审查修正并复核。
 - **B1 整体仍未完成**：运行时能力探测、来源身份/坐标转换/媒体时基/generation、取消与资源释放回执、UI/CLI 接入仍待 C1/C2 真实来源验证后落实。此处保留现有宿主 ABI 是为了让正在运行的宿主继续使用同一策略，不是插件 v1 兼容层。
+
+### C1/C2：区域录制与共享准备流程
+
+本节记录继 `fb890b0` 后的功能接入；上方矩阵仍是 `14bbbea` 审计基线。用户已明确实机测试由其后续组织，未验项目继续保留，不以此阻塞实现。
+
+| 层次 | 本批实际接入 | 仍待完成/验证 |
+| --- | --- | --- |
+| MoonBit core | 不复用的会话句柄、绝对单调截止点、一次启动效果、停止/取消到资源释放回执、活动 close 拒绝；四环境编码计划 | 来源能力动态快照、媒体时间轴与插件/CLI 服务协调 |
+| MoonBit UI | 同一倒计时/计时文本、面板/按钮矩形、命中与小窗字号；Windows/Linux 生产入口消费 | macOS 新 UI/flow 迁移；完整选区画布及可访问性语义统一 |
+| Windows | 自由框选→3 秒可取消倒计时→所选物理区域采集→停止/Finalize→保留 MP4/现有编辑器；截图与录屏共用提取的 selection surface | 四个源已通过 LLVM-MinGW x64 对象编译；MSVC/Windows 自动媒体 smoke 尚未运行；混合 DPI/窗口排除/实际输入留实机；跟随窗口和旧媒体/编辑器拆分仍待做 |
+| Linux X11 | 自有选区、物理像素换算、GStreamer ximagesrc→VP8/WebM、托盘与 --record/--stop | 原生编译/Xvfb 媒体 smoke 待目标平台；多显示器/DPI/桌面环境实测；选区尚非完整共用画布 |
+| Linux Wayland | libportal ScreenCast 授权→PipeWire fd/node→真实视频尺寸探测→共享倒计时→录制；取消与迟到资源释放 | 目标 compositor/portal 组合与实际授权流程实测；不保证任意窗口全局坐标或自有窗口排除 |
+| 媒体/原片 | Linux worker 拥有 pipeline，EOS/NULL/FD 收尾后再完成；失败保留 partial；新目标禁止覆盖 | 与录后编辑器的正式媒体端口 E0/E1；系统音频、麦克风、暂停尚未实现 |
+| 构建交付 | 显式 platform.recording 模块；Linux 系统 GStreamer/libportal 依赖、CI 安装与包内说明更新 | Windows/Linux 更新仍为下载校验后手动换装；本批没有改变发行包签名与自动替换能力 |
+
+Windows 只在系统支持窗口排除时显示录中控制条；Linux 开始前隐藏自有倒计时窗口，停止由托盘/GUI 启动参数提供。两个新平台入口均为静音，不能把状态模型中存在 pause 或系统名当成音源已实现。Linux 默认文件在 Videos/Mooji Cut 下的独立录制目录，未设置 Videos 时回退用户 data 目录；完成/失败提示提供实际路径。
+
+Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控制，**不关闭 D2 独立 CLI 工作包**。录屏扩展/标记和用户插件未在此批假装完成；共享准备 UI 也不代表完整截图或视频编辑 UI 已统一。
+
+本轮已运行：MoonBit native/Wasm 各 **187/187**、构建与文件策略 **22/22**、原生 C ABI 重复调用与所有权检查。LLVM-MinGW 20260908 / Clang 23.1.1 将 `surface.c`、`capture.c`、`main.c`、`recording.cpp` 编译为 Windows x64 COFF；新增源与 main 使用 `-Wall -Wextra -Werror` 通过，截图旧文件保留 5 个既有聚合初始化警告。它不等同 MSVC 链接或 Windows 运行。
+
+新增 Windows 选区输入/实际区域裁剪与完整媒体 worker 闭环、Linux X11/合成视频解码/原片失败保留/迟到回调取消自动 fixture 已加入目标平台 smoke；Ubuntu 编译、这批目标平台 smoke 尚未执行，实际执行状态以对应构建记录为准。两路实现与独立审查已收口：tooltip 捕获、回调跨线程、起录前来源尺寸变化、无效小选区扩大为全屏均已修正。Wayland 当前采用无鼠标的通用 cursor mode，不持久化授权；这些限制需要在后续体验与能力扩展中继续处理。

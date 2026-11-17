@@ -4,6 +4,7 @@ import {
   "moojicut/core/internal/features/capture/ui" @capture_ui,
   "moojicut/core/internal/features/capture/extensions/annotations" @annotation_tools,
   "moojicut/core/internal/features/recording/core" @recording,
+  "moojicut/core/internal/features/recording/ui" @recording_ui,
   "moojicut/core/internal/desktop",
   "moojicut/core/internal/feature_runtime",
   "moojicut/core/internal/pin",

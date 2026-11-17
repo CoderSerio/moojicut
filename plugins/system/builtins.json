@@ -94,7 +94,7 @@
         "requires": []
       },
       "feature.select": {
-        "sources": ["plugins/feature/select/windows/selection.c"],
+        "sources": ["plugins/feature/select/windows/selection.c", "plugins/feature/select/windows/surface.c"],
         "requires": []
       },
       "feature.capture": {
@@ -107,13 +107,13 @@
       },
       "feature.recording": {
         "sources": ["plugins/feature/recording/windows/recording.cpp"],
-        "requires": []
+        "requires": ["feature.select"]
       }
     },
     "linux": {
       "host": {
         "sources": ["native/linux/main.c", "native/linux/updates.c"],
-        "requires": ["feature.capture", "feature.pin"]
+        "requires": ["feature.capture", "feature.pin", "feature.recording"]
       },
       "component.style_controls": {
         "sources": ["components/style_controls/linux/style_controls.c"],
@@ -130,6 +130,14 @@
       "feature.pin": {
         "sources": ["plugins/feature/pin/linux/pinning.c"],
         "requires": []
+      },
+      "platform.recording": {
+        "sources": ["platform/linux/recording/gstreamer_capture.c"],
+        "requires": []
+      },
+      "feature.recording": {
+        "sources": ["plugins/feature/recording/linux/recording.c"],
+        "requires": ["platform.recording", "feature.select"]
       }
     }
   }
