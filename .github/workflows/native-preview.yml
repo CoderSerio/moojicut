@@ -26,6 +26,9 @@ on:
       - test/build/**
       - test/native/**
       - scripts/install_moon.py
+      - scripts/install_gstreamer.py
+      - scripts/gstreamer_runtime.py
+      - scripts/media_tests.py
       - scripts/generate_icons.py
       - assets/icons/**
       - assets/brand/mooji-cut/**
@@ -48,7 +51,7 @@ jobs:
           - platform: linux
             runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       PREVIEW_VERSION: ${{ inputs.version || '0.1.0-alpha.16' }}
       MOOJICUT_SMOKE_SCREENSHOT: ${{ github.workspace }}/.artifacts/${{ matrix.platform }}/smoke.${{ matrix.platform == 'windows' && 'bmp' || 'png' }}
@@ -80,10 +83,30 @@ jobs:
           if ((${#llvm_unwind_devel[@]})); then
             sudo apt-get remove -y "${llvm_unwind_devel[@]}"
           fi
-          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev xvfb dbus-x11 fonts-noto-cjk libxtst6 libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libportal-dev libportal-gtk3-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev xvfb dbus-x11 fonts-noto-cjk libxtst6 libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libges-1.0-dev libavformat-dev libavcodec-dev libavutil-dev libportal-dev libportal-gtk3-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire
       - name: Install pinned MoonBit compiler and core
         id: moon_install
         run: python scripts/install_moon.py "${{ runner.temp }}/moonbit"
+      - name: Cache verified Windows media SDK archive
+        if: runner.os == 'Windows'
+        id: media_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/gstreamer-archives
+          key: gstreamer-msvc-x64-${{ hashFiles('build/gstreamer-sdk.json') }}
+      - name: Install and validate private Windows media SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/install_gstreamer.py "${{ runner.temp }}/gstreamer-sdk" --cache "${{ runner.temp }}/gstreamer-archives"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "MOOJICUT_GSTREAMER_SDK=${{ runner.temp }}/gstreamer-sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Save verified SDK archive
+        if: runner.os == 'Windows' && steps.media_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/gstreamer-archives
+          key: ${{ steps.media_cache.outputs.cache-primary-key }}
       - name: Build, test and package Windows
         if: runner.os == 'Windows'
         run: python scripts/desktop.py release --release-version "$env:PREVIEW_VERSION"
@@ -107,6 +130,17 @@ jobs:
           path: dist/releases/*
           if-no-files-found: error
           retention-days: 14
+      - name: Upload media diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-${{ matrix.platform }}-x64
+          path: |
+            .artifacts/${{ matrix.platform }}/media-tests/**/results.json
+            .artifacts/${{ matrix.platform }}/media-tests/**/*.log
+            .artifacts/${{ matrix.platform }}/media-tests/**/runtime/manifest.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload UI smoke screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -116,5 +150,7 @@ jobs:
             .artifacts/${{ matrix.platform }}/smoke.*
             .artifacts/${{ matrix.platform }}/shared-canvas/*.bmp
             .artifacts/${{ matrix.platform }}/shared-canvas/*.png
+            .artifacts/${{ matrix.platform }}/video-editor-*/*.png
+            .artifacts/${{ matrix.platform }}/video-editor-*/*.bmp
           if-no-files-found: ignore
           retention-days: 14

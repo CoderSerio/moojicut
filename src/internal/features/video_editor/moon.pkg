@@ -1,0 +1,10 @@
+import {
+  "moojicut/core/internal/features/video_editor/core" @project,
+  "moojicut/core/internal/features/video_editor/ui",
+  "moojicut/core/internal/shared/protocol",
+  "moonbitlang/core/json",
+}
+
+import {
+  "moojicut/core/internal/shared/test_support",
+} for "wbtest"

@@ -40,27 +40,6 @@
 #include <thread>
 #include <vector>
 
-extern "C" {
-int32_t native_video_open(int32_t, int32_t, int32_t, int32_t);
-int32_t native_video_resume(int32_t, int32_t, int32_t, int32_t, moonbit_string_t);
-int32_t native_video_trim(int32_t, int32_t, int32_t);
-int32_t native_video_cut(int32_t, int32_t, int32_t);
-int32_t native_video_clear_cuts(int32_t);
-int32_t native_video_crop(int32_t, int32_t, int32_t, int32_t, int32_t);
-int32_t native_video_reset_crop(int32_t);
-int32_t native_video_undo(int32_t);
-int32_t native_video_redo(int32_t);
-int32_t native_video_reset(int32_t);
-int32_t native_video_duration(int32_t);
-int32_t native_video_segment_count(int32_t);
-int32_t native_video_segment_value(int32_t, int32_t, int32_t);
-int32_t native_video_crop_value(int32_t, int32_t);
-int32_t native_video_edit_value(int32_t, int32_t);
-moonbit_string_t native_video_snapshot(int32_t);
-moonbit_string_t native_video_error(int32_t);
-void native_video_close(int32_t);
-}
-
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
 namespace {
@@ -74,10 +53,6 @@ constexpr UINT startedMessage = WM_APP + 0x63;
 constexpr UINT_PTR flowTimer = 2;
 constexpr wchar_t flowClass[] = L"MoojiCut.Recording.Controls";
 constexpr wchar_t hostClass[] = L"MoojiCut.Recording.WorkerHost";
-constexpr wchar_t editorClass[] = L"MoojiCut.Recording.Editor";
-enum { TrimStart=9100, TrimEnd, CutStart, CutEnd, CropX, CropY, CropW, CropH,
-       ApplyTrim, AddCut, ClearCuts, ApplyCrop, ResetCrop, Undo, Redo, Reset,
-       PreviewSource, PreviewEdited, Confirm, CloseEditor, OpenDraft };
 struct Failure { HRESULT code; std::wstring stage; };
 void check(HRESULT hr, const wchar_t *stage) { if (FAILED(hr)) throw Failure{hr, stage}; }
 MCCoreRecordingPlan recordingPlan(int32_t width, int32_t height) {
@@ -120,10 +95,6 @@ std::wstring takeString(moonbit_string_t value) {
     std::wstring result(reinterpret_cast<const wchar_t *>(value), static_cast<size_t>(Moonbit_array_length(value)));
     moonbit_decref(value); return result;
 }
-moonbit_string_t toString(const std::wstring &value) {
-    moonbit_string_t result = moonbit_make_string_raw(static_cast<int32_t>(value.size()));
-    memcpy(result, value.data(), value.size()*sizeof(wchar_t)); return result;
-}
 std::string utf8(const std::wstring &value) {
     if (value.empty()) return {};
     int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
@@ -131,14 +102,6 @@ std::string utf8(const std::wstring &value) {
     std::string result(static_cast<size_t>(size), '\0');
     WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(), size, nullptr, nullptr); return result;
 }
-std::wstring fromUtf8(const std::string &value) {
-    if (value.empty()) return {};
-    int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
-    if (!size) throw Failure{HRESULT_FROM_WIN32(GetLastError()), L"草稿文本损坏"};
-    std::wstring result(static_cast<size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(), size); return result;
-}
-
 struct Encoder {
     ComPtr<IMFSinkWriter> writer;
     bool finalizeAttempted = false;
@@ -288,54 +251,6 @@ struct Decoder {
         return SUCCEEDED(reader->GetNativeMediaType(audioStream, 0, &audio));
     }
 };
-struct Segment { LONGLONG start, end, output; };
-struct Plan { UINT32 x=0,y=0,width=0,height=0; LONGLONG duration=0; std::vector<Segment> segments; };
-Plan planFor(int32_t session) {
-    Plan plan;
-    int32_t x=native_video_crop_value(session,0), y=native_video_crop_value(session,1);
-    int32_t w=native_video_crop_value(session,2), h=native_video_crop_value(session,3);
-    if(x<0 || y<0 || w<2 || h<2) throw Failure{E_INVALIDARG,L"MoonBit 返回无效画面范围"};
-    plan.x=static_cast<UINT32>(x); plan.y=static_cast<UINT32>(y); plan.width=static_cast<UINT32>(w); plan.height=static_cast<UINT32>(h);
-    plan.duration=static_cast<LONGLONG>(native_video_duration(session))*10000;
-    int32_t count=native_video_segment_count(session);
-    for(int32_t i=0;i<count;i++) {
-        int32_t start=native_video_segment_value(session,i,0), end=native_video_segment_value(session,i,1), output=native_video_segment_value(session,i,2);
-        if(start<0 || end<=start || output<0) throw Failure{E_INVALIDARG,L"MoonBit 返回无效视频片段"};
-        plan.segments.push_back({static_cast<LONGLONG>(start)*10000,static_cast<LONGLONG>(end)*10000,static_cast<LONGLONG>(output)*10000});
-    }
-    if(plan.segments.empty() || plan.duration<=0) throw Failure{E_INVALIDARG,L"视频没有可导出的片段"};
-    return plan;
-}
-void exportVideo(const fs::path &source, const fs::path &target, const Plan &plan, UINT32 frameRate, std::atomic<bool> &cancel, std::atomic<int> &progress) {
-    Decoder decoder(source,frameRate);
-    if(plan.x+plan.width>decoder.width || plan.y+plan.height>decoder.height) throw Failure{E_INVALIDARG,L"裁剪范围超出视频画面"};
-    Encoder encoder(target,plan.width,plan.height,frameRate);
-    std::vector<BYTE> pixels, cropped(static_cast<size_t>(plan.width)*plan.height*4);
-    LONGLONG time=0,length=0, written=0; size_t first=0;
-    while(decoder.next(pixels,time,length)) {
-        if(cancel.load()) throw Failure{HRESULT_FROM_WIN32(ERROR_CANCELLED),L"导出已取消"};
-        while(first<plan.segments.size() && time>=plan.segments[first].end) first++;
-        if(first==plan.segments.size()) break;
-        bool copied=false;
-        for(size_t i=first;i<plan.segments.size() && plan.segments[i].start<time+length;i++) {
-            const Segment &segment=plan.segments[i];
-            LONGLONG begin=std::max(time,segment.start), end=std::min(time+length,segment.end);
-            if(end<=begin) continue;
-            if(!copied) {
-                for(UINT32 y=0;y<plan.height;y++) memcpy(cropped.data()+static_cast<size_t>(y)*plan.width*4,
-                    pixels.data()+(static_cast<size_t>(plan.y+y)*decoder.width+plan.x)*4, plan.width*4);
-                copied=true;
-            }
-            LONGLONG position=segment.output+begin-segment.start;
-            encoder.frame(cropped.data(),position,end-begin); written=position+end-begin;
-        }
-        progress.store(static_cast<int>(std::min<LONGLONG>(99,written*100/plan.duration)));
-    }
-    if(cancel.load()) throw Failure{HRESULT_FROM_WIN32(ERROR_CANCELLED),L"导出已取消"};
-    if(!written) throw Failure{E_UNEXPECTED,L"视频中没有可保留的画面"};
-    encoder.finish(); progress.store(100);
-}
-
 struct DesktopSurface {
     HDC screen=nullptr,memory=nullptr; HBITMAP bitmap=nullptr; HGDIOBJ old=nullptr; BYTE *pixels=nullptr;
     DesktopSurface(UINT32 width,UINT32 height) {
@@ -396,25 +311,24 @@ void recordDesktop(const fs::path &target, RECT bounds, UINT32 width, UINT32 hei
     }
 }
 
-enum class JobKind { None, Recording, Preview, Confirm };
-struct JobResult { int32_t flow=0; JobKind kind; bool success=false,cancelled=false,published=false; std::wstring error; fs::path path; UINT32 width=0,height=0; int32_t duration=0; };
+enum class JobKind { None, Recording };
+struct JobResult { int32_t flow=0; JobKind kind; bool success=false; std::wstring error; fs::path path; UINT32 width=0,height=0; int32_t duration=0; };
 struct RecordingState {
-    HINSTANCE instance=nullptr; HWND owner=nullptr,host=nullptr,editor=nullptr,status=nullptr,summary=nullptr;
-    HFONT font=nullptr; HWND fields[8]={}; std::vector<HWND> controls;
-    std::thread worker; std::atomic<bool> stop{false},cancel{false}; std::atomic<int> progress{0};
-    JobKind kind=JobKind::None; bool closeAfter=false,pendingCut=false; int32_t session=0; fs::path directory,source;
+    HINSTANCE instance=nullptr; HWND owner=nullptr,host=nullptr;
+    std::thread worker; std::atomic<bool> stop{false};
+    JobKind kind=JobKind::None; fs::path directory,source;
+    MCRecordingCompleted completed=nullptr; void *completedContext=nullptr;
     int32_t flow=0; HWND selection=nullptr,panel=nullptr,action=nullptr,tooltip=nullptr;
     RECT desktopBounds={},region={},workArea={}; double panelFrame[14]={},scale=1,logicalWidth=0,logicalHeight=0;
     std::unique_ptr<DesktopSurface> frozen,dimmed;
     bool updatingPanel=false,smoke=false,smokeRealDesktop=false; double smokeNow=1000;
     fs::path smokeDirectory;
-    ~RecordingState(){stop.store(true);cancel.store(true);if(worker.joinable())worker.join();}
+    ~RecordingState(){stop.store(true);if(worker.joinable())worker.join();}
 } state;
 void notify() { if(state.owner) PostMessageW(state.owner,MOOJICUT_RECORDING_STATE_CHANGED,0,0); }
-void setStatus(const std::wstring &text) { if(state.status) SetWindowTextW(state.status,text.c_str()); }
 void showFailure(const std::wstring &message) {
     if(state.smoke) { std::fprintf(stderr,"Recording smoke failure: %s\n",utf8(message).c_str()); return; }
-    MessageBoxW(state.editor?state.editor:state.owner,message.c_str(),L"Mooji Cut",MB_OK|MB_ICONWARNING);
+    MessageBoxW(state.owner,message.c_str(),L"Mooji Cut",MB_OK|MB_ICONWARNING);
 }
 double flowNow() { return state.smoke?state.smokeNow:static_cast<double>(GetTickCount64()); }
 void dispatchFlow(int32_t event);
@@ -423,58 +337,6 @@ void updateFlowPanel();
 void releaseFlow();
 void beginSelection();
 LRESULT CALLBACK flowProcedure(HWND window,UINT message,WPARAM wp,LPARAM lp);
-void saveDraft() {
-    std::wstring document=takeString(native_video_snapshot(state.session));
-    if(document.empty()) throw Failure{E_FAIL,L"无法保存 MoonBit 编辑草稿"};
-    std::string data=utf8(document); fs::path temporary=state.directory/L"edit.json.tmp";
-    { std::ofstream file(temporary,std::ios::binary|std::ios::trunc); file.write(data.data(),static_cast<std::streamsize>(data.size())); if(!file) throw Failure{E_FAIL,L"无法写入编辑草稿，请检查磁盘空间"}; }
-    if(!MoveFileExW(temporary.c_str(),(state.directory/L"edit.json").c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法保存编辑草稿"};
-}
-void putNumber(HWND field,int32_t value,bool milliseconds) {
-    wchar_t text[64]; if(milliseconds) swprintf_s(text,L"%.3f",static_cast<double>(value)/1000); else swprintf_s(text,L"%d",value); SetWindowTextW(field,text);
-}
-void refresh() {
-    if(!state.session || !state.editor) return;
-    putNumber(state.fields[0],native_video_edit_value(state.session,0),true); putNumber(state.fields[1],native_video_edit_value(state.session,1),true);
-    for(int i=0;i<4;i++) putNumber(state.fields[4+i],native_video_crop_value(state.session,i),false);
-    EnableWindow(GetDlgItem(state.editor,Undo),native_video_edit_value(state.session,3)>0);
-    EnableWindow(GetDlgItem(state.editor,Redo),native_video_edit_value(state.session,4)>0);
-    wchar_t text[256]; swprintf_s(text,L"成片 %.3f 秒 · %d × %d · 删除区间 %d 个 · 无音轨（静音录屏）",
-        static_cast<double>(native_video_duration(state.session))/1000,native_video_crop_value(state.session,2),native_video_crop_value(state.session,3),native_video_edit_value(state.session,5));
-    SetWindowTextW(state.summary,text); setStatus(L"编辑已应用并保存。确认后才会复制视频文件。");
-}
-bool number(HWND field,int32_t &result,bool milliseconds) {
-    wchar_t text[80]; GetWindowTextW(field,text,80); wchar_t *end=nullptr; double value=wcstod(text,&end);
-    while(end && iswspace(*end)) end++;
-    double scaled=milliseconds?std::round(value*1000):value;
-    if(end==text || (end&&*end) || !std::isfinite(scaled) || scaled<0 || scaled>604800000 || (!milliseconds&&std::floor(scaled)!=scaled)) {
-        setStatus(milliseconds?L"请输入有效秒数，例如 1.250。":L"像素值需要填写非负整数。");return false;
-    }
-    result=static_cast<int32_t>(scaled);return true;
-}
-void applied(int32_t success) {
-    if(!success){setStatus(takeString(native_video_error(state.session)));return;}
-    try{saveDraft();refresh();}catch(const Failure &error){setStatus(description(error));}
-}
-bool noPendingInputs() {
-    int32_t values[6];
-    if(!number(state.fields[0],values[0],true)||!number(state.fields[1],values[1],true))return false;
-    for(int i=0;i<4;i++)if(!number(state.fields[4+i],values[2+i],false))return false;
-    bool same=values[0]==native_video_edit_value(state.session,0)&&values[1]==native_video_edit_value(state.session,1);
-    for(int i=0;i<4;i++)same=same&&values[2+i]==native_video_crop_value(state.session,i);
-    if(!same)setStatus(L"还有未应用的裁剪或画面调整，请先点击对应的“应用”按钮。");
-    if(same&&state.pendingCut){int32_t start=0,end=0;if(!number(state.fields[2],start,true)||!number(state.fields[3],end,true))return false;
-        if(start!=0||end!=0){setStatus(L"还有未添加的删除区间，请点击“添加删除区间”，或将两项都清为 0。");return false;}state.pendingCut=false;}
-    return same;
-}
-bool copyFile(HWND owner,const fs::path &file) {
-    std::wstring path=file.wstring();SIZE_T size=sizeof(DROPFILES)+(path.size()+2)*sizeof(wchar_t);
-    HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE|GMEM_ZEROINIT,size);if(!memory)return false;
-    DROPFILES *drop=static_cast<DROPFILES *>(GlobalLock(memory));if(!drop){GlobalFree(memory);return false;}
-    drop->pFiles=sizeof(DROPFILES);drop->fWide=TRUE;memcpy(reinterpret_cast<BYTE *>(drop)+sizeof(DROPFILES),path.c_str(),(path.size()+1)*sizeof(wchar_t));GlobalUnlock(memory);
-    if(!OpenClipboard(owner)){GlobalFree(memory);return false;}bool copied=EmptyClipboard()&&SetClipboardData(CF_HDROP,memory)!=nullptr;CloseClipboard();if(!copied)GlobalFree(memory);return copied;
-}
-void openEditor(UINT32 width,UINT32 height,int32_t duration);
 void complete(JobResult *raw) {
     std::unique_ptr<JobResult> result(raw);
     // A delayed message must never join or mutate another recording session.
@@ -489,50 +351,33 @@ void complete(JobResult *raw) {
         releaseFlow();
     }
     state.kind=JobKind::None;notify();
-    for(HWND control:state.controls)EnableWindow(control,TRUE);
-    if(result->kind!=JobKind::Recording && state.cancel.load()) {
-        result->cancelled=true;result->success=false;
-        // The final path may belong to a pre-existing file if publication failed.
-        if(result->published){std::error_code ignored;fs::remove(result->path,ignored);}
-    }
-    if(!result->success) {
-        if(result->cancelled)setStatus(L"导出已取消，原片与草稿仍然保留。");else showFailure(result->error);
-        if(state.closeAfter&&state.editor){state.closeAfter=false;DestroyWindow(state.editor);}return;
-    }
-    if(result->kind==JobKind::Recording){openEditor(result->width,result->height,result->duration);return;}
-    refresh();
-    if(result->kind==JobKind::Preview){ShellExecuteW(state.editor,L"open",result->path.c_str(),nullptr,nullptr,SW_SHOWNORMAL);setStatus(L"成片预览已交给系统播放器；尚未复制。");return;}
-    if(copyFile(state.editor,result->path)){DestroyWindow(state.editor);}
-    else { setStatus(L"视频已保存，但剪贴板正被占用；已打开文件所在目录。");ShellExecuteW(state.editor,L"open",result->path.parent_path().c_str(),nullptr,nullptr,SW_SHOWNORMAL); }
+    if(!result->success) { showFailure(result->error); return; }
+    if(!state.completed || !state.completed(state.completedContext,result->path.c_str()))
+        showFailure(L"无法打开编辑窗口，完整原片已保留：\n"+result->path.wstring());
 }
 void publishOutput(const fs::path &partial,const fs::path &target) {
     // No REPLACE_EXISTING: a collision must preserve both the original and target.
     if(!MoveFileExW(partial.c_str(),target.c_str(),MOVEFILE_WRITE_THROUGH))
         throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法保存完成的视频"};
 }
-void launchJob(JobKind kind,fs::path target,Plan plan,RECT bounds={},UINT32 width=0,UINT32 height=0,UINT32 frameRate=0) {
+void launchJob(JobKind kind,fs::path target,RECT bounds,UINT32 width,UINT32 height,UINT32 frameRate) {
     // Resolve policy on the host/core thread; media workers consume values only.
     if(!frameRate)frameRate=static_cast<UINT32>(recordingPlan(2,2).frames_per_second);
-    state.kind=kind;state.cancel.store(false);state.stop.store(false);state.progress.store(0);state.closeAfter=false;
-    fs::path source=state.source;HWND host=state.host;int32_t flow=state.flow;
-    for(HWND control:state.controls)EnableWindow(control,FALSE);
+    state.kind=kind;state.stop.store(false);
+    HWND host=state.host;int32_t flow=state.flow;
     notify();
-    try { state.worker=std::thread([kind,target,plan,bounds,width,height,frameRate,source,host,flow]{
+    try { state.worker=std::thread([kind,target,bounds,width,height,frameRate,host,flow]{
         auto result=std::make_unique<JobResult>();result->flow=flow;result->kind=kind;result->path=target;
-        moojicut::media::OutputFile output(target,kind==JobKind::Recording?
-            moojicut::media::OutputKind::Original:moojicut::media::OutputKind::Derived);
+        moojicut::media::OutputFile output(target,moojicut::media::OutputKind::Original);
         try {
             MediaRuntime runtime;
-            if(kind==JobKind::Recording)recordDesktop(output.partial(),bounds,width,height,frameRate,state.stop,host,flow);
-            else exportVideo(source,output.partial(),plan,frameRate,state.cancel,state.progress);
-            if(kind!=JobKind::Recording&&state.cancel.load())throw Failure{HRESULT_FROM_WIN32(ERROR_CANCELLED),L"导出已取消"};
-            output.publish(publishOutput);result->published=true;
+            recordDesktop(output.partial(),bounds,width,height,frameRate,state.stop,host,flow);
+            output.publish(publishOutput);
             if(kind==JobKind::Recording){Decoder decoder(target,frameRate);result->width=decoder.width;result->height=decoder.height;result->duration=static_cast<int32_t>(std::min<LONGLONG>(604800000,decoder.duration/10000));}
             result->success=true;
         }catch(const Failure &error){
             // Recording has stop/finalize, not disposable-export cancellation.
             // Even ERROR_CANCELLED from a capture backend must show its retained path.
-            result->cancelled=kind!=JobKind::Recording&&error.code==HRESULT_FROM_WIN32(ERROR_CANCELLED);
             result->error=description(error);
         }
         catch(const std::exception &){result->error=L"视频处理失败，请检查磁盘空间与文件权限。";}
@@ -544,73 +389,7 @@ void launchJob(JobKind kind,fs::path target,Plan plan,RECT bounds={},UINT32 widt
                 result->error+=L"\n\n录制文件未被自动清理，请检查输出位置：\n"+output.retained().wstring();
         }
         JobResult *raw=result.release();if(!PostMessageW(host,doneMessage,0,reinterpret_cast<LPARAM>(raw)))delete raw;
-    }); } catch (...) { state.kind=JobKind::None;for(HWND control:state.controls)EnableWindow(control,TRUE);notify();throw; }
-}
-void startExport(bool confirmation) {
-    if(state.kind!=JobKind::None||!state.session||!noPendingInputs())return;
-    try{
-        saveDraft();Plan plan=planFor(state.session);
-        fs::path directory=confirmation?applicationDirectory()/L"Exports":state.directory;fs::create_directories(directory);
-        fs::path output=directory/((confirmation?L"MoojiCut-":L"preview-")+identifier()+L".mp4");
-        launchJob(confirmation?JobKind::Confirm:JobKind::Preview,output,plan);setStatus(L"正在生成视频，可关闭窗口以取消；草稿会保留。");
-    }catch(const Failure &error){showFailure(description(error));}catch(const std::exception &){showFailure(L"无法创建视频导出文件。请检查磁盘空间与目录权限。");}
-}
-int px(HWND window,int value){return MulDiv(value,static_cast<int>(GetDpiForWindow(window)),96);}
-HWND control(HWND parent,const wchar_t *klass,const wchar_t *text,DWORD style,int id,int x,int y,int width,int height) {
-    HWND result=CreateWindowExW(wcscmp(klass,L"EDIT")==0?WS_EX_CLIENTEDGE:0,klass,text,WS_CHILD|WS_VISIBLE|style,
-        px(parent,x),px(parent,y),px(parent,width),px(parent,height),parent,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),state.instance,nullptr);
-    SendMessageW(result,WM_SETFONT,reinterpret_cast<WPARAM>(state.font),TRUE);return result;
-}
-HWND button(HWND parent,const wchar_t *text,int id,int x,int y,int width){HWND item=control(parent,L"BUTTON",text,WS_TABSTOP|BS_PUSHBUTTON,id,x,y,width,27);state.controls.push_back(item);return item;}
-void buildEditor(HWND window) {
-    state.font=CreateFontW(-MulDiv(10,static_cast<int>(GetDpiForWindow(window)),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
-    control(window,L"STATIC",L"录屏编辑",0,0,20,18,740,22);
-    control(window,L"STATIC",L"所选区域录制，最高 1920 × 1080 / 15 fps。无音轨（静音录屏）。",0,0,20,48,750,22);
-    control(window,L"STATIC",L"填写后点击对应的应用按钮。时间使用原片秒数，编辑可撤销。",0,0,20,76,750,22);
-    const wchar_t *labels[]={L"保留范围（秒）",L"删除片段（秒）"};
-    for(int row=0;row<2;row++) {
-        int y=112+row*44;control(window,L"STATIC",labels[row],0,0,20,y+4,118,22);
-        for(int col=0;col<2;col++){int i=row*2+col;state.fields[i]=control(window,L"EDIT",L"0",WS_TABSTOP|ES_RIGHT|ES_AUTOHSCROLL,TrimStart+i,140+col*112,y,94,26);state.controls.push_back(state.fields[i]);}
-        control(window,L"STATIC",L"到",0,0,238,y+4,20,22);
-    }
-    button(window,L"应用裁剪",ApplyTrim,374,112,104);button(window,L"添加删除区间",AddCut,374,156,122);button(window,L"清除删除区间",ClearCuts,508,156,132);
-    control(window,L"STATIC",L"裁画面（像素）",0,0,20,204,118,22);
-    const wchar_t *cropLabels[]={L"X",L"Y",L"宽",L"高"};
-    for(int i=0;i<4;i++){int x=140+i*104;control(window,L"STATIC",cropLabels[i],0,0,x,204,20,22);state.fields[4+i]=control(window,L"EDIT",L"0",WS_TABSTOP|ES_RIGHT|ES_AUTOHSCROLL,CropX+i,x+22,200,70,26);state.controls.push_back(state.fields[4+i]);}
-    button(window,L"应用画面",ApplyCrop,566,200,100);button(window,L"完整画面",ResetCrop,678,200,100);
-    button(window,L"撤销",Undo,20,248,76);button(window,L"重做",Redo,108,248,76);button(window,L"重置编辑",Reset,196,248,100);
-    button(window,L"预览原片",PreviewSource,320,248,112);button(window,L"生成成片预览",PreviewEdited,444,248,138);button(window,L"打开草稿目录",OpenDraft,594,248,140);
-    state.summary=control(window,L"STATIC",L"",0,0,20,296,760,24);
-    state.status=control(window,L"STATIC",L"",0,0,20,328,760,44);
-    control(window,L"BUTTON",L"保留草稿并关闭",WS_TABSTOP|BS_PUSHBUTTON,CloseEditor,20,388,160,30);
-    button(window,L"确认并复制视频",Confirm,606,388,172);
-    state.pendingCut=false;
-    SetTimer(window,1,250,nullptr);
-}
-LRESULT CALLBACK editorProcedure(HWND window,UINT message,WPARAM wp,LPARAM lp) {
-    switch(message){
-    case WM_CREATE:buildEditor(window);return 0;
-    case WM_COMMAND:if(HIWORD(wp)==EN_CHANGE&&(LOWORD(wp)==CutStart||LOWORD(wp)==CutEnd)){state.pendingCut=true;return 0;}if(HIWORD(wp)==BN_CLICKED){
-        int id=LOWORD(wp);int32_t a=0,b=0,c=0,d=0;
-        if(id==CloseEditor){mc_recording_close();return 0;}
-        if(state.kind!=JobKind::None)return 0;
-        switch(id){
-        case ApplyTrim:if(number(state.fields[0],a,true)&&number(state.fields[1],b,true))applied(native_video_trim(state.session,a,b));break;
-        case AddCut:if(number(state.fields[2],a,true)&&number(state.fields[3],b,true)){int32_t accepted=native_video_cut(state.session,a,b);if(accepted)state.pendingCut=false;applied(accepted);}break;
-        case ClearCuts:applied(native_video_clear_cuts(state.session));break;
-        case ApplyCrop:if(number(state.fields[4],a,false)&&number(state.fields[5],b,false)&&number(state.fields[6],c,false)&&number(state.fields[7],d,false))applied(native_video_crop(state.session,a,b,c,d));break;
-        case ResetCrop:applied(native_video_reset_crop(state.session));break;
-        case Undo:applied(native_video_undo(state.session));break;case Redo:applied(native_video_redo(state.session));break;case Reset:applied(native_video_reset(state.session));break;
-        case PreviewSource:ShellExecuteW(window,L"open",state.source.c_str(),nullptr,nullptr,SW_SHOWNORMAL);setStatus(L"系统播放器正在预览原片；当前编辑不会改变原片。");break;
-        case OpenDraft:ShellExecuteW(window,L"open",state.directory.c_str(),nullptr,nullptr,SW_SHOWNORMAL);break;
-        case PreviewEdited:startExport(false);break;case Confirm:startExport(true);break;
-        }return 0;
-    }break;
-    case WM_TIMER:if(state.kind==JobKind::Preview||state.kind==JobKind::Confirm){wchar_t text[120];swprintf_s(text,L"正在生成视频 %d%%… 关闭窗口可以取消并保留草稿。",state.progress.load());setStatus(text);}return 0;
-    case WM_CLOSE:mc_recording_close();return 0;
-    case WM_DESTROY:KillTimer(window,1);if(state.session)native_video_close(state.session);state.session=0;state.editor=nullptr;state.controls.clear();state.status=nullptr;state.summary=nullptr;if(state.font){DeleteObject(state.font);state.font=nullptr;}notify();return 0;
-    }
-    return DefWindowProcW(window,message,wp,lp);
+    }); } catch (...) { state.kind=JobKind::None;notify();throw; }
 }
 LRESULT CALLBACK hostProcedure(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     if(message==doneMessage){complete(reinterpret_cast<JobResult *>(lp));return 0;}
@@ -626,9 +405,9 @@ bool initialize(HINSTANCE instance,HWND owner) {
     WNDCLASSEXW klass={};klass.cbSize=sizeof(klass);klass.hInstance=instance;klass.lpfnWndProc=hostProcedure;klass.lpszClassName=hostClass;
     if(!RegisterClassExW(&klass)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
     state.host=CreateWindowExW(0,hostClass,L"Mooji Cut recording",0,0,0,0,0,HWND_MESSAGE,nullptr,instance,nullptr);
-    klass.lpfnWndProc=editorProcedure;klass.lpszClassName=editorClass;klass.hCursor=LoadCursorW(nullptr,IDC_ARROW);klass.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_MOOJICUT));klass.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_BTNFACE+1);
-    if(!state.host || (!RegisterClassExW(&klass)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS))return false;
+    if(!state.host)return false;
     klass.lpfnWndProc=flowProcedure;klass.lpszClassName=flowClass;klass.hbrBackground=nullptr;
+    klass.hCursor=LoadCursorW(nullptr,IDC_ARROW);klass.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_MOOJICUT));
     return RegisterClassExW(&klass)||GetLastError()==ERROR_CLASS_ALREADY_EXISTS;
 }
 void closeFlowPanel() {
@@ -783,7 +562,7 @@ void dispatchFlow(int32_t event) {
             if(state.smoke&&state.smokeDirectory.empty())throw Failure{E_FAIL,L"录屏测试未配置隔离输出目录"};
             state.directory=(state.smoke?state.smokeDirectory:applicationDirectory()/L"Drafts")/identifier();
             fs::create_directories(state.directory);state.source=state.directory/L"source.mp4";
-            launchJob(JobKind::Recording,state.source,Plan{},state.region,static_cast<UINT32>(plan.width),
+            launchJob(JobKind::Recording,state.source,state.region,static_cast<UINT32>(plan.width),
                 static_cast<UINT32>(plan.height),static_cast<UINT32>(plan.frames_per_second));
         }
         if(event==MC_RECORDING_SELECTED && state.flow){
@@ -842,44 +621,12 @@ LRESULT CALLBACK flowProcedure(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     }
     return DefWindowProcW(window,message,wp,lp);
 }
-void discardUnshownSession() {
-    if(!state.editor&&state.session){native_video_close(state.session);state.session=0;}
-}
-void loadDraftSession(UINT32 width,UINT32 height,int32_t duration) {
-    fs::path file=state.directory/L"edit.json";
-    if(fs::exists(file)) {
-        if(!fs::is_regular_file(file)||fs::file_size(file)==0||fs::file_size(file)>4*1024*1024)
-            throw Failure{E_INVALIDARG,L"编辑草稿为空或损坏，已保留原片和草稿文件"};
-        std::ifstream saved(file,std::ios::binary);
-        if(!saved)throw Failure{E_ACCESSDENIED,L"无法读取编辑草稿，请检查文件权限"};
-        std::string bytes((std::istreambuf_iterator<char>(saved)),std::istreambuf_iterator<char>());
-        if(saved.bad())throw Failure{E_FAIL,L"读取编辑草稿失败，原文件未修改"};
-        moonbit_string_t draft=toString(fromUtf8(bytes));
-        state.session=native_video_resume(duration,static_cast<int32_t>(width),static_cast<int32_t>(height),0,draft);moonbit_decref(draft);
-        if(!state.session)throw Failure{E_INVALIDARG,L"无法恢复编辑草稿，原文件未修改。\n"+takeString(native_video_error(0))};
-    }else{
-        state.session=native_video_open(duration,static_cast<int32_t>(width),static_cast<int32_t>(height),0);
-        if(!state.session)throw Failure{E_INVALIDARG,takeString(native_video_error(0))};
-    }
-}
-void createEditor(bool visible) {
-    saveDraft();
-    UINT dpi=GetDpiForSystem();RECT rectangle={0,0,MulDiv(800,static_cast<int>(dpi),96),MulDiv(442,static_cast<int>(dpi),96)};
-    DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX;AdjustWindowRectExForDpi(&rectangle,style,FALSE,WS_EX_CONTROLPARENT,dpi);
-    state.editor=CreateWindowExW(WS_EX_CONTROLPARENT,editorClass,L"编辑录屏 · Mooji Cut",style,CW_USEDEFAULT,CW_USEDEFAULT,rectangle.right-rectangle.left,rectangle.bottom-rectangle.top,state.owner,nullptr,state.instance,nullptr);
-    if(!state.editor)throw Failure{HRESULT_FROM_WIN32(GetLastError()),L"无法打开录屏编辑器"};
-    refresh();if(visible){ShowWindow(state.editor,SW_SHOWNORMAL);SetForegroundWindow(state.editor);}notify();
-}
-void openEditor(UINT32 width,UINT32 height,int32_t duration) {
-    try{loadDraftSession(width,height,duration);createEditor(!state.smoke);}
-    catch(const Failure &error){discardUnshownSession();showFailure(description(error));}
-    catch(const std::exception &){discardUnshownSession();showFailure(L"无法打开草稿，请检查文件权限与磁盘空间。");}
-}
 fs::path latestDraft(const fs::path &root) {
     fs::path latest;fs::file_time_type newest=fs::file_time_type::min();
     if(fs::exists(root))for(const auto &entry:fs::directory_iterator(root)) {
         if(!entry.is_directory())continue;
-        fs::path source=entry.path()/L"source.mp4",edit=entry.path()/L"edit.json";
+        fs::path source=entry.path()/L"source.mp4",edit=entry.path()/L"edit-v2.json";
+        if(!fs::exists(edit))edit=entry.path()/L"edit.json";
         bool hasSource=fs::is_regular_file(source),hasEdit=fs::is_regular_file(edit);
         if(!hasSource&&!hasEdit)continue;
         auto modified=hasEdit?fs::last_write_time(edit):fs::last_write_time(source);
@@ -889,19 +636,17 @@ fs::path latestDraft(const fs::path &root) {
     if(latest.empty())throw Failure{HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND),L"没有可继续编辑的录屏。完成一次录屏后，原片与编辑草稿会保存在本机。"};
     return latest;
 }
-void restoreDraft(const fs::path &directory,bool visible) {
+void restoreDraft(const fs::path &directory) {
     fs::path source=directory/L"source.mp4";
     if(!fs::is_regular_file(source))throw Failure{HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND),L"上次录屏的原片 source.mp4 已被移动或删除，无法恢复编辑。\n"+directory.wstring()};
-    // A restarted tray process has not initialized Media Foundation yet.
-    MediaRuntime runtime;Decoder decoder(source,static_cast<UINT32>(recordingPlan(2,2).frames_per_second));
-    std::vector<BYTE> pixels;LONGLONG time=0,length=0;
-    if(!decoder.next(pixels,time,length))throw Failure{E_INVALIDARG,L"录屏文件没有可读取的画面，可能已损坏。\n"+source.wstring()};
-    if(decoder.duration<10000||decoder.duration/10000>604800000)throw Failure{E_INVALIDARG,L"录屏时长超出支持范围"};
-    state.directory=directory;state.source=source;
-    loadDraftSession(decoder.width,decoder.height,static_cast<int32_t>(decoder.duration/10000));createEditor(visible);
+    if(!state.completed || !state.completed(state.completedContext,source.c_str()))
+        throw Failure{E_FAIL,L"无法打开编辑窗口，原片和编辑草稿仍保留在：\n"+directory.wstring()};
 }
 }
 
+extern "C" void mc_recording_set_completed_callback(MCRecordingCompleted callback,void *context) {
+    state.completed=callback;state.completedContext=context;
+}
 extern "C" bool mc_recording_start(HINSTANCE instance,HWND owner) {
     if(mc_recording_busy()){mc_recording_activate();return false;}
     if(!initialize(instance,owner)){showFailure(L"无法初始化录屏界面。");return false;}
@@ -913,45 +658,38 @@ extern "C" bool mc_recording_start(HINSTANCE instance,HWND owner) {
 extern "C" bool mc_recording_resume_last(HINSTANCE instance,HWND owner) {
     if(mc_recording_busy()){mc_recording_activate();return false;}
     if(!initialize(instance,owner)){showFailure(L"无法初始化录屏编辑器。");return false;}
-    try{restoreDraft(latestDraft(applicationDirectory()/L"Drafts"),true);return true;}
-    catch(const Failure &error){discardUnshownSession();showFailure(L"无法继续编辑上次录屏。\n"+description(error));}
-    catch(const std::exception &){discardUnshownSession();showFailure(L"无法读取录屏草稿目录，请检查文件权限。原片与草稿未修改。");}
+    try{restoreDraft(latestDraft(applicationDirectory()/L"Drafts"));return true;}
+    catch(const Failure &error){showFailure(L"无法继续编辑上次录屏。\n"+description(error));}
+    catch(const std::exception &){showFailure(L"无法读取录屏草稿目录，请检查文件权限。原片与草稿未修改。");}
     return false;
 }
 extern "C" void mc_recording_stop(void) {
     if(state.flow)dispatchFlow(MC_RECORDING_STOP);
     else if(state.kind==JobKind::Recording){state.stop.store(true);notify();}
 }
-extern "C" bool mc_recording_busy(void){return state.flow!=0||state.kind!=JobKind::None||state.editor!=nullptr;}
+extern "C" bool mc_recording_busy(void){return state.flow!=0||state.kind!=JobKind::None;}
 extern "C" bool mc_recording_preparing(void) {
     if(!state.flow)return false;
     int32_t phase=recording_flow_value(state.flow,MC_RECORDING_PHASE);
     return phase==MC_RECORDING_SELECTING||phase==MC_RECORDING_COUNTDOWN||phase==MC_RECORDING_STARTING;
 }
 extern "C" bool mc_recording_recording(void){return state.flow && recording_flow_value(state.flow,MC_RECORDING_PHASE)==MC_RECORDING_ACTIVE;}
-extern "C" bool mc_recording_exporting(void){return state.kind==JobKind::Preview||state.kind==JobKind::Confirm;}
 extern "C" void mc_recording_activate(void) {
     if(state.selection){mc_selection_surface_activate(state.selection);return;}
-    HWND window=state.editor?state.editor:state.panel;
+    HWND window=state.panel;
     if(window && IsWindowVisible(window)){ShowWindow(window,SW_SHOWNORMAL);SetForegroundWindow(window);}
 }
 extern "C" void mc_recording_close(void){
     if(state.flow){dispatchFlow(MC_RECORDING_STOP);return;}
     if(state.kind==JobKind::Recording){mc_recording_stop();return;}
-    if(mc_recording_exporting()){
-        // Mark cancellation before any UI work: a modal prompt would pump the
-        // worker completion message and could publish a video after close.
-        state.closeAfter=true;state.cancel.store(true);
-        setStatus(L"正在取消并关闭，原片与编辑草稿会保留。");return;
-    }
-    if(state.editor){try{saveDraft();DestroyWindow(state.editor);}catch(const Failure &error){setStatus(description(error));}}
+
 }
 extern "C" bool mc_recording_handle_message(MSG *message) {
     if(state.panel && (message->hwnd==state.panel||IsChild(state.panel,message->hwnd))) {
         if(message->message==WM_KEYDOWN&&message->wParam==VK_ESCAPE){dispatchFlow(MC_RECORDING_STOP);return true;}
         if(IsDialogMessageW(state.panel,message))return true;
     }
-    return state.editor&&IsDialogMessageW(state.editor,message)!=FALSE;
+    return false;
 }
 
 void selectionFlowSmoke(HINSTANCE instance) {
@@ -1030,7 +768,17 @@ template<typename Ready> void pumpRecordingSmoke(Ready ready,DWORD timeout,const
         Sleep(5);
     }
 }
+struct SmokeDelivery { fs::path source; unsigned count=0; };
+bool receiveSmokeRecording(void *context,const wchar_t *source) {
+    auto *delivery=static_cast<SmokeDelivery *>(context);delivery->source=source;delivery->count++;return true;
+}
+struct ScopedSmokeDelivery {
+    MCRecordingCompleted previous=state.completed; void *context=state.completedContext;
+    explicit ScopedSmokeDelivery(SmokeDelivery *delivery) { mc_recording_set_completed_callback(receiveSmokeRecording,delivery); }
+    ~ScopedSmokeDelivery() { mc_recording_set_completed_callback(previous,context); }
+};
 void recordingLifecycleSmoke(HINSTANCE instance,const fs::path &directory) {
+    SmokeDelivery delivered;ScopedSmokeDelivery callback(&delivered);
     // Exercise the actual deadline -> worker -> finalized original -> editor
     // path against the CI desktop, with every output confined to temp storage.
     // Pixel correctness is checked separately using a deterministic GDI source.
@@ -1064,20 +812,23 @@ void recordingLifecycleSmoke(HINSTANCE instance,const fs::path &directory) {
         throw Failure{E_FAIL,L"停止录制未等待媒体收尾"};
     pumpRecordingSmoke([]{return state.kind==JobKind::None;},15000,L"媒体没有完成封装并回报完成");
     if(state.flow||recording_flow_value(flow,MC_RECORDING_PHASE)!=-1||state.worker.joinable()||state.selection||state.panel||
-        state.frozen||state.dimmed||!state.editor||!state.session||!fs::is_regular_file(original))
+        state.frozen||state.dimmed||delivered.count!=1||delivered.source!=original||!fs::is_regular_file(original))
         throw Failure{E_FAIL,L"完成后未释放录屏资源或没有交付原片到编辑器"};
     {MediaRuntime runtime;Decoder decoder(original,15);std::vector<BYTE> pixels;LONGLONG time=0,length=0;
         if(decoder.width!=320||decoder.height!=240||decoder.duration<second/4||!decoder.next(pixels,time,length))
             throw Failure{E_FAIL,L"闭环原片尺寸、时长或可播放性不正确"};}
     auto size=fs::file_size(original);mc_recording_close();
-    if(mc_recording_busy()||state.session||fs::file_size(original)!=size||!fs::is_regular_file(state.directory/L"edit.json"))
-        throw Failure{E_FAIL,L"关闭编辑器没有保留原片/草稿并释放会话"};
+    if(mc_recording_busy()||fs::file_size(original)!=size||delivered.count!=1)
+        throw Failure{E_FAIL,L"录屏关闭没有保留原片，或重复交付给应用"};
     state.smokeRealDesktop=false;state.smokeDirectory.clear();
-    std::printf("Windows region recording lifecycle: passed (entry, surface, countdown deadline, capture worker, stop/finalize, playable original, editor, cleanup).\n");
+    std::printf("Windows region recording lifecycle: passed (entry, surface, countdown deadline, capture worker, stop/finalize, playable original, app delivery, cleanup).\n");
 }
 extern "C" int mc_recording_smoke(HINSTANCE instance) {
-    int32_t session=0;
     try {
+        // The App must register delivery in its common startup path. The
+        // isolated capture fixture below replaces it temporarily, never
+        // compensates for a missing production registration.
+        if(!state.completed)throw Failure{E_FAIL,L"应用启动未注册录屏完成交付入口"};
         selectionFlowSmoke(instance);
         MCCoreRecordingPlan recording=recordingPlan(320,240),large=recordingPlan(5120,2880),portrait=recordingPlan(1080,1920);
         if(recording.width!=320 || recording.height!=240 || recording.frames_per_second!=15 ||
@@ -1086,7 +837,7 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
         UINT32 frameRate=static_cast<UINT32>(recording.frames_per_second);
         MediaRuntime runtime;fs::path directory=fs::temp_directory_path()/L"moojicut-recording-smoke"/identifier();fs::create_directories(directory);
         recordingLifecycleSmoke(instance,directory);
-        fs::path source=directory/L"source.mp4",output=directory/L"edited.mp4";
+        fs::path source=directory/L"source.mp4";
         {Encoder encoder(source,320,240,frameRate);std::vector<BYTE> pixels(320*240*4);
             for(UINT32 frame=0;frame<60;frame++){
                 for(UINT32 y=0;y<240;y++)for(UINT32 x=0;x<320;x++){size_t offset=(static_cast<size_t>(y)*320+x)*4;pixels[offset]=static_cast<BYTE>(y);pixels[offset+1]=static_cast<BYTE>(x);pixels[offset+2]=static_cast<BYTE>(frame*4);pixels[offset+3]=255;}
@@ -1142,55 +893,25 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
             if(text!="existing target")throw Failure{E_FAIL,L"改名覆盖了已有文件"};}
         {Decoder recovered(retained,frameRate);std::vector<BYTE> frame;LONGLONG t=0,d=0;
             if(!recovered.next(frame,t,d))throw Failure{E_FAIL,L"改名失败后保留的原片无法读取"};}
-        session=native_video_open(4000,320,240,0);
-        if(!session||!native_video_trim(session,500,3500)||!native_video_cut(session,1000,1500)||!native_video_cut(session,2000,2500)||!native_video_crop(session,20,30,160,100))throw Failure{E_FAIL,L"MoonBit 视频编辑状态测试失败"};
-        Plan plan=planFor(session);std::atomic<bool> cancel{false};std::atomic<int> progress{0};exportVideo(source,output,plan,frameRate,cancel,progress);
-        Decoder decoder(output,frameRate);if(decoder.width!=160||decoder.height!=100||std::llabs(decoder.duration-2*second)>second/6||decoder.hasAudio())throw Failure{E_FAIL,L"视频尺寸、时长或无音轨检查失败"};
+        // Capture format remains independently checked. Editing/cropping,
+        // exports and draft recovery now exercise the shared v2 host in the
+        // gst-media/media-worker/windows-video-editor fixtures, not a retired
+        // native form or another Media Foundation editing implementation.
+        Decoder decoder(source,frameRate);
+        if(decoder.width!=320||decoder.height!=240||std::llabs(decoder.duration-4*second)>second/6||decoder.hasAudio())
+            throw Failure{E_FAIL,L"录制原片尺寸、时长或无音轨检查失败"};
         ComPtr<IMFMediaType> actual;UINT32 rateNumerator=0,rateDenominator=0;
-        check(decoder.reader->GetCurrentMediaType(videoStream,&actual),L"无法读取成片帧率");
-        check(MFGetAttributeRatio(actual.Get(),MF_MT_FRAME_RATE,&rateNumerator,&rateDenominator),L"成片没有帧率信息");
-        if(!rateDenominator || rateNumerator!=frameRate*rateDenominator)throw Failure{E_FAIL,L"成片帧率与共享录制策略不一致"};
-        std::vector<BYTE> pixels;LONGLONG time=0,length=0;if(!decoder.next(pixels,time,length))throw Failure{E_FAIL,L"成片没有画面"};
-        const BYTE *center=pixels.data()+(50*160+80)*4;
-        if(std::abs(static_cast<int>(center[0])-80)>20||std::abs(static_cast<int>(center[1])-100)>20)throw Failure{E_FAIL,L"裁画面位置或RGB方向不正确"};
-        moonbit_string_t snapshot=native_video_snapshot(session);int32_t resumed=native_video_resume(4000,320,240,0,snapshot);moonbit_decref(snapshot);
-        if(!resumed||native_video_duration(resumed)!=2000)throw Failure{E_FAIL,L"视频草稿恢复失败"};native_video_close(resumed);
-        if(!native_video_undo(session)||!native_video_redo(session))throw Failure{E_FAIL,L"视频撤销重做失败"};
-        if(!initialize(instance,nullptr))throw Failure{E_FAIL,L"无法初始化视频编辑窗口"};
-        state.directory=directory;state.source=source;state.session=session;session=0;
-        state.editor=CreateWindowExW(WS_EX_CONTROLPARENT,editorClass,L"Mooji Cut video smoke",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
-            0,0,820,480,nullptr,nullptr,instance,nullptr);
-        if(!state.editor)throw Failure{E_FAIL,L"无法创建视频编辑测试窗口"};
-        refresh();saveDraft();
-        SetWindowTextW(state.fields[0],L"0.750");
-        if(noPendingInputs())throw Failure{E_FAIL,L"未应用的裁剪输入被忽略"};
-        refresh();SetWindowTextW(state.fields[2],L"0.200");SetWindowTextW(state.fields[3],L"0.300");
-        if(noPendingInputs())throw Failure{E_FAIL,L"未添加的删除区间被忽略"};
-        SetWindowTextW(state.fields[2],L"0");SetWindowTextW(state.fields[3],L"0");
-        if(!noPendingInputs())throw Failure{E_FAIL,L"有效编辑状态无法确认"};
-        fs::path cancelled=directory/L"cancelled.mp4";fs::copy_file(output,cancelled);
-        DWORD clipboardSequence=GetClipboardSequenceNumber();
-        state.kind=JobKind::Confirm;state.cancel.store(false);state.closeAfter=false;
-        mc_recording_close();
-        auto completed=std::make_unique<JobResult>();completed->kind=JobKind::Confirm;completed->success=true;completed->published=true;completed->path=cancelled;
-        SendMessageW(state.host,doneMessage,0,reinterpret_cast<LPARAM>(completed.release()));
-        if(mc_recording_busy()||fs::exists(cancelled)||GetClipboardSequenceNumber()!=clipboardSequence)
-            throw Failure{E_FAIL,L"关闭后的完成回调仍然发布了视频"};
-        // A late cancel after failed publication must not delete a foreign path.
-        auto failed=std::make_unique<JobResult>();failed->kind=JobKind::Confirm;failed->path=source;
-        SendMessageW(state.host,doneMessage,0,reinterpret_cast<LPARAM>(failed.release()));
-        if(!fs::is_regular_file(source))throw Failure{E_FAIL,L"取消失败导出误删了未发布的文件"};
-        wchar_t ci[16];DWORD ciLength=GetEnvironmentVariableW(L"CI",ci,16);
-        if(ciLength&&ciLength<16&&_wcsicmp(ci,L"true")==0){
-            HWND clipboardOwner=CreateWindowExW(0,L"STATIC",L"Mooji Cut clipboard test",WS_POPUP,0,0,0,0,nullptr,nullptr,instance,nullptr);
-            if(!clipboardOwner)throw Failure{E_FAIL,L"无法创建CI剪贴板所有者"};
-            bool copied=copyFile(clipboardOwner,output)&&IsClipboardFormatAvailable(CF_HDROP);
-            DestroyWindow(clipboardOwner);if(!copied)throw Failure{E_FAIL,L"CI文件剪贴板检查失败"};
-        }
-        else std::printf("Clipboard test skipped outside CI.\n");
-        std::printf("Windows Media Foundation recording/edit/export smoke passed.\n");return 0;
-    }catch(const Failure &error){if(session)native_video_close(session);std::fprintf(stderr,"Recording smoke failed: %s\n",utf8(description(error)).c_str());}
-    catch(const std::exception &){if(session)native_video_close(session);std::fprintf(stderr,"Recording smoke failed: native exception.\n");}
+        check(decoder.reader->GetCurrentMediaType(videoStream,&actual),L"无法读取原片帧率");
+        check(MFGetAttributeRatio(actual.Get(),MF_MT_FRAME_RATE,&rateNumerator,&rateDenominator),L"原片没有帧率信息");
+        if(!rateDenominator||rateNumerator!=frameRate*rateDenominator)throw Failure{E_FAIL,L"原片帧率与共享录制策略不一致"};
+        std::vector<BYTE> pixels;LONGLONG time=0,length=0;
+        if(!decoder.next(pixels,time,length))throw Failure{E_FAIL,L"原片没有画面"};
+        const BYTE *center=pixels.data()+(120*320+160)*4;
+        if(std::abs(static_cast<int>(center[0])-120)>20||std::abs(static_cast<int>(center[1])-160)>20)
+            throw Failure{E_FAIL,L"原片RGB方向或像素位置不正确"};
+        std::printf("Windows Media Foundation recording/source-preservation smoke passed.\n");return 0;
+    }catch(const Failure &error){std::fprintf(stderr,"Recording smoke failed: %s\n",utf8(description(error)).c_str());}
+    catch(const std::exception &){std::fprintf(stderr,"Recording smoke failed: native exception.\n");}
     if(GetCapture()==state.host)ReleaseCapture();
     // Even failed assertions must stop/finalize the real worker before a core
     // failure acknowledgement or teardown releases its session resources.
@@ -1199,8 +920,6 @@ extern "C" int mc_recording_smoke(HINSTANCE instance) {
         MSG message;while(PeekMessageW(&message,state.host,doneMessage,doneMessage,PM_REMOVE))DispatchMessageW(&message);
     }
     if(state.flow){clearSelection();closeFlowPanel();recording_flow_event(state.flow,MC_RECORDING_FAIL,flowNow());releaseFlow();}
-    if(state.editor)DestroyWindow(state.editor);
-    else if(state.session){native_video_close(state.session);state.session=0;}
     state.kind=JobKind::None;
     return 1;
 }

@@ -1,4 +1,5 @@
 import {
+  "moojicut/core/internal/features/video_editor" @video_editor,
   "moojicut/core/internal/features/capture" @capture,
   "moojicut/core/internal/features/capture/core" @image,
   "moojicut/core/internal/features/capture/ui" @capture_ui,

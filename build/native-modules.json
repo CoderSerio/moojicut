@@ -307,7 +307,9 @@
         "requires": [
           "feature.capture",
           "feature.pin",
-          "feature.recording"
+          "feature.recording",
+          "platform.app",
+          "platform.media"
         ],
         "files": [
           "native/windows/app.ico",
@@ -317,7 +319,8 @@
           "native/windows/updates.h"
         ],
         "includes": [
-          "shared.bindings"
+          "shared.bindings",
+          "shared.editor_host"
         ]
       },
       "component.style_controls": {
@@ -423,6 +426,30 @@
         "includes": [
           "shared.bindings"
         ]
+      },
+      "platform.app": {
+        "sources": [
+          "platform/windows/app/video_editor.c"
+        ],
+        "files": [
+          "platform/windows/app/video_editor.h"
+        ],
+        "requires": [
+          "shared.editor_host",
+          "platform.graphics"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
+      },
+      "platform.media": {
+        "sources": [
+          "platform/windows/media/runtime.c"
+        ],
+        "files": [
+          "platform/windows/media/runtime.h"
+        ],
+        "requires": []
       }
     },
     "linux": {
@@ -435,7 +462,8 @@
           "feature.capture",
           "feature.pin",
           "feature.recording",
-          "platform.input"
+          "platform.input",
+          "platform.app"
         ],
         "files": [
           "native/linux/launch.sh",
@@ -549,10 +577,55 @@
         "includes": [
           "shared.bindings"
         ]
+      },
+      "platform.app": {
+        "sources": [
+          "platform/linux/app/video_editor.c"
+        ],
+        "files": [
+          "platform/linux/app/video_editor.h"
+        ],
+        "requires": [
+          "shared.editor_host",
+          "platform.graphics"
+        ],
+        "includes": [
+          "shared.bindings"
+        ]
       }
     }
   },
   "shared": {
+    "shared.editor_host": {
+      "sources": [
+        "platform/shared/app/video_editor_host.c"
+      ],
+      "files": [
+        "platform/shared/app/video_editor_host.h"
+      ],
+      "requires": [
+        "shared.media_engine",
+        "shared.graphics"
+      ],
+      "includes": [
+        "shared.bindings"
+      ]
+    },
+    "shared.media_engine": {
+      "sources": [
+        "platform/shared/media/gst_engine.c",
+        "platform/shared/media/mp4_mux.c",
+        "platform/shared/media/media_worker.c",
+        "platform/shared/media/waveform.c"
+      ],
+      "files": [
+        "platform/shared/media/gst_engine.h",
+        "platform/shared/media/mp4_mux.h",
+        "platform/shared/media/media_worker.h",
+        "platform/shared/media/waveform.h"
+      ],
+      "requires": []
+    },
     "shared.bindings": {
       "sources": [],
       "files": [
@@ -569,6 +642,8 @@
         "bindings/c/tool_registry.h",
         "bindings/c/update_release.h",
         "bindings/c/video_project.h",
+        "bindings/c/video_editor.h",
+        "bindings/c/video_media_plan.h",
         "bindings/c/video_timeline.h",
         "bindings/c/video_ui.h",
         "bindings/c/ui_frame.h"
@@ -664,7 +739,7 @@
     {
       "from": "plugins/feature/recording/windows/recording.cpp",
       "to": "native/windows/resource.h",
-      "reason": "E1/Windows editor: legacy recording/editor still consumes native application resource identifiers; remove with shared editor integration."
+      "reason": "E3/app resources: recording HUD still consumes the application's IDI_MOOJICUT icon; inject this resource from app when extracting the recording adapter. The legacy editor has been removed."
     },
     {
       "from": "plugins/feature/recording/windows/recording.cpp",

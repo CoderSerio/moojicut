@@ -18,11 +18,11 @@
 | 工具贡献、启停和排序 | 共享 MoonBit 目录 | 共享 MoonBit 目录 | 共享 MoonBit 目录 |
 | 二级属性与圆色块 | 共享尺寸/间距值，原生控件 | 共享尺寸/间距值，原生控件 | 共享尺寸/间距值，原生控件 |
 | 基础录屏 | 区域/窗口/整屏及系统音频 | 区域 MP4，静音 | X11 区域与 Wayland ScreenCast/PipeWire，静音 WebM |
-| v2 视频编辑 | 共享 UI、正式预览/导出与波形 | 仍使用旧编辑器 | 尚无录后编辑器 |
+| v2 视频编辑 | 共享 UI、正式预览/导出与波形 | 已接共享窗口、预览/导出/波形与草稿，目标 CI 待验 | 已接共享窗口、预览/导出/波形与草稿，目标 CI 待验 |
 | OCR、翻译、用户 ZIP 插件 | 已有后端；用户插件仍为元信息输入/文本输出 v1 | 未接对应后端 | 未接对应后端 |
 | 更新安装 | 内置安装链 | 下载校验后手动换装 | 下载校验后手动换装 |
 
-Windows/Linux 的新共享画布已实现，并通过独立宿主调用真实 v2 MoonBit 工程；这与生产录制后编辑流程是两项交付。画布不拥有第二份剪辑模型，切分、空隙、历史和视口规则仍由 MoonBit 决定。三端麦克风/暂停、完整属性 Schema、用户插件 v2、独立 CLI/IPC，以及 Windows/Linux 的正式媒体编辑链仍未完成。
+Windows/Linux 的共享画布已通过独立宿主调用真实 v2 MoonBit 工程；新生产录制后编辑流程已接线，尚待本批目标 CI，不能沿用上一批画布绿灯替代验收。画布不拥有第二份剪辑模型，切分、空隙、历史和视口规则仍由 MoonBit 决定。三端麦克风/暂停、完整属性 Schema、用户插件 v2、独立 CLI/IPC仍未完成。
 
 结构约束仍在构建入口执行，新增画布没有增加原生跨层 include 例外。现有 12 对历史例外、旧 components/plugins/feature 和宿主混合职责仍按下表迁移；目录归位、生产接入、自动回归和实机效果分别验收。
 
@@ -65,8 +65,8 @@ Windows/Linux 的新共享画布已实现，并通过独立宿主调用真实 v2
 | `plugins/feature/pin` | 三端有窗口实现；MoonBit 数值/缩放规则已归 features/capture/extensions/pin | `capture/extensions/pin` 贡献与设置已接；通用命令与完整资源租约继续提取 | `windowing` 管置顶、穿透和窗口资源，`graphics` 管图片；停用按既有窗口关闭/菜单退役策略释放，不能把资源回收解释为删除原始图片 |
 | `plugins/feature/capture_text` | macOS Vision OCR、Apple Translation、结果窗口与任务控制 | `capture/extensions/ocr`、`translation` 管工作流、输入输出、可编辑结果、取消；通用结果控件归 shared/ui | `platform/<os>/text_services` 执行 OCR/翻译；三端实现与模型资源待分别验证，不能在无后端时承诺同等可用 |
 | `plugins/feature/scroll_capture` | 仅 macOS 原型；默认关闭；采集、HUD、重叠拼接混合 | `capture/extensions/scroll_capture` 管会话/UI与拼接计划；重叠算法优先共享 MoonBit | 获取帧留 capture；实测若需底层像素计算，才提到 platform/shared/image；继续默认关闭，独立页面稳定性验收 |
-| `plugins/feature/recording` | macOS 采集/选区；Windows 同文件包含采集、编码、草稿、旧编辑器；Linux 宿主已接 platform/linux/recording | `recording/core` 与倒计时 UI 已共享；完整会话编排、音源和编辑交接仍需提取 | `recording`、`audio` 管采集和时间戳，媒体执行归 `media`；Windows 区域选区与 Linux 基础视频流已接，音频/暂停待补 |
-| `plugins/feature/video_editor` | 独立目录仅 macOS；Windows 旧编辑器仍在 recording.cpp；Linux 缺失 | `video_editor/core`、ui、根会话统一三端 | `media` 管 probe/preview/seek/export/waveform；`graphics/windowing` 提供嵌入表面；无后端时共享 UI 报不可用，不能继续造平台专用简化编辑器 |
+| `plugins/feature/recording` | macOS 采集/选区；Windows 已移除旧编辑器与剪辑导出，采集/编码仍待归位；Linux 宿主已接 platform/linux/recording | `recording/core` 与倒计时 UI 已共享；完整会话编排与音源仍需提取，Win/Linux 完成素材经 App 回调交接 | `recording`、`audio` 管采集和时间戳，媒体执行归 `media`；Windows 区域选区与 Linux 基础视频流已接，音频/暂停待补 |
+| `plugins/feature/video_editor` | macOS 旧接线路径仍在；Windows/Linux 已接 platform 下薄窗口及共用原生宿主 | `video_editor/core`、ui、根会话已实现；macOS 根会话消费者迁移待做 | `media` 管 probe/preview/seek/export/waveform；`graphics/windowing` 提供嵌入表面；本批 Win/Linux 目标运行仍待 CI，不造平台专用简化编辑器 |
 
 截图扩展清单必须覆盖矩形、箭头、文字、实心/马赛克覆盖、OCR、翻译、贴图、滚动截图及用户自定义贡献。选择、取消、确认是宿主会话控制；撤销重做消费文档历史。每个按钮可配置，不意味着每个按钮都要独立 Wasm 包或三份系统代码。
 
@@ -138,7 +138,7 @@ Windows/Linux 的新共享画布已实现，并通过独立宿主调用真实 v2
 | `plugins/runtime/catalog`（原 tool_registry） | 目录/配置已迁；贡献已由各功能 extensions 声明、app/tools 注入；通用目录不再导入固定功能 |
 | `plugins/contracts`（原 plugin_protocol） | 当前 v1 校验已迁；通用字段与截图业务契约后续拆分，新协议一次替换旧插件 v1 |
 | `features/video_editor/core/legacy_document`（原 video） | 已有旧草稿读取/转换、宿主 API 与时间线几何已迁；拆掉旧编辑器后清理无调用 API。视频草稿保护与插件 v1 兼容是两件事 |
-| `features/video_editor/core`（原 video_project） | 文档、命令、RenderPlan 已迁；会话装配后续到功能根 |
+| `features/video_editor/core`（原 video_project） | 文档、命令、RenderPlan 已迁；功能根新增权威会话、不可变媒体计划与回执生命周期 |
 | `features/video_editor/ui`（原 video_ui） | 已迁；可复用绘制描述/图标/主题按真实消费者提到 shared/ui |
 | `shared/protocol`（原 protocol） | 已迁 |
 | `shared/test_support`（原 test_support） | 已迁，仅测试导入 |
@@ -337,4 +337,18 @@ Linux `--record/--stop` 利用现有 GTK 单实例转发，属于 GUI 启动控�
 
 E0 媒体探针使用隔离的官方 GStreamer/GES 1.28.9，在 macOS arm64 实际调用公共 C ABI，没有改变系统安装或生产依赖。八组真实 preview/seek→Matroska VP8/FLAC 导出→独立 FFmpeg 解码通过：黑屏/静音空隙、独立偏移音频、音频长于视频、1.5×/3×保音调、4500 ticks 源入点及重叠音频；另验真实取消到 NULL 及同进程再次导出。时间线来自共享编辑计划，不引入第二份可编辑文档。
 
-**MP4 仍未通过该探针**：H.264/AAC 虽可完成封装、视频帧数正确，末尾音频标记校验失败。AAC priming/尾端处理、Windows/Linux 目标运行库、解码取消代次、裁剪及原子发布继续是正式媒体端口的接入条件，不降低断言，不声称 GES 媒体后端已交付。完整探针与失败证据保留在本地 `.artifacts/e0-ges/E0-RESULTS.md`，该临时目录不随仓库/发布包交付；后续选定后端时将必要可复现 fixture 正式纳入测试。
+**该次 E0 探针的 MP4 未通过**：H.264/AAC 虽可完成封装、视频帧数正确，末尾音频标记校验失败。完整探针与失败证据保留在本地 `.artifacts/e0-ges/E0-RESULTS.md`，该临时目录不随仓库/发布包交付。后续修复与当前验收范围见下节，不以新结果改写历史失败记录。
+
+### 2026-11-18：E1 共享编辑会话与正式宿主（已接线，目标 CI 待验，未发布）
+
+- `features/video_editor` 根包新增共享会话，统一持有 core/UI、预览请求、保存版本、导出/取消及关闭回执；原生工作线程只接收复制后的不可变媒体计划。异步播放错误以代次失效旧请求，不能冒充独立导出任务完成。备份文档恢复为 v2 也必须先保存到新位置；关闭期间不再启动新的预览构建。本地针对性 native 测试 14 项、完整 Wasm 236 项与 macOS 原生回归通过。
+- `platform/shared/media` 新增共享 GStreamer/GES 执行器与 MP4 包装器，只消费计划，不拥有第二份可编辑文档。正式 fixture `test/native/gst-media.c` 在隔离的 macOS 官方 SDK 上通过真实预览、seek、空隙、独立音频、1.5×/3×保音调、裁剪、取消、原片不变及 MP4 首尾音频验证。无音轨与全静音计划不创建音轨、不依赖音频设备；音频长于视频时尾段黑屏继续出声，已由独立解码验证。该 fixture 修前 10 项失败，修后 143 项通过；AAC 修正限定本执行器已知编码配置，不能用于任意导入文件。
+- 后台媒体执行由进程唯一 GES 线程及私有事件循环管理，多个编辑会话公平轮转；初始化、创建和释放不跨 GES owner 线程，也不泵 UI 默认循环。素材发现使用真实异步完成回调，关闭等到回调、管道和文件实际排空。双会话、空隙、取消、覆盖与原片别名拒绝已通过真实媒体回归。
+- 音频波形使用独立 Gst-only 分析任务，按原始音频时间生成最多 16,384 个峰值，静音空隙、延迟、取消和源文件不变通过实际回归；片段偏移、缩放和变速后的展示仍由 MoonBit UI 计算。
+- `platform/shared/app` 只执行 MoonBit 效果并回执；Windows/Linux 薄窗口复用同一宿主。草稿异步原子保存，坏新草稿不回退覆盖，旧 v1/v2 只在新草稿真正不存在时读取，源文件不改写；共享宿主 58 项真实回归及 Address/UndefinedBehavior 检查通过。窗口用 presentation serial 更新绘制描述，视频像素独立刷新。
+- Windows 录制模块已删除旧表单、外部播放器预览和旧剪辑导出，改为 App 的完成回调打开共享编辑窗口；Linux 录制后也经 App 回调交接，并可恢复最近草稿。退出必须等保存与媒体完成，保存失败撤回退出并保留编辑状态。新增两端真实窗口 fixture 已登记，尚待目标系统执行。
+- Windows 构建接固定官方 SDK、经过依赖闭包/许可证清单核验的最小运行库；最终包带 DLL、插件与 scanner，生产启动使用 EXE 相对路径和独立缓存。CI 同时验证被搬迁包、污染环境、无 SDK PATH 的加载，不以开发 SDK 可运行代替发行包验证。
+- 新增媒体源文件已纳入构建归属清单；MoonBit 依赖检查与原生文件/include 检查均通过，仍只有原先 12 对历史例外。业务/UI 会话在 MoonBit，解码、编码、线程与原子文件发布在共享底层 C，不在 Windows/Linux 各复制一套剪辑逻辑。
+- **本批尚未跑 Windows/Linux 目标 CI。** 两端窗口与录制交接已接线；macOS 仍用现有宿主会话。上节绿色 CI 不覆盖本批改动；发行包仍为 alpha.20。Linux 新媒体链暂按 Ubuntu 22.04 的 FFmpeg 58/58/56 ABI 构建，不能据 glibc 版本声称同包支持 Ubuntu 24.04；后者的构建/制品及更新选包仍待补齐，不能做 SONAME 软链接冒充兼容。
+
+下一交付边界是本批正式录后编辑流程与运行库合批通过目标 CI。截图完整共享属性 UI、用户插件 v2、独立 CLI、OCR/翻译、录屏音源/暂停、Ubuntu 24.04 交付及旧原生职责迁移继续保留为未完成项；用户后续组织实机效果验收。

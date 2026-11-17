@@ -48,13 +48,14 @@ class DesktopBuild:
             self.home = Path(binary).resolve().parent.parent
         self.moon = self.home / "bin" / ("moon" + suffix)
         self.env = dict(os.environ, MOON_HOME=str(self.home), MOONBIT_NEW_NATIVE="0")
+        self.env["MOOJICUT_MEDIA_CACHE_DIR"] = str(self.directory / "media-cache")
         manifest = (ROOT / "moon.mod").read_text(encoding="utf-8")
         self.module = re.search(r'^name\s*=\s*"([^"]+)"', manifest, re.M).group(1)
         self.compiler = self.run(self.home / "bin" / ("moonc" + suffix), "-v").strip()
 
-    def run(self, *args, cwd=ROOT):
+    def run(self, *args, cwd=ROOT, env=None):
         print("+", " ".join(str(arg) for arg in args), flush=True)
-        result = subprocess.run([str(arg) for arg in args], cwd=cwd, env=self.env,
+        result = subprocess.run([str(arg) for arg in args], cwd=cwd, env=self.env if env is None else env,
                                 text=True, encoding="utf-8", errors="replace",
                                 capture_output=True, timeout=240)
         if result.stdout:
@@ -82,10 +83,21 @@ class DesktopBuild:
                      ROOT / "platform/linux/input/portal_shortcuts.c", *flags, "-o", fixture)
             self.run(fixture)
 
+    def media_tests(self):
+        self.prepare_media()
+        self.media.test(self.core_archive, self.home)
+
+    def prepare_media(self):
+        if hasattr(self, "media"):
+            return
+        from media_tests import MediaTests
+        self.media = MediaTests(self.directory / "media-tests", self.env)
+
     def build(self):
         self.run(sys.executable, ROOT / "scripts/check_module_boundaries.py")
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check")
         sources = native_sources(self.system)
+        self.prepare_media()
         output = self.moon_command("build", "--target", "native", "--release", "--deny-warn", "--output-json")
         archive = None
         for line in output.splitlines():
@@ -114,7 +126,7 @@ class DesktopBuild:
                 self.run("rc", "/nologo", "/fo" + str(resource), "resources.rc", cwd=source)
                 common = ["/nologo", "/utf-8", "/MT", "/O2", "/W4", "/DUNICODE", "/D_UNICODE",
                           '/DMOOJICUT_VERSION="' + self.version + '"', "/I" + str(self.home / "include"),
-                          "/I" + str(ROOT)]
+                          "/I" + str(ROOT), *self.media.includes]
                 objects = []
                 for unit in sources:
                     obj = object_path(name, unit)
@@ -128,15 +140,18 @@ class DesktopBuild:
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
                          "gdi32.lib", "gdiplus.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
                          "mfplat.lib", "mfreadwrite.lib", "mfuuid.lib", "mf.lib", "propsys.lib",
-                         "winhttp.lib", "bcrypt.lib", "comdlg32.lib")
+                         "winhttp.lib", "bcrypt.lib", "comdlg32.lib", "oleacc.lib", "oleaut32.lib",
+                         *self.media.libraries)
                 shutil.copy2(linked_executable, executable)
+                shutil.copytree(self.media.runtime_payload, staging, dirs_exist_ok=True)
                 dependencies = self.run("dumpbin", "/nologo", "/dependents", executable)
             else:
                 flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0", "ayatana-appindicator3-0.1", "libcurl",
                                             "gstreamer-1.0", "gstreamer-pbutils-1.0", "libportal-gtk3", "gio-unix-2.0", "x11"))
                 self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                          '-DMOOJICUT_VERSION="' + self.version + '"', "-I", self.home / "include",
-                         "-I", ROOT, *sources, archive, *flags, "-lm", "-o", executable)
+                         "-I", ROOT, *self.media.includes, *sources, archive, *flags,
+                         *self.media.libraries, "-lm", "-o", executable)
                 self.run("strip", executable)
                 dependencies = self.run("ldd", executable)
                 if "not found" in dependencies:
@@ -175,25 +190,40 @@ class DesktopBuild:
             return ("Native tray and configurable global shortcuts; frozen-desktop inline screenshot editing, "
                     "editable text, RGBA annotation styles, in-place pinned images with configurable zoom/opacity "
                     "and global hide/recover/click-through keys, confirmed image copy; "
-                    "silent selected-region recording with shared countdown/controls, trim, cuts, crop and confirmed MP4 file copy.")
+                    "silent selected-region recording; shared MoonBit v2 timeline with non-destructive edits, "
+                    "gaps, linked/independent audio, waveform, speed, crop, recoverable drafts and MP4 export.")
         return ("Native tray and preferences; X11 frozen-desktop inline editing or Wayland portal image editing; "
                 "editable text, RGBA annotation styles, pinned images with configurable zoom/opacity keys "
                 "and X11 global hide/recover/click-through keys, confirmed image copy. "
                 "Wayland positioning/keep-above is compositor-dependent; click-through is disabled. "
                 "Silent X11 selected-region or Wayland ScreenCast/PipeWire recording to WebM; "
                 "shared countdown/stop controls. Screenshot/record/stop shortcuts use native X11 registration "
-                "or the Wayland GlobalShortcuts portal when provided by the compositor. Video editor is not connected.")
+                "or the Wayland GlobalShortcuts portal when provided by the compositor. Shared MoonBit v2 editor "
+                "with embedded preview, non-destructive timeline/gaps/audio/speed/crop, waveform, saved drafts and MP4 export.")
 
     def verify_bundle(self, directory):
         expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt"}
         if self.system == "linux":
             expected.add("launch.sh")
-        actual = {path.name for path in directory.iterdir()}
+        directories = set()
+        if self.system == "windows":
+            for item in self.media.runtime_payload.rglob("*"):
+                relative = item.relative_to(self.media.runtime_payload).as_posix()
+                if item.is_dir():
+                    directories.add(relative)
+                else:
+                    expected.add(relative)
+                    copied = directory / relative
+                    if not copied.is_file() or hashlib.sha256(copied.read_bytes()).digest() != hashlib.sha256(item.read_bytes()).digest():
+                        raise RuntimeError("Packaged media runtime differs from verified payload: " + relative)
+        actual = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_file()}
         if actual != expected:
             raise RuntimeError("Unexpected package contents: extra={}, missing={}.".format(
                 sorted(actual - expected), sorted(expected - actual)))
-        if any(path.is_symlink() or not path.is_file() for path in directory.iterdir()):
-            raise RuntimeError("Package contents must be regular runtime files.")
+        actual_directories = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_dir()}
+        if actual_directories != directories or any(path.is_symlink() or not (path.is_file() or path.is_dir())
+                                                   for path in directory.rglob("*")):
+            raise RuntimeError("Package contains an unexpected directory, symlink or special file.")
 
     def instructions(self):
         shared = ("Mooji Cut " + self.version + "\n\n"
@@ -218,16 +248,18 @@ class DesktopBuild:
                              "从托盘菜单或可配置的全局快捷键启动截图、开始录屏和停止录屏。\n"
                              "录屏先自由框选区域，3 秒倒计时后开始；倒计时可按 Esc 取消。\n"
                              "最高 1920 × 1080 / 15 fps；本版不录声音。托盘或停止快捷键结束录制。\n"
-                             "停止后可裁剪时长、删除片段和裁画面。修改需点击对应的应用按钮。\n"
-                             "确认后复制 MP4 文件，可粘贴到接受文件的应用；关闭编辑器保留草稿。\n"
-                             "草稿和成片保存在 %LOCALAPPDATA%\\MoojiCut 的 Drafts 与 Exports 文件夹。\n"
+                             "停止后打开共享时间线：分割、拖动片段留空隙、修剪、变速、裁画面与撤销。\n"
+                             "编辑只影响预览和草稿；点击保存选择 MP4 导出位置，原始录制保留。\n"
+                             "已有音轨支持波形、分离与独立移动；本版新录制仍不含声音。\n"
+                             "草稿保存在 %LOCALAPPDATA%\\MoojiCut\\Drafts，可从托盘继续编辑上次录屏。\n"
                              "Windows N 版录屏需要系统媒体功能包。\n\n"
                              "免安装，无需 Node、Python 或 MoonBit 工具链。程序未进行代码签名，\n"
                              "Windows 可能显示未知发布者提示。仅从项目 Release 下载并核对 SHA256。\n"
                              "命令行 MoojiCut.exe --preferences 可直接打开设置。\n")
-        return shared + ("适用 Ubuntu 22.04/24.04 x86_64 及兼容发行版（glibc >= 2.35）。\n"
-                         "需要 GTK 3、Ayatana AppIndicator、libcurl、GStreamer 与 libportal：\n"
-                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 libportal-gtk3-1 libgstreamer-plugins-base1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire\n"
+        return shared + ("本包针对 Ubuntu 22.04 x86_64 构建；需要该版本的 FFmpeg 58/58/56 ABI。\n"
+                         "Ubuntu 24.04 的媒体库 ABI 不同，不能直接使用本包。\n"
+                         "需要 GTK 3、Ayatana AppIndicator、libcurl、GStreamer/GES、FFmpeg 与 libportal：\n"
+                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 libportal-gtk3-1 libges-1.0-0 libavformat58 libavcodec58 libavutil56 libgstreamer-plugins-base1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire\n"
                          "解压后运行 ./launch.sh 打开设置；./moojicut 仅启动托盘。\n"
                          "从托盘菜单或设置中启动截图，也可运行 ./moojicut --capture。\n"
                          "X11 支持桌面框选；Wayland 使用系统截图门户，需要可用的\n"
@@ -238,7 +270,9 @@ class DesktopBuild:
                          "录屏：X11 自由框选区域；Wayland 通过系统录屏门户选择屏幕/窗口，\n"
                          "需要当前桌面的 ScreenCast portal 后端与 PipeWire。3 秒倒计时后开始，\n"
                          "可从托盘停止，保存静音 WebM 原片；最高 1920×1080 / 15fps。\n"
-                         "本版 Linux 尚无录后编辑器。截图/录屏快捷键在 X11 直接注册；Wayland 需要\n"
+                         "停止后打开共享时间线，可分割、移动、修剪、变速和裁画面，保存时导出 MP4。\n"
+                         "原片与 edit-v2.json 草稿保存在视频目录的 Mooji Cut 子目录；托盘可继续编辑上次录屏。\n"
+                         "截图/录屏快捷键在 X11 直接注册；Wayland 需要\n"
                          "桌面的 GlobalShortcuts portal，在设置中申请授权，实际组合由系统确认。\n"
                          "后端不支持时仍可从托盘操作，或在桌面设置中将快捷键绑定到解压目录下\n"
                          "moojicut --capture、--record 或 --stop 的完整路径。\n"
@@ -246,12 +280,58 @@ class DesktopBuild:
                          "./launch.sh 重新打开设置。包不自动安装依赖或修改桌面配置。\n")
 
     def verify_binary(self, executable):
-        self.run(executable, "--self-test")
+        self.run(executable, "--self-test", cwd=self.directory, env=self.app_test_environment())
+
+    def app_test_environment(self):
+        environment = dict(self.env)
+        if self.system == "windows":
+            windows = Path(environment.get("SystemRoot", r"C:\Windows"))
+            environment["PATH"] = os.pathsep.join(map(str, (windows / "System32", windows)))
+            # Production bootstrap must override these itself. Do not supply
+            # the Python runtime_environment used by lower-level fixtures.
+            invalid = str(self.directory / "unavailable-system-sdk")
+            environment.update(GST_PLUGIN_PATH_1_0=invalid, GST_PLUGIN_SYSTEM_PATH_1_0=invalid,
+                               GST_PLUGIN_SCANNER_1_0=invalid, GST_REGISTRY_1_0=invalid,
+                               GST_REGISTRY_UPDATE="no", GST_PLUGIN_FEATURE_RANK="openh264enc:NONE,avenc_aac:NONE",
+                               GIO_MODULE_DIR=invalid, GIO_EXTRA_MODULES=invalid,
+                               GSETTINGS_SCHEMA_DIR=invalid)
+        return environment
 
     def smoke(self):
         self.verify_binary(self.executable)
         self.run(self.executable, "--smoke")
         self.canvas_smoke()
+        self.video_smoke()
+
+    def video_smoke(self):
+        if not hasattr(self.media, "fixtures"):
+            self.media_tests()
+        directory = Path(tempfile.mkdtemp(prefix="video-editor-", dir=self.directory))
+        sources = native_sources(self.system, "platform.app", *( ["platform.media"] if self.system == "windows" else [] ))
+        fixture = ROOT / "test/native" / (self.system + "-video-editor.c")
+        executable = self.media.executables / ("video-editor.exe" if self.system == "windows" else "video-editor")
+        if self.system == "windows":
+            objects = []
+            for unit in [*sources, fixture]:
+                obj = object_path(directory, unit); obj.parent.mkdir(parents=True, exist_ok=True)
+                self.run("cl", "/nologo", "/utf-8", "/MT", "/O2", "/W4", "/WX", "/std:c11",
+                         "/DUNICODE", "/D_UNICODE", "/I" + str(self.home / "include"),
+                         "/I" + str(ROOT), *self.media.includes, "/Fo" + str(obj), "/c", unit)
+                objects.append(obj)
+            self.run("cl", "/nologo", *objects, self.core_archive, "/Fe" + str(executable),
+                     "/link", "/SUBSYSTEM:CONSOLE", "/MANIFEST:EMBED",
+                     "/MANIFESTINPUT:" + str(ROOT / "native/windows/app.manifest"),
+                     "/IMPLIB:" + str(directory / "video-editor.lib"),
+                     *self.media.libraries, "user32.lib", "kernel32.lib", "gdi32.lib", "comctl32.lib",
+                     "ole32.lib", "oleacc.lib", "oleaut32.lib", "uuid.lib", "oldnames.lib",
+                     "advapi32.lib", "dbghelp.lib", "shell32.lib")
+        else:
+            flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0"))
+            self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                     "-I", self.home / "include", "-I", ROOT, *self.media.includes,
+                     *sources, fixture, self.core_archive, *flags, *self.media.libraries, "-lm", "-o", executable)
+        self.run(executable, self.media.directory / "media/generated-source.mkv", directory,
+                 cwd=self.directory, env=self.app_test_environment())
 
     def canvas_smoke(self):
         # Exercise the shared v2 editor through real native input/painting and
@@ -285,12 +365,15 @@ class DesktopBuild:
     def test(self):
         self.core_tests()
         self.build()
+        self.media_tests()
         self.verify_binary(self.executable)
         self.canvas_smoke()
+        self.video_smoke()
 
     def release(self):
         self.core_tests()
         self.build()
+        self.media_tests()
         self.smoke()
         self.verify_bundle(self.bundle)
         releases = ROOT / "dist/releases"
@@ -302,7 +385,7 @@ class DesktopBuild:
             if self.system == "windows":
                 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
                     for path in sorted(self.bundle.rglob("*")):
-                        if path.is_file():
+                        if path.is_file() or path.is_dir():
                             output.write(path, path.relative_to(self.bundle.parent).as_posix())
             else:
                 with tarfile.open(archive, "w:gz") as output:
@@ -323,7 +406,8 @@ class DesktopBuild:
                 raise RuntimeError("Packaged executable differs from the tested binary.")
             checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
             metadata = dict(self.metadata, archive=archive.name, sha256=checksum,
-                            checks=["moon-check", "moon-tests", "native-core", "native-ui-smoke", "shared-canvas", "unpacked-native-core"])
+                            checks=["moon-check", "moon-tests", "gst-media", "mp4-mux", "media-worker", "media-waveform", "video-editor-host",
+                                    "native-core", "native-ui-smoke", "shared-canvas", "video-editor", "unpacked-native-core"])
             shutil.copy2(archive, releases / archive.name)
             (releases / (archive.name + ".sha256")).write_text(checksum + "  " + archive.name + "\n", encoding="utf-8")
             (releases / (stem + ".build.json")).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

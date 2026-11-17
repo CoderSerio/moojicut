@@ -6,6 +6,16 @@ pub fn close(Int32) -> Unit
 
 pub fn command(Int32, String) -> String
 
+pub fn media_plan_clip_number(Int32, Int32, Int32, Int32) -> Double
+
+pub fn media_plan_close(Int32) -> Unit
+
+pub fn media_plan_number(Int32, Int32) -> Double
+
+pub fn media_plan_open(Int32) -> Int32
+
+pub fn media_plan_value(Int32, Int32) -> Int32
+
 pub fn open(String, String) -> String
 
 pub fn snapshot(Int32) -> String

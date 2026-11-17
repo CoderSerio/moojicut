@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "purpose": "Private development SDK; this is not a redistributable runtime whitelist.",
+  "windows-x86_64": {
+    "version": "1.28.8",
+    "toolchain": "MSVC x86_64, VS 2022 Release CRT",
+    "url": "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe",
+    "checksum_url": "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.8/msvc/gstreamer-1.0-msvc-x86_64-1.28.8.exe.sha256sum",
+    "sha256": "e4c41ee6ee9c6c32a45d198463ec08d79bac3bd5fa58adc93d13fe4a08abc9d9",
+    "bytes": 542592369,
+    "portable_mode_evidence": [
+      "https://raw.githubusercontent.com/GStreamer/cerbero/1.28.8/data/inno/base.iss",
+      "https://raw.githubusercontent.com/GStreamer/cerbero/1.28.8/cerbero/packages/windows/inno_setup.py"
+    ],
+    "package_evidence": [
+      "https://raw.githubusercontent.com/GStreamer/cerbero/1.28.8/packages/gstreamer-1.0/gstreamer-1.0.package",
+      "https://raw.githubusercontent.com/GStreamer/cerbero/1.28.8/packages/gstreamer-1.0-editing.package",
+      "https://raw.githubusercontent.com/GStreamer/cerbero/1.28.8/recipes/gst-editing-services-1.0.recipe",
+      "https://raw.githubusercontent.com/GStreamer/cerbero/1.28.8/recipes/ffmpeg.recipe",
+      "https://raw.githubusercontent.com/GStreamer/cerbero/1.28.8/packages/gstreamer-1.0-libav.package",
+      "https://raw.githubusercontent.com/GStreamer/cerbero/1.28.8/cerbero/packages/package.py"
+    ],
+    "include_dirs": ["include", "include/gstreamer-1.0", "include/glib-2.0", "lib/glib-2.0/include"],
+    "link_libraries": ["ges-1.0.lib", "gstreamer-1.0.lib", "gstapp-1.0.lib", "gstpbutils-1.0.lib", "gstvideo-1.0.lib", "gstaudio-1.0.lib", "gio-2.0.lib", "gobject-2.0.lib", "glib-2.0.lib", "avformat.lib", "avcodec.lib", "avutil.lib"],
+    "required_files": [
+      "bin/gst-inspect-1.0.exe",
+      "bin/ges-1.0-0.dll",
+      "libexec/gstreamer-1.0/gst-plugin-scanner.exe",
+      "include/gstreamer-1.0/ges/ges.h",
+      "include/gstreamer-1.0/gst/app/gstappsink.h",
+      "include/gstreamer-1.0/gst/pbutils/pbutils.h",
+      "include/glib-2.0/glib.h",
+      "lib/glib-2.0/include/glibconfig.h",
+      "lib/pkgconfig/gst-editing-services-1.0.pc",
+      "include/libavformat/avformat.h",
+      "include/libavcodec/avcodec.h",
+      "include/libavutil/avutil.h",
+      "bin/avformat-61.dll",
+      "bin/avcodec-61.dll",
+      "bin/avutil-59.dll"
+    ],
+    "required_factories": [
+      "nlecomposition", "gesdemux", "pitch", "appsink", "appsrc", "compositor", "audiomixer",
+      "videoconvert", "audioconvert", "audioresample", "videorate", "videocrop",
+      "qtdemux", "mp4mux", "h264parse", "aacparse", "avdec_h264", "avdec_aac",
+      "matroskamux", "vp8enc", "flacenc"
+    ],
+    "encoder_alternatives": {
+      "h264": ["openh264enc", "mfh264enc"],
+      "aac": ["avenc_aac"]
+    },
+    "required_license_dirs": ["gstreamer-1.0", "gst-editing-services-1.0", "soundtouch", "ffmpeg"],
+    "libav": {
+      "recipe_version": "7.1",
+      "abi_majors": {"avformat": 61, "avcodec": 61, "avutil": 59},
+      "scope": "Packet-copy MP4 finalization only; no second editing timeline or FFmpeg command-line executable.",
+      "io": "The official recipe disables protocols/network/programs. Use caller-owned custom AVIO read/write/seek callbacks instead of assuming the file protocol exists."
+    },
+    "redistribution": {
+      "approved": false,
+      "reason": "The SDK contains optional GPL/restricted components. A shipped subset needs an explicit codec and dependency closure, source/license inventory, relocated runtime validation, and actual media tests. Factory discovery does not verify MP4 audio priming/tails or device availability."
+    }
+  }
+}

@@ -20,7 +20,7 @@ typedef struct {
     GdkPixbuf *desktop;
     MCSelectionDrag drag;
     MCSelectionRect region;
-    gboolean dragging, attempted_region, quiet, releasing;
+    gboolean dragging, attempted_region, quiet, notify_completed, releasing;
     const char *selection_hint;
     int logical_width, logical_height, pixel_width, pixel_height, fd;
     MCGstCaptureInput input;
@@ -38,6 +38,11 @@ static Recording *active;
 static GtkApplication *application;
 static MCLinuxRecordingChanged changed;
 static gpointer changed_data;
+static MCLinuxRecordingCompleted completed;
+static gpointer completed_data;
+void mc_linux_recording_set_completed(MCLinuxRecordingCompleted callback, gpointer data) {
+    completed = callback; completed_data = data;
+}
 static void dispatch(Recording *r, int event);
 static void drain(Recording *r);
 static double now_ms(void) { return g_get_monotonic_time() / 1000.0; }
@@ -100,10 +105,15 @@ static void finish(Recording *r) {
     destroy_window(&r->panel); r->canvas = NULL;
     if (changed) changed(FALSE, FALSE, r->error ? "录屏失败，已写出的原片保留。" :
         result == MC_RECORDING_DELIVER_MEDIA ? "录屏已保存（静音 WebM）。" : "已取消录屏。", changed_data);
-    if (!r->quiet && (r->error || result == MC_RECORDING_DELIVER_MEDIA)) {
+    // Shutdown silences windows, but a successfully finalized production
+    // recording must still reach the app so it can persist its recent paths.
+    // Isolated smoke recordings opt out at creation, independently of quiet.
+    if (r->notify_completed && !r->error && result == MC_RECORDING_DELIVER_MEDIA && completed) {
+        completed(r->path, r->directory, completed_data);
+    } else if (!r->quiet && (r->error || result == MC_RECORDING_DELIVER_MEDIA)) {
         char *detail = r->error ? g_strdup_printf("%s%s%s", r->error,
             r->path ? "\n已保留原片：\n" : "", r->path ? r->path : "") :
-            g_strdup_printf("%s\n\n当前录制不含声音；Linux 录后编辑尚未接入。", r->path);
+            g_strdup(r->path);
         report(r->error ? "录屏未完成" : "录屏已保存", detail, r->error != NULL); g_free(detail);
     }
     recording_flow_close(r->handle); active = NULL;
@@ -429,7 +439,8 @@ void mc_linux_recording_init(GtkApplication *app, MCLinuxRecordingChanged callba
 gboolean mc_linux_recording_busy(void) { return active != NULL; }
 static void begin_recording(gboolean quiet) {
     if (!application || active) return;
-    Recording *r = g_new0(Recording, 1); r->fd = -1; r->quiet = quiet; r->handle = recording_flow_open();
+    Recording *r = g_new0(Recording, 1); r->fd = -1; r->quiet = quiet;
+    r->notify_completed = !quiet; r->handle = recording_flow_open();
     if (r->handle <= 0) { g_free(r); report("无法开始录屏", "无法创建录屏会话。", TRUE); return; }
     r->input.kind = GDK_IS_X11_DISPLAY(gdk_display_get_default()) ? MC_GST_X11 : MC_GST_PIPEWIRE;
     r->input.pipewire_fd = -1; active = r;
@@ -439,14 +450,25 @@ static void begin_recording(gboolean quiet) {
 void mc_linux_recording_start(void) { begin_recording(FALSE); }
 void mc_linux_recording_stop(void) { if (active) dispatch(active, MC_RECORDING_STOP); }
 void mc_linux_recording_shutdown(void) { if (active) { active->quiet = TRUE; mc_linux_recording_stop(); } }
-typedef struct { GMainLoop *loop; gint64 deadline; gboolean timed_out, observed_active; char *path; } FlowSmoke;
+typedef struct { GMainLoop *loop; gint64 deadline; gboolean timed_out, observed_active, shutdown; char *path; } FlowSmoke;
+typedef struct { unsigned calls; gboolean finalized; char *source, *directory; } CompletionSmoke;
+static void smoke_completed(const char *source, const char *directory, gpointer data) {
+    CompletionSmoke *s = data; s->calls++;
+    g_free(s->source); g_free(s->directory);
+    s->source = g_strdup(source); s->directory = g_strdup(directory);
+    s->finalized = active && !active->media && !active->pending &&
+        g_file_test(source, G_FILE_TEST_IS_REGULAR);
+}
 static gboolean flow_smoke_poll(gpointer data) {
     FlowSmoke *s = data;
     if (!active) { g_main_loop_quit(s->loop); return G_SOURCE_REMOVE; }
     if (active->directory && !s->path) s->path = g_build_filename(active->directory, "source.webm", NULL);
     if (phase(active) == MC_RECORDING_ACTIVE) {
         s->observed_active = TRUE;
-        if (recording_flow_value(active->handle, MC_RECORDING_ELAPSED_MS) >= 400) mc_linux_recording_stop();
+        if (recording_flow_value(active->handle, MC_RECORDING_ELAPSED_MS) >= 400) {
+            if (s->shutdown) mc_linux_recording_shutdown();
+            else mc_linux_recording_stop();
+        }
     }
     if (!s->timed_out && g_get_monotonic_time() > s->deadline) {
         s->timed_out = TRUE; mc_linux_recording_shutdown();
@@ -465,6 +487,7 @@ static gboolean smoke_pending_cancel(gboolean fd_delivery) {
     /* Simulate only the external completion boundary, not portal permission or
      * compositor success. The FD is real and must be closed on late delivery. */
     Recording *r = g_new0(Recording, 1); r->fd = -1; r->quiet = TRUE;
+    r->notify_completed = TRUE; // production cancellation must not publish media
     r->handle = recording_flow_open(); r->input.kind = MC_GST_PIPEWIRE; active = r;
     g_application_hold(G_APPLICATION(application));
     int handle = r->handle;
@@ -487,6 +510,8 @@ static gboolean smoke_pending_cancel(gboolean fd_delivery) {
 }
 gboolean mc_linux_recording_smoke(GtkApplication *app, const char *directory) {
     (void)app;
+    MCLinuxRecordingCompleted saved_completed = completed; gpointer saved_data = completed_data;
+    CompletionSmoke completion = {0}; mc_linux_recording_set_completed(smoke_completed, &completion);
     gboolean ok = mc_gst_capture_smoke(directory);
     /* Cancellation before source delivery is a real host lifetime path: no
      * output, no countdown, no surviving selection window or application hold. */
@@ -510,16 +535,34 @@ gboolean mc_linux_recording_smoke(GtkApplication *app, const char *directory) {
     ok = !active && ok;
     /* Exercise the production selection -> actual deadline -> first buffer ->
      * stop -> EOS/NULL -> save route, in a temporary fixture directory. */
+    for (unsigned production = 0; production < 2; production++) {
+        begin_recording(!production);
+        if (active) active->fixture_base = directory;
+        if (smoke_select_region()) {
+            FlowSmoke flow = {g_main_loop_new(NULL, FALSE), g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND,
+                FALSE, FALSE, production != 0, NULL};
+            g_timeout_add(50, flow_smoke_poll, &flow); g_main_loop_run(flow.loop);
+            ok = !flow.timed_out && flow.observed_active && flow.path &&
+                g_file_test(flow.path, G_FILE_TEST_IS_REGULAR) && completion.calls == production && ok;
+            if (production) {
+                char *parent = flow.path ? g_path_get_dirname(flow.path) : NULL;
+                ok = completion.finalized && !g_strcmp0(completion.source, flow.path) &&
+                    !g_strcmp0(completion.directory, parent) && ok;
+                g_free(parent);
+            }
+            g_free(flow.path); g_main_loop_unref(flow.loop);
+        } else { ok = FALSE; mc_linux_recording_shutdown(); }
+    }
+    // Even with notification enabled, a failed/cancelled flow is not a usable
+    // recording and must never replace the application's recent successful one.
     begin_recording(TRUE);
-    if (active) active->fixture_base = directory;
-    if (smoke_select_region()) {
-        FlowSmoke flow = {g_main_loop_new(NULL, FALSE), g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND,
-            FALSE, FALSE, NULL};
-        g_timeout_add(50, flow_smoke_poll, &flow); g_main_loop_run(flow.loop);
-        ok = !flow.timed_out && flow.observed_active && flow.path && g_file_test(flow.path, G_FILE_TEST_IS_REGULAR) && ok;
-        g_free(flow.path); g_main_loop_unref(flow.loop);
-    } else { ok = FALSE; mc_linux_recording_shutdown(); }
+    if (active) { active->notify_completed = TRUE; failure(active, "Expected recording smoke failure"); }
+    else ok = FALSE;
+    ok = !active && completion.calls == 1 && ok;
     ok = smoke_pending_cancel(TRUE) && smoke_pending_cancel(FALSE) && ok;
-    g_print("Linux recording smoke %s: X11 region, decoded WebM, failure retention, small-region rejection, cancel/select/countdown/stop, late FD/probe.\n", ok ? "passed" : "FAILED");
+    ok = completion.calls == 1 && ok;
+    mc_linux_recording_set_completed(saved_completed, saved_data);
+    g_free(completion.source); g_free(completion.directory);
+    g_print("Linux recording smoke %s: X11 region, decoded WebM, failure retention, small-region rejection, cancel/select/countdown/stop, late FD/probe, shutdown completion once, isolated smoke and failure never publish.\n", ok ? "passed" : "FAILED");
     return ok;
 }

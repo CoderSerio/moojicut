@@ -1,0 +1,59 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/features/video_editor"
+
+// Values
+pub fn ack(Int32, Int32, Int32, String) -> Bool
+
+pub fn command(Int32, String) -> Bool
+
+pub fn effect_generation(Int32, Int32) -> Int32
+
+pub fn effect_kind(Int32, Int32) -> Int32
+
+pub fn effect_number(Int32, Int32) -> Double
+
+pub fn effect_plan(Int32, Int32) -> Int32
+
+pub fn effect_revision(Int32, Int32) -> Double
+
+pub fn effect_text(Int32, Int32) -> String
+
+pub fn event(Int32, String) -> Bool
+
+pub fn export_progress(Int32, Int32, Double) -> Bool
+
+pub fn frame(Int32, Double, Double) -> String
+
+pub fn media_failed(Int32, Int32, String) -> Bool
+
+pub fn number(Int32, Int32) -> Double
+
+pub fn open(String, String, String) -> Int32
+
+pub fn open_unsaved(String, String, String) -> Int32
+
+pub fn playback(Int32, Int32, Double, Bool) -> Bool
+
+pub fn release(Int32) -> Bool
+
+pub fn request_close(Int32, Bool) -> Bool
+
+pub fn retry(Int32) -> Bool
+
+pub fn state(Int32) -> String
+
+pub fn take_effect(Int32) -> Int32
+
+pub fn text(Int32, Int32) -> String
+
+pub fn value(Int32, Int32) -> Int32
+
+pub fn waveform(Int32, String) -> Bool
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

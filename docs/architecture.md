@@ -31,7 +31,7 @@ Mooji Cut 以 MoonBit 实现共享界面、交互、文档和业务规则，以�
 | --- | --- | --- |
 | 截图 | MoonBit 文档、撤销、几何、工具贡献与大小/间距参数；三端接入标注、工具启停/排序和贴图复制、滚轮/边界等比缩放 | 颜色入口已为圆形，但控件绘制、调色板和属性排列仍由三端原生实现；通用属性 Schema、完整共享属性/选区 UI 未完成 |
 | 选区 | macOS、Windows 截图与录屏各自复用同一原生选区组件；MoonBit 共用几何 | 完整三端选区 UI、窗口 hover 与选区调整；Linux 当前仍为独立选区适配 |
-| 视频编辑 | MoonBit v2 文档、事务、时间映射、布局、图标和时间线；macOS 已接正式媒体宿主和波形；共享 frame 与三端画布实现已接入 | Windows/Linux 的 v2 切分、拖开空隙、撤销和缩放目前在独立测试宿主中验证；Windows 正式入口仍为旧编辑器，Linux 录制后尚无编辑器；多素材、字幕、效果仍有缺口 |
+| 视频编辑 | MoonBit v2 文档、事务、时间映射、布局、图标和时间线；macOS 已接正式媒体宿主和波形；Windows/Linux 已接共享根会话、预览/导出/波形及录制后编辑入口 | 本批 Windows/Linux 生产流程及私有媒体运行库尚待目标 CI；macOS 仍待迁到新根会话；多素材、字幕、效果仍有缺口 |
 | 录屏 | 三端接入 MoonBit live flow 与倒计时面板；Windows 区域 MP4；Linux X11 与 Wayland ScreenCast/PipeWire→WebM | Windows/Linux 为静音；三端麦克风/暂停与完整运行时能力快照仍缺；实际授权、设备和交互验收按台账 |
 | 用户插件 | macOS ZIP 导入、工具管理、独立 Wasm worker；v1 仅截图元信息输入和文本输出 | Windows/Linux 插件宿主；通用截图工具、自定义属性与录屏扩展协议 |
 | 插件注册 | 扩展声明贡献，app 注入通用目录；三端读取相同稳定 ID、槽位、开关、排序、能力与交互描述 | 通用属性 Schema、完整输入 UI 与用户插件 v2 待做；录屏、录后编辑注册内容为空；取消/排空仍有原生策略 |
@@ -43,7 +43,7 @@ Mooji Cut 以 MoonBit 实现共享界面、交互、文档和业务规则，以�
 
 MoonBit 的 `check_module_boundaries.py` 检查包归属及依赖方向，拒绝旧包路径重新出现；`check_native_boundaries.py` 检查原生源码、头文件、包含片段与打包资源的归属，以及实际 include/import。原生平台层不得反向依赖产品功能，跨功能协调应回到 app。现有 12 对旧引用逐条列入 `legacy_includes`，绑定迁移任务；新代码不能继承这些例外，删除旧引用后也必须删掉例外。这些检查已经进入构建入口，但不代替共享 UI、运行时行为或实机验收。
 
-2026-11-18 交叉复核：这批共享画布未扩大上述 12 对例外，MoonBit 与原生边界检查通过。仍需收口的结构欠账是截图属性控件与固定 annotations 接线、macOS 录制器直接创建编辑器、Windows recording 文件内的旧编辑器及宿主中的插件资源策略。它们有迁移归属，但不能将“已登记例外”视作目标架构已经实现；新增平台适配不得复制这些职责。
+2026-11-18 交叉复核：共享画布及本批编辑器接入未扩大上述 12 对例外，MoonBit 与原生边界检查通过。Windows recording 中的旧编辑器已移除，完成素材改经 App 回调交给共享编辑窗口。仍需收口的结构欠账是截图属性控件与固定 annotations 接线、macOS 录制器直接创建编辑器、原生 App 中的装配/退出策略，以及宿主中的插件资源策略。它们有迁移归属，但不能将“已登记例外”视作目标架构已经实现；新增平台适配不得复制这些职责。Windows/Linux 新媒体与窗口代码已接线，目标运行结果另记，不沿用旧批次的 CI 绿灯。
 
 ## 目标目录
 
@@ -353,16 +353,16 @@ Windows 混合 DPI、多屏和 IME，Linux X11/Wayland 与音频环境必须分�
 | src/internal/selection 与原生选区组件 | MoonBit 几何已到 shared/geometry；共用框选状态/UI 到 shared/selection 仍待做；窗口枚举与采集留平台 |
 | src/internal/pin | MoonBit 数值/交互规则已到 capture/extensions/pin；窗口和像素资源到平台适配仍待提取 |
 | src/internal/video/recording.mbt | recording/core；资源协调到 recording 根会话 |
-| src/internal/video_project、video_ui、video | 已到 video_editor/core、ui 与 core/legacy_document；旧文档/API 仍有 Windows 消费者，在 E1 替换后清理无调用入口。已有草稿读取/转换保留，不扩建用户插件兼容层 |
+| src/internal/video_project、video_ui、video | 已到 video_editor/core、ui 与 core/legacy_document；Windows 旧编辑器已替换，后续清理无调用 API。已有草稿读取/转换保留，不扩建用户插件兼容层 |
 | src/internal/tool_registry、feature_runtime、plugin_protocol | 已到 plugins/runtime/catalog、runtime/lifecycle、contracts；固定贡献、完整租约和功能专用契约的提取仍待做 |
 | src/internal/desktop、updates | 已到 app/shortcuts、app/updates；应用命令、会话、任务编排尚未实现 |
 | src/internal/protocol、test_support | 已到 shared/protocol、shared/test_support；测试辅助只允许测试作用域导入 |
-| native、components、plugins/feature | 按迁移台账逐项提取；Windows/Linux capture 内嵌图片编辑、Windows recording 内嵌视频编辑、macOS 分散选区均单列任务 |
+| native、components、plugins/feature | 按迁移台账逐项提取；Windows/Linux capture 内嵌图片编辑、macOS 分散选区与旧控制器均单列任务；Windows/Linux 编辑窗口已进入 platform/<os>/app |
 | 原 native/shared 头文件 | 已迁：15 个 ABI 头在 bindings/c；pixelate.h 实现在 platform/shared/image；同仓调用者同步，无旧路径转发 |
 | 原 plugins/system/builtins.json | 已迁 build/native-modules.json；构建前检查全量原生文件归属与实际 include 依赖 |
 | plugins/user-runtime | 当前仅作者 README，迁根 plugins/spec；真实执行器 native/tools/plugin-worker.m 与 native/macos/plugins 按台账拆分 |
 
-已修复图片 core 反向导入 UI：协调已移到 capture 根包，样式值域也留在 core。录屏核心已脱离旧 video 包。剩余 MoonBit 包已归位，边界检查不再将旧路径映射为新归属，直接拒绝旧目录及旧导入（含测试导入）。后续继续处理 Windows recording.cpp 混合采集、编码和旧编辑器，以及 macOS 插件管理中的通用取消/排空策略。提取时保留配置 preflight、原子索引和迟到结果校验，不能退化为简单通知式开关。
+已修复图片 core 反向导入 UI：协调已移到 capture 根包，样式值域也留在 core。录屏核心已脱离旧 video 包。剩余 MoonBit 包已归位，边界检查不再将旧路径映射为新归属，直接拒绝旧目录及旧导入（含测试导入）。Windows recording.cpp 已移除旧编辑器，采集与编码仍待归入平台能力；macOS 插件管理中的通用取消/排空策略仍需提取。提取时保留配置 preflight、原子索引和迟到结果校验，不能退化为简单通知式开关。
 
 ### 实施阶段
 

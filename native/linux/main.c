@@ -12,6 +12,7 @@
 #include "plugins/feature/recording/linux/recording.h"
 #include "updates.h"
 #include "platform/linux/input/global_shortcuts.h"
+#include "platform/linux/app/video_editor.h"
 #include "bindings/c/tool_registry.h"
 
 #ifndef MOOJICUT_VERSION
@@ -30,6 +31,7 @@ typedef struct {
   GtkWidget *shortcut_note, *shortcut_enable;
   GtkWidget *tool_settings;
   guint tool_settings_refresh;
+  guint quit_poll;
   int tool_snapshot;
   char *tool_layout;
   MCGlobalShortcuts *global_shortcuts;
@@ -37,8 +39,10 @@ typedef struct {
   gboolean shortcuts_pending, shortcut_keyboard_grabbed;
   Shortcut shortcuts[3];
   gboolean prefer_dark, system_dark, smoke, activated, core_ok, pin_enabled, pins_ready, quitting;
+  gboolean record_can_stop;
   int recording, exit_code;
   char *config_path, *smoke_dir, *icon_path;
+  char *last_video_source, *last_video_draft;
 } Host;
 
 static Host host;
@@ -190,6 +194,10 @@ static gboolean replace_shortcuts(const Shortcut candidate[3], gboolean persist)
 static gboolean save_settings_with_tools(const char *layout) {
   GKeyFile *settings = g_key_file_new();
   g_key_file_set_boolean(settings, "General", "prefer-dark", host.prefer_dark);
+  if (host.last_video_source && host.last_video_draft) {
+    g_key_file_set_string(settings, "Video", "last-source", host.last_video_source);
+    g_key_file_set_string(settings, "Video", "last-draft", host.last_video_draft);
+  }
   if (layout) g_key_file_set_string(settings, "Tools", "layout", layout);
   for (int i = 0; i < 3; i++) {
     int values[] = { host.shortcuts[i].key, host.shortcuts[i].mods };
@@ -221,6 +229,10 @@ static void load_settings(void) {
   GKeyFile *settings = g_key_file_new();
   char *saved_tools = NULL;
   if (g_key_file_load_from_file(settings, host.config_path, G_KEY_FILE_NONE, NULL)) {
+    g_clear_pointer(&host.last_video_source, g_free);
+    g_clear_pointer(&host.last_video_draft, g_free);
+    host.last_video_source = g_key_file_get_string(settings, "Video", "last-source", NULL);
+    host.last_video_draft = g_key_file_get_string(settings, "Video", "last-draft", NULL);
     saved_tools = g_key_file_get_string(settings, "Tools", "layout", NULL);
     host.prefer_dark = g_key_file_get_boolean(settings, "General", "prefer-dark", NULL);
     if (g_key_file_has_key(settings, "Features", "pin-enabled", NULL))
@@ -523,14 +535,21 @@ static void window_destroyed(GtkWidget *widget, gpointer data) {
   cancel_recording();
 }
 
-static void quit_app(GtkWidget *widget, gpointer data) {
-  (void)widget; (void)data;
-  if (host.quitting) return;
-  host.quitting = TRUE;
+static gboolean finish_quit(gpointer data) {
+  (void)data;
+  if (mc_linux_video_editors_busy() && !mc_linux_video_editors_closing()) {
+    host.quitting = FALSE; host.quit_poll = 0;
+    gboolean recording = mc_linux_recording_busy();
+    if (host.record_start_menu) gtk_widget_set_sensitive(host.record_start_menu, !recording);
+    if (host.record_stop_menu) gtk_widget_set_sensitive(host.record_stop_menu, recording && host.record_can_stop);
+    set_status("草稿尚未保存，已取消退出。请在编辑器中重试。");
+    return G_SOURCE_REMOVE;
+  }
+  if (mc_linux_recording_busy() || mc_linux_video_editors_busy()) return G_SOURCE_CONTINUE;
+  host.quit_poll = 0;
   MCGlobalShortcuts *shortcuts = host.global_shortcuts; host.global_shortcuts = NULL;
   mc_global_shortcuts_close(shortcuts);
   cancel_recording();
-  mc_linux_recording_shutdown();
   mc_linux_capture_close();
   mc_linux_pins_set_enabled(FALSE);
   if (host.window) gtk_widget_destroy(host.window);
@@ -539,6 +558,16 @@ static void quit_app(GtkWidget *widget, gpointer data) {
   /* Download tasks hold the application until cancelled workers finish removing
    * partial files. Releasing startup's hold leaves the GTK loop responsive. */
   g_application_release(G_APPLICATION(host.application));
+  return G_SOURCE_REMOVE;
+}
+
+static void quit_app(GtkWidget *widget, gpointer data) {
+  (void)widget; (void)data;
+  if (host.quitting) return;
+  host.quitting = TRUE;
+  mc_linux_recording_shutdown();
+  mc_linux_video_editors_close();
+  host.quit_poll = g_timeout_add(50, finish_quit, NULL);
 }
 
 static void show_preferences(void) {
@@ -642,7 +671,7 @@ static void show_preferences(void) {
   }
   gtk_box_pack_start(GTK_BOX(about), label("Mooji Cut  " MOOJICUT_VERSION, FALSE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(about), label("以 MoonBit 为核心的本地截图与录屏工具。", FALSE), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(about), label("Linux 原生预览版\n截图后原地标注、编辑文字、确认复制或固定贴图。X11 保留冻结桌面；Wayland 由系统门户提供截图，编辑位置与贴图置顶由桌面决定。录屏支持静音 WebM，录后编辑尚未接入。", TRUE), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(about), label("截图后原地标注、编辑文字、复制或固定贴图。录屏后可分割、移动、变速和裁剪视频，保存草稿或导出 MP4。Wayland 的选源、窗口位置与置顶由桌面提供。", TRUE), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(about), label(host.core_ok ? "MoonBit native 核心已连接" : "MoonBit 核心检查失败", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), about, gtk_label_new("关于"));
 
@@ -691,6 +720,7 @@ static void menu_capture(GtkWidget *widget, gpointer data) {
 
 static void recording_changed(gboolean busy, gboolean can_stop, const char *status, gpointer data) {
   (void)data;
+  host.record_can_stop = can_stop;
   if (host.record_start_menu) gtk_widget_set_sensitive(host.record_start_menu, !busy && !host.quitting);
   if (host.record_stop_menu) {
     gtk_widget_set_sensitive(host.record_stop_menu, can_stop && !host.quitting);
@@ -698,6 +728,25 @@ static void recording_changed(gboolean busy, gboolean can_stop, const char *stat
   }
   if (host.indicator) app_indicator_set_label(host.indicator, busy ? "● REC" : "", "● REC");
   set_status(status);
+}
+static void recording_completed(const char *source, const char *directory, gpointer data) {
+  (void)data;
+  char *draft = g_build_filename(directory, "edit-v2.json", NULL);
+  g_free(host.last_video_source); g_free(host.last_video_draft);
+  host.last_video_source = g_strdup(source); host.last_video_draft = g_strdup(draft);
+  save_settings();
+  if (!host.quitting && !mc_linux_video_editor_open(host.application, source, draft))
+    set_status("原片已保存，暂时无法打开编辑器。");
+  g_free(draft);
+}
+static void menu_resume_video(GtkWidget *widget, gpointer data) {
+  (void)widget; (void)data;
+  if (host.quitting || mc_linux_recording_busy()) return;
+  if (!host.last_video_source || !host.last_video_draft) {
+    set_status("还没有可恢复的录屏草稿。"); return;
+  }
+  if (!mc_linux_video_editor_open(host.application, host.last_video_source, host.last_video_draft))
+    set_status("无法打开上次的录屏，请检查原片是否已移动。");
 }
 static void menu_record(GtkWidget *widget, gpointer data) {
   (void)widget; (void)data;
@@ -934,6 +983,42 @@ static gboolean smoke_tool_settings(void) {
   return ok;
 }
 
+static gboolean smoke_recording_recents(void) {
+  // Reuse an actual finalized WebM from the recorder fixture. This tests the
+  // application handoff while quitting, independently of the recorder's spy
+  // callback (which prevents its isolated flows opening production windows).
+  GDir *files = g_dir_open(host.smoke_dir, 0, NULL);
+  char *source = NULL, *directory = NULL;
+  const char *name;
+  while (files && (name = g_dir_read_name(files))) {
+    if (!g_str_has_prefix(name, "recording-")) continue;
+    char *candidate = g_build_filename(host.smoke_dir, name, "source.webm", NULL);
+    if (g_file_test(candidate, G_FILE_TEST_IS_REGULAR)) {
+      source = candidate; directory = g_path_get_dirname(candidate); break;
+    }
+    g_free(candidate);
+  }
+  if (files) g_dir_close(files);
+  gboolean passed = source && !mc_linux_video_editors_busy();
+  if (source) {
+    char *draft = g_build_filename(directory, "edit-v2.json", NULL);
+    gboolean was_quitting = host.quitting; host.quitting = TRUE;
+    recording_completed(source, directory, NULL);
+    host.quitting = was_quitting;
+    passed = !mc_linux_video_editors_busy() && !g_strcmp0(source, host.last_video_source) &&
+      !g_strcmp0(draft, host.last_video_draft) && passed;
+    g_clear_pointer(&host.last_video_source, g_free);
+    g_clear_pointer(&host.last_video_draft, g_free);
+    load_settings();
+    passed = !g_strcmp0(source, host.last_video_source) && !g_strcmp0(draft, host.last_video_draft) && passed;
+    g_free(draft);
+  }
+  g_free(source); g_free(directory);
+  g_print("Linux recording recents smoke %s: shutdown completion persists paths, settings reload restores them, no editor opens.\n",
+      passed ? "passed" : "FAILED");
+  return passed;
+}
+
 static gboolean smoke_check(gpointer data) {
   (void)data;
   gboolean passed = host.core_ok && host.window && gtk_widget_get_visible(host.window);
@@ -970,6 +1055,7 @@ static gboolean smoke_check(gpointer data) {
   passed = mc_linux_capture_smoke(host.application) && passed;
   passed = mc_linux_pin_smoke() && passed;
   passed = mc_linux_recording_smoke(host.application, host.smoke_dir) && passed;
+  passed = smoke_recording_recents() && passed;
   passed = smoke_shortcut_input_pending() && passed;
   passed = mc_linux_update_smoke() && passed;
   passed = mc_global_shortcuts_x11_smoke() && passed;
@@ -995,6 +1081,7 @@ static void startup(GApplication *application, gpointer data) {
   g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &host.system_dark, NULL);
   load_settings();
   mc_linux_recording_init(host.application, recording_changed, NULL);
+  mc_linux_recording_set_completed(recording_completed, NULL);
   mc_linux_pins_init(host.application, host.config_path);
   host.pins_ready = TRUE;
   sync_pin_feature();
@@ -1018,6 +1105,9 @@ static void startup(GApplication *application, gpointer data) {
   g_signal_connect(host.record_stop_menu, "activate", G_CALLBACK(menu_stop), NULL);
   gtk_widget_set_sensitive(host.record_stop_menu, FALSE);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), host.record_stop_menu);
+  GtkWidget *resume_video = gtk_menu_item_new_with_label("继续编辑上次录屏…");
+  g_signal_connect(resume_video, "activate", G_CALLBACK(menu_resume_video), NULL);
+  gtk_menu_shell_append(GTK_MENU_SHELL(menu), resume_video);
   GtkWidget *restore = gtk_menu_item_new_with_label("恢复隐藏贴图");
   host.pin_menu[0] = restore;
   g_signal_connect(restore,"activate",G_CALLBACK(restore_pins),NULL);
@@ -1122,6 +1212,7 @@ int main(int argc, char **argv) {
   g_free(host.icon_path);
   g_free(host.shortcut_status);
   g_free(host.tool_layout);
+  g_free(host.last_video_source); g_free(host.last_video_draft);
   for (unsigned i = 0; i < 3; i++) g_free(host.shortcut_actual[i]);
   return result ? result : host.exit_code;
 }

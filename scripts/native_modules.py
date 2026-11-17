@@ -14,9 +14,11 @@ MANIFEST = ROOT / "build/native-modules.json"
 SUFFIXES = {"macos": {".m", ".c", ".swift"}, "windows": {".c", ".cpp"}, "linux": {".c"}}
 COMPILE_SUFFIXES = {".c", ".cpp", ".m", ".mm", ".swift"}
 SHARED_PREFIXES = {
+    "shared.editor_host": "platform/shared/app/",
     "shared.bindings": "bindings/c/",
     "shared.icons": "components/icons/shared/",
     "shared.media": "platform/shared/media/",
+    "shared.media_engine": "platform/shared/media/",
     "shared.image": "platform/shared/image/",
     "shared.graphics": "platform/shared/graphics/",
 }

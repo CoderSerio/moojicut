@@ -20,6 +20,9 @@
 #include "plugins/feature/capture/windows/capture.h"
 #include "plugins/feature/pin/windows/pinning.h"
 #include "plugins/feature/recording/windows/recording.h"
+#include "platform/windows/app/video_editor.h"
+#include "platform/windows/media/runtime.h"
+#include "platform/shared/app/video_editor_host.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "0.1.0-alpha.2"
@@ -70,6 +73,24 @@ static HWND tools_window;
 static void refresh_tools_page(HWND page, int selected);
 static wchar_t shortcut_registration_error[180];
 static void refresh_global_shortcuts(void);
+static bool open_recording_editor(void *context, const wchar_t *source) {
+    (void)context;
+    /* Quitting while recording still finalizes and retains the original, but
+     * must not create a new editing session after App shutdown was requested. */
+    if (update_exit_pending) return true;
+    const wchar_t *slash = wcsrchr(source, L'\\'), *forward = wcsrchr(source, L'/');
+    if (!slash || (forward && forward > slash)) slash = forward;
+    if (!slash) return false;
+    size_t length = (size_t)(slash - source);
+    if (length > 32600) return false;
+    size_t capacity = length + 32;
+    wchar_t *draft = calloc(capacity, sizeof(*draft)), *legacy = calloc(capacity, sizeof(*legacy));
+    if (!draft || !legacy) { free(draft); free(legacy); return false; }
+    swprintf_s(draft, capacity, L"%.*ls\\edit-v2.json", (int)length, source);
+    swprintf_s(legacy, capacity, L"%.*ls\\edit.json", (int)length, source);
+    HWND editor = mc_win_video_editor_open_with_legacy(instance, host, source, draft, legacy, FALSE);
+    free(draft); free(legacy); return editor != NULL;
+}
 static void unregister_shortcuts(void) {
     int i;
     for (i = 0; i < 3; i++) {
@@ -706,6 +727,13 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
             wcscpy_s(tray.szTip, ARRAYSIZE(tray.szTip), mc_recording_recording() ? L"Mooji Cut · 录屏中，请使用停止录屏快捷键结束" : L"Mooji Cut · 截图与录屏");
             Shell_NotifyIconW(NIM_MODIFY, &tray);
         }
+        if (update_exit_pending && !mc_recording_busy() && !mc_win_video_editor_busy()) PostMessageW(host, WM_CLOSE, 0, 0);
+        return 0;
+    case MC_WIN_VIDEO_EDITOR_CHANGED:
+        /* A failed save leaves the editor open; stop this quit attempt rather
+         * than repeatedly retrying and hiding a persistent storage failure. */
+        if (update_exit_pending && (lp == MC_VIDEO_HOST_OPEN || lp == MC_VIDEO_HOST_FAILED)) update_exit_pending = FALSE;
+        else if (update_exit_pending && !mc_win_video_editor_busy() && !mc_recording_busy()) PostMessageW(host, WM_CLOSE, 0, 0);
         return 0;
     case WM_TRAY:
         switch (LOWORD(lp)) {
@@ -722,13 +750,13 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         if (update_exit_pending && !mc_updates_busy()) PostMessageW(host, WM_CLOSE, 0, 0);
         return 0;
     case WM_CLOSE:
-        if (mc_recording_busy()) {
-            mc_recording_close();
-            if (mc_recording_busy()) return 0;
-        }
         update_exit_pending = TRUE;
         KillTimer(host, CAPTURE_TIMER);
         KillTimer(host, RECORD_TIMER);
+        if (mc_recording_busy()) {
+            mc_recording_close();
+        }
+        if (!mc_win_video_editor_request_close_all(TRUE) || mc_recording_busy()) return 0;
         if (!mc_updates_prepare_close()) return 0;
         DestroyWindow(window); return 0;
     case WM_DESTROY:
@@ -989,6 +1017,11 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
     moonbit_init();
     core_ok = preview_core_check() == 1;
     if (self_test) {
+        wchar_t runtime_error[1024] = {0};
+        if (!mc_win_media_runtime_init(runtime_error, ARRAYSIZE(runtime_error))) {
+            fwprintf(stderr, L"Private media runtime initialization failed: %ls\n", runtime_error);
+            return 1;
+        }
         for (i = 0; i < 1000 && core_ok; i++) core_ok = preview_core_check() == 1;
         return core_ok ? 0 : 1;
     }
@@ -1019,6 +1052,13 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
         }
     }
     instance = application;
+    wchar_t media_error[1024] = {0};
+    if (!mc_win_media_runtime_init(media_error, ARRAYSIZE(media_error))) {
+        if (smoke_mode) fwprintf(stderr, L"Private media runtime initialization failed: %ls\n", media_error);
+        else MessageBoxW(NULL, media_error, L"Mooji Cut", MB_OK | MB_ICONERROR);
+        if (mutex) CloseHandle(mutex);
+        return 1;
+    }
     if (!InitCommonControlsEx(&controls)) { if (mutex) CloseHandle(mutex); return 1; }
     app_icon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_MOOJICUT));
     ZeroMemory(&klass, sizeof(klass));
@@ -1033,6 +1073,7 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
         CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, NULL, NULL, instance, NULL);
     if (!host) { if (mutex) CloseHandle(mutex); return 1; }
     load_preferences();
+    mc_recording_set_completed_callback(open_recording_editor, NULL);
     if (smoke_mode) {
         result = run_smoke();
         if (result == 0) result = mc_capture_smoke(instance);
@@ -1050,6 +1091,7 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
         while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {
             if (mc_capture_handle_message(&message)) continue;
             if (mc_recording_handle_message(&message)) continue;
+            if (mc_win_video_editor_handle_message(&message)) continue;
             if (!settings || !PropSheet_IsDialogMessage(settings, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);

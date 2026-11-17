@@ -278,6 +278,64 @@ pub fn video_command(Int32, String) -> String
 
 pub fn video_dispose(Int32) -> Unit
 
+pub fn video_editor_ack(Int32, Int32, Int32, String) -> Int32
+
+pub fn video_editor_command(Int32, String) -> Int32
+
+pub fn video_editor_effect_generation(Int32, Int32) -> Int32
+
+pub fn video_editor_effect_kind(Int32, Int32) -> Int32
+
+pub fn video_editor_effect_number(Int32, Int32) -> Double
+
+pub fn video_editor_effect_plan(Int32, Int32) -> Int32
+
+pub fn video_editor_effect_revision(Int32, Int32) -> Double
+
+pub fn video_editor_effect_text(Int32, Int32) -> String
+
+pub fn video_editor_event(Int32, String) -> Int32
+
+pub fn video_editor_export_progress(Int32, Int32, Double) -> Int32
+
+pub fn video_editor_frame(Int32, Double, Double) -> String
+
+pub fn video_editor_media_failed(Int32, Int32, String) -> Int32
+
+pub fn video_editor_number(Int32, Int32) -> Double
+
+pub fn video_editor_open(String, String, String) -> Int32
+
+pub fn video_editor_open_unsaved(String, String, String) -> Int32
+
+pub fn video_editor_playback(Int32, Int32, Double, Int32) -> Int32
+
+pub fn video_editor_release(Int32) -> Int32
+
+pub fn video_editor_request_close(Int32, Int32) -> Int32
+
+pub fn video_editor_retry(Int32) -> Int32
+
+pub fn video_editor_state(Int32) -> String
+
+pub fn video_editor_take_effect(Int32) -> Int32
+
+pub fn video_editor_text(Int32, Int32) -> String
+
+pub fn video_editor_value(Int32, Int32) -> Int32
+
+pub fn video_editor_waveform(Int32, String) -> Int32
+
+pub fn video_media_plan_clip_number(Int32, Int32, Int32, Int32) -> Double
+
+pub fn video_media_plan_close(Int32) -> Unit
+
+pub fn video_media_plan_number(Int32, Int32) -> Double
+
+pub fn video_media_plan_open(Int32) -> Int32
+
+pub fn video_media_plan_value(Int32, Int32) -> Int32
+
 pub fn video_open(String, String) -> String
 
 pub fn video_project_close(Int32) -> Unit
