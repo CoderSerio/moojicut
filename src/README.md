@@ -58,7 +58,7 @@ MoonBit 以目录为包边界；`internal` 下的包仅供本模块使用，跨�
 根 ABI
   ├─ capture 根会话 ──→ capture/core、capture/ui、annotations
   ├─ capture/ui ──→ capture/core、annotations、protocol
-  ├─ annotations ──→ capture/core
+  ├─ annotations（当前无包依赖，仅提供工具属性与默认值）
   ├─ capture/core ──→ protocol、selection
   ├─ recording/core ──→ protocol
   ├─ video_project ──→ video（草稿迁移）、protocol
