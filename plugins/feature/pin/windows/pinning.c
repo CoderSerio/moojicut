@@ -752,43 +752,62 @@ static BOOL pin_menu_disable_smoke(HWND window, BOOL (*check_draining_transactio
       !IsWindow(window) && !pins && !hotkey_host && !menu_leases && feature_state == MC_FEATURE_DISABLED;
 }
 static BOOL pin_interaction_smoke(Pin *pin) {
+  BOOL ok = TRUE, restore_keyboard = FALSE;
+  BOOL was_visible = IsWindowVisible(pin->window);
+  BYTE saved[256] = {0};
+#define PIN_CHECK(condition) do { if (!(condition)) { RECT actual = {0}; GetWindowRect(pin->window, &actual); \
+    fprintf(stderr, "Windows pin interaction FAILED line %d: %s (zoom=%.17g rect=%ld,%ld,%ld,%ld handle=%d visible=%d selected=%d hidden=%d captureHidden=%d focus=%p foreground=%p capture=%p pin=%p)\n", \
+        __LINE__, #condition, pin->zoom, actual.left, actual.top, actual.right, actual.bottom, pin->resize_handle, \
+        IsWindowVisible(pin->window), pin->selected, pin->hidden, capture_hidden, (void *)GetFocus(), \
+        (void *)GetForegroundWindow(), (void *)GetCapture(), (void *)pin->window); ok = FALSE; goto cleanup; } } while (0)
+  /* A real drag and Ctrl+C need a visible, active input target. The caller
+   * creates this synthetic pin hidden for its initial geometry checks. Do not
+   * rely on focus left behind by the preceding screenshot fixture. */
+  PIN_CHECK(GetCapture() == NULL && !pin->hidden && !capture_hidden && mc_pin_enabled());
+  ShowWindow(pin->window, SW_SHOWNORMAL);
+  SetForegroundWindow(pin->window); SetFocus(pin->window); UpdateWindow(pin->window);
+  PIN_CHECK(IsWindowVisible(pin->window) && GetForegroundWindow() == pin->window &&
+      GetFocus() == pin->window && pin->selected);
   resize_pin(pin, .5);
   double start = pin->zoom;
   SendMessageW(pin->window, WM_MOUSEWHEEL, MAKEWPARAM(0, 30), 0);
-  BOOL ok = pin->zoom > start && pin->zoom < start * 1.1;
+  PIN_CHECK(pin->zoom > start && pin->zoom < start * 1.1);
   for (int i = 0; i < 3; i++) SendMessageW(pin->window, WM_MOUSEWHEEL, MAKEWPARAM(0, 30), 0);
-  ok = ok && fabs(pin->zoom - start * 1.1) < .000001;
+  PIN_CHECK(fabs(pin->zoom - start * 1.1) < .000001);
   SendMessageW(pin->window, WM_MOUSEWHEEL, MAKEWPARAM(0, (WORD)-120), 0);
-  ok = ok && fabs(pin->zoom - start) < .000001;
+  PIN_CHECK(fabs(pin->zoom - start) < .000001);
   RECT before, after; GetWindowRect(pin->window, &before);
   int x = before.right - before.left - 1, y = (before.bottom - before.top) / 2;
   SendMessageW(pin->window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
-  ok = ok && pin->resize_handle == 2 && GetCapture() == pin->window;
+  PIN_CHECK(pin->resize_handle == 2 && GetCapture() == pin->window);
   SendMessageW(pin->window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x + 32, y));
   SendMessageW(pin->window, WM_LBUTTONUP, 0, MAKELPARAM(x + 32, y));
   GetWindowRect(pin->window, &after);
-  ok = ok && after.left == before.left && after.right - after.left == 192 && after.bottom - after.top == 120 &&
-      !pin->resize_handle && GetCapture() != pin->window;
+  PIN_CHECK(after.left == before.left && after.right - after.left == 192 && after.bottom - after.top == 120 &&
+      !pin->resize_handle && GetCapture() != pin->window);
   SendMessageW(pin->window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(191, 60));
+  PIN_CHECK(pin->resize_handle == 2 && GetCapture() == pin->window);
   ReleaseCapture(); // Real cancellation must revoke the gesture, not just a fake message.
   SendMessageW(pin->window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(220, 60));
   GetWindowRect(pin->window, &before);
-  ok = ok && !pin->resize_handle && EqualRect(&before, &after);
+  PIN_CHECK(!pin->resize_handle && GetCapture() != pin->window && EqualRect(&before, &after));
   SendMessageW(pin->window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(191, 60));
-  ok = ok && GetCapture() == pin->window;
+  PIN_CHECK(pin->resize_handle == 2 && GetCapture() == pin->window);
   SendMessageW(pin->window, WM_CANCELMODE, 0, 0);
   SendMessageW(pin->window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(220, 60));
   GetWindowRect(pin->window, &before);
-  ok = ok && !pin->resize_handle && GetCapture() != pin->window && EqualRect(&before, &after);
+  PIN_CHECK(!pin->resize_handle && GetCapture() != pin->window && EqualRect(&before, &after));
   double frozen = pin->zoom; pin->hidden = TRUE;
   SendMessageW(pin->window, WM_MOUSEWHEEL, MAKEWPARAM(0, 120), 0);
-  ok = ok && pin->zoom == frozen; pin->hidden = FALSE;
+  PIN_CHECK(pin->zoom == frozen); pin->hidden = FALSE;
   // CI owns an isolated desktop. Exercise the real Ctrl+C dispatch/clipboard
   // there without changing a developer's clipboard during local smoke runs.
   wchar_t ci[16]; DWORD length = GetEnvironmentVariableW(L"CI", ci, 16);
   if (length && length < 16 && _wcsicmp(ci, L"true") == 0) {
-    ShowWindow(pin->window, SW_SHOWNORMAL); SetForegroundWindow(pin->window); SetFocus(pin->window); pin->selected = TRUE;
-    BYTE saved[256], keyboard[256] = {0}; GetKeyboardState(saved); keyboard[VK_CONTROL] = 0x80; SetKeyboardState(keyboard);
+    PIN_CHECK(GetForegroundWindow() == pin->window && GetFocus() == pin->window && pin->selected);
+    BYTE keyboard[256] = {0}; PIN_CHECK(GetKeyboardState(saved)); restore_keyboard = TRUE;
+    keyboard[VK_CONTROL] = 0x80; PIN_CHECK(SetKeyboardState(keyboard));
+    DWORD before_copy = GetClipboardSequenceNumber();
     SendMessageW(pin->window, WM_KEYDOWN, 'C', 0);
     BOOL copied = FALSE;
     if (OpenClipboard(pin->window)) {
@@ -800,16 +819,23 @@ static BOOL pin_interaction_smoke(Pin *pin) {
       }
       CloseClipboard();
     }
-    ok = ok && copied;
+    PIN_CHECK(copied && before_copy != GetClipboardSequenceNumber());
     DWORD sequence = GetClipboardSequenceNumber();
     pin->selected = FALSE; SendMessageW(pin->window, WM_KEYDOWN, 'C', 0);
+    PIN_CHECK(sequence == GetClipboardSequenceNumber());
     pin->selected = TRUE; pin->hidden = TRUE; SendMessageW(pin->window, WM_KEYDOWN, 'C', 0);
+    PIN_CHECK(sequence == GetClipboardSequenceNumber());
     pin->hidden = FALSE; pin->passthrough = TRUE; SendMessageW(pin->window, WM_KEYDOWN, 'C', 0);
-    ok = ok && sequence == GetClipboardSequenceNumber(); pin->passthrough = FALSE;
-    SetKeyboardState(saved); ShowWindow(pin->window, SW_HIDE);
+    PIN_CHECK(sequence == GetClipboardSequenceNumber()); pin->passthrough = FALSE;
   }
+cleanup:
+  if (restore_keyboard) SetKeyboardState(saved);
+  pin->hidden = FALSE; pin->passthrough = FALSE;
+  if (GetCapture() == pin->window) ReleaseCapture();
   resize_pin(pin, .5);
+  if (!was_visible) ShowWindow(pin->window, SW_HIDE);
   printf("Windows pin interaction smoke %s: fractional wheel, proportional edge resize, capture cancellation, input guards.\n", ok ? "passed" : "FAILED");
+#undef PIN_CHECK
   return ok;
 }
 BOOL mc_pin_smoke(HINSTANCE instance, BOOL (*check_draining_transaction)(void)) {
@@ -840,7 +866,11 @@ BOOL mc_pin_smoke(HINSTANCE instance, BOOL (*check_draining_transaction)(void)) 
   RECT rect;
   GetWindowRect(pin->window, &rect);
   BOOL ok = rect.right - rect.left == 160 && rect.bottom - rect.top == 100;
-  ok = pin_interaction_smoke(pin) && ok;
+  if (!ok || !pin_interaction_smoke(pin)) {
+    if (!ok) fprintf(stderr, "Windows pin smoke initial resize FAILED: %ld x %ld, expected 160 x 100\n",
+        rect.right - rect.left, rect.bottom - rect.top);
+    mc_pins_shutdown(); return FALSE;
+  }
   WORD saved[6];
   memcpy(saved, keys, sizeof(keys));
   keys[0] = MAKEWORD(VK_F8, HOTKEYF_ALT);
