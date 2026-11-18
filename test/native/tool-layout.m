@@ -74,8 +74,7 @@ static NSDictionary *configuration(NSArray<NSNumber *> *order, NSSet<NSNumber *>
         @"enabled":@(![disabled containsObject:kind])}];
     // These fixtures isolate annotation interactions. Content actions are tested
     // separately against the actual default catalog and host capabilities.
-    for (NSString *identifier in @[@"builtin.capture.ocr",@"builtin.capture.translate"])
-        [entries addObject:@{@"id":identifier,@"enabled":@NO}];
+    [entries addObject:@{@"id":@"builtin.capture.ocr",@"enabled":@NO}];
     return registryConfiguration(entries,@[]);
 }
 static NSDictionary *setConfiguredTool(NSDictionary *configuration, NSString *identifier, BOOL enabled) {

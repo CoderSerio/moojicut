@@ -2133,21 +2133,6 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
                capture.selection.anchor.x, capture.selection.anchor.y, capture.selection.current.x, capture.selection.current.y, capture.crop[0], capture.crop[1],
                capture.crop[2], capture.crop[3], capture.zoom, ox, oy);
   }
-  if (ok)
-    for (int i = 0; i < 2; i++) {
-      int x, y;
-      const char *id = i ? "builtin.capture.translate" : "builtin.capture.ocr";
-      if (!smoke_toolbar_point(id, &x, &y)) {
-        ok = FALSE; g_printerr("XTest fixture: unavailable action missing from descriptor toolbar\n"); break;
-      }
-      motion_event(display, -1, ox + x, oy + y, 0);
-      button_event(display, 1, TRUE, 0);
-      button_event(display, 1, FALSE, 0);
-      smoke_pump();
-      ok = capture.editor && capture.tool == SELECT && !capture.editing && ok;
-      if (!ok)
-        g_printerr("XTest fixture: disabled future action changed capture state\n");
-    }
   if (ok) {
     int x, y;
     ok = smoke_toolbar_point("builtin.image.text", &x, &y);
@@ -2521,17 +2506,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   CAPTURE_CHECK(!(editor_style_property_mask(context_kind()) == 0) && smoke_property_visible(MC_STYLE_COLOR) &&
        smoke_property_visible(MC_STYLE_OPACITY) && !smoke_property_visible(MC_STYLE_FONT) &&
        !smoke_property_visible(MC_STYLE_STROKE));
-  for (int i = 0; i < 2; i++) {
-    const char *id = i ? "builtin.capture.translate" : "builtin.capture.ocr";
-    int index = smoke_find_tool(id);
-    if (index < 0) { ok = FALSE; continue; }
-    AtkObject *node = atk_object_ref_accessible_child(gtk_widget_get_accessible(capture.toolbar_canvas), index);
-    AtkStateSet *state = node ? atk_object_ref_state_set(node) : NULL;
-    const char *tip = node ? atk_object_get_description(node) : NULL;
-    CAPTURE_CHECK(state && !atk_state_set_contains_state(state, ATK_STATE_ENABLED) && tip && *tip);
-    g_clear_object(&state);
-    g_clear_object(&node);
-  }
+  CAPTURE_CHECK(smoke_find_tool("builtin.capture.ocr") < 0 && smoke_find_tool("builtin.capture.translate") < 0);
   CAPTURE_CHECK(smoke_bridge_retirement() && smoke_shared_text());
   double r[10];
   CAPTURE_CHECK(image_session_add(capture.session, REDACT, 50, 60, 80, 60, 0, 4) == 1);

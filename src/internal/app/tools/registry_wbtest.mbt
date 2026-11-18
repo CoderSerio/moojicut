@@ -21,7 +21,7 @@ fn tool_index(handle : Int32, id : String) -> Int32 {
 ///|
 test "app composes extension-owned tools slots defaults and generic commands" {
   let handle = opened(31)
-  assert_eq(tool_registry_snapshot_count(handle, 0), 9)
+  assert_eq(tool_registry_snapshot_count(handle, 0), 8)
   assert_eq(tool_registry_snapshot_count(handle, 1), 0)
   for
     (index, id, icon, kind) in [
@@ -41,7 +41,7 @@ test "app composes extension-owned tools slots defaults and generic commands" {
   let pin = tool_index(handle, "builtin.image.pin")
   assert_eq(tool_registry_snapshot_value(handle, 0, pin, 2), 1)
   assert_eq(tool_registry_snapshot_text(handle, 0, pin, 4), "pin")
-  for name in ["ocr", "translate", "scroll"] {
+  for name in ["ocr", "scroll"] {
     let index = tool_index(handle, "builtin.capture." + name)
     assert_eq(tool_registry_snapshot_value(handle, 0, index, 2), 0)
     assert_eq(tool_registry_snapshot_text(handle, 0, index, 4), name)
@@ -73,7 +73,7 @@ test "app composes extension-owned tools slots defaults and generic commands" {
 test "backend availability is separate from the persistent enabled preference" {
   let unavailable = opened(0)
   let available = opened(31)
-  for name in ["ocr", "translate", "scroll"] {
+  for name in ["ocr", "scroll"] {
     let index = tool_index(unavailable, "builtin.capture." + name)
     assert_eq(tool_registry_snapshot_value(unavailable, 0, index, 1), 0)
     assert_eq(tool_registry_snapshot_value(available, 0, index, 1), 1)
@@ -126,7 +126,7 @@ test "typed candidates preserve immutable snapshots until the host saves and pub
   )
   let last = tool_registry_snapshot_move(moved, "builtin.capture.scroll", "")
   assert_eq(
-    tool_registry_snapshot_text(last, 0, 8, 0),
+    tool_registry_snapshot_text(last, 0, 7, 0),
     "builtin.capture.scroll",
   )
   // A failed disk write simply discards candidates; there is no runtime-global
@@ -198,7 +198,7 @@ test "closed invalid and exhausted snapshot handles fail without changing live s
       (-1, 0, 0),
       (3, 0, 0),
       (0, -1, 0),
-      (0, 9, 0),
+      (0, 8, 0),
       (0, 0, 99),
     ] {
     assert_eq(tool_registry_snapshot_value(next, group, index, key), -1)
@@ -259,8 +259,8 @@ test "typed and JSON moves reject cross-slot anchors without changing the source
   // toolbar rendering partitions that order into the two slots.
   let appended = tool_registry_snapshot_move(original, "builtin.image.pin", "")
   assert_true(appended > original)
-  assert_eq(tool_registry_snapshot_text(appended, 0, 8, 0), "builtin.image.pin")
-  assert_eq(tool_registry_snapshot_value(appended, 0, 8, 2), 1)
+  assert_eq(tool_registry_snapshot_text(appended, 0, 7, 0), "builtin.image.pin")
+  assert_eq(tool_registry_snapshot_value(appended, 0, 7, 2), 1)
   assert_eq(tool_registry_snapshot_layout(original), saved)
   assert_eq(tool_registry_snapshot_close(appended), 1)
   assert_eq(tool_registry_snapshot_close(original), 1)
@@ -300,7 +300,7 @@ test "adding built-ins preserves a previously full layout across reload and edit
       "screenshot",
     ),
   )
-  assert_eq(rows.length(), 260)
+  assert_eq(rows.length(), 259)
   for index in 0..<256 {
     assert_eq(rows[index], entries[index])
   }
@@ -333,7 +333,7 @@ test "adding built-ins preserves a previously full layout across reload and edit
       "screenshot",
     ),
   )
-  assert_eq(reloaded_rows.length(), 260)
+  assert_eq(reloaded_rows.length(), 259)
   for index in 5..<256 {
     assert_eq(reloaded_rows[index], entries[index])
   }

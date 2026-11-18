@@ -452,7 +452,8 @@ fn toolbar_item(
 fn toolbar_items(t : CaptureToolbar) -> Array[@capture_ui.ToolbarItem] {
   let items = [toolbar_item(t, "host.select", "选择", "select", 0)]
   for e in t.entries {
-    if e.enabled && e.slot == 0 {
+    // The text result window needs a recognition provider to open.
+    if e.enabled && e.slot == 0 && (e.command != "ocr" || toolbar_available(t, e)) {
       items.push({
         id: e.id,
         title: e.title,

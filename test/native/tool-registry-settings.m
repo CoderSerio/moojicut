@@ -53,7 +53,7 @@ int main(void) {
         NSString *key = @"builtinToolLayoutV1";
         NSString *rectangle = @"builtin.image.rectangle", *arrow = @"builtin.image.arrow";
         NSString *text = @"builtin.image.text", *cover = @"builtin.image.cover", *pin = @"builtin.image.pin";
-        NSString *ocr = @"builtin.capture.ocr", *translate = @"builtin.capture.translate", *scroll = @"builtin.capture.scroll", *numbered = @"builtin.image.numberedRectangle";
+        NSString *ocr = @"builtin.capture.ocr", *scroll = @"builtin.capture.scroll", *numbered = @"builtin.image.numberedRectangle";
         MCToolRegistryStore *store = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
         __block NSUInteger prepared = 0, applied = 0, notified = 0;
         __block BOOL veto = NO, nestedRejected = NO;
@@ -72,17 +72,17 @@ int main(void) {
         MCPreferencesController *preferences = nil;
         MCPluginManagementController *controller = nil;
         @try {
-            CHECK(([ids(store) isEqual:@[rectangle, arrow, text, cover, pin, ocr, translate, scroll, numbered]] && !store.loadError), "first launch exposes built-in tools and the pin action in default order");
+            CHECK(([ids(store) isEqual:@[rectangle, arrow, text, cover, pin, ocr, scroll, numbered]] && !store.loadError), "first launch exposes built-in tools and the pin action in default order");
             CHECK([defaults objectForKey:key] == nil, "opening settings does not write defaults");
             CHECK(![toolWithID(store,scroll)[@"enabled"] boolValue] && ![toolWithID(store,numbered)[@"enabled"] boolValue] &&
                   [toolWithID(store,pin)[@"slot"] isEqual:@"finish"] && [toolWithID(store,ocr)[@"slot"] isEqual:@"tools"] &&
-                  [toolWithID(store,translate)[@"command"] isEqual:@"translate"] && [toolWithID(store,numbered)[@"interaction"] isEqual:@"dragRect"],
+                  [toolWithID(store,ocr)[@"command"] isEqual:@"ocr"] && [toolWithID(store,numbered)[@"interaction"] isEqual:@"dragRect"],
                   "settings consume the actual extension defaults, toolbar slots and generic command descriptors");
             CHECK([store toolsForGroup:@"recording"].count == 0 && [store toolsForGroup:@"videoEditing"].count == 0,
                   "unintegrated groups remain empty");
             NSError *error = nil;
             CHECK([store moveTool:text inGroup:@"screenshot" beforeTool:rectangle error:&error], "moving by stable ID succeeds");
-            CHECK(([ids(store) isEqual:@[text, rectangle, arrow, cover, pin, ocr, translate, scroll, numbered]]), "move preserves the other tools' relative order");
+            CHECK(([ids(store) isEqual:@[text, rectangle, arrow, cover, pin, ocr, scroll, numbered]]), "move preserves the other tools' relative order");
             CHECK(nestedRejected && prepared == 1 && applied == 1 && notified == 1, "publication is synchronous and rejects reentrant changes");
             CHECK([store setTool:cover enabled:NO error:&error], "disable persists");
             MCToolRegistryStore *reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
@@ -107,13 +107,13 @@ int main(void) {
             NSButton *up = (NSButton *)findView(preferences.window.contentView, @"plugin-tool-move-up");
             NSButton *down = (NSButton *)findView(preferences.window.contentView, @"plugin-tool-move-down");
             NSButton *import = (NSButton *)findView(preferences.window.contentView, @"plugin-import");
-            CHECK(table && table.numberOfRows == 9 && groups.segmentCount == 3 && !preferences.window.visible,
+            CHECK(table && table.numberOfRows == 8 && groups.segmentCount == 3 && !preferences.window.visible,
                   "real preferences exposes three categories and one tool list in a hidden fixture");
             CHECK(import && !import.enabled && [import.toolTip containsString:@"尚未初始化"], "import stays unavailable until the plugin service is attached");
             [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
             CHECK(!up.enabled && down.enabled, "first row only moves down");
             [down performClick:nil];
-            CHECK(([ids(store) isEqual:@[rectangle, text, arrow, cover, pin, ocr, translate, scroll, numbered]] && table.selectedRow == 1), "down button saves order and follows stable selection");
+            CHECK(([ids(store) isEqual:@[rectangle, text, arrow, cover, pin, ocr, scroll, numbered]] && table.selectedRow == 1), "down button saves order and follows stable selection");
             [up performClick:nil];
             CHECK([ids(store).firstObject isEqual:text] && table.selectedRow == 0, "up button updates the same order contract");
             veto = YES;
@@ -189,7 +189,7 @@ int main(void) {
             [preferences.window close]; preferences = nil;
             reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
             controller = [[MCPluginManagementController alloc] initWithStore:reopened];
-            CHECK(((NSTableView *)findView(controller.view, @"plugin-management-table")).numberOfRows == 9 &&
+            CHECK(((NSTableView *)findView(controller.view, @"plugin-management-table")).numberOfRows == 8 &&
                   [ids(reopened) isEqual:ids(store)], "management view can reopen after its previous observer was removed");
             [controller invalidate]; controller = nil;
 
@@ -213,7 +213,7 @@ int main(void) {
 
             [defaults setObject:@{@"version":@999} forKey:key];
             reopened = [[MCToolRegistryStore alloc] initWithDefaults:defaults];
-            CHECK(reopened.loadError && [reopened toolsForGroup:@"screenshot"].count == 9 &&
+            CHECK(reopened.loadError && [reopened toolsForGroup:@"screenshot"].count == 8 &&
                   [[defaults dictionaryForKey:key][@"version"] integerValue] == 999,
                   "corrupt preferences recover in memory without overwriting the original");
             CHECK([reopened setTool:text enabled:NO error:&error] && !reopened.loadError &&

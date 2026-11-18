@@ -5,7 +5,6 @@ import {
   "moojicut/core/internal/features/capture/extensions/annotations",
   "moojicut/core/internal/features/capture/extensions/pin",
   "moojicut/core/internal/features/capture/extensions/ocr",
-  "moojicut/core/internal/features/capture/extensions/translation",
   "moojicut/core/internal/features/capture/extensions/scroll_capture" @scroll,
 }
 

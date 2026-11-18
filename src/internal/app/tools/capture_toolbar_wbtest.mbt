@@ -3,7 +3,11 @@ test "capture app adapter copies only a live verified catalog and owns no runtim
   let image = @capture.image_session_create(640, 480)
   let style = @capture.editor_style_create()
   assert_eq(capture_toolbar_open(image, style, 12345678), 0)
-  let catalog = opened(8)
+  let legacy_layout = tool_registry_normalize(
+    "{\"version\":1,\"groups\":{\"screenshot\":[{\"id\":\"builtin.capture.translate\",\"enabled\":true}]}}",
+  )
+  let catalog = tool_registry_snapshot_open(legacy_layout, 8)
+  assert_eq(tool_registry_snapshot_count(catalog, 0), 8)
   let toolbar = capture_toolbar_open(image, style, catalog)
   assert_true(toolbar > 0)
   assert_eq(tool_registry_snapshot_close(catalog), 1)
@@ -16,6 +20,7 @@ test "capture app adapter copies only a live verified catalog and owns no runtim
     1,
   )
   let epoch = @capture.toolbar_value(toolbar, 2).to_int()
+  assert_false(@capture.toolbar_frame(toolbar, 1024, 0).contains("builtin.capture.ocr"))
   assert_eq(@capture.toolbar_activate(toolbar, epoch, "builtin.capture.ocr"), 0)
   assert_eq(
     @capture.toolbar_context(
@@ -23,6 +28,9 @@ test "capture app adapter copies only a live verified catalog and owns no runtim
     ),
     1,
   )
+  let frame = @capture.toolbar_frame(toolbar, 1024, 0)
+  assert_true(frame.contains("builtin.capture.ocr"))
+  assert_false(frame.contains("builtin.capture.translate"))
   assert_eq(@capture.toolbar_activate(toolbar, epoch, "builtin.capture.ocr"), 1)
   assert_eq(@capture.toolbar_value(toolbar, 5), 5)
   assert_eq(

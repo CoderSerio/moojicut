@@ -3,7 +3,6 @@ fn contributions() -> Array[@plugin_protocol.ToolContribution] {
   let tools = @annotations.contributions()
   tools.push(@pin.contribution())
   tools.push(@ocr.contribution())
-  tools.push(@translation.contribution())
   tools.push(@scroll.contribution())
   tools.push(@annotations.numbered_rectangle_contribution())
   tools

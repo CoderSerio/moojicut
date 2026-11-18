@@ -41,7 +41,7 @@ test "v2 app snapshots feed the shared toolbar and keep invocation separate from
   )
   let snapshot = tool_registry_snapshot_open_packages(resolved, 31)
   assert_true(snapshot > 0)
-  assert_eq(tool_registry_snapshot_count(snapshot, 0), 11)
+  assert_eq(tool_registry_snapshot_count(snapshot, 0), 10)
   let info = "user.com.example.capture/info"
   let box = "user.com.example.capture/box"
   let moved = tool_registry_snapshot_move(

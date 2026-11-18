@@ -1126,7 +1126,6 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     }
     if (!finish_text(FALSE))
       return 0;
-    SetFocus(window);
     capture.start = capture.end = p;
     capture.handle = -1;
     capture.drag_mode = 0;
@@ -1140,6 +1139,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     } else if (!PtInRect(&capture.viewport, p)) {
       capture.selected = -1;
       load_tool_style(capture.tool);
+      SetFocus(window);
       changed();
       return 0;
     } else {
@@ -1179,14 +1179,17 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
         moonbit_decref(command);
       } else began = image_session_shape_begin(capture.session, capture.tool, p.x, p.y,
           capture.color, capture.stroke, capture.opacity, capture.shape, capture.block);
-      if (!began) return 0;
+      if (!began) { SetFocus(window); changed(); return 0; }
     }
     if (capture.drag_id) { moonbit_decref(capture.drag_id); capture.drag_id = NULL; }
     if (capture.drag_mode == 1 && capture.selected >= 0) {
       capture.drag_id = image_session_annotation_id(capture.session, capture.selected);
       capture.drag_revision = image_session_revision(capture.session);
     }
+    // WM_SETFOCUS lays out the editor synchronously. Let the gesture own the
+    // document first so layout cannot open a draft on the pre-gesture revision.
     capture.dragging = TRUE;
+    SetFocus(window);
     SetCapture(window);
     changed();
     return 0;
@@ -1210,8 +1213,6 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     if (capture.dragging) {
       capture.end.x = bounded(GET_X_LPARAM(lp), 0, capture.image.width);
       capture.end.y = bounded(GET_Y_LPARAM(lp), 0, capture.image.height);
-      capture.dragging = FALSE;
-      ReleaseCapture();
       if (capture.drag_mode == 1 && capture.selected >= 0) {
         RECT r = capture.draft;
         BOOL corner = capture.handle == 0 || capture.handle == 2 || capture.handle == 4 || capture.handle == 6;
@@ -1224,14 +1225,14 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
             r.left, r.top, r.right - r.left, r.bottom - r.top, corner && text ? size : -1);
         capture.font_size = size;
         if (capture.drag_id) { moonbit_decref(capture.drag_id); capture.drag_id = NULL; }
-        sync_properties();
       } else if (capture.drag_mode == 2) {
         RECT r = capture.viewport;
         image_session_crop(capture.session, r.left, r.top, r.right - r.left, r.bottom - r.top);
         sync_viewport();
-        layout_editor(window);
       } else
         add_shape();
+      capture.dragging = FALSE;
+      ReleaseCapture();
       if (capture.toolbar_session && capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_EFFECT)>MC_CAPTURE_TOOLBAR_NONE) {
         int32_t session=capture.session;
         toolbar_effect();
@@ -1735,10 +1736,16 @@ static BOOL shared_toolbar_smoke(void) {
   TOOLBAR_CHECK(smoke_toolbar_click(L"host.redo")); smoke_drain_field_actions();
   TOOLBAR_CHECK(capture.text_edit==edit && capture.stroke==5.25 && image_session_revision(capture.session)==revision);
   TOOLBAR_CHECK(SetWindowTextW(stroke,L"4") && finish_text(FALSE)); changed();
+  SetFocus(capture.toolbar_view);
+  TOOLBAR_CHECK(GetFocus()==capture.toolbar_view);
   SendMessageW(capture.editor,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(200,80));
+  TOOLBAR_CHECK(capture.dragging && !capture.text_edit && GetFocus()==capture.editor);
   SendMessageW(capture.editor,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(240,120));
   SendMessageW(capture.editor,WM_LBUTTONUP,0,MAKELPARAM(240,120));
-  TOOLBAR_CHECK(image_session_count(capture.session)==initial_count+1);
+  TOOLBAR_CHECK(image_session_count(capture.session)==initial_count+1 && capture.text_edit &&
+      capture_text_value(capture.session,capture.text_edit,MC_CAPTURE_TEXT_VALID)==1);
+  int select=smoke_toolbar_semantic(L"host.select");
+  TOOLBAR_CHECK(select>=0 && ui_frame_semantic_value(capture.toolbar_frame,select,MC_UI_SEM_ENABLED)==1);
   stroke=mc_win_text_inputs_field(capture.property_inputs,L"style.stroke");
   TOOLBAR_CHECK(stroke); SetFocus(stroke); revision=image_session_revision(capture.session);
   int undo=smoke_toolbar_semantic(L"host.undo");
@@ -1761,14 +1768,15 @@ static BOOL shared_toolbar_smoke(void) {
   smoke_toolbar_pointer(arrow_index,WM_LBUTTONUP);
   TOOLBAR_CHECK(capture.tool==TOOL_RECT && GetCapture()!=capture.toolbar_view);
   TOOLBAR_CHECK(SUCCEEDED(AccessibleObjectFromWindow(capture.toolbar_view,(DWORD)OBJID_CLIENT,&IID_IAccessible,(void **)&accessible)) && accessible);
-  TOOLBAR_CHECK(smoke_accessible_child(accessible,L"builtin.capture.ocr",&child));
+  TOOLBAR_CHECK(smoke_accessible_child(accessible,L"host.select",&child));
   VARIANT state; VariantInit(&state);
   HRESULT state_result=IAccessible_get_accState(accessible,child,&state);
-  BOOL unavailable=SUCCEEDED(state_result) && state.vt==VT_I4 && (state.lVal&STATE_SYSTEM_UNAVAILABLE)!=0;
+  BOOL available=SUCCEEDED(state_result) && state.vt==VT_I4 && (state.lVal&STATE_SYSTEM_UNAVAILABLE)==0;
   VariantClear(&state);
-  TOOLBAR_CHECK(unavailable);
+  TOOLBAR_CHECK(available && smoke_toolbar_semantic(L"builtin.capture.ocr")<0 &&
+      smoke_toolbar_semantic(L"builtin.capture.translate")<0 && !toolbar_activate(L"builtin.capture.ocr"));
   IAccessible_accDoDefaultAction(accessible,child);
-  TOOLBAR_CHECK(capture.tool==TOOL_RECT && image_session_count(capture.session)==initial_count);
+  TOOLBAR_CHECK(capture.tool==TOOL_SELECT && image_session_count(capture.session)==initial_count);
   VariantClear(&child);
   MoveWindow(capture.editor,window_rect.left,window_rect.top,140,window_rect.bottom-window_rect.top,FALSE);
   TOOLBAR_CHECK(smoke_toolbar_semantic(L"__toolbar.next")>=0);
@@ -1783,7 +1791,7 @@ done:
     MoveWindow(capture.editor,window_rect.left,window_rect.top,window_rect.right-window_rect.left,window_rect.bottom-window_rect.top,FALSE);
     if (ok) smoke_select_tool(TOOL_SELECT);
   }
-  printf("Windows shared toolbar %s: pointer and keyboard, numeric focus/history, cancel, MSAA unavailable state, overflow.\n",ok?"passed":"FAILED");
+  printf("Windows shared toolbar %s: focus-to-draw, numeric history, keyboard, MSAA activation, unavailable OCR, overflow.\n",ok?"passed":"FAILED");
 #undef TOOLBAR_CHECK
   return ok;
 }

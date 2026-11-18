@@ -158,10 +158,7 @@ static BOOL exercise(CGFloat scale) {
     CHECK(editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 0,
           "select without a text object shows no irrelevant properties");
     NSInteger ocr=contributionPosition(editor,@"builtin.capture.ocr"), translate=contributionPosition(editor,@"builtin.capture.translate");
-    CHECK(ocr >= 0 && translate >= 0 && !MCToolbarEnabled(editor.toolbar,@"builtin.capture.ocr") && !MCToolbarEnabled(editor.toolbar,@"builtin.capture.translate") &&
-          [MCToolbarSemantic(editor.toolbar,@"builtin.capture.ocr")[@"tooltip"] length] > [MCToolbarSemantic(editor.toolbar,@"builtin.capture.ocr")[@"label"] length] && [MCToolbarSemantic(editor.toolbar,@"builtin.capture.translate")[@"tooltip"] length] > [MCToolbarSemantic(editor.toolbar,@"builtin.capture.translate")[@"label"] length] &&
-          [MCToolbarSemantic(editor.toolbar,@"builtin.capture.ocr")[@"label"] length] > 0 && [MCToolbarSemantic(editor.toolbar,@"builtin.capture.translate")[@"label"] length] > 0,
-          "enabled contributions remain visible with explicit unavailable state and accessible descriptions until a backend is supplied");
+    CHECK(ocr == -1 && translate == -1, "an editor without a text backend hides the text action");
     NSNumber *revision = editor.document[@"revision"];
     invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
     CHECK([editor.document[@"revision"] isEqual:revision], "unavailable contribution dispatch never mutates the image");
@@ -366,7 +363,6 @@ static NSDictionary *overlayConfiguration(NSSet<NSNumber *> *disabled, NSUIntege
         [entries addObject:@{@"id":ids[index],@"enabled":@(![disabled containsObject:@(index+1)])}];
     [entries addObject:@{@"id":@"builtin.image.pin",@"enabled":@(![disabled containsObject:@100])}];
     [entries addObject:@{@"id":@"builtin.capture.ocr",@"enabled":@(![disabled containsObject:@101])}];
-    [entries addObject:@{@"id":@"builtin.capture.translate",@"enabled":@(![disabled containsObject:@102])}];
     [entries addObject:@{@"id":@"builtin.capture.scroll",@"enabled":@NO}];
     [entries addObject:@{@"id":@"builtin.image.numberedRectangle",@"enabled":@NO}];
     for (NSUInteger index=0; index<pluginCount; index++) {
@@ -454,16 +450,16 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     editor.onTranslate = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onScrollCapture = ^(__unused MCImageEditorController *source) { contentActions++; };
     NSInteger ocr=contributionPosition(editor,@"builtin.capture.ocr"), translate=contributionPosition(editor,@"builtin.capture.translate");
-    CHECK(ocr >= 0 && translate >= 0 && MCToolbarEnabled(editor.toolbar,@"builtin.capture.ocr") && MCToolbarEnabled(editor.toolbar,@"builtin.capture.translate"),
-          "OCR and translation occupy their own declared tool slots when their respective backends are attached");
+    CHECK(ocr >= 0 && translate == -1 && MCToolbarEnabled(editor.toolbar,@"builtin.capture.ocr"),
+          "OCR provides the single toolbar entry even when translation is available");
     CHECK(contributionPosition(editor,@"builtin.capture.scroll") == -1, "attaching a scroll backend does not override its saved disabled preference");
     invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
-    CHECK(contentActions == 2, "both declared content actions route through the shared canvas");
+    CHECK(contentActions == 1, "the unified text entry invokes recognition exactly once");
     [editor applyToolConfiguration:setConfiguredTool(editor.toolConfiguration,@"builtin.capture.scroll",YES)];
     NSInteger scroll=contributionPosition(editor,@"builtin.capture.scroll");
     CHECK(scroll >= 0 && MCToolbarEnabled(editor.toolbar,@"builtin.capture.scroll"), "scroll appears only after explicit enable plus backend availability");
     invokeContribution(editor,@"builtin.capture.scroll");
-    CHECK(contentActions == 3, "the explicitly enabled scroll contribution invokes exactly once");
+    CHECK(contentActions == 2, "the explicitly enabled scroll contribution invokes exactly once");
     [editor applyToolConfiguration:overlayConfiguration([NSSet set],0)];
     CGFloat withContentActions = NSWidth(editor.floatingToolbar.frame);
     // Tiny synthetic display: preserve action/field hit targets and scroll them
