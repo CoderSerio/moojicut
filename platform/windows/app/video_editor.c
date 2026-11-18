@@ -11,6 +11,7 @@
 #include "platform/shared/app/video_editor_host.h"
 #include <commctrl.h>
 #include <shobjidl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -30,7 +31,7 @@ struct Editor {
     double width, height;
     int phase, modal_depth;
     BOOL close_requested, close_submitted, cancel_export, chooser_posted, error_posted;
-    BOOL cancelling_modal;
+    BOOL cancelling_modal, reported_chooser_cancel;
     BOOL theme_delivered;
     uint64_t presentation_serial, video_generation, video_seek;
     int64_t video_pts;
@@ -127,7 +128,28 @@ static void cancel_modal(Editor *e) {
      * timer issuing Close recursively from inside this Close call. */
     if (e->cancelling_modal) return;
     e->cancelling_modal = TRUE;
-    if (e->chooser) IFileSaveDialog_Close(e->chooser, HRESULT_FROM_WIN32(ERROR_CANCELLED));
+    if (e->chooser) {
+        HRESULT result = IFileSaveDialog_Close(e->chooser, HRESULT_FROM_WIN32(ERROR_CANCELLED));
+        /* A visible native chooser can outlive Close during Shell message
+         * dispatch. Ask that exact COM-owned window to cancel asynchronously;
+         * never destroy it or acknowledge its ticket before Show returns. */
+        IOleWindow *native = NULL;
+        if (SUCCEEDED(IFileSaveDialog_QueryInterface(e->chooser, &IID_IOleWindow, (void **)&native))) {
+            HWND window = NULL;
+            if (SUCCEEDED(IOleWindow_GetWindow(native, &window)) && IsWindowVisible(window) &&
+                GetWindowThreadProcessId(window, NULL) == GetCurrentThreadId() &&
+                GetWindow(window, GW_OWNER) == e->window) {
+                BOOL posted = PostMessageW(window, WM_CLOSE, 0, 0);
+                DWORD post_error = posted ? ERROR_SUCCESS : GetLastError();
+                if (!e->reported_chooser_cancel) {
+                    fprintf(stderr, "Mooji Cut: save dialog cancellation pending (0x%08lx); window close post error=%lu.\n",
+                        (unsigned long)result, (unsigned long)post_error);
+                    e->reported_chooser_cancel = TRUE;
+                }
+            }
+            IOleWindow_Release(native);
+        }
+    }
     if (e->error_dialog) PostMessageW(e->error_dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
     e->cancelling_modal = FALSE;
 }
@@ -184,7 +206,7 @@ static void show_chooser(Editor *e) {
     if (SUCCEEDED(initialized)) result = CoCreateInstance(&CLSID_FileSaveDialog, NULL, CLSCTX_INPROC_SERVER,
         &IID_IFileSaveDialog, (void **)&dialog);
     if (SUCCEEDED(result) && dialog) {
-        e->chooser = dialog;
+        e->chooser = dialog; e->reported_chooser_cancel = FALSE;
         COMDLG_FILTERSPEC types[] = {{L"MP4 video", L"*.mp4"}};
         FILEOPENDIALOGOPTIONS options = 0;
         result = IFileSaveDialog_GetOptions(dialog, &options);
