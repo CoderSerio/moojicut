@@ -1257,7 +1257,8 @@ static int run_smoke(void) {
     if (mc_pin_key(0) != VK_OEM_PLUS) goto cleanup;
     PropSheet_SetCurSel(settings, NULL, 5);
     page = PropSheet_GetCurrentPageHwnd(settings);
-    if (!page || SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCOUNT, 0, 0) < 9) goto cleanup;
+    if (!page || SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCOUNT, 0, 0) != 8 ||
+        find_tool_action(tool_snapshot, L"ocr") < 0 || find_tool_action(tool_snapshot, L"translate") >= 0) goto cleanup;
     SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_SETCURSEL, 0, 0);
     SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_LIST, LBN_SELCHANGE), 0);
     moonbit_string_t first_id = tool_registry_snapshot_text(tool_snapshot, 0, 0, MC_TOOL_ID);
