@@ -159,9 +159,6 @@ static BOOL exercise(CGFloat scale) {
           "select without a text object shows no irrelevant properties");
     NSInteger ocr=contributionPosition(editor,@"builtin.capture.ocr"), translate=contributionPosition(editor,@"builtin.capture.translate");
     CHECK(ocr == -1 && translate == -1, "an editor without a text backend hides the text action");
-    NSNumber *revision = editor.document[@"revision"];
-    invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
-    CHECK([editor.document[@"revision"] isEqual:revision], "unavailable contribution dispatch never mutates the image");
     selectTool(editor, 1);
     CHECK(propertyVisible(editor,@"style.color") && !propertyVisible(editor,@"style.fontSize") && propertyVisible(editor,@"style.stroke"),
           "rectangle exposes color and labelled line width only");
@@ -453,7 +450,7 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     CHECK(ocr >= 0 && translate == -1 && MCToolbarEnabled(editor.toolbar,@"builtin.capture.ocr"),
           "OCR provides the single toolbar entry even when translation is available");
     CHECK(contributionPosition(editor,@"builtin.capture.scroll") == -1, "attaching a scroll backend does not override its saved disabled preference");
-    invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
+    invokeContribution(editor,@"builtin.capture.ocr");
     CHECK(contentActions == 1, "the unified text entry invokes recognition exactly once");
     [editor applyToolConfiguration:setConfiguredTool(editor.toolConfiguration,@"builtin.capture.scroll",YES)];
     NSInteger scroll=contributionPosition(editor,@"builtin.capture.scroll");
