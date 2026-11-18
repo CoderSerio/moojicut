@@ -870,6 +870,23 @@ h2 span {
   color: #999da6;
   margin: 13px 0 22px;
 }
+.mirror-download {
+  display: block;
+  width: fit-content;
+  margin: 8px auto 0;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #5c6473;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.mirror-download:hover {
+  color: #343844;
+}
+.mirror-download[hidden] {
+  display: none;
+}
 .download-card details {
   border-top: 1px solid #ececf1;
   padding: 15px 0;

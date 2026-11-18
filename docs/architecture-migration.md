@@ -485,3 +485,7 @@ macOS/Linux 共用 POSIX 磁盘适配，Windows 使用相同接口与 Win32 原�
 ### alpha.21 发布交付
 
 源码 `1f3dab50ff9a4a58ca7d87138191432b9a5e0a80` 构建三端正式包。Windows x64、Ubuntu 22 和同包 Ubuntu 24 自动验证通过；macOS arm64 通过原生回归、包签名和更新签名校验。macOS 签名身份与公开 alpha.20 包一致。真实原位升级、系统授权及设备交互由后续实机验证。 [发布构建](https://github.com/CoderSerio/moojicut/actions/runs/44313847105) · [发布下载](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.21)
+
+### alpha.22 发布交付
+
+截图工具栏与属性行共用同一张浮层。MoonBit 管理属性间距、步进和焦点策略。原生输入适配器处理字形对齐、滚轮和输入法。包由同一份源码 `c53f25a76980fe7bc214c062b341d76c3da433a5` 构建，覆盖 Windows x64、Ubuntu 22.04 和 Ubuntu 24.04 同包回归以及 macOS arm64 原生测试和更新签名。[发布构建](https://github.com/CoderSerio/moojicut/actions/runs/44340961948) · [发布下载](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.22)

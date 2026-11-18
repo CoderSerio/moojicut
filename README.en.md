@@ -56,13 +56,15 @@ Screenshot plugins receive image metadata and selection coordinates. They can di
 
 ## Downloads and Compatibility
 
-Current release: **[0.1.0-alpha.21](https://github.com/CoderSerio/moojicut/releases/latest)**. The project is still in alpha. The sections above describe the full product feature set; the table below shows what is currently available on each system.
+[Official downloads and Cloudflare mirrors](https://coderserio.github.io/moojicut/#download)
+
+Current release: **[0.1.0-alpha.22](https://github.com/CoderSerio/moojicut/releases/latest)**. The project is still in alpha. The sections above describe the full product feature set; the table below shows what is currently available on each system.
 
 | Platform and download | Requirements | Current features |
 | --- | --- | --- |
-| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-macos-arm64.zip) | macOS 26+ | Screenshot annotations, pinned images, OCR and translation, plugin management and import; region, window, and full-screen recording with system audio, plus the timeline editing features described above. |
-| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-windows-x64.zip) | Windows 10/11, Intel / AMD | Screenshot annotations, pinned images, plugin import, silent region recording, and shared timeline editing. |
-| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-linux-x64.tar.gz) | An Ubuntu 22.04+ compatible environment with the [system dependencies (简体中文)](docs/guide.zh-CN.md#下载与开始使用) | Screenshot annotations, pinned images, plugin import, silent WebM recording, and shared timeline editing. Select a region on X11 or choose a source through the system portal on Wayland. |
+| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-macos-arm64.zip) | macOS 26+ | Screenshot annotations, pinned images, OCR and translation, plugin management and import; region, window, and full-screen recording with system audio, plus the timeline editing features described above. |
+| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-windows-x64.zip) | Windows 10/11, Intel / AMD | Screenshot annotations, pinned images, plugin import, silent region recording, and shared timeline editing. |
+| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-linux-x64.tar.gz) | An Ubuntu 22.04+ compatible environment with the [system dependencies (简体中文)](docs/guide.zh-CN.md#下载与开始使用) | Screenshot annotations, pinned images, plugin import, silent WebM recording, and shared timeline editing. Select a region on X11 or choose a source through the system portal on Wayland. |
 
 OCR and translation are available on macOS. Windows and Linux record up to 1920 × 1080 at 15 fps, without audio or pause support. Both show the default icon for imported plugins. On Wayland, keeping windows on top, positioning, and input depend on the desktop environment. System authorization, multiple displays, and mixed DPI setups still need testing on physical devices.
 

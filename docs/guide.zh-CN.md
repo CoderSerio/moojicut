@@ -2,11 +2,11 @@
 
 [English overview](../README.en.md) · [返回中文首页](../README.md)
 
-本指南对应已发布的 `0.1.0-alpha.21`，具体交付范围见[该版本发布说明](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.21)。当前仍处于 alpha 阶段：已实现和通过自动检查的功能，不等于已在所有桌面环境与用户设备上完成验收。
+本指南对应已发布的 `0.1.0-alpha.22`，具体交付范围见[该版本发布说明](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.22)。当前仍处于 alpha 阶段：已实现和通过自动检查的功能，不等于已在所有桌面环境与用户设备上完成验收。
 
 ## 下载与开始使用
 
-前往[最新版本下载页](https://github.com/CoderSerio/moojicut/releases/latest)，按系统选择安装包，并核对该版本的功能范围与运行要求。alpha.21 已提供下表三种平台的安装包及 SHA256 校验文件；其他架构尚无发布包。
+打开[官网下载页](https://coderserio.github.io/moojicut/#download)，按系统选择 GitHub 主下载或 Cloudflare 备用下载。两个入口提供相同的安装包。alpha.22 已提供下表三种平台的安装包及 SHA256 校验文件；其他架构尚无发布包。
 
 | 系统 | 运行要求 | 打开方式 |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 \
 
 部分 GNOME 桌面需要 AppIndicator 扩展才能显示托盘；没有图标也可运行 `./launch.sh` 打开设置，或运行 `./moojicut --capture` 直接截图。Wayland 需要 `xdg-desktop-portal` 和当前桌面对应的后端：截图使用 Screenshot 服务，录屏使用 ScreenCast 服务与 PipeWire；只有截图门户可用，并不代表录屏服务可用。安装包不会自动安装这些依赖或修改桌面配置。
 
-## alpha.21 功能范围
+## alpha.22 功能范围
 
 | 功能 | macOS | Windows | Linux |
 | --- | --- | --- | --- |
@@ -44,11 +44,11 @@ sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 \
 | 视频编辑 | 时间线分割、重排、删除与合拢空隙，独立音轨及片段波形、片段变速、裁画面、静音、撤销与重做 | 共享时间线、切分、留空隙、变速、裁画面、草稿和 MP4 导出 | 同左 |
 | 全局快捷键 | 截图、开始录屏、停止录屏 | 截图、开始录屏、停止录屏 | X11 全局按键；Wayland 由桌面 GlobalShortcuts 门户授权 |
 
-alpha.21 的 Windows/Linux 原生构建、媒体回归与打包已通过[发布构建检查](https://github.com/CoderSerio/moojicut/actions/runs/44313847105)，其中 Linux 采集在 Xvfb/X11 环境执行。**真实 Wayland 截图/录屏授权、各桌面后端、多显示器与混合 DPI，以及用户设备上的输入和快捷键仍待人工回归**。Windows/Linux 录屏尚无系统声音、麦克风或暂停。
+alpha.22 的 Windows/Linux 原生构建、媒体回归与打包已通过[发布构建检查](https://github.com/CoderSerio/moojicut/actions/runs/44340961948)，其中 Linux 采集在 Xvfb/X11 环境执行。**真实 Wayland 截图/录屏授权、各桌面后端、多显示器与混合 DPI，以及用户设备上的输入和快捷键仍待人工回归**。Windows/Linux 录屏尚无系统声音、麦克风或暂停。
 
 ## 截图：标出重点，再发出去
 
-框选后可直接原地标注，在画布中输入和重新编辑文字，并调整位置、大小、颜色与字号。工具栏第二行显示当前工具的属性：字号与线宽可通过数值控件或上下箭头调节；文字、矩形、箭头和填充覆盖均可调整颜色与不透明度。macOS 点击颜色色块后，在同一个弹层中选色和调整不透明度；属性行只显示当前工具适用的控件。Wayland 通过门户取得图片后进入无边框编辑界面，定位与置顶效果取决于桌面合成器。
+框选后可直接原地标注，在画布中输入和重新编辑文字，并调整位置、大小、颜色与字号。工具栏第二行显示当前工具的属性。点击圆形色块选色。透明度、线宽、字号和马赛克颗粒可直接输入，或用框内上下箭头和滚轮微调。Wayland 通过门户取得图片后进入无边框编辑界面，定位与置顶效果取决于桌面合成器。
 
 三端的框线工具均提供方框、圆框（椭圆）；覆盖工具提供方框、圆框和马赛克，可在工具的二级属性中切换。三端共用形状选择和悬停说明。选中马赛克后可调整颗粒大小（4–48 像素），不显示颜色和透明度。形状偏好按工具记忆；选中已有标注可以切换形状并撤销，复制结果会保留所选形状和马赛克效果。
 
@@ -173,7 +173,7 @@ macOS 请将正式应用放在 `/Applications/Mooji Cut.app`，之后从「设�
 
 Windows 与 Linux 可在更新页下载对应平台的安装包，校验大小及 SHA256 后保存到选择的位置；下载可以取消，失败时不会覆盖已有文件。下载完成后点击打开文件位置，退出旧版本，再手动解压并运行新版本。这两个平台目前尚不支持自动替换正在运行的应用。
 
-更新沿用原有的快捷键、偏好设置和录屏草稿存储位置。首次安装仍需下载应用；旧版若没有更新入口或提示更新源不可用，可从[最新版本下载页](https://github.com/CoderSerio/moojicut/releases/latest)手动换装。alpha.21 已验证公开安装包校验值与 macOS 更新签名；真实原位升级、系统授权与用户设置保留仍待用户设备验收，不能把发布检查视为覆盖安装已通过。
+更新沿用原有的快捷键、偏好设置和录屏草稿存储位置。首次安装仍需下载应用；旧版若没有更新入口或提示更新源不可用，可从[最新版本下载页](https://github.com/CoderSerio/moojicut/releases/latest)手动换装。alpha.22 已验证公开安装包校验值与 macOS 更新签名；真实原位升级、系统授权与用户设置保留仍待用户设备验收，不能把发布检查视为覆盖安装已通过。
 
 发布包沿用原签名身份和应用位置，以维持系统识别的一致性，但不能保证 macOS 永不再次提示授权。升级后若有系统提示，请按提示处理；无需为了更新主动重置屏幕录制权限或保留多份应用副本。
 
@@ -188,7 +188,7 @@ Windows 与 Linux 可在更新页下载对应平台的安装包，校验大小�
 在仓库根目录运行：
 
 ```sh
-python3 scripts/desktop.py dev --release-version 0.1.0-alpha.21
+python3 scripts/desktop.py dev --release-version 0.1.0-alpha.22
 ```
 
 Windows 可将 `python3` 换成 `python`；macOS 与 Linux 也可使用 `make dev`。构建后会启动应用并打开设置。

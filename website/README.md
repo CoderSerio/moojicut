@@ -4,7 +4,7 @@ English-first product website, deployed at https://coderserio.github.io/moojicut
 
 ## Develop and build
 
-Requires Node 22.12+ and npm. From this directory:
+Requires Node 22.12+, npm, and Python 3 for download verification tests. From this directory:
 
 ```sh
 npm ci
@@ -28,6 +28,10 @@ Remotion dependencies have their own [Remotion license](https://www.remotion.dev
 
 The GitHub Pages workflow builds and publishes `dist/` after website changes reach `main`, a release is published, or manual workflow dispatch. It checks out `main`, installs the lockfile, runs lifecycle tests, then builds with Vite's `/moojicut/` base path.
 
-At deploy time, `scripts/sync_releases.py` selects the highest published semantic version (including previews) with all three supported desktop packages. It refreshes `public/releases.json` and HTML fallback links in the deployment checkout, without committing generated changes or exposing the workflow token. Refresh failure stops deployment and leaves the last working site available. Visitors fetch only a same-origin snapshot, not the GitHub API. Download links point directly to official GitHub release assets.
+At deploy time, `scripts/sync_releases.py` selects the highest published semantic version (including previews) with all three supported desktop packages. It refreshes `public/releases.json` and HTML fallback links in the deployment checkout, without committing generated changes or exposing the workflow token. Refresh failure stops deployment and leaves the last working site available. Visitors fetch only a same-origin snapshot, not the GitHub API. Primary download links point directly to official GitHub release assets.
+
+`verified-mirrors.json` optionally adds a **Cloudflare mirror** link below a platform’s primary download. Its versioned entries have `{version, origin, downloads: {macos/windows/linux: {sha256, size}}}` under `{schemaVersion: 1, mirrors: [...]}`. A publisher must download each public mirror URL and verify its complete bytes against the GitHub release before adding an entry. The canonical HTTPS Pages/Workers origin has no trailing slash; routes are `/v<version>/moojicut-<version>-<platform suffix>`. Unavailable platforms can be omitted. Empty `mirrors` keeps every mirror link hidden.
+
+The deployment script separately requires an exact match with the GitHub asset’s `sha256:` digest and byte size; missing digests, mismatches, and older mirror versions cannot produce a link. Both the no-JavaScript HTML and runtime snapshot follow this rule. The browser checks the snapshot against the bundled manifest and clears stale mirror links on a release change. This is a manual download alternative: application update feeds and their GitHub/Sparkle verification are unchanged. `npm test` covers checksum/version gating, stale links, and the animation lifecycle without contacting release services.
 
 When platform support changes, update the download requirements and FAQ alongside the release. OS suggestions do not claim to detect CPU architecture. Mobile visitors receive desktop guidance. The tool switches change only the website illustration, not application settings.

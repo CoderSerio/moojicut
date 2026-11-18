@@ -1,4 +1,6 @@
 import { createMotionController } from "./src/motion-controller.js";
+import { updateDownloads } from "./src/downloads.js";
+import verifiedMirrors from "./verified-mirrors.json";
 
 const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
 const hasObserver = "IntersectionObserver" in window;
@@ -140,30 +142,6 @@ fetch(`${import.meta.env.BASE_URL}releases.json`, { cache: "no-cache" })
     return response.json();
   })
   .then((release) => {
-    if (!/^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/.test(release.version))
-      return;
-    const base = `https://github.com/CoderSerio/moojicut/releases/download/v${release.version}/`;
-    const suffixes = {
-      macos: "macos-arm64.zip",
-      windows: "windows-x64.zip",
-      linux: "linux-x64.tar.gz",
-    };
-    if (
-      !Object.keys(suffixes).every(
-        (key) =>
-          release.downloads?.[key] ===
-          `${base}moojicut-${release.version}-${suffixes[key]}`,
-      )
-    )
-      return;
-    document.querySelectorAll("[data-download]").forEach((link) => {
-      link.href = release.downloads[link.dataset.download];
-    });
-    document.querySelectorAll("[data-version]").forEach((label) => {
-      label.textContent = release.version;
-    });
-    document.querySelectorAll("[data-release-link]").forEach((link) => {
-      link.href = `https://github.com/CoderSerio/moojicut/releases/tag/v${release.version}`;
-    });
+    updateDownloads(document, release, verifiedMirrors);
   })
   .catch(() => {});

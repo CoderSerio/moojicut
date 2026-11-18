@@ -6,7 +6,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsx scripts/posters.jsx && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js download-mirror/worker.test.mjs && python3 -m unittest discover -s tests -p '*_test.py'"
   },
   "dependencies": {
     "@remotion/player": "4.0.543",

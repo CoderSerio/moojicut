@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "mirrors": [
+    {
+      "version": "0.1.0-alpha.22",
+      "origin": "https://moojicut-downloads.pages.dev",
+      "downloads": {
+        "macos": {
+          "sha256": "d851acfc3a04c8f40eb003dd3515b647ebe6741f331f7c6772710e82913d6a11",
+          "size": 9748972
+        },
+        "windows": {
+          "sha256": "3d68e07dbe9deac8acfdc111815bf59a24fbae341cd67c63ae0d8e17fac734df",
+          "size": 27001527
+        },
+        "linux": {
+          "sha256": "9c663d5186bad9e493a08b1f42ad4bd7ae6a3b34529dc92ab81a4204bb512cbf",
+          "size": 20151091
+        }
+      }
+    }
+  ]
+}
