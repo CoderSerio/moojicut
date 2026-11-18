@@ -2172,32 +2172,56 @@ static void CALLBACK cancel_fixture_color_tick(HWND window, UINT message, UINT_P
     if (!color_dialog_probe.seen) { fprintf(stderr, "Windows color fixture did not find its owned dialog.\n"); PostQuitMessage(1); }
   }
 }
+static BOOL fractional_pixels_equal(const Surface *expected, const char *stage) {
+  SIZE_T bytes = (SIZE_T)expected->width * expected->height * 4;
+  if (!memcmp(expected->pixels, capture.rendered.pixels, bytes)) return TRUE;
+  for (SIZE_T offset = 0; offset < bytes; offset++) {
+    if (expected->pixels[offset] == capture.rendered.pixels[offset]) continue;
+    fprintf(stderr, "Windows fractional pixels FAILED %s: x=%zu y=%zu channel=%zu expected=%u actual=%u\n",
+        stage, (size_t)((offset / 4) % expected->width), (size_t)((offset / 4) / expected->width),
+        (size_t)(offset % 4), (unsigned)expected->pixels[offset], (unsigned)capture.rendered.pixels[offset]);
+    break;
+  }
+  return FALSE;
+}
 static BOOL fractional_property_pixels_smoke(int index) {
   Surface expected = {0};
-  if (!finish_text(FALSE)) return FALSE;
+  BOOL ok = TRUE;
+#define FRACTIONAL_CHECK(condition) do { if (!(condition)) { fprintf(stderr, "Windows fractional properties FAILED line %d: %s\n", __LINE__, #condition); ok = FALSE; goto done; } } while (0)
+  FRACTIONAL_CHECK(finish_text(FALSE));
   moonbit_string_t id = image_session_annotation_id(capture.session, index);
-  BOOL ok = image_session_geometry(capture.session, image_session_revision(capture.session), id,
+  BOOL moved = image_session_geometry(capture.session, image_session_revision(capture.session), id,
       10.4, 10.4, 70.4, 50.4, -1);
   moonbit_decref(id);
+  FRACTIONAL_CHECK(moved);
   capture.dirty = TRUE;
-  ok = ok && render_image() && surface_new(&expected, capture.image.width, capture.image.height);
-  if (ok) {
-    SIZE_T bytes = (SIZE_T)expected.width * expected.height * 4;
-    memcpy(expected.pixels, capture.rendered.pixels, bytes);
-    capture.selected = index; sync_properties(); capture.dirty = TRUE;
-    ok = capture.text_edit && render_image() && !memcmp(expected.pixels, capture.rendered.pixels, bytes);
-    HWND stroke = mc_win_text_inputs_field(capture.property_inputs, L"style.stroke");
-    ok = ok && stroke && SetWindowTextW(stroke, L"7.25") && render_image();
-    if (ok) {
-      memcpy(expected.pixels, capture.rendered.pixels, bytes);
-      ok = finish_text(FALSE); capture.dirty = TRUE;
-      ok = ok && render_image() && !memcmp(expected.pixels, capture.rendered.pixels, bytes) &&
-          image_session_value(capture.session, index, 1) == 10.4 &&
-          image_session_value(capture.session, index, 3) == 70.4;
-    }
-  }
+  FRACTIONAL_CHECK(render_image());
+  FRACTIONAL_CHECK(surface_new(&expected, capture.image.width, capture.image.height));
+  SIZE_T bytes = (SIZE_T)expected.width * expected.height * 4;
+  memcpy(expected.pixels, capture.rendered.pixels, bytes);
+  capture.selected = index;
+  /* Match the production selection refresh: finishing retired the previous
+   * native fields, so the new shared frame must be laid out before typing.
+   * sync_properties alone only creates the MoonBit transaction/preview. */
+  changed();
+  FRACTIONAL_CHECK(capture.text_edit && render_image());
+  FRACTIONAL_CHECK(fractional_pixels_equal(&expected, "selected preview"));
+  HWND stroke = mc_win_text_inputs_field(capture.property_inputs, L"style.stroke");
+  FRACTIONAL_CHECK(stroke && IsWindow(stroke));
+  FRACTIONAL_CHECK(SetWindowTextW(stroke, L"7.25"));
+  FRACTIONAL_CHECK(capture.stroke == 7.25 && render_image());
+  memcpy(expected.pixels, capture.rendered.pixels, bytes);
+  FRACTIONAL_CHECK(finish_text(FALSE));
+  capture.dirty = TRUE;
+  FRACTIONAL_CHECK(render_image());
+  FRACTIONAL_CHECK(fractional_pixels_equal(&expected, "committed style"));
+  FRACTIONAL_CHECK(image_session_value(capture.session, index, 1) == 10.4 &&
+      image_session_value(capture.session, index, 3) == 70.4 &&
+      image_session_value(capture.session, index, 6) == 7.25);
+done:
   surface_free(&expected);
   printf("Windows fractional property pixels %s: selection and draft commit preserve exact geometry.\n", ok ? "passed" : "FAILED");
+#undef FRACTIONAL_CHECK
   return ok;
 }
 static BOOL shared_properties_smoke(void) {

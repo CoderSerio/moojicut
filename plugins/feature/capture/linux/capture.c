@@ -1495,14 +1495,36 @@ static void smoke_buffer_set(GtkWidget *widget, const char *text) {
 static void smoke_preedit(const char *text) {
   g_signal_emit_by_name(capture.entry, "preedit-changed", text);
 }
-static void smoke_style_step(int field, gboolean increase) {
+static gboolean smoke_style_step(int field, gboolean increase) {
   GtkWidget *widget = smoke_property(field);
-  if (!widget) return;
+  if (!widget || !capture.editor) return FALSE;
+  g_object_ref(widget);
+  /* Color-dialog fixtures can leave the X11 toplevel inactive. A keyboard
+   * event must follow real focus delivery, not just setting GtkWindow's stored
+   * focus widget while its shared field still has no observed focus-in. */
+  if (capture.x11) gdk_window_focus(gtk_widget_get_window(capture.editor), GDK_CURRENT_TIME);
   gtk_widget_grab_focus(widget);
-  GdkEventKey event = {0};
-  event.type = GDK_KEY_PRESS; event.keyval = increase ? GDK_KEY_Up : GDK_KEY_Down;
-  gboolean handled = FALSE;
-  g_signal_emit_by_name(widget, "key-press-event", &event, &handled);
+  smoke_pump();
+  GdkWindow *window = gtk_widget_get_window(widget);
+  if (!capture.editor || widget != smoke_property(field) || !window || !gtk_widget_has_focus(widget) ||
+      mc_linux_text_inputs_active(capture.property_inputs) != widget) {
+    g_printerr("Linux numeric step: field focus was not delivered before the key event (field=%d).\n", field);
+    g_object_unref(widget); return FALSE;
+  }
+  GdkEvent *event = gdk_event_new(GDK_KEY_PRESS);
+  event->key.window = g_object_ref(window);
+  event->key.send_event = TRUE; event->key.time = GDK_CURRENT_TIME;
+  event->key.keyval = increase ? GDK_KEY_Up : GDK_KEY_Down;
+  GdkDisplay *display = gdk_window_get_display(window);
+  GdkKeymapKey *keys = NULL; gint count = 0;
+  if (gdk_keymap_get_entries_for_keyval(gdk_keymap_get_for_display(display), event->key.keyval, &keys, &count) && count > 0) {
+    event->key.hardware_keycode = keys[0].keycode; event->key.group = keys[0].group;
+  }
+  g_free(keys);
+  gdk_event_set_device(event, gdk_seat_get_keyboard(gdk_display_get_default_seat(display)));
+  gboolean handled = gtk_widget_event(widget, event);
+  gdk_event_free(event); g_object_unref(widget);
+  return handled;
 }
 static void smoke_style_number(int field, const char *text) {
   GtkWidget *widget = smoke_property(field);
@@ -2262,70 +2284,71 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   }
   while (gtk_events_pending())
     gtk_main_iteration();
+#define CAPTURE_CHECK(condition) do { if (!(condition)) { ok = FALSE; g_printerr("Linux screenshot smoke line %d: %s\n", __LINE__, #condition); } } while (0)
   GtkWidget *original = capture.editor;
   GdkEventButton selection_event = {0};
   selection_event.button = 1;
   selection_event.x = capture.offset_x + 350 * capture.zoom;
   selection_event.y = capture.offset_y + 250 * capture.zoom;
-  ok = canvas_press(capture.canvas, &selection_event, NULL) && ok;
+  CAPTURE_CHECK(canvas_press(capture.canvas, &selection_event, NULL));
   selection_event.x = capture.offset_x + 30 * capture.zoom;
   selection_event.y = capture.offset_y + 50 * capture.zoom;
-  ok = canvas_release(capture.canvas, &selection_event, NULL) && !capture.selecting &&
-       capture.editor == original && !gtk_window_get_decorated(GTK_WINDOW(original)) && ok;
-  ok = smoke_contributions() && smoke_tool_styles() && smoke_shape_variants() && smoke_shared_properties() && ok;
-  ok = (editor_style_property_mask(context_kind()) == 0) && !smoke_property_visible(MC_STYLE_COLOR) &&
-       !smoke_property_visible(MC_STYLE_FONT) && ok;
+  CAPTURE_CHECK(canvas_release(capture.canvas, &selection_event, NULL) && !capture.selecting &&
+       capture.editor == original && !gtk_window_get_decorated(GTK_WINDOW(original)));
+  CAPTURE_CHECK(smoke_contributions() && smoke_tool_styles() && smoke_shape_variants() && smoke_shared_properties());
+  CAPTURE_CHECK((editor_style_property_mask(context_kind()) == 0) && !smoke_property_visible(MC_STYLE_COLOR) &&
+       !smoke_property_visible(MC_STYLE_FONT));
   tool_clicked(NULL, GINT_TO_POINTER(TEXT));
-  ok = smoke_property_visible(MC_STYLE_COLOR) && smoke_property_visible(MC_STYLE_FONT) &&
-       !smoke_property_visible(MC_STYLE_STROKE) && ok;
-  smoke_style_step(MC_STYLE_FONT, TRUE);
-  ok = capture.font_size == editor_style_default(MC_STYLE_FONT) + editor_style_step(MC_STYLE_FONT) && image_session_count(capture.session) == 0 && ok;
-  smoke_style_step(MC_STYLE_FONT, FALSE);
+  CAPTURE_CHECK(smoke_property_visible(MC_STYLE_COLOR) && smoke_property_visible(MC_STYLE_FONT) &&
+       !smoke_property_visible(MC_STYLE_STROKE));
+  CAPTURE_CHECK(smoke_style_step(MC_STYLE_FONT, TRUE));
+  CAPTURE_CHECK(capture.font_size == editor_style_default(MC_STYLE_FONT) + editor_style_step(MC_STYLE_FONT) && image_session_count(capture.session) == 0);
+  CAPTURE_CHECK(smoke_style_step(MC_STYLE_FONT, FALSE));
   tool_clicked(NULL, GINT_TO_POINTER(RECTANGLE));
-  ok = smoke_property_visible(MC_STYLE_COLOR) && smoke_property_visible(MC_STYLE_STROKE) &&
-       !smoke_property_visible(MC_STYLE_FONT) && ok;
+  CAPTURE_CHECK(smoke_property_visible(MC_STYLE_COLOR) && smoke_property_visible(MC_STYLE_STROKE) &&
+       !smoke_property_visible(MC_STYLE_FONT));
   smoke_style_number(MC_STYLE_STROKE, "8");
-  ok = capture.stroke == 8 && ok;
+  CAPTURE_CHECK(capture.stroke == 8);
   smoke_style_number(MC_STYLE_STROKE, "4");
   tool_clicked(NULL, GINT_TO_POINTER(REDACT));
-  ok = !(editor_style_property_mask(context_kind()) == 0) && smoke_property_visible(MC_STYLE_COLOR) &&
+  CAPTURE_CHECK(!(editor_style_property_mask(context_kind()) == 0) && smoke_property_visible(MC_STYLE_COLOR) &&
        smoke_property_visible(MC_STYLE_OPACITY) && !smoke_property_visible(MC_STYLE_FONT) &&
-       !smoke_property_visible(MC_STYLE_STROKE) && ok;
+       !smoke_property_visible(MC_STYLE_STROKE));
   for (int i = 0; i < 2; i++) {
     if (!capture.future_tools[i]) { ok = FALSE; continue; }
     AtkStateSet *state = atk_object_ref_state_set(gtk_widget_get_accessible(capture.future_tools[i]));
     char *tip = gtk_widget_get_tooltip_text(gtk_widget_get_parent(capture.future_tools[i]));
-    ok = !atk_state_set_contains_state(state, ATK_STATE_ENABLED) && tip && *tip &&
-      gtk_event_box_get_above_child(GTK_EVENT_BOX(gtk_widget_get_parent(capture.future_tools[i]))) && ok;
+    CAPTURE_CHECK(!atk_state_set_contains_state(state, ATK_STATE_ENABLED) && tip && *tip &&
+      gtk_event_box_get_above_child(GTK_EVENT_BOX(gtk_widget_get_parent(capture.future_tools[i]))));
     g_free(tip);
     g_object_unref(state);
   }
-  ok = smoke_bridge_retirement() && smoke_shared_text() && ok;
+  CAPTURE_CHECK(smoke_bridge_retirement() && smoke_shared_text());
   double r[10];
-  ok = image_session_add(capture.session, REDACT, 50, 60, 80, 60, 0, 4) == 1 && ok;
-  ok = hit_test(70, 80) == image_session_count(capture.session) - 1 && ok;
+  CAPTURE_CHECK(image_session_add(capture.session, REDACT, 50, 60, 80, 60, 0, 4) == 1);
+  CAPTURE_CHECK(hit_test(70, 80) == image_session_count(capture.session) - 1);
   GdkPixbuf *image = flatten();
-  ok = image && gdk_pixbuf_get_width(image) == 320 && gdk_pixbuf_get_height(image) == 200 && ok;
+  CAPTURE_CHECK(image && gdk_pixbuf_get_width(image) == 320 && gdk_pixbuf_get_height(image) == 200);
   if (image) {
     const guchar *p = gdk_pixbuf_get_pixels(image) + 30 * gdk_pixbuf_get_rowstride(image) +
                       30 * gdk_pixbuf_get_n_channels(image);
-    ok = p[0] == 0 && p[1] == 0 && p[2] == 0 && ok;
+    CAPTURE_CHECK(p[0] == 0 && p[1] == 0 && p[2] == 0);
     g_object_unref(image);
   }
-  ok = copy_image() && ok;
+  CAPTURE_CHECK(copy_image());
   GtkClipboard *clip = gtk_clipboard_get(gdk_atom_intern_static_string("MOOJICUT_TEST_IMAGE"));
   image = gtk_clipboard_wait_for_image(clip);
-  ok = image && gdk_pixbuf_get_width(image) == 320 && ok;
+  CAPTURE_CHECK(image && gdk_pixbuf_get_width(image) == 320);
   g_clear_object(&image);
   gtk_clipboard_clear(clip);
   /* A translucent colored cover must blend once on the source, including the
    * blank portion of an active native text editor, and preserve alpha on move. */
-  ok = image_session_add_rgba(capture.session, REDACT, 180, 160, 80, 50, 0xFF0000, 4, 24, .5) == 1 && ok;
+  CAPTURE_CHECK(image_session_add_rgba(capture.session, REDACT, 180, 160, 80, 50, 0xFF0000, 4, 24, .5) == 1);
   int cover = image_session_count(capture.session) - 1;
   double cover_rect[10];
   read_annotation(cover, cover_rect);
   cover_rect[0] += 5;
-  ok = update_annotation(cover, cover_rect) && image_session_value(capture.session, cover, 8) == .5 && ok;
+  CAPTURE_CHECK(update_annotation(cover, cover_rect) && image_session_value(capture.session, cover, 8) == .5);
   const guchar *source_pixel = gdk_pixbuf_get_pixels(capture.image) +
                                180 * gdk_pixbuf_get_rowstride(capture.image) +
                                210 * gdk_pixbuf_get_n_channels(capture.image);
@@ -2336,7 +2359,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
                           (180 - (int)capture.crop[1]) * gdk_pixbuf_get_rowstride(image) +
                           (210 - (int)capture.crop[0]) * gdk_pixbuf_get_n_channels(image);
     for (int c = 0; c < 3; c++)
-      ok = abs(pixel[c] - expected[c]) <= 1 && ok;
+      CAPTURE_CHECK(abs(pixel[c] - expected[c]) <= 1);
     g_object_unref(image);
   } else
     ok = FALSE;
@@ -2357,7 +2380,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
     const guchar *pixel = gdk_pixbuf_get_pixels(live_image) + 180 * gdk_pixbuf_get_rowstride(live_image) +
                           210 * gdk_pixbuf_get_n_channels(live_image);
     for (int c = 0; c < 3; c++)
-      ok = abs(pixel[c] - expected[c]) <= 1 && ok;
+      CAPTURE_CHECK(abs(pixel[c] - expected[c]) <= 1);
     g_object_unref(live_image);
   } else
     ok = FALSE;
@@ -2367,31 +2390,31 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   capture.selected = 0;
   sync_style();
   smoke_style_number(MC_STYLE_OPACITY, "45");
-  ok = commit_text() && ok;
+  CAPTURE_CHECK(commit_text());
   read_annotation(0, r);
   r[0] += 1;
-  ok = update_annotation(0, r) && fabs(image_session_value(capture.session, 0, 8) - .45) < .001 && ok;
+  CAPTURE_CHECK(update_annotation(0, r) && fabs(image_session_value(capture.session, 0, 8) - .45) < .001);
   image_session_undo(capture.session);
   image_session_undo(capture.session);
   cancel_text();
   capture.selected = -1;
-  ok = image_session_crop(capture.session, 40, 60, 200, 120) == 1 && ok;
+  CAPTURE_CHECK(image_session_crop(capture.session, 40, 60, 200, 120) == 1);
   sync_crop();
   image = flatten();
-  ok = image && gdk_pixbuf_get_width(image) == 200 && ok;
+  CAPTURE_CHECK(image && gdk_pixbuf_get_width(image) == 200);
   g_clear_object(&image);
   image_session_undo(capture.session);
   sync_crop();
-  ok = capture.crop[2] == 320 && ok;
+  CAPTURE_CHECK(capture.crop[2] == 320);
   const char *preview_path = g_getenv("MOOJICUT_SMOKE_SCREENSHOT");
   if (preview_path && *preview_path) {
     /* Readable synthetic preview, after all behavior and privacy pixel checks.
      * It uses the same document and native renderer as interactive capture. */
     begin_text(0, 0, 0);
     if (capture.entry) smoke_buffer_set(capture.entry, "原地编辑");
-    ok = commit_text() && ok;
+    CAPTURE_CHECK(commit_text());
     read_annotation(0, r); r[0] = 150; r[1] = 100; r[2] = 180; r[3] = 70;
-    ok = update_annotation(0, r) && ok;
+    CAPTURE_CHECK(update_annotation(0, r));
     image_session_crop(capture.session, 30, 50, 440, 200);
     capture.selected = 0;
     sync_crop();
@@ -2405,28 +2428,29 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
                                                              gdk_window_get_height(window))
                                 : NULL;
     char *path = g_strconcat(preview_path, ".capture.png", NULL);
-    ok = preview && gdk_pixbuf_save(preview, path, "png", NULL, NULL) && ok;
+    CAPTURE_CHECK(preview && gdk_pixbuf_save(preview, path, "png", NULL, NULL));
     g_free(path);
     g_clear_object(&preview);
   }
   capture.host.can_pin = smoke_pin_unavailable;
   mc_linux_capture_refresh_capabilities();
   command(NULL, GINT_TO_POINTER(5));
-  ok = capture.editor && !gtk_widget_get_sensitive(capture.pin_button) && host_probe.closed == 0 && host_probe.results == 0 && ok;
+  CAPTURE_CHECK(capture.editor && !gtk_widget_get_sensitive(capture.pin_button) && host_probe.closed == 0 && host_probe.results == 0);
   capture.host.can_pin = NULL;
   mc_linux_capture_refresh_capabilities();
-  ok = gtk_widget_get_sensitive(capture.pin_button) && ok;
+  CAPTURE_CHECK(gtk_widget_get_sensitive(capture.pin_button));
   command(NULL, GINT_TO_POINTER(5));
-  ok = host_probe.closed == 1 && host_probe.results == 1 && host_probe.valid && ok;
+  CAPTURE_CHECK(host_probe.closed == 1 && host_probe.results == 1 && host_probe.valid);
   mc_linux_capture_close();
-  ok = host_probe.closed == 1 && ok;
+  CAPTURE_CHECK(host_probe.closed == 1);
   gboolean geometry_ok = mc_selection_smoke();
   g_print("Linux selection geometry smoke %s: reverse regions, zoom hit areas, bounds, signed arrows.\n",
            geometry_ok ? "passed" : "FAILED");
-  ok = geometry_ok && ok;
-  ok = smoke_pointer_route(application) && ok;
+  CAPTURE_CHECK(geometry_ok);
+  CAPTURE_CHECK(smoke_pointer_route(application));
   g_print("Linux screenshot/selection smoke %s: retained overlay, inline multilingual text/re-edit/undo/style, "
           "crop export, masks, private clipboard, selection geometry.\n",
           ok ? "passed" : "FAILED");
+#undef CAPTURE_CHECK
   return ok;
 }
