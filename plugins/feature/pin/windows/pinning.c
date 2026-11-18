@@ -751,10 +751,45 @@ static BOOL pin_menu_disable_smoke(HWND window, BOOL (*check_draining_transactio
       state.preflight_rejected && state.transaction_ok && mc_pin_can_set_enabled(TRUE) &&
       !IsWindow(window) && !pins && !hotkey_host && !menu_leases && feature_state == MC_FEATURE_DISABLED;
 }
+static BOOL pin_smoke_foreground(HWND window, BOOL isolated_ci) {
+  SetForegroundWindow(window); SetFocus(window);
+  if (GetForegroundWindow() == window && GetFocus() == window) return TRUE;
+  /* SetFocus only changes this thread's focus. The hosted CI desktop can
+   * still have a runner/console window in the foreground. Attach only during
+   * this isolated fixture's activation, never in production or a local run.
+   * AttachThreadInput resets key state; detach and restore on every path. */
+  if (!isolated_ci) return FALSE;
+  HWND foreground = GetForegroundWindow();
+  DWORD current = GetCurrentThreadId(), other = GetWindowThreadProcessId(foreground, NULL);
+  BYTE saved[256];
+  if (!other || other == current || !GetKeyboardState(saved)) {
+    fprintf(stderr, "Windows pin foreground setup FAILED: current=%lu other=%lu foreground=%p error=%lu\n",
+        current, other, (void *)foreground, GetLastError());
+    return FALSE;
+  }
+  BOOL attached = AttachThreadInput(current, other, TRUE);
+  DWORD attach_error = attached ? ERROR_SUCCESS : GetLastError();
+  BOOL requested = FALSE;
+  if (attached) {
+    requested = SetForegroundWindow(window);
+    SetActiveWindow(window); SetFocus(window);
+  }
+  BOOL detached = !attached || AttachThreadInput(current, other, FALSE);
+  DWORD detach_error = detached ? ERROR_SUCCESS : GetLastError();
+  BOOL restored = SetKeyboardState(saved);
+  BOOL active = GetForegroundWindow() == window && GetFocus() == window;
+  if (!attached || !detached || !restored || !active)
+    fprintf(stderr, "Windows pin foreground setup FAILED: current=%lu other=%lu attached=%d attachError=%lu requested=%d detached=%d detachError=%lu restored=%d foreground=%p focus=%p expected=%p\n",
+        current, other, attached, attach_error, requested, detached, detach_error, restored,
+        (void *)GetForegroundWindow(), (void *)GetFocus(), (void *)window);
+  return attached && detached && restored && active;
+}
 static BOOL pin_interaction_smoke(Pin *pin) {
   BOOL ok = TRUE, restore_keyboard = FALSE;
   BOOL was_visible = IsWindowVisible(pin->window);
   BYTE saved[256] = {0};
+  wchar_t ci[16]; DWORD length = GetEnvironmentVariableW(L"CI", ci, ARRAYSIZE(ci));
+  BOOL isolated_ci = length && length < ARRAYSIZE(ci) && _wcsicmp(ci, L"true") == 0;
 #define PIN_CHECK(condition) do { if (!(condition)) { RECT actual = {0}; GetWindowRect(pin->window, &actual); \
     fprintf(stderr, "Windows pin interaction FAILED line %d: %s (zoom=%.17g rect=%ld,%ld,%ld,%ld handle=%d visible=%d selected=%d hidden=%d captureHidden=%d focus=%p foreground=%p capture=%p pin=%p)\n", \
         __LINE__, #condition, pin->zoom, actual.left, actual.top, actual.right, actual.bottom, pin->resize_handle, \
@@ -765,7 +800,8 @@ static BOOL pin_interaction_smoke(Pin *pin) {
    * rely on focus left behind by the preceding screenshot fixture. */
   PIN_CHECK(GetCapture() == NULL && !pin->hidden && !capture_hidden && mc_pin_enabled());
   ShowWindow(pin->window, SW_SHOWNORMAL);
-  SetForegroundWindow(pin->window); SetFocus(pin->window); UpdateWindow(pin->window);
+  PIN_CHECK(pin_smoke_foreground(pin->window, isolated_ci));
+  UpdateWindow(pin->window);
   PIN_CHECK(IsWindowVisible(pin->window) && GetForegroundWindow() == pin->window &&
       GetFocus() == pin->window && pin->selected);
   resize_pin(pin, .5);
@@ -802,8 +838,7 @@ static BOOL pin_interaction_smoke(Pin *pin) {
   PIN_CHECK(pin->zoom == frozen); pin->hidden = FALSE;
   // CI owns an isolated desktop. Exercise the real Ctrl+C dispatch/clipboard
   // there without changing a developer's clipboard during local smoke runs.
-  wchar_t ci[16]; DWORD length = GetEnvironmentVariableW(L"CI", ci, 16);
-  if (length && length < 16 && _wcsicmp(ci, L"true") == 0) {
+  if (isolated_ci) {
     PIN_CHECK(GetForegroundWindow() == pin->window && GetFocus() == pin->window && pin->selected);
     BYTE keyboard[256] = {0}; PIN_CHECK(GetKeyboardState(saved)); restore_keyboard = TRUE;
     keyboard[VK_CONTROL] = 0x80; PIN_CHECK(SetKeyboardState(keyboard));
