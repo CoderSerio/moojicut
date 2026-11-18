@@ -1998,6 +1998,13 @@ static BOOL shared_text_fields_smoke(void) {
   SetFocus(font); SetWindowTextW(font, L"32.25");
   TEXT_CHECK(capture.font_size == 32.25);
   SetFocus(body); editor_command(ID_UNDO);
+  if (!text_equals(L"A\n🌙B") || capture.font_size != 32.25) {
+    moonbit_string_t raw = capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW);
+    fprintf(stderr, "Windows field undo: focusBody=%d activeBody=%d font=%.17g rawUnits=%d:",
+            GetFocus() == body, capture.text_active_field == body, capture.font_size, Moonbit_array_length(raw));
+    for (int i = 0; i < Moonbit_array_length(raw) && i < 32; i++) fprintf(stderr, " %04x", (unsigned)raw[i]);
+    fputc('\n', stderr); moonbit_decref(raw);
+  }
   TEXT_CHECK(text_equals(L"A\n🌙B") && capture.font_size == 32.25); /* active body, not last edited property */
   editor_command(ID_REDO); TEXT_CHECK(text_equals(L"Z\n🌙B"));
   SetFocus(font); SetWindowTextW(font, L"-");
