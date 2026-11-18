@@ -70,6 +70,7 @@ static gboolean open_toolbar(void);
 static gboolean toolbar_context(void);
 static gboolean pin_available(void);
 static gboolean toolbar_activate(const char *id);
+static void handle_toolbar_effect(void);
 static void sync_toolbar_tool(void);
 static void sync_style(void);
 static void sync_text(void);
@@ -169,11 +170,14 @@ void mc_linux_capture_close(void) {
 gboolean mc_linux_capture_busy(void) {
   return capture.editor || capture.pending;
 }
-gboolean mc_linux_capture_preflight_tools(int snapshot, const char **reason) {
-  const char *failure = NULL;
+void mc_linux_capture_discard_tools(void) {
   if (capture.prepared_tool_candidate) capture_toolbar_config_close(capture.prepared_tool_candidate);
   capture.prepared_tool_candidate = 0;
   capture.prepared_snapshot = 0;
+}
+gboolean mc_linux_capture_preflight_tools(int snapshot, const char **reason) {
+  const char *failure = NULL;
+  mc_linux_capture_discard_tools();
   if (tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT) < 0)
     failure = "工具配置无效，原设置未改动。";
   else if (capture.selecting || capture.dragging)
@@ -927,12 +931,20 @@ static gboolean canvas_release(GtkWidget *widget, GdkEventButton *event, gpointe
   }
   capture.gesture = 0;
   g_clear_pointer(&capture.drag_annotation_id, g_free); capture.drag_revision = -1;
+  if (capture.toolbar_handle && capture_toolbar_value(capture.toolbar_handle, MC_CAPTURE_TOOLBAR_EFFECT) > MC_CAPTURE_TOOLBAR_NONE) {
+    int session = capture.session;
+    handle_toolbar_effect();
+    if (!capture.editor || capture.session != session) return TRUE;
+  }
   layout_controls();
   gtk_widget_queue_draw(widget);
   return TRUE;
 }
 static gboolean pin_available(void) {
   return capture.host.pin_result && (!capture.host.can_pin || capture.host.can_pin(capture.host.data));
+}
+static int tool_capabilities(void) {
+  return MC_TOOL_CAP_COMMANDS | (capture.host.on_user_tool ? MC_TOOL_CAP_USER : 0);
 }
 static gboolean toolbar_field_focused(void *context) {
   (void)context;
@@ -950,13 +962,14 @@ static gboolean toolbar_context(void) {
   g_ascii_dtostr(measurement, sizeof(measurement), text_measurement());
   char *json = g_strdup_printf(
       "{\"hasRegion\":%s,\"blocked\":%s,\"fieldFocused\":%s,\"toolbarFocused\":%s,"
-      "\"bodyEditing\":%s,\"pinAvailable\":%s,\"edit\":%d,\"editVersion\":%d,\"measuredHeight\":%s}",
+      "\"bodyEditing\":%s,\"pinAvailable\":%s,\"capabilities\":%d,\"edit\":%d,\"editVersion\":%d,\"measuredHeight\":%s}",
       capture.selecting ? "false" : "true",
       (capture.dragging || capture.color_dialog || composing) ? "true" : "false",
       toolbar_field_focused(NULL) ? "true" : "false",
       (focus && focus == capture.toolbar_canvas) ? "true" : "false",
       capture.editing ? "true" : "false",
       pin_available() ? "true" : "false",
+      tool_capabilities(),
       capture.text_edit, capture.text_edit ? text_version() : 0, measurement);
   moonbit_string_t input = core_string(json);
   g_free(json);
@@ -970,7 +983,7 @@ static gboolean open_toolbar(void) {
     moonbit_string_t empty = core_string("");
     moonbit_string_t config = tool_registry_normalize(empty);
     moonbit_decref(empty);
-    snapshot = tool_registry_snapshot_open(config, MC_TOOL_CAP_COMMANDS);
+    snapshot = tool_registry_snapshot_open(config, tool_capabilities());
     moonbit_decref(config);
   }
   capture.toolbar_handle = capture_toolbar_open(capture.session, capture.style_bank, snapshot);
@@ -1032,6 +1045,16 @@ static void handle_toolbar_effect(void) {
       if (!success) error = "暂时无法创建贴图，请重试。";
       break;
     }
+    case MC_CAPTURE_TOOLBAR_USER_TOOL: {
+      char *id = core_text(capture_toolbar_text(toolbar, MC_CAPTURE_TOOLBAR_EFFECT_ID));
+      char *payload = core_text(capture_toolbar_text(toolbar, MC_CAPTURE_TOOLBAR_PAYLOAD));
+      success = capture.host.on_user_tool &&
+        capture.host.on_user_tool(capture.host.data, capture.session, id, payload);
+      g_free(id); g_free(payload);
+      if (capture.toolbar_handle != toolbar) return;
+      if (!success) error = "插件请求未被接收，请重试。";
+      break;
+    }
     default:
       success = FALSE;
       error = "当前后端尚未提供这个操作。";
@@ -1083,6 +1106,16 @@ static void toolbar_event(void *context, GtkWidget *widget, const MCCanvasInput 
 }
 void mc_linux_capture_refresh_capabilities(void) {
   if (capture.editor) layout_controls();
+}
+gboolean mc_linux_capture_plugin_result(int32_t session, gboolean document_changed) {
+  if (!capture.editor || capture.closing || capture.session != session) return FALSE;
+  if (document_changed) {
+    if (capture.text_edit && text_version() < 0) end_text_controls();
+    sync_style();
+    layout_controls();
+    gtk_widget_queue_draw(capture.canvas);
+  }
+  return TRUE;
 }
 static gboolean editor_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
   (void)widget;
@@ -1586,6 +1619,87 @@ static gboolean smoke_reopen_toolbar(void) {
   layout_controls();
   return TRUE;
 }
+typedef struct { int calls, image, count; double revision; gboolean accept, valid; } UserToolProbe;
+static gboolean smoke_user_number(const char *object, const char *key, double expected) {
+  const char *value = object ? strstr(object, key) : NULL;
+  if (!value) return FALSE;
+  value += strlen(key); char *end = NULL; double actual = g_ascii_strtod(value, &end);
+  return end != value && fabs(actual - expected) < 0.000001;
+}
+static gboolean smoke_user_tool(gpointer data, int32_t image, const char *id, const char *payload) {
+  UserToolProbe *probe = data; probe->calls++;
+  gboolean valid = image == probe->image && !capture.dragging &&
+      image_session_count(image) == probe->count && image_session_revision(image) == probe->revision &&
+      capture_toolbar_value(capture.toolbar_handle, MC_CAPTURE_TOOLBAR_EFFECT) == MC_CAPTURE_TOOLBAR_USER_TOOL;
+  if (!strcmp(id, "user.com.example.fixture/info"))
+    valid = valid && !strcmp(payload, "{\"effect\":\"result.text\"}");
+  else if (!strcmp(id, "user.com.example.fixture/box")) {
+    const char *selection = strstr(payload, "\"selection\":");
+    valid = valid && strstr(payload, "\"capture.annotations.add\"") &&
+        smoke_user_number(payload, "\"revision\":", probe->revision) &&
+        smoke_user_number(selection, "\"x\":", 20) && smoke_user_number(selection, "\"y\":", 20) &&
+        smoke_user_number(selection, "\"width\":", 80) && smoke_user_number(selection, "\"height\":", 70);
+  } else valid = FALSE;
+  probe->valid = probe->valid && valid;
+  return probe->accept;
+}
+static gboolean smoke_user_tools(void) {
+  const char *request = "{\"layout\":{\"version\":1,\"groups\":{\"screenshot\":["
+      "{\"id\":\"user.com.example.fixture/info\",\"enabled\":true},{\"id\":\"user.com.example.fixture/box\",\"enabled\":true}]}},"
+      "\"manifests\":[{\"apiVersion\":2,\"pluginId\":\"com.example.fixture\",\"name\":\"Capture fixture\",\"version\":\"2.0.0\","
+      "\"entry\":\"plugin.wasm\",\"runtime\":\"extism-1\",\"tools\":[{\"toolId\":\"info\",\"title\":\"Info\",\"gesture\":\"invoke\",\"effect\":\"result.text\"},"
+      "{\"toolId\":\"box\",\"title\":\"Box\",\"gesture\":\"dragRect\",\"effect\":\"capture.annotations.add\"}]}]}";
+  MCLinuxCaptureHost saved_host = capture.host;
+  int baseline = published_tools;
+  moonbit_string_t input = core_string(request), resolved = tool_registry_resolve_packages(input);
+  moonbit_decref(input);
+  int snapshot = tool_registry_snapshot_open_packages(resolved, MC_TOOL_CAP_COMMANDS | MC_TOOL_CAP_USER);
+  moonbit_decref(resolved);
+  if (!snapshot) return FALSE;
+  gboolean ok = commit_text();
+  UserToolProbe probe = {0}; probe.image = capture.session; probe.count = image_session_count(capture.session);
+  probe.revision = image_session_revision(capture.session); probe.accept = TRUE; probe.valid = TRUE;
+  capture.host = (MCLinuxCaptureHost){0}; capture.host.data = &probe;
+#define USER_CHECK(condition) do { if (!(condition)) { ok=FALSE; g_printerr("Linux user tool smoke FAILED line %d: %s\n",__LINE__,#condition); } } while (0)
+  const char *reason = NULL;
+  if (!mc_linux_capture_preflight_tools(snapshot, &reason)) { ok = FALSE; goto cleanup; }
+  mc_linux_capture_publish_tools(snapshot);
+  USER_CHECK(smoke_find_tool("user.com.example.fixture/info") >= 0 && !smoke_toolbar_enabled("user.com.example.fixture/info"));
+  USER_CHECK(!toolbar_activate("user.com.example.fixture/info") && probe.calls == 0);
+  capture.host.on_user_tool = smoke_user_tool; mc_linux_capture_refresh_capabilities();
+  USER_CHECK(smoke_toolbar_enabled("user.com.example.fixture/info"));
+  USER_CHECK(smoke_toolbar_press("user.com.example.fixture/info") && probe.calls == 1 && probe.valid &&
+      capture_toolbar_value(capture.toolbar_handle, MC_CAPTURE_TOOLBAR_EFFECT) == MC_CAPTURE_TOOLBAR_NONE);
+  probe.accept = FALSE;
+  USER_CHECK(smoke_toolbar_press("user.com.example.fixture/info") && probe.calls == 2 && probe.valid &&
+      capture_toolbar_value(capture.toolbar_handle, MC_CAPTURE_TOOLBAR_TICKET) == 0);
+  probe.accept = TRUE;
+  USER_CHECK(smoke_toolbar_press("user.com.example.fixture/box") && capture.tool_command && probe.calls == 2);
+  double x = capture.crop[0] + 20, y = capture.crop[1] + 20;
+  GdkEventButton event = {0}; event.button = 1;
+  event.x = capture.offset_x + x * capture.zoom; event.y = capture.offset_y + y * capture.zoom;
+  canvas_press(capture.canvas, &event, NULL); motion(x + 80, y + 70);
+  USER_CHECK(capture.dragging && image_session_preview_value(capture.session, 0) == RECTANGLE && probe.calls == 2);
+  event.x = capture.offset_x + (x + 80) * capture.zoom; event.y = capture.offset_y + (y + 70) * capture.zoom;
+  canvas_release(capture.canvas, &event, NULL);
+  USER_CHECK(!capture.dragging && probe.calls == 3 && probe.valid &&
+      capture_toolbar_value(capture.toolbar_handle, MC_CAPTURE_TOOLBAR_EFFECT) == MC_CAPTURE_TOOLBAR_NONE &&
+      image_session_count(capture.session) == probe.count && image_session_revision(capture.session) == probe.revision);
+  canvas_release(capture.canvas, &event, NULL);
+  USER_CHECK(probe.calls == 3);
+cleanup:
+  if (capture.dragging) {
+    image_session_shape_event(capture.session, 2, 0, 0); capture.dragging = FALSE;
+    if (gtk_widget_has_grab(capture.canvas)) gtk_grab_remove(capture.canvas);
+  }
+  toolbar_activate("host.select");
+  if (mc_linux_capture_preflight_tools(baseline, &reason)) mc_linux_capture_publish_tools(baseline); else ok = FALSE;
+  capture.host = saved_host; mc_linux_capture_refresh_capabilities();
+  tool_registry_snapshot_close(snapshot);
+  g_print("Linux v2 user tool smoke %s: optional capability, shared invoke/dragRect callback, immediate ACK and unchanged document.\n", ok ? "passed" : "FAILED");
+#undef USER_CHECK
+  return ok;
+}
 static gboolean smoke_contributions(void) {
   int original_session = capture.session, original_snapshot = published_tools;
   capture.session = image_session_create(capture.width, capture.height);
@@ -1968,7 +2082,7 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
   memset(&capture, 0, sizeof(capture));
   capture.application = application;
   CaptureHostProbe host_probe = {0};
-  capture.host = (MCLinuxCaptureHost){smoke_host_pin, smoke_host_closed, &host_probe, NULL};
+  capture.host = (MCLinuxCaptureHost){smoke_host_pin, smoke_host_closed, &host_probe, NULL, NULL};
   capture.smoke = capture.selecting = capture.x11 = TRUE;
   capture.root_width = 640;
   capture.root_height = 400;
@@ -2294,7 +2408,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   memset(&capture, 0, sizeof(capture));
   capture.application = application;
   CaptureHostProbe host_probe = {0};
-  capture.host = (MCLinuxCaptureHost){smoke_host_pin, smoke_host_closed, &host_probe, NULL};
+  capture.host = (MCLinuxCaptureHost){smoke_host_pin, smoke_host_closed, &host_probe, NULL, NULL};
   capture.smoke = TRUE;
   capture.selecting = TRUE;
   capture.x11 = GDK_IS_X11_DISPLAY(gdk_display_get_default());
@@ -2325,7 +2439,7 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   selection_event.y = capture.offset_y + 50 * capture.zoom;
   CAPTURE_CHECK(canvas_release(capture.canvas, &selection_event, NULL) && !capture.selecting &&
        capture.editor == original && !gtk_window_get_decorated(GTK_WINDOW(original)));
-  CAPTURE_CHECK(smoke_contributions() && smoke_tool_styles() && smoke_shape_variants() && smoke_shared_properties());
+  CAPTURE_CHECK(smoke_contributions() && smoke_tool_styles() && smoke_shape_variants() && smoke_shared_properties() && smoke_user_tools());
   CAPTURE_CHECK((editor_style_property_mask(context_kind()) == 0) && !smoke_property_visible(MC_STYLE_COLOR) &&
        !smoke_property_visible(MC_STYLE_FONT));
   smoke_choose_tool(TEXT);

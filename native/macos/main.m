@@ -3,7 +3,6 @@
 #import <unistd.h>
 #import "native/macos/preferences/MCPreferencesController.h"
 #import "native/macos/preferences/MCToolRegistryStore.h"
-#import "native/macos/plugins/MCPluginPackageStore.h"
 #import "native/macos/plugins/MCUserPluginManager.h"
 #import "native/macos/shortcuts/MCGlobalShortcutManager.h"
 #import "plugins/feature/capture/macos/MCCaptureController.h"
@@ -53,7 +52,8 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
 @property MCUserPluginManager *userPlugins;
 @property MCTextToolsController *textTools;
 @property MCScrollCaptureController *scrollCapture;
-@property NSMutableDictionary<NSString *, NSString *> *pluginRequestTokens;
+@property NSMutableDictionary<NSString *, NSNumber *> *pluginCaptures;
+@property NSMapTable<NSNumber *, MCImageEditorController *> *pluginEditors;
 @property NSUserDefaults *defaults;
 @property NSDictionary *diagnostics;
 @property NSMutableDictionary *report;
@@ -197,30 +197,13 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     if (![self.captureController.pluginIcons isEqual:icons]) self.captureController.pluginIcons = icons;
     [self.updateController operationStateDidChange];
 }
-- (void)runUserTool:(NSString *)identifier inEditor:(MCImageEditorController *)editor {
-    if (self.terminationPending) return;
-    NSDictionary *capture = editor.pluginCaptureMetadata;
-    if (!capture) { [editor showPluginMessage:@"请先选择截图区域。"]; return; }
-    NSString *owner = editor.pluginContextIdentifier;
-    NSString *token = NSUUID.UUID.UUIDString;
-    self.pluginRequestTokens[owner] = token;
-    __weak MCImageEditorController *weakEditor = editor;
-    __weak MCNativeHost *weakSelf = self;
-    BOOL (^isCurrent)(void) = ^BOOL{
-        MCImageEditorController *current = weakEditor;
-        return current.window && [current.pluginCaptureMetadata isEqual:capture] &&
-            [weakSelf.pluginRequestTokens[owner] isEqual:token];
-    };
-    [editor showPluginMessage:@"插件正在处理…"];
-    [self.userPlugins invokeTool:identifier owner:owner capture:capture isCurrent:isCurrent
-        completion:^(NSDictionary *result, NSError *error) {
-            if (!isCurrent()) return;
-            [weakSelf.pluginRequestTokens removeObjectForKey:owner];
-            if (result) {
-                [weakSelf.userPlugins presentResult:result toolID:identifier owner:owner parentWindow:weakEditor.window];
-                [weakEditor showPluginMessage:@"插件处理完成，可在结果窗口查看或复制文本。"];
-            } else [weakEditor showPluginMessage:error.localizedDescription ?: @"插件未返回结果。"];
-        }];
+- (BOOL)runUserTool:(NSString *)identifier payload:(NSString *)payload session:(int32_t)session inEditor:(MCImageEditorController *)editor {
+    if (self.terminationPending || self.updateController.installationPending) return NO;
+    self.pluginCaptures[editor.pluginContextIdentifier] = @(session);
+    [self.pluginEditors setObject:editor forKey:@(session)];
+    BOOL accepted = [self.userPlugins invokeTool:identifier payload:payload capture:session];
+    [editor showPluginMessage:accepted ? @"插件正在处理…" : self.userPlugins.statusMessage];
+    return accepted;
 }
 - (void)runTextToolInEditor:(MCImageEditorController *)editor translate:(BOOL)translate {
     if (self.terminationPending || self.updateController.installationPending || self.scrollCapture.busy) return;
@@ -244,7 +227,8 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
         [editor showPluginMessage:error.localizedDescription ?: @"请先选择截图区域。"]; return;
     }
     [self.textTools cancelForOwner:editor.pluginContextIdentifier];
-    [self.userPlugins cancelInvocationsForOwner:editor.pluginContextIdentifier];
+    NSNumber *pluginCapture = self.pluginCaptures[editor.pluginContextIdentifier];
+    if (pluginCapture) [self.userPlugins closeCapture:pluginCapture.intValue];
     __weak MCNativeHost *weakSelf = self;
     __weak MCImageEditorController *weakEditor = editor;
     MCScrollCaptureController *scroll = [[MCScrollCaptureController alloc] initWithScreenRect:rect
@@ -287,20 +271,27 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateStateChanged:)
         name:MCUpdateStateDidChangeNotification object:self.updateController];
     __weak MCNativeHost *weakSelf = self;
-    NSString *pluginDirectory = MCRuntimeIsTestProfile() ? nil : NSProcessInfo.processInfo.environment[@"MOOJICUT_PLUGIN_DIRECTORY"];
+    NSString *pluginDirectory = MCRuntimeIsTestProfile() ? nil : NSProcessInfo.processInfo.environment[@"MOOJICUT_PLUGIN_V2_DIRECTORY"];
     if (!pluginDirectory.length) {
         NSURL *root = MCRuntimeSupportDirectory(@"Mooji Cut");
-        pluginDirectory = [root URLByAppendingPathComponent:@"Plugins" isDirectory:YES].path;
+        pluginDirectory = [root URLByAppendingPathComponent:@"plugins-v2" isDirectory:YES].path;
     }
-    MCPluginPackageStore *packages = [[MCPluginPackageStore alloc] initWithRootURL:[NSURL fileURLWithPath:pluginDirectory isDirectory:YES]];
     NSURL *workerURL = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"Contents/Helpers/MoojiPluginWorker"];
-    self.userPlugins = [[MCUserPluginManager alloc] initWithRegistry:self.toolRegistryStore packages:packages workerURL:workerURL];
+    self.userPlugins = [[MCUserPluginManager alloc] initWithRegistry:self.toolRegistryStore rootURL:[NSURL fileURLWithPath:pluginDirectory isDirectory:YES] workerURL:workerURL];
     self.textTools = [MCTextToolsController new];
-    self.pluginRequestTokens = [NSMutableDictionary dictionary];
+    self.pluginCaptures = [NSMutableDictionary dictionary];
+    self.pluginEditors = [NSMapTable strongToWeakObjectsMapTable];
+    self.userPlugins.windowForCapture = ^NSWindow *(int32_t session) {
+        return [weakSelf.pluginEditors objectForKey:@(session)].window;
+    };
+    self.userPlugins.documentChanged = ^(int32_t session) {
+        MCImageEditorController *editor = [weakSelf.pluginEditors objectForKey:@(session)];
+        if ([editor refreshPluginDocumentForSession:session]) [editor showPluginMessage:@"插件处理完成。"];
+    };
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userPluginsChanged:)
         name:MCUserPluginsDidChangeNotification object:self.userPlugins];
-    self.captureController.onUserTool = ^(MCImageEditorController *editor, NSString *identifier) {
-        [weakSelf runUserTool:identifier inEditor:editor];
+    self.captureController.onUserToolV2 = ^BOOL(MCImageEditorController *editor, NSString *identifier, NSString *payload, int32_t session) {
+        return [weakSelf runUserTool:identifier payload:payload session:session inEditor:editor];
     };
     self.captureController.onOCR = ^(MCImageEditorController *editor) { [weakSelf runTextToolInEditor:editor translate:NO]; };
     self.captureController.onTranslate = ^(MCImageEditorController *editor) { [weakSelf runTextToolInEditor:editor translate:YES]; };
@@ -308,13 +299,18 @@ static void MCAfter(NSTimeInterval seconds, dispatch_block_t action) {
     // real-page capture problems are resolved. A missing action hides it.
     self.captureController.onScrollCapture = nil;
     self.captureController.onPluginContextClosed = ^(NSString *identifier) {
-        [weakSelf.pluginRequestTokens removeObjectForKey:identifier];
-        [weakSelf.userPlugins cancelInvocationsForOwner:identifier];
+        NSNumber *session = weakSelf.pluginCaptures[identifier];
+        if (session) {
+            [weakSelf.userPlugins closeCapture:session.intValue];
+            [weakSelf.pluginEditors removeObjectForKey:session];
+            [weakSelf.pluginCaptures removeObjectForKey:identifier];
+        }
         [weakSelf.textTools cancelForOwner:identifier];
     };
     self.toolRegistryStore.prepareChange = ^BOOL(NSDictionary *candidate, NSError **error) {
         return [weakSelf.captureController canApplyToolConfiguration:candidate error:error];
     };
+    self.toolRegistryStore.discardChange = ^{ [weakSelf.captureController discardToolConfigurationPublication]; };
     self.toolRegistryStore.applyChange = ^(NSDictionary *candidate) {
         [weakSelf.captureController applyToolConfiguration:candidate];
         [weakSelf applyPinToolConfiguration];

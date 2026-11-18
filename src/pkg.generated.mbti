@@ -246,9 +246,17 @@ pub fn pin_zoom_step(Double, Int32) -> Double
 
 pub fn plugin_application_close(Int32) -> Int32
 
+pub fn plugin_application_decode_utf8(Bytes) -> String
+
+pub fn plugin_application_encode_utf8(String) -> Bytes
+
 pub fn plugin_application_open(String, String, String) -> String
 
+pub fn plugin_application_reply_field(String, String, Int32, String, Int32) -> String
+
 pub fn plugin_application_request(Int32, String) -> String
+
+pub fn plugin_application_requirements(String) -> String
 
 pub fn plugin_manifest_validate(String) -> String
 
@@ -304,6 +312,8 @@ pub fn tool_registry_normalize(String) -> String
 
 pub fn tool_registry_resolve(String) -> String
 
+pub fn tool_registry_resolve_packages(String) -> String
+
 pub fn tool_registry_snapshot_close(Int32) -> Int32
 
 pub fn tool_registry_snapshot_count(Int32, Int32) -> Int32
@@ -313,6 +323,8 @@ pub fn tool_registry_snapshot_layout(Int32) -> String
 pub fn tool_registry_snapshot_move(Int32, String, String) -> Int32
 
 pub fn tool_registry_snapshot_open(String, Int32) -> Int32
+
+pub fn tool_registry_snapshot_open_packages(String, Int32) -> Int32
 
 pub fn tool_registry_snapshot_set_enabled(Int32, String, Int32) -> Int32
 

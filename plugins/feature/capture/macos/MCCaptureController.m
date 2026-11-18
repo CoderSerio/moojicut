@@ -77,9 +77,14 @@ static NSError *MCCaptureError(NSString *message) {
     for (MCImageEditorController *editor in editors) [editor completeToolConfigurationPublication:candidate];
     self.toolConfiguration = candidate;
 }
+- (void)discardToolConfigurationPublication {
+    for (MCImageEditorController *editor in [self toolConfigurationEditors])
+        [editor discardToolConfigurationPublication];
+}
 
 - (void)configureUserActionsForEditor:(MCImageEditorController *)editor {
     editor.onUserTool = self.onUserTool;
+    editor.onUserToolV2 = self.onUserToolV2;
     editor.onOCR = self.onOCR;
     editor.onTranslate = self.onTranslate;
     editor.onScrollCapture = self.onScrollCapture;
@@ -88,6 +93,10 @@ static NSError *MCCaptureError(NSString *message) {
 }
 - (void)setOnUserTool:(void (^)(MCImageEditorController *,NSString *))handler {
     _onUserTool = [handler copy];
+    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
+}
+- (void)setOnUserToolV2:(BOOL (^)(MCImageEditorController *,NSString *,NSString *,int32_t))handler {
+    _onUserToolV2 = [handler copy];
     for (MCImageEditorController *editor in [self toolConfigurationEditors]) [self configureUserActionsForEditor:editor];
 }
 - (void)setOnOCR:(void (^)(MCImageEditorController *))handler {

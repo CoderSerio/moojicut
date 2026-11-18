@@ -99,8 +99,16 @@ static const wchar_t *EDITOR_CLASS = L"MoojiCut.Capture.Editor";
 static BOOL pin_enabled(void) {
   return !capture.host.pin_enabled || capture.host.pin_enabled(capture.host.context);
 }
+static int tool_capabilities(void) {
+  return MC_TOOL_CAP_COMMANDS | (capture.host.on_user_tool ? MC_TOOL_CAP_USER : 0);
+}
 void mc_capture_refresh_capabilities(void) {
   if (capture.editor && capture.toolbar_session) layout_editor(capture.editor);
+}
+BOOL mc_capture_plugin_result(int32_t image_session, BOOL document_changed) {
+  if (image_session <= 0 || image_session != capture.session || !capture.editor || capture.closing) return FALSE;
+  if (document_changed) toolbar_sync_native();
+  return TRUE;
 }
 static void set_pins_hidden(BOOL hidden) {
   if (capture.host.set_pins_hidden)
@@ -812,7 +820,7 @@ static BOOL toolbar_context(void) {
   swprintf_s(json,ARRAYSIZE(json),L"{\"hasRegion\":%s,\"blocked\":%s,\"fieldFocused\":%s,\"toolbarFocused\":%s,\"bodyEditing\":%s,\"pinAvailable\":%s,\"capabilities\":%d,\"edit\":%d,\"editVersion\":%d,\"measuredHeight\":%.17g}",
       capture.viewport.right>capture.viewport.left && capture.viewport.bottom>capture.viewport.top ? L"true":L"false",
       capture.dragging || capture.color_picker || capture.composing ? L"true":L"false",field ? L"true":L"false",focus==capture.toolbar_view ? L"true":L"false",capture.editing!=-2 && capture.text ? L"true":L"false",pin_enabled()?L"true":L"false",
-      MC_TOOL_CAP_COMMANDS,capture.text_edit,capture.text_edit ? text_version():0,measure_text());
+      tool_capabilities(),capture.text_edit,capture.text_edit ? text_version():0,measure_text());
   moonbit_string_t facts=moon_text(json); BOOL ok=capture_toolbar_context(capture.toolbar_session,facts)==1;
   moonbit_decref(facts); return ok;
 }
@@ -852,6 +860,18 @@ static void toolbar_effect(void) {
       if (!success) GlobalFree(dib);
     }
     close=success; if (!success) error=L"无法贴图，请重试。";
+  } else if (effect==MC_CAPTURE_TOOLBAR_USER_TOOL && capture.host.on_user_tool) {
+    moonbit_string_t id=capture_toolbar_text(toolbar,MC_CAPTURE_TOOLBAR_EFFECT_ID);
+    moonbit_string_t payload=capture_toolbar_text(toolbar,MC_CAPTURE_TOOLBAR_PAYLOAD);
+    size_t id_length=(size_t)Moonbit_array_length(id), payload_length=(size_t)Moonbit_array_length(payload);
+    wchar_t *stable=calloc(id_length+1,sizeof(wchar_t)), *raw=calloc(payload_length+1,sizeof(wchar_t));
+    if (stable && raw) {
+      memcpy(stable,id,id_length*sizeof(wchar_t)); memcpy(raw,payload,payload_length*sizeof(wchar_t));
+      success=capture.host.on_user_tool(capture.host.context,capture.session,stable,raw);
+    }
+    free(stable); free(raw); moonbit_decref(id); moonbit_decref(payload);
+    if (capture.toolbar_session!=toolbar) return;
+    if (!success) error=L"插件请求未被接收，请重试。";
   } else error=L"当前平台尚未提供此能力。";
   moonbit_string_t detail=moon_text(error);
   BOOL accepted=capture_toolbar_ack(toolbar,ticket,success,detail)==1; moonbit_decref(detail);
@@ -1170,6 +1190,11 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
         layout_editor(window);
       } else
         add_shape();
+      if (capture.toolbar_session && capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_EFFECT)>MC_CAPTURE_TOOLBAR_NONE) {
+        int32_t session=capture.session;
+        toolbar_effect();
+        if (!capture.editor || capture.session!=session) return 0;
+      }
       changed();
     }
     return 0;
@@ -1211,7 +1236,7 @@ static BOOL open_editor(void) {
     moonbit_string_t empty = moonbit_make_string_raw(0);
     moonbit_string_t result = tool_registry_normalize(empty);
     moonbit_decref(empty);
-    capture.tool_snapshot = capture.owned_tools = tool_registry_snapshot_open(result, MC_TOOL_CAP_COMMANDS);
+    capture.tool_snapshot = capture.owned_tools = tool_registry_snapshot_open(result, tool_capabilities());
     moonbit_decref(result);
   }
   if (!capture.tool_snapshot) return FALSE;
@@ -2423,6 +2448,83 @@ typedef struct {
   int attempts, accepted, hidden, restored, x, y, width, height;
   uint64_t digest;
 } CaptureHostSmoke;
+typedef struct { int calls, image, count; double revision; BOOL accept, valid; } UserToolProbe;
+static BOOL smoke_user_number(const wchar_t *object, const wchar_t *key, double expected) {
+  const wchar_t *value=object ? wcsstr(object,key):NULL;
+  if (!value) return FALSE;
+  value+=wcslen(key); wchar_t *end=NULL; double actual=wcstod(value,&end);
+  return end!=value && fabs(actual-expected)<0.000001;
+}
+static BOOL smoke_user_tool(void *context,int32_t image,const wchar_t *id,const wchar_t *payload) {
+  UserToolProbe *probe=context; probe->calls++;
+  BOOL valid=image==probe->image && !capture.dragging &&
+      image_session_count(image)==probe->count && image_session_revision(image)==probe->revision &&
+      capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_EFFECT)==MC_CAPTURE_TOOLBAR_USER_TOOL;
+  if (!wcscmp(id,L"user.com.example.fixture/info"))
+    valid=valid && !wcscmp(payload,L"{\"effect\":\"result.text\"}");
+  else if (!wcscmp(id,L"user.com.example.fixture/box")) {
+    const wchar_t *selection=wcsstr(payload,L"\"selection\":");
+    valid=valid && wcsstr(payload,L"\"capture.annotations.add\"") &&
+        smoke_user_number(payload,L"\"revision\":",probe->revision) &&
+        smoke_user_number(selection,L"\"x\":",20) && smoke_user_number(selection,L"\"y\":",20) &&
+        smoke_user_number(selection,L"\"width\":",80) && smoke_user_number(selection,L"\"height\":",70);
+  } else valid=FALSE;
+  probe->valid=probe->valid && valid;
+  return probe->accept;
+}
+static BOOL user_tool_smoke(void) {
+  const wchar_t *request=L"{\"layout\":{\"version\":1,\"groups\":{\"screenshot\":["
+      L"{\"id\":\"user.com.example.fixture/info\",\"enabled\":true},{\"id\":\"user.com.example.fixture/box\",\"enabled\":true}]}},"
+      L"\"manifests\":[{\"apiVersion\":2,\"pluginId\":\"com.example.fixture\",\"name\":\"Capture fixture\",\"version\":\"2.0.0\","
+      L"\"entry\":\"plugin.wasm\",\"runtime\":\"extism-1\",\"tools\":[{\"toolId\":\"info\",\"title\":\"Info\",\"gesture\":\"invoke\",\"effect\":\"result.text\"},"
+      L"{\"toolId\":\"box\",\"title\":\"Box\",\"gesture\":\"dragRect\",\"effect\":\"capture.annotations.add\"}]}]}";
+  MCCaptureHost saved_host=capture.host;
+  int32_t baseline=capture.tool_snapshot;
+  moonbit_string_t input=moon_text(request), resolved=tool_registry_resolve_packages(input);
+  moonbit_decref(input);
+  int32_t snapshot=tool_registry_snapshot_open_packages(resolved,MC_TOOL_CAP_COMMANDS|MC_TOOL_CAP_USER);
+  moonbit_decref(resolved);
+  if (!snapshot) return FALSE;
+  BOOL ok=finish_text(FALSE);
+  UserToolProbe probe={0}; probe.image=capture.session; probe.count=image_session_count(capture.session);
+  probe.revision=image_session_revision(capture.session); probe.accept=TRUE; probe.valid=TRUE;
+  capture.host=(MCCaptureHost){0}; capture.host.context=&probe;
+#define USER_CHECK(condition) do { if (!(condition)) { ok=FALSE; fprintf(stderr,"Windows user tool smoke FAILED line %d: %s\n",__LINE__,#condition); } } while (0)
+  if (!mc_capture_prepare_tools(snapshot)) { ok=FALSE; goto cleanup; }
+  mc_capture_commit_tools(snapshot);
+  int info=smoke_toolbar_semantic(L"user.com.example.fixture/info");
+  USER_CHECK(info>=0 && ui_frame_semantic_value(capture.toolbar_frame,info,MC_UI_SEM_ENABLED)==0);
+  USER_CHECK(!toolbar_activate(L"user.com.example.fixture/info") && probe.calls==0);
+  capture.host.on_user_tool=smoke_user_tool; mc_capture_refresh_capabilities();
+  info=smoke_toolbar_semantic(L"user.com.example.fixture/info");
+  USER_CHECK(info>=0 && ui_frame_semantic_value(capture.toolbar_frame,info,MC_UI_SEM_ENABLED)==1);
+  USER_CHECK(smoke_toolbar_click(L"user.com.example.fixture/info") && probe.calls==1 && probe.valid &&
+      capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_EFFECT)==MC_CAPTURE_TOOLBAR_NONE);
+  probe.accept=FALSE;
+  USER_CHECK(smoke_toolbar_click(L"user.com.example.fixture/info") && probe.calls==2 && probe.valid &&
+      capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_TICKET)==0);
+  probe.accept=TRUE;
+  USER_CHECK(smoke_toolbar_click(L"user.com.example.fixture/box") && custom_drag() && probe.calls==2);
+  int x=capture.viewport.left+20,y=capture.viewport.top+20;
+  SendMessageW(capture.editor,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(x,y));
+  SendMessageW(capture.editor,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(x+80,y+70));
+  USER_CHECK(capture.dragging && image_session_preview_value(capture.session,0)==TOOL_RECT && probe.calls==2);
+  SendMessageW(capture.editor,WM_LBUTTONUP,0,MAKELPARAM(x+80,y+70));
+  USER_CHECK(!capture.dragging && probe.calls==3 && probe.valid &&
+      capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_EFFECT)==MC_CAPTURE_TOOLBAR_NONE &&
+      image_session_count(capture.session)==probe.count && image_session_revision(capture.session)==probe.revision);
+  SendMessageW(capture.editor,WM_LBUTTONUP,0,MAKELPARAM(x+80,y+70));
+  USER_CHECK(probe.calls==3);
+cleanup:
+  if (capture.dragging) ReleaseCapture();
+  editor_command(ID_SELECT);
+  if (mc_capture_prepare_tools(baseline)) mc_capture_commit_tools(baseline); else ok=FALSE;
+  capture.host=saved_host; mc_capture_refresh_capabilities();
+  tool_registry_snapshot_close(snapshot);
+  printf("Windows v2 user tool smoke %s: optional capability, shared invoke/dragRect callback, immediate ACK and unchanged document.\n",ok?"passed":"FAILED");
+#undef USER_CHECK
+  return ok;
+}
 static uint64_t smoke_dib_digest(HGLOBAL dib) {
   const BYTE *bytes=GlobalLock(dib);
   if (!bytes) return 0;
@@ -2466,7 +2568,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   ZeroMemory(&capture, sizeof(capture));
   capture.instance = instance;
   capture.smoke = TRUE;
-  capture.host = (MCCaptureHost){&host, smoke_pin_image, smoke_pins_hidden, smoke_pin_enabled};
+  capture.host = (MCCaptureHost){&host, smoke_pin_image, smoke_pins_hidden, smoke_pin_enabled, NULL};
   set_pins_hidden(TRUE);
   SetRect(&capture.desktop_bounds, 0, 0, 640, 480);
   if (!mc_selection_smoke() || !register_windows(instance) || !surface_new(&capture.desktop, 640, 480) ||
@@ -2503,6 +2605,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   CAPTURE_SUITE(shape_variants_smoke);
   CAPTURE_SUITE(shared_properties_smoke);
   CAPTURE_SUITE(contribution_smoke);
+  CAPTURE_SUITE(user_tool_smoke);
 #undef CAPTURE_SUITE
   if (image_session_add(capture.session, TOOL_REDACT, 40, 60, 80, 60, 0, 4) != 1)
     CAPTURE_FAIL();

@@ -450,6 +450,13 @@ class NativeBuild:
                  *native_sources("macos", "feature.capture"), archive,
                  "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", *CANVAS_LINK, "-o", tool_layout)
         self.run(tool_layout)
+        plugin_gesture = shortcuts / "capture-plugin-gesture"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
+                 "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/capture-plugin-gesture.m",
+                 *native_sources("macos", "feature.capture"), archive,
+                 "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit",
+                 *CANVAS_LINK, "-o", plugin_gesture)
+        self.run(plugin_gesture)
         recording_experience = shortcuts / "recording-experience"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
                  "-I", self.include, "-I", ROOT, ROOT / "test/native/recording-experience.m",
@@ -500,16 +507,18 @@ class NativeBuild:
                  ROOT / "test/native/plugin-package-zip.c",
                  *native_sources("macos", "shared.plugin_host.package"), "-lz", "-o", zip_test)
         self.run(zip_test, sample_zip)
-        manager_test = plugin_directory / "plugin-manager"
-        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
-                 ROOT / "test/native/plugin-manager.m", *user_plugins, preferences / "MCToolRegistryStore.m", archive,
-                 "-framework", "AppKit", "-framework", "UniformTypeIdentifiers", "-framework", "Carbon",
-                 "-lz", "-o", manager_test)
-        self.run(manager_test, plugin_worker, sample_zip)
         numbered_sample = ROOT / "plugins/examples/numbered-box"
         numbered_zip = plugin_directory / "numbered-box.zip"
         offline = ("--offline",) if (numbered_sample / ".mooncakes/.moon-lock").is_file() else ()
         self.run(sys.executable, ROOT / "scripts/package_plugin.py", numbered_sample, "--output", numbered_zip, *offline)
+        manager_test = plugin_directory / "plugin-manager-v2"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
+                 "-I", ROOT / "native/macos", ROOT / "test/native/plugin-manager-v2.m",
+                 *user_plugins, *native_sources("macos", "feature.capture"),
+                 preferences / "MCToolRegistryStore.m", archive, "-framework", "AppKit", "-framework", "CoreGraphics",
+                 "-framework", "ScreenCaptureKit", "-framework", "UniformTypeIdentifiers", "-framework", "Carbon",
+                 *CANVAS_LINK, "-lz", "-o", manager_test)
+        self.run(manager_test, plugin_worker, numbered_zip)
         plugin_application = plugin_directory / "plugin-application"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
                  ROOT / "test/native/plugin-application.m", ROOT / "native/macos/plugins/MCPluginPackageStore.m",

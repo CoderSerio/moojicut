@@ -391,11 +391,28 @@ class DesktopBuild:
 
     def smoke(self):
         self.verify_binary(self.executable)
-        self.run(self.executable, "--smoke", env=self.app_test_environment())
+        self.app_smoke()
         self.canvas_smoke()
         self.video_smoke()
         self.plugin_worker_smoke(self.bundle)
         self.plugin_store_smoke()
+
+    def product_plugin_path(self):
+        if not hasattr(self, "product_plugin"):
+            configured = self.env.get("MOOJICUT_PLUGIN_SAMPLE")
+            if configured:
+                self.product_plugin = (ROOT / configured).resolve()
+            else:
+                directory = Path(tempfile.mkdtemp(prefix="numbered-box-", dir=self.directory))
+                self.product_plugin = directory / "numbered-box.zip"
+                self.run(sys.executable, ROOT / "scripts/package_plugin.py", ROOT / "plugins/examples/numbered-box",
+                         "--output", self.product_plugin)
+        return self.product_plugin
+
+    def app_smoke(self):
+        environment = self.app_test_environment()
+        environment["MOOJICUT_PLUGIN_SAMPLE"] = str(self.product_plugin_path())
+        self.run(self.executable, "--smoke", env=environment)
 
     def plugin_sample_path(self):
         if not hasattr(self, "plugin_sample"):
@@ -515,7 +532,7 @@ class DesktopBuild:
         checks = [("media", self.media_tests),
                   ("native-core", lambda: self.verify_binary(self.executable))]
         if app_smoke:
-            checks.append(("native-ui-smoke", lambda: self.run(self.executable, "--smoke", env=self.app_test_environment())))
+            checks.append(("native-ui-smoke", self.app_smoke))
         checks.extend((("shared-canvas", self.canvas_smoke),
                        ("video-editor", lambda: self.video_smoke(prepared=True)),
                        ("plugin-worker", lambda: self.plugin_worker_smoke(self.bundle)),
@@ -586,7 +603,7 @@ class DesktopBuild:
             if kit.exists():
                 kit.unlink()
             write_fixture_kit(kit, releases / archive.name, self.metadata["commit"], self.media.executables,
-                              self.plugin_sample)
+                              self.plugin_sample, self.product_plugin_path())
 
 
 def main():

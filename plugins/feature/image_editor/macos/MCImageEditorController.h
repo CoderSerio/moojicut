@@ -15,6 +15,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly) NSString *pluginContextIdentifier;
 @property (nonatomic, readonly, nullable) NSDictionary *pluginCaptureMetadata;
 @property (nonatomic, copy, nullable) void (^onUserTool)(MCImageEditorController *editor, NSString *identifier);
+// Optional v2 dispatch seam, on the main thread. The payload is the unchanged
+// shared-toolbar JSON and imageSession is borrowed, never owned by the callback.
+// Return enqueue acceptance immediately; asynchronous worker completion belongs
+// to the application. When present this takes precedence over legacy onUserTool.
+@property (nonatomic, copy, nullable) BOOL (^onUserToolV2)(MCImageEditorController *editor,
+    NSString *identifier, NSString *payload, int32_t imageSession);
 @property (nonatomic, copy, nullable) void (^onOCR)(MCImageEditorController *editor);
 @property (nonatomic, copy, nullable) void (^onTranslate)(MCImageEditorController *editor);
 @property (nonatomic, copy, nullable) void (^onScrollCapture)(MCImageEditorController *editor);
@@ -31,6 +37,10 @@ NS_ASSUME_NONNULL_BEGIN
 // tear down native input. Empty dictionaries mean that no document edit is needed.
 - (nullable NSDictionary *)preparedToolConfigurationPublication:(NSDictionary *)candidate error:(NSError **)error;
 - (void)completeToolConfigurationPublication:(NSDictionary *)candidate;
+- (void)discardToolConfigurationPublication;
+// Refresh only the live session whose accepted plugin result was committed by
+// MoonBit. The application cannot supply replacement document JSON here.
+- (BOOL)refreshPluginDocumentForSession:(int32_t)session;
 - (void)show;
 - (void)prepareOverlayInFrame:(NSRect)screenFrame;
 - (BOOL)applyAnnotation:(NSDictionary *)annotation;

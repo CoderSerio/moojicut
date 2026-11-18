@@ -7,8 +7,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSDictionary *toolConfiguration;
 - (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error;
 - (void)applyToolConfiguration:(NSDictionary *)candidate;
+- (void)discardToolConfigurationPublication;
 @property (nonatomic, copy, nullable) void (^onStateChange)(void);
 @property (nonatomic, copy, nullable) void (^onUserTool)(MCImageEditorController *editor, NSString *identifier);
+@property (nonatomic, copy, nullable) BOOL (^onUserToolV2)(MCImageEditorController *editor,
+    NSString *identifier, NSString *payload, int32_t imageSession);
 @property (nonatomic, copy, nullable) void (^onOCR)(MCImageEditorController *editor);
 @property (nonatomic, copy, nullable) void (^onTranslate)(MCImageEditorController *editor);
 @property (nonatomic, copy, nullable) void (^onScrollCapture)(MCImageEditorController *editor);

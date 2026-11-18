@@ -65,7 +65,9 @@
         ],
         "requires": [
           "shared.plugin_host.posix",
-          "shared.plugin_host.package"
+          "shared.plugin_host.package",
+          "shared.plugin_host.desktop",
+          "shared.plugin_host.storage"
         ],
         "files": [
           "native/macos/plugins/MCPluginPackageStore.h",
@@ -302,7 +304,9 @@
           "feature.pin",
           "feature.recording",
           "platform.app",
-          "platform.media"
+          "platform.media",
+          "platform.plugin_host",
+          "shared.plugin_host.desktop_gio"
         ],
         "files": [
           "native/windows/app.ico",
@@ -457,7 +461,10 @@
           "feature.recording",
           "platform.input",
           "platform.app",
-          "platform.media"
+          "platform.media",
+          "shared.plugin_host.posix",
+          "shared.plugin_host.storage",
+          "shared.plugin_host.desktop_gio"
         ],
         "files": [
           "native/linux/launch.sh",
@@ -749,6 +756,31 @@
       "files": [],
       "requires": [
         "shared.plugin_host.process"
+      ]
+    },
+    "shared.plugin_host.desktop": {
+      "sources": [
+        "platform/shared/plugin_host/desktop.c"
+      ],
+      "files": [
+        "platform/shared/plugin_host/desktop.h"
+      ],
+      "requires": [
+        "shared.plugin_host.package"
+      ],
+      "includes": [
+        "shared.bindings",
+        "shared.plugin_host.storage",
+        "shared.plugin_host.process"
+      ]
+    },
+    "shared.plugin_host.desktop_gio": {
+      "sources": [
+        "platform/shared/plugin_host/desktop_gio.c"
+      ],
+      "files": [],
+      "requires": [
+        "shared.plugin_host.desktop"
       ]
     }
   },

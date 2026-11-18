@@ -310,7 +310,6 @@ int main(int argc,const char **argv) {
         MCTerminationHost *host=[MCTerminationHost new];
         NSUserDefaults *defaults=[[NSUserDefaults alloc] initWithSuiteName:DefaultsSuite];
         MCToolRegistryStore *registry=[[MCToolRegistryStore alloc] initWithDefaults:defaults];
-        MCPluginPackageStore *packages=[[MCPluginPackageStore alloc] initWithRootURL:FixtureDirectory];
         host.workerExecutable=[FixtureDirectory URLByAppendingPathComponent:@"termination-worker-stall"];
         if ([FixtureMode isEqual:@"worker-event"]) {
             char path[PATH_MAX]; uint32_t size=sizeof(path);
@@ -318,7 +317,8 @@ int main(int argc,const char **argv) {
             Check([NSFileManager.defaultManager linkItemAtPath:[NSString stringWithUTF8String:path]
                 toPath:host.workerExecutable.path error:NULL],@"create worker stub hardlink");
         }
-        host.fixtureManager=[[MCTerminationManager alloc] initWithRegistry:registry packages:packages workerURL:host.workerExecutable];
+        host.fixtureManager=[[MCTerminationManager alloc] initWithRegistry:registry
+            rootURL:[FixtureDirectory URLByAppendingPathComponent:@"plugins-v2" isDirectory:YES] workerURL:host.workerExecutable];
         host.userPlugins=host.fixtureManager;
         application.delegate=host;
         [application run];

@@ -59,12 +59,13 @@ class LinuxPackageCheckTest(unittest.TestCase):
         (directory / "runtime").mkdir(exist_ok=True)
         (directory / "runtime/not-for-kit").write_text("not a release library", encoding="utf-8")
         sample = self.sample()
-        return check.write_fixture_kit(self.root / name, package, COMMIT, directory, sample)
+        return check.write_fixture_kit(self.root / name, package, COMMIT, directory, sample, self.sample(product=True))
 
-    def sample(self):
-        sample = self.root / "capture-info.zip"
+    def sample(self, *, product=False):
+        name = "numbered-box" if product else "capture-info"
+        sample = self.root / (name + ".zip")
         with zipfile.ZipFile(sample, "w") as archive:
-            archive.writestr("manifest.json", (ROOT / "plugins/examples/capture-info/manifest.json").read_bytes())
+            archive.writestr("manifest.json", (ROOT / "plugins/examples" / name / "manifest.json").read_bytes())
             # These unit tests never execute a fabricated Wasm or ELF. They
             # check package binding and orchestration; real sample execution
             # is the native fixture/target-machine gate.
@@ -97,8 +98,10 @@ class LinuxPackageCheckTest(unittest.TestCase):
         package, metadata = self.release()
         kit = self.kit(package)
         with tarfile.open(kit) as archive:
-            self.assertEqual(set(archive.getnames()), {"manifest.json", check.SAMPLE_PATH,
+            self.assertEqual(set(archive.getnames()), {"manifest.json", *check.SAMPLE_PATHS,
                                                        *("bin/" + x for x in check.FIXTURES)})
+            for name in check.SAMPLE_PATHS:
+                self.assertEqual(archive.getmember(name).mode, 0o644)
         directory = check.safe_unpack(kit, self.root / "unpacked", kit=True)
         manifest = check.verify_kit(directory, metadata, COMMIT)
         self.assertEqual(manifest["packageSha256"], check.sha256(package))
@@ -109,12 +112,19 @@ class LinuxPackageCheckTest(unittest.TestCase):
             check.verify_kit(directory, metadata, "b" * 40)
         original = kit.read_bytes()
         with self.assertRaisesRegex(ValueError, "overwrite"):
-            check.write_fixture_kit(kit, package, COMMIT, self.root / "compiled", self.root / "capture-info.zip")
+            check.write_fixture_kit(kit, package, COMMIT, self.root / "compiled",
+                                    self.root / "capture-info.zip", self.root / "numbered-box.zip")
         self.assertEqual(kit.read_bytes(), original)
         (directory / "bin/gst-media").write_bytes(ELF + b"tampered fixture")
         with self.assertRaisesRegex(ValueError, "hash/size"):
             check.verify_kit(directory, metadata, COMMIT)
         (directory / "bin/gst-media").write_bytes(ELF + b"gst-media")
+        product = directory / check.PRODUCT_SAMPLE_PATH
+        original_product = product.read_bytes()
+        product.write_bytes(original_product + b"tampered product")
+        with self.assertRaisesRegex(ValueError, "hash/size"):
+            check.verify_kit(directory, metadata, COMMIT)
+        product.write_bytes(original_product)
         (directory / check.SAMPLE_PATH).write_bytes(b"different ZIP")
         with self.assertRaisesRegex(ValueError, "hash/size"):
             check.verify_kit(directory, metadata, COMMIT)
@@ -138,6 +148,46 @@ class LinuxPackageCheckTest(unittest.TestCase):
                 check.safe_unpack(archive, self.root / "link-output")
         self.assertFalse((self.root / "outside").exists())
 
+    def test_product_sample_is_required_and_cannot_be_replaced_by_rehashed_transport_sample(self):
+        package, metadata = self.release()
+        kit = self.kit(package)
+        directory = check.safe_unpack(kit, self.root / "product-validation", kit=True)
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        product = directory / check.PRODUCT_SAMPLE_PATH
+        product.unlink()
+        with self.assertRaisesRegex(ValueError, "regular file"):
+            check.verify_kit(directory, metadata, COMMIT)
+        product.write_bytes((directory / check.SAMPLE_PATH).read_bytes())
+        for entry in manifest["files"]:
+            if entry["path"] == check.PRODUCT_SAMPLE_PATH:
+                entry.update(sha256=check.sha256(product), bytes=product.stat().st_size)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "numbered-box v2"):
+            check.verify_kit(directory, metadata, COMMIT)
+        invalid_kit = self.root / "wrong-product.tar.gz"
+        with self.assertRaisesRegex(ValueError, "numbered-box v2"):
+            check.write_fixture_kit(invalid_kit, package, COMMIT, self.root / "compiled",
+                                    self.root / "capture-info.zip", self.root / "capture-info.zip")
+        self.assertFalse(invalid_kit.exists())
+
+    def test_product_zip_rejects_unknown_members_duplicate_manifest_and_oversized_wasm(self):
+        product = self.sample(product=True)
+        with zipfile.ZipFile(product, "a") as archive:
+            archive.writestr("../outside", b"not allowed")
+        with self.assertRaisesRegex(ValueError, "ZIP members"):
+            check.product_sample_contents(product)
+        with zipfile.ZipFile(product, "w") as archive:
+            archive.writestr("manifest.json", '{"apiVersion":2,"apiVersion":2}')
+            archive.writestr("plugin.wasm", b"\0asm\1\0\0\0")
+        with self.assertRaisesRegex(ValueError, "Duplicate JSON"):
+            check.product_sample_contents(product)
+        with zipfile.ZipFile(product, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json", (ROOT / "plugins/examples/numbered-box/manifest.json").read_bytes())
+            archive.writestr("plugin.wasm", b"\0" * (check.plugin_worker_fixture.MEMBER_LIMITS["plugin.wasm"] + 1))
+        with self.assertRaisesRegex(ValueError, "oversized"):
+            check.product_sample_contents(product)
+
     def test_failed_and_timed_out_checks_are_collected_without_stopping_other_checks(self):
         package, metadata = self.release()
         kit = self.kit(package)
@@ -153,6 +203,14 @@ class LinuxPackageCheckTest(unittest.TestCase):
             self.assertNotIn("LD_PRELOAD", environment)
             self.assertNotIn("PYTHONPATH", environment)
             self.assertNotIn("PYTHONHOME", environment)
+            if name == "app-smoke":
+                product = self.root / "validation/fixtures" / check.PRODUCT_SAMPLE_PATH
+                self.assertTrue(Path(environment["MOOJICUT_PLUGIN_SAMPLE"]).is_absolute())
+                self.assertEqual(Path(environment["MOOJICUT_PLUGIN_SAMPLE"]), product)
+                self.assertEqual(check.sha256(product), check.sha256(self.root / "numbered-box.zip"))
+                self.assertEqual(command, [self.root / "validation/package/MoojiCut/moojicut", "--smoke"])
+            else:
+                self.assertNotIn("MOOJICUT_PLUGIN_SAMPLE", environment)
             if name == "plugin-worker-host":
                 self.assertEqual(Path(command[0]), Path(sys.executable).resolve())
                 self.assertEqual(Path(command[command.index("--worker") + 1]),
@@ -179,7 +237,8 @@ class LinuxPackageCheckTest(unittest.TestCase):
         result = check.check_package(package, kit, self.root / "validation", COMMIT, execute=execute,
                                      inherited={"PATH": "/private/sdk/bin", "LD_PRELOAD": "bad",
                                                 "PYTHONHOME": "/private/sdk/python", "PYTHONPATH": "/private/sdk/modules",
-                                                "MOOJICUT_LINUX_MEDIA_SDK": "/sdk", "G_DEBUG": "fatal-warnings"})
+                                                "MOOJICUT_LINUX_MEDIA_SDK": "/sdk", "G_DEBUG": "fatal-warnings",
+                                                "MOOJICUT_PLUGIN_SAMPLE": "/untrusted/old-plugin.zip"})
         self.assertEqual(len(calls), 9)
         self.assertEqual(result["result"], "failed")
         self.assertEqual(set(result["failures"]), {"gst-media", "app-smoke"})

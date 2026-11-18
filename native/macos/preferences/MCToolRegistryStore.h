@@ -14,6 +14,12 @@ FOUNDATION_EXPORT NSNotificationName const MCToolRegistryDidChangeNotification;
 // Synchronous, non-failing publication after preflight. Do not start another
 // store transaction from this callback or its change notification.
 @property (nonatomic, copy, nullable) void (^applyChange)(NSDictionary *candidate);
+@property (nonatomic, copy, nullable) void (^discardChange)(void);
+// A managed v2 application is the sole durable owner. Once attached, commands
+// never fall back to the legacy defaults/catalog path, including startup errors.
+@property (nonatomic, copy, nullable) BOOL (^managedCommand)(NSDictionary *command, NSError * _Nullable * _Nullable error);
+- (BOOL)prepareManagedSnapshot:(NSDictionary *)candidate error:(NSError * _Nullable * _Nullable)error;
+- (void)publishManagedSnapshot:(NSDictionary *)candidate;
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults;
 // Resolve a complete validated installed catalog before its atomic disk commit.
 // A nil commit publishes read-only startup state without rewriting preferences.

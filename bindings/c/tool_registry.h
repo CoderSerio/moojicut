@@ -12,6 +12,7 @@ extern "C" {
 moonbit_string_t tool_registry_normalize(moonbit_string_t saved_json);
 moonbit_string_t tool_registry_update(moonbit_string_t request_json);
 moonbit_string_t tool_registry_resolve(moonbit_string_t request_json);
+moonbit_string_t tool_registry_resolve_packages(moonbit_string_t request_json);
 enum { MC_TOOL_GROUP_SCREENSHOT=0, MC_TOOL_GROUP_RECORDING=1, MC_TOOL_GROUP_VIDEO_EDITING=2 };
 enum { MC_TOOL_SLOT_TOOLS=0, MC_TOOL_SLOT_FINISH=1 };
 enum { MC_TOOL_TYPE_ANNOTATION=1, MC_TOOL_TYPE_ACTION=2, MC_TOOL_TYPE_COMMAND=3 };
@@ -46,6 +47,9 @@ enum {
  * Entries include disabled tools, in saved order. Partition by SLOT when drawing.
  * Payload is extensible JSON; icon/command are stable names, not button indices. */
 int32_t tool_registry_snapshot_open(moonbit_string_t result_json, int32_t capabilities);
+/* Open the registry in a v2 plugin application response. Uses the same
+ * snapshot queries, ownership, preflight and publication as built-in tools. */
+int32_t tool_registry_snapshot_open_packages(moonbit_string_t result_json, int32_t capabilities);
 int32_t tool_registry_snapshot_count(int32_t handle, int32_t group);
 int32_t tool_registry_snapshot_value(int32_t handle, int32_t group, int32_t index, int32_t key);
 moonbit_string_t tool_registry_snapshot_text(int32_t handle, int32_t group, int32_t index, int32_t key);

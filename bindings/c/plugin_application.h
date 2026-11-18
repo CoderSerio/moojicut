@@ -28,10 +28,20 @@ extern "C" {
  * closeCapture cancels calls owned by that capture. status supplies outstanding
  * cancellation tickets; beginClose stops new work and starts draining.
  * Shutdown completes after both worker and storage acknowledgements drain. */
+/* Pure startup read plan {ok:true,packages:[{pluginId,digest}]}. */
+moonbit_string_t plugin_application_requirements(moonbit_string_t index);
 moonbit_string_t plugin_application_open(moonbit_string_t index, moonbit_string_t archives,
                                         moonbit_string_t layout);
 moonbit_string_t plugin_application_request(int32_t application, moonbit_string_t request);
 int32_t plugin_application_close(int32_t application);
+/* Byte/String conversion for native hosts without a Unicode library. A
+ * failed decode returns the empty String and leaves a UTF-8 BOM in valid data. */
+moonbit_string_t plugin_application_decode_utf8(moonbit_bytes_t bytes);
+moonbit_bytes_t plugin_application_encode_utf8(moonbit_string_t text);
+/* Read a field from a trusted core reply. index=-1 and child="" skip those
+ * selections. literal=1 returns serialized JSON instead of a String value. */
+moonbit_string_t plugin_application_reply_field(moonbit_string_t reply, moonbit_string_t key,
+    int32_t index, moonbit_string_t child, int32_t literal);
 
 #ifdef __cplusplus
 }

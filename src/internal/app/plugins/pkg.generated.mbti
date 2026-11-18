@@ -13,7 +13,11 @@ pub fn desktop_plugin_close(Int32) -> Int32
 
 pub fn desktop_plugin_open(String, String, String) -> String
 
+pub fn desktop_plugin_reply_field(String, String, Int32, String, Int32) -> String
+
 pub fn desktop_plugin_request(Int32, String) -> String
+
+pub fn desktop_plugin_requirements(String) -> String
 
 pub fn parse_plugin_index(String) -> PluginIndex raise @protocol.InputError
 

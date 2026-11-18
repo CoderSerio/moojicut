@@ -1,4 +1,6 @@
-# User plugin protocol v1
+# Legacy v1 transport fixture
+
+For plugins imported by Mooji Cut, see the [capture v2 specification](../../../../plugins/spec/capture-v2.md). The v1 examples below describe the transport fixture.
 
 This package validates data and constructs typed records. It does not load Wasm,
 read files, grant capabilities, invoke plugins, or create windows. The native

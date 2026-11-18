@@ -117,6 +117,7 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
     }
     self.publishing = YES;
     @try {
+        if (self.managedCommand) return self.managedCommand(command, error);
         NSString *json = MCToolJSON(@{@"layout":self.snapshot[@"layout"], @"manifests":self.pluginManifests, @"command":command}, error);
         NSDictionary *candidate = json ? MCCallToolRegistry(tool_registry_resolve, json, error) : nil;
         if (!candidate) return NO;
@@ -131,6 +132,27 @@ static NSDictionary *MCCallToolRegistry(moonbit_string_t (*function)(moonbit_str
     } @finally {
         self.publishing = NO;
     }
+}
+- (BOOL)prepareManagedSnapshot:(NSDictionary *)candidate error:(NSError **)error {
+    NSAssert(NSThread.isMainThread, @"Tool configuration preflight belongs to the main thread");
+    if (error) *error = nil;
+    if (self.prepareChange && !self.prepareChange(candidate, error)) {
+        if (error && !*error) *error = MCToolError(@"请先完成当前编辑，再修改工具设置。");
+        return NO;
+    }
+    return YES;
+}
+- (void)publishManagedSnapshot:(NSDictionary *)candidate {
+    NSAssert(NSThread.isMainThread, @"Tool configuration publication belongs to the main thread");
+    // The shared application's durable CAS and runtime acknowledgement already
+    // succeeded. This is a UI projection, never a second defaults write.
+    BOOL wasPublishing = self.publishing;
+    self.publishing = YES;
+    @try {
+        self.pluginManifests = candidate[@"manifests"] ?: @[];
+        self.loadError = nil;
+        [self publishCandidate:candidate persist:NO];
+    } @finally { self.publishing = wasPublishing; }
 }
 - (void)publishCandidate:(NSDictionary *)candidate persist:(BOOL)persist {
     if (persist) {

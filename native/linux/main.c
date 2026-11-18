@@ -15,6 +15,9 @@
 #include "platform/linux/app/video_editor.h"
 #include "platform/linux/media/runtime.h"
 #include "bindings/c/tool_registry.h"
+#include "bindings/c/capture_edit.h"
+#include "bindings/c/image_session.h"
+#include "platform/shared/plugin_host/desktop.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "development"
@@ -33,6 +36,13 @@ typedef struct {
   GtkWidget *tool_settings;
   guint tool_settings_refresh;
   guint quit_poll;
+  MCDesktopPlugins *plugins;
+  guint plugin_poll;
+  GtkWidget *plugin_picker, *plugin_result, *plugin_import;
+  char *plugin_root, *plugin_worker, *plugin_message;
+  gboolean plugin_busy, plugins_draining;
+  int32_t plugin_result_capture;
+  double plugin_result_revision;
   int tool_snapshot;
   char *tool_layout;
   MCGlobalShortcuts *global_shortcuts;
@@ -65,6 +75,9 @@ static void cancel_tool_settings_refresh(void);
 static void sync_pin_feature(void);
 static void pin_feature_changed(GtkToggleButton *button, gpointer data);
 static gboolean publish_tools(int candidate);
+static void open_plugins(void);
+static void close_plugin_result(void);
+static gboolean change_tool_enabled(const char *id, gboolean enabled);
 
 static moonbit_string_t core_string(const char *text) {
   glong length = 0;
@@ -199,7 +212,9 @@ static gboolean save_settings_with_tools(const char *layout) {
     g_key_file_set_string(settings, "Video", "last-source", host.last_video_source);
     g_key_file_set_string(settings, "Video", "last-draft", host.last_video_draft);
   }
-  if (layout) g_key_file_set_string(settings, "Tools", "layout", layout);
+  /* Once the v2 driver is open, its atomic index owns the entire toolbar.
+   * General/shortcut writes must not create a second layout authority. */
+  if (layout && !host.plugins) g_key_file_set_string(settings, "Tools", "layout", layout);
   for (int i = 0; i < 3; i++) {
     int values[] = { host.shortcuts[i].key, host.shortcuts[i].mods };
     g_key_file_set_integer_list(settings, "Shortcuts", action_ids[i], values, 2);
@@ -251,8 +266,8 @@ static void load_settings(void) {
       }
     }
   }
-  int snapshot = open_tools(saved_tools ? saved_tools : "");
-  if (snapshot <= 0) snapshot = open_tools("");
+  int snapshot = host.plugins ? 0 : open_tools(saved_tools ? saved_tools : "");
+  if (!host.plugins && snapshot <= 0) snapshot = open_tools("");
   /* Import the former feature flag only for configurations without a tool
    * layout. Once present, the saved contribution preference is authoritative. */
   if ((!saved_tools || !*saved_tools) && !legacy_pin_enabled && snapshot > 0) {
@@ -393,9 +408,12 @@ static void pin_feature_changed(GtkToggleButton *button, gpointer data) {
   (void)data;
   /* The general switch is another view of the same saved contribution, not a
    * second policy. Persist before disabling, which closes existing pins. */
-  if (publish_tools(pin_candidate(host.tool_snapshot, gtk_toggle_button_get_active(button))))
+  int index = tool_action_index(host.tool_snapshot, "pin");
+  char *id = index >= 0 ? tool_text(host.tool_snapshot, index, MC_TOOL_ID) : NULL;
+  if (id && change_tool_enabled(id, gtk_toggle_button_get_active(button)))
     set_status(host.pin_enabled ? "贴图已启用。" : "贴图已关闭，当前贴图与全局按键已释放；按键配置保留。");
   else sync_pin_feature();
+  g_free(id);
 }
 
 static GtkWidget *label(const char *text, gboolean secondary) {
@@ -414,6 +432,11 @@ static GtkWidget *page(void) {
 }
 
 static gboolean publish_tools(int candidate) {
+  /* This path is only the built-in fallback, never a v2 index writer. */
+  if (host.plugins) {
+    if (candidate > 0) tool_registry_snapshot_close(candidate);
+    return FALSE;
+  }
   if (candidate <= 0) {
     set_status("工具配置无效，原设置未改动。"); queue_tool_settings_refresh(); return FALSE;
   }
@@ -425,6 +448,7 @@ static gboolean publish_tools(int candidate) {
   }
   char *layout = core_text(tool_registry_snapshot_layout(candidate));
   if (!*layout || !save_settings_with_tools(layout)) {
+    mc_linux_capture_discard_tools();
     g_free(layout); tool_registry_snapshot_close(candidate);
     queue_tool_settings_refresh(); return FALSE;
   }
@@ -437,12 +461,174 @@ static gboolean publish_tools(int candidate) {
   if (previous > 0) tool_registry_snapshot_close(previous);
   queue_tool_settings_refresh(); set_status("工具设置已保存并应用。"); return TRUE;
 }
+static gboolean change_tool_enabled(const char *id, gboolean enabled) {
+  if (host.quitting) return FALSE;
+  if (host.plugins) {
+    gboolean accepted = mc_desktop_plugins_enabled(host.plugins, id, enabled != FALSE);
+    if (!accepted) queue_tool_settings_refresh();
+    return accepted;
+  }
+  moonbit_string_t value = core_string(id);
+  int candidate = tool_registry_snapshot_set_enabled(host.tool_snapshot, value, enabled ? 1 : 0);
+  moonbit_decref(value);
+  return publish_tools(candidate);
+}
+static bool plugin_preflight(void *context, int32_t snapshot, const char *registry_json) {
+  (void)context; (void)registry_json;
+  const char *reason = NULL;
+  if (host.quitting) return false;
+  gboolean accepted = mc_linux_capture_preflight_tools(snapshot, &reason);
+  if (!accepted) set_status(reason ? reason : "请先完成当前截图输入。");
+  return accepted != FALSE;
+}
+static void plugin_discard(void *context) {
+  (void)context;
+  mc_linux_capture_discard_tools();
+  queue_tool_settings_refresh();
+}
+static void plugin_publish(void *context, int32_t snapshot, const char *registry_json) {
+  (void)context; (void)registry_json;
+  close_plugin_result();
+  int previous = host.tool_snapshot;
+  host.tool_snapshot = snapshot;
+  g_free(host.tool_layout);
+  host.tool_layout = core_text(tool_registry_snapshot_layout(snapshot));
+  mc_linux_capture_publish_tools(snapshot);
+  read_pin_preference();
+  sync_pin_feature();
+  if (previous > 0) tool_registry_snapshot_close(previous);
+  queue_tool_settings_refresh();
+}
+static void plugin_message(void *context, const char *text, bool error) {
+  (void)context;
+  g_free(host.plugin_message);
+  host.plugin_message = g_strdup(text ? text : "");
+  if (!host.quitting) set_status(host.plugin_message);
+  if (error) g_printerr("Plugin host: %s\n", host.plugin_message);
+  queue_tool_settings_refresh();
+}
+static void plugin_result_destroyed(GtkWidget *widget, gpointer data) {
+  (void)data;
+  if (host.plugin_result == widget) {
+    host.plugin_result = NULL;
+    host.plugin_result_capture = 0;
+  }
+}
+static void close_plugin_result(void) {
+  if (host.plugin_result) gtk_widget_destroy(host.plugin_result);
+}
+static void copy_plugin_result(GtkButton *button, gpointer data) {
+  (void)button;
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(data));
+  GtkTextIter begin, end;
+  gtk_text_buffer_get_bounds(buffer, &begin, &end);
+  char *text = gtk_text_buffer_get_text(buffer, &begin, &end, FALSE);
+  gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD), text, -1);
+  g_free(text);
+}
+static void plugin_result(void *context, int32_t capture, const char *tool_id, const char *title,
+    const char *text, bool document_changed) {
+  (void)context; (void)tool_id;
+  if (host.quitting || !mc_linux_capture_plugin_result(capture, document_changed)) return;
+  close_plugin_result();
+  if (document_changed) return;
+  host.plugin_result = gtk_application_window_new(host.application);
+  host.plugin_result_capture = capture;
+  host.plugin_result_revision = image_session_revision(capture);
+  gtk_window_set_title(GTK_WINDOW(host.plugin_result), title && *title ? title : "插件结果");
+  gtk_window_set_default_size(GTK_WINDOW(host.plugin_result), 480, 320);
+  g_signal_connect(host.plugin_result, "destroy", G_CALLBACK(plugin_result_destroyed), NULL);
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+  gtk_container_set_border_width(GTK_CONTAINER(box), 16);
+  GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+  GtkWidget *view = gtk_text_view_new();
+  gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
+  gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_WORD_CHAR);
+  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)), text ? text : "", -1);
+  gtk_container_add(GTK_CONTAINER(scroll), view);
+  gtk_box_pack_start(GTK_BOX(box), scroll, TRUE, TRUE, 0);
+  GtkWidget *copy = gtk_button_new_with_label("复制");
+  gtk_widget_set_halign(copy, GTK_ALIGN_END);
+  g_signal_connect(copy, "clicked", G_CALLBACK(copy_plugin_result), view);
+  gtk_box_pack_start(GTK_BOX(box), copy, FALSE, FALSE, 0);
+  gtk_container_add(GTK_CONTAINER(host.plugin_result), box);
+  gtk_widget_show_all(host.plugin_result);
+  gtk_window_present(GTK_WINDOW(host.plugin_result));
+}
+static gboolean plugin_pump(gpointer data) {
+  (void)data;
+  if (!host.plugins) { host.plugin_poll = 0; return G_SOURCE_REMOVE; }
+  mc_desktop_plugins_pump(host.plugins);
+  gboolean busy = mc_desktop_plugins_busy(host.plugins);
+  if (busy != host.plugin_busy) {
+    host.plugin_busy = busy;
+    queue_tool_settings_refresh();
+  }
+  if (host.plugin_result && image_session_revision(host.plugin_result_capture) != host.plugin_result_revision)
+    close_plugin_result();
+  return G_SOURCE_CONTINUE;
+}
+static void open_plugins(void) {
+  if (host.plugins || !host.plugin_worker) return;
+  char *parent = g_path_get_dirname(host.config_path);
+  if (g_mkdir_with_parents(parent, 0700) != 0) {
+    plugin_message(NULL, "无法创建插件目录，仅启用内置工具。", true);
+    g_free(parent); return;
+  }
+  g_free(host.plugin_root);
+  host.plugin_root = g_build_filename(parent, "plugins-v2", NULL);
+  g_free(parent);
+  const MCDesktopPluginHooks hooks = {NULL, plugin_preflight, plugin_publish, plugin_discard,
+      plugin_message, plugin_result, NULL};
+  host.plugins = mc_desktop_plugins_open(host.plugin_root, host.plugin_worker,
+      host.tool_layout ? host.tool_layout : "", MC_TOOL_CAP_COMMANDS | MC_TOOL_CAP_USER, &hooks);
+  if (host.plugins) {
+    host.plugin_busy = mc_desktop_plugins_busy(host.plugins);
+    if (!host.plugin_poll) host.plugin_poll = g_timeout_add(20, plugin_pump, NULL);
+  } else if (!host.plugin_message || !*host.plugin_message) {
+    plugin_message(NULL, "插件服务不可用，仅启用内置工具；已有插件文件未改动。", true);
+  }
+}
+static void plugin_picker_destroyed(GtkWidget *widget, gpointer data) {
+  (void)data;
+  if (host.plugin_picker == widget) host.plugin_picker = NULL;
+}
+static void plugin_picker_response(GtkDialog *dialog, gint response, gpointer data) {
+  (void)data;
+  char *path = response == GTK_RESPONSE_ACCEPT ? gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog)) : NULL;
+  gtk_widget_destroy(GTK_WIDGET(dialog));
+  if (path && host.plugins && !host.quitting) {
+    if (mc_desktop_plugins_import(host.plugins, path)) set_status("正在验证并安装插件…");
+    queue_tool_settings_refresh();
+  }
+  g_free(path);
+}
+static void import_plugin(GtkButton *button, gpointer data) {
+  (void)button; (void)data;
+  if (!host.plugins || host.quitting || mc_desktop_plugins_busy(host.plugins)) return;
+  if (host.plugin_picker) { gtk_window_present(GTK_WINDOW(host.plugin_picker)); return; }
+  host.plugin_picker = gtk_file_chooser_dialog_new("导入 MoonBit 插件 ZIP", GTK_WINDOW(host.window),
+      GTK_FILE_CHOOSER_ACTION_OPEN, "取消", GTK_RESPONSE_CANCEL, "导入", GTK_RESPONSE_ACCEPT, NULL);
+  gtk_window_set_modal(GTK_WINDOW(host.plugin_picker), TRUE);
+  gtk_window_set_destroy_with_parent(GTK_WINDOW(host.plugin_picker), TRUE);
+  gtk_file_chooser_set_local_only(GTK_FILE_CHOOSER(host.plugin_picker), TRUE);
+  GtkFileFilter *filter = gtk_file_filter_new();
+  gtk_file_filter_set_name(filter, "插件 ZIP (*.zip)");
+  gtk_file_filter_add_pattern(filter, "*.zip"); gtk_file_filter_add_pattern(filter, "*.ZIP");
+  gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(host.plugin_picker), filter);
+  g_signal_connect(host.plugin_picker, "response", G_CALLBACK(plugin_picker_response), NULL);
+  g_signal_connect(host.plugin_picker, "destroy", G_CALLBACK(plugin_picker_destroyed), NULL);
+  gtk_widget_show(host.plugin_picker);
+}
+static void uninstall_plugin(GtkButton *button, gpointer data) {
+  (void)data;
+  if (!host.plugins || host.quitting) return;
+  const char *id = g_object_get_data(G_OBJECT(button), "plugin-id");
+  if (!mc_desktop_plugins_uninstall(host.plugins, id)) queue_tool_settings_refresh();
+}
 static void tool_enabled(GtkToggleButton *button, gpointer data) {
   (void)data;
-  moonbit_string_t id = core_string(g_object_get_data(G_OBJECT(button), "tool-id"));
-  int candidate = tool_registry_snapshot_set_enabled(host.tool_snapshot, id,
-    gtk_toggle_button_get_active(button) ? 1 : 0);
-  moonbit_decref(id); publish_tools(candidate);
+  change_tool_enabled(g_object_get_data(G_OBJECT(button), "tool-id"), gtk_toggle_button_get_active(button));
 }
 static void move_tool(GtkButton *button, gpointer data) {
   int direction = GPOINTER_TO_INT(data), slot = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "tool-slot"));
@@ -457,6 +643,11 @@ static void move_tool(GtkButton *button, gpointer data) {
   if (current < 0 || current + direction < 0 || current + direction >= (int)ids->len) { g_ptr_array_unref(ids); return; }
   const char *before = direction < 0 ? g_ptr_array_index(ids, current - 1) :
     current + 2 < (int)ids->len ? g_ptr_array_index(ids, current + 2) : "";
+  if (host.plugins) {
+    if (!host.quitting && !mc_desktop_plugins_move(host.plugins, wanted, before)) queue_tool_settings_refresh();
+    g_ptr_array_unref(ids);
+    return;
+  }
   moonbit_string_t id = core_string(wanted), next = core_string(before);
   int candidate = tool_registry_snapshot_move(host.tool_snapshot, id, next);
   moonbit_decref(id); moonbit_decref(next); g_ptr_array_unref(ids);
@@ -485,6 +676,8 @@ static void queue_tool_settings_refresh(void) {
 static void refresh_tool_settings(void) {
   cancel_tool_settings_refresh();
   if (!host.tool_settings) return;
+  gboolean available = !host.quitting && (!host.plugins || !mc_desktop_plugins_busy(host.plugins));
+  if (host.plugin_import) gtk_widget_set_sensitive(host.plugin_import, host.plugins && available);
   GList *children = gtk_container_get_children(GTK_CONTAINER(host.tool_settings));
   for (GList *item = children; item; item = item->next) gtk_widget_destroy(item->data);
   g_list_free(children);
@@ -502,6 +695,7 @@ static void refresh_tool_settings(void) {
       GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
       GtkWidget *enabled = gtk_check_button_new_with_label(title);
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(enabled), tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_ENABLED) == 1);
+      gtk_widget_set_sensitive(enabled, available);
       g_object_set_data_full(G_OBJECT(enabled), "tool-id", g_strdup(id), g_free);
       g_signal_connect(enabled, "toggled", G_CALLBACK(tool_enabled), NULL);
       gtk_box_pack_start(GTK_BOX(row), enabled, TRUE, TRUE, 0);
@@ -513,11 +707,21 @@ static void refresh_tool_settings(void) {
       for (int direction = -1; direction <= 1; direction += 2) {
         GtkWidget *button = gtk_button_new_with_label(direction < 0 ? "↑" : "↓");
         gtk_widget_set_tooltip_text(button, direction < 0 ? "上移" : "下移");
-        gtk_widget_set_sensitive(button, direction < 0 ? position > 0 : position + 1 < rows);
+        gtk_widget_set_sensitive(button, available && (direction < 0 ? position > 0 : position + 1 < rows));
         g_object_set_data_full(G_OBJECT(button), "tool-id", g_strdup(id), g_free);
         g_object_set_data(G_OBJECT(button), "tool-slot", GINT_TO_POINTER(slot));
         g_signal_connect(button, "clicked", G_CALLBACK(move_tool), GINT_TO_POINTER(direction));
         gtk_box_pack_start(GTK_BOX(row), button, FALSE, FALSE, 0);
+      }
+      if (host.plugins && (tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT,
+          i, MC_TOOL_CAPABILITY) & MC_TOOL_CAP_USER)) {
+        GtkWidget *remove = gtk_button_new_with_label("卸载插件");
+        gtk_widget_set_sensitive(remove, available);
+        gtk_widget_set_tooltip_text(remove, "移除此插件的全部工具；不删除截图中的已有标注");
+        g_object_set_data_full(G_OBJECT(remove), "tool-id", g_strdup(id), g_free);
+        g_object_set_data_full(G_OBJECT(remove), "plugin-id", tool_text(host.tool_snapshot, i, MC_TOOL_PLUGIN_ID), g_free);
+        g_signal_connect(remove, "clicked", G_CALLBACK(uninstall_plugin), NULL);
+        gtk_box_pack_start(GTK_BOX(row), remove, FALSE, FALSE, 0);
       }
       gtk_box_pack_start(GTK_BOX(host.tool_settings), row, FALSE, FALSE, 0);
       g_free(id); g_free(title); g_free(reason); position++;
@@ -532,6 +736,7 @@ static void window_destroyed(GtkWidget *widget, gpointer data) {
   host.window = host.notebook = host.status = host.dark_toggle = host.pin_toggle = NULL;
   host.shortcut_note = host.shortcut_enable = NULL;
   host.tool_settings = NULL;
+  host.plugin_import = NULL;
   memset(host.recorders, 0, sizeof(host.recorders));
   cancel_recording();
 }
@@ -547,6 +752,18 @@ static gboolean finish_quit(gpointer data) {
     return G_SOURCE_REMOVE;
   }
   if (mc_linux_recording_busy() || mc_linux_video_editors_busy()) return G_SOURCE_CONTINUE;
+  if (!host.plugins_draining) {
+    host.plugins_draining = TRUE;
+    if (host.plugin_picker) gtk_widget_destroy(host.plugin_picker);
+    close_plugin_result();
+    mc_linux_capture_close();
+  }
+  if (host.plugins) {
+    mc_desktop_plugins_pump(host.plugins);
+    if (!mc_desktop_plugins_close(host.plugins)) return G_SOURCE_CONTINUE;
+    host.plugins = NULL;
+    if (host.plugin_poll) { g_source_remove(host.plugin_poll); host.plugin_poll = 0; }
+  }
   host.quit_poll = 0;
   MCGlobalShortcuts *shortcuts = host.global_shortcuts; host.global_shortcuts = NULL;
   mc_global_shortcuts_close(shortcuts);
@@ -653,6 +870,11 @@ static void show_preferences(void) {
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_pin_preferences(), gtk_label_new("贴图按键"));
   GtkWidget *tools = page();
   gtk_box_pack_start(GTK_BOX(tools), label("工具与完成操作分别排序。关闭标注工具不会删除已有标注；关闭贴图会关闭现有贴图。未接入的能力显示不可用。", TRUE), FALSE, FALSE, 0);
+  host.plugin_import = gtk_button_new_with_label("导入插件 ZIP…");
+  gtk_widget_set_halign(host.plugin_import, GTK_ALIGN_START);
+  gtk_widget_set_sensitive(host.plugin_import, host.plugins && !mc_desktop_plugins_busy(host.plugins));
+  g_signal_connect(host.plugin_import, "clicked", G_CALLBACK(import_plugin), NULL);
+  gtk_box_pack_start(GTK_BOX(tools), host.plugin_import, FALSE, FALSE, 0);
   GtkWidget *tool_scroll = gtk_scrolled_window_new(NULL, NULL);
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tool_scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
   host.tool_settings = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -676,7 +898,7 @@ static void show_preferences(void) {
   gtk_box_pack_start(GTK_BOX(about), label(host.core_ok ? "MoonBit native 核心已连接" : "MoonBit 核心检查失败", TRUE), FALSE, FALSE, 0);
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), about, gtk_label_new("关于"));
 
-  host.status = label("截图编辑后复制到剪贴板。设置保存在本机。", TRUE);
+  host.status = label(host.plugin_message ? host.plugin_message : "截图编辑后复制到剪贴板。设置保存在本机。", TRUE);
   gtk_box_pack_start(GTK_BOX(layout), host.status, FALSE, FALSE, 0);
   GtkWidget *quit = gtk_button_new_with_label("退出 Mooji Cut");
   gtk_widget_set_halign(quit, GTK_ALIGN_END);
@@ -694,6 +916,7 @@ static void menu_preferences(GtkWidget *widget, gpointer data) {
 
 static void capture_closed(gpointer data) {
   (void)data;
+  close_plugin_result();
   mc_linux_pins_hide(FALSE);
 }
 static gboolean pin_capture_result(GdkPixbuf *image, const GdkRectangle *bounds, gpointer data) {
@@ -701,7 +924,11 @@ static gboolean pin_capture_result(GdkPixbuf *image, const GdkRectangle *bounds,
   return host.pin_enabled && mc_linux_pin_image_at(image, bounds);
 }
 static gboolean can_pin_capture(gpointer data) { (void)data; return mc_linux_pins_enabled(); }
-static const MCLinuxCaptureHost capture_host = {pin_capture_result, capture_closed, NULL, can_pin_capture};
+static gboolean invoke_capture_plugin(gpointer data, int32_t capture, const char *id, const char *payload) {
+  (void)data;
+  return host.plugins && !host.quitting && mc_desktop_plugins_invoke(host.plugins, capture, id, payload);
+}
+static MCLinuxCaptureHost capture_host = {pin_capture_result, capture_closed, NULL, can_pin_capture, NULL};
 
 static gboolean begin_capture(gpointer data) {
   (void)data;
@@ -872,7 +1099,143 @@ static gboolean smoke_flush_tool_settings(void) {
     g_main_context_iteration(NULL, FALSE);
   return host.tool_settings_refresh == 0;
 }
+static gboolean smoke_wait_plugins(void) {
+  gint64 deadline = g_get_monotonic_time() + 15000000;
+  while (host.plugins && mc_desktop_plugins_busy(host.plugins) && g_get_monotonic_time() < deadline) {
+    mc_desktop_plugins_pump(host.plugins);
+    g_main_context_iteration(NULL, FALSE);
+    g_usleep(2000);
+  }
+  return host.plugins && !mc_desktop_plugins_busy(host.plugins);
+}
+static gboolean smoke_plugin_package(void) {
+  if (!host.plugins) return FALSE;
+  const char *sample = g_getenv("MOOJICUT_PLUGIN_SAMPLE");
+  if (!sample || !*sample) {
+    g_print("SKIP Linux app v2 ZIP route: MOOJICUT_PLUGIN_SAMPLE is not set.\n");
+    return TRUE;
+  }
+  const char *id = "user.com.moojicut.examples.numbered-box/numbered-box";
+  gboolean ok = host.plugins && mc_desktop_plugins_import(host.plugins, sample) && smoke_wait_plugins();
+  ok = smoke_tool_index(id) >= 0 && smoke_flush_tool_settings() && ok;
+  /* Exercise the application's real dispatch callback with a real core owner;
+   * capture's separate GTK smoke covers pointer -> toolbar -> this callback. */
+  int32_t capture = image_session_create_viewport(320, 240, 0, 0, 320, 240);
+  const char *payload = "{\"effect\":\"capture.annotations.add\",\"selection\":{\"x\":8,\"y\":12,\"width\":64,\"height\":32}}";
+  ok = capture > 0 && invoke_capture_plugin(NULL, capture, id, payload) && smoke_wait_plugins() && ok;
+  ok = image_session_count(capture) == 2 && image_session_undo(capture) == 1 && image_session_count(capture) == 0 && ok;
+  GtkWidget *toggle = smoke_tool_setting(host.tool_settings, id, NULL);
+  if (toggle) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), FALSE); else ok = FALSE;
+  ok = !invoke_capture_plugin(NULL, capture, id, payload) && image_session_count(capture) == 0 && ok;
+  mc_desktop_plugins_close_capture(host.plugins, capture);
+  image_session_dispose(capture);
+  ok = smoke_wait_plugins() && smoke_flush_tool_settings() && ok;
+  /* Use the actual uninstall button and its descriptor-supplied package ID. */
+  GtkWidget *remove = smoke_tool_setting(host.tool_settings, id, "卸载插件");
+  if (remove) gtk_button_clicked(GTK_BUTTON(remove)); else ok = FALSE;
+  ok = smoke_flush_tool_settings() && smoke_tool_index(id) < 0 && ok;
+  g_print("Linux app v2 ZIP route %s: real import/health, app dispatch, two annotations/one undo, disable and uninstall.\n",
+      ok ? "passed" : "FAILED");
+  return ok;
+}
+static gboolean smoke_plugin_settings(void) {
+  /* The real driver writes its own CAS index. A file at the private root makes
+   * a genuine storage failure, independently of process uid/permissions. */
+  gboolean ok = host.plugins != NULL;
+  char *original = g_strdup(host.tool_layout), *before = NULL, *after = NULL;
+  guint criticals = 0;
+  guint log_handler = g_log_set_handler("GLib-GObject", G_LOG_LEVEL_CRITICAL |
+      G_LOG_FLAG_FATAL | G_LOG_FLAG_RECURSION, smoke_tool_critical, &criticals);
+  ok = save_settings() && g_file_get_contents(host.config_path, &before, NULL, NULL) && ok;
+  GList *windows = g_list_copy(gtk_application_get_windows(host.application));
+  GdkPixbuf *image = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, 32, 24);
+  GtkWidget *pinned = NULL;
+  if (image) {
+    gdk_pixbuf_fill(image, 0x336699ff); mc_linux_pin_image(image); g_object_unref(image);
+    for (GList *item = gtk_application_get_windows(host.application); item; item = item->next)
+      if (!g_list_find(windows, item->data)) { pinned = item->data; break; }
+  }
+  g_list_free(windows);
+  if (pinned) g_object_add_weak_pointer(G_OBJECT(pinned), (gpointer *)&pinned); else ok = FALSE;
+  int previous = host.tool_snapshot;
+  char *backup = g_strconcat(host.plugin_root, ".smoke-backup", NULL);
+  gboolean moved = g_rename(host.plugin_root, backup) == 0;
+  gboolean blocked = moved && g_file_set_contents(host.plugin_root, "blocked", -1, NULL);
+  ok = blocked && ok;
+  GtkWidget *retired_toggle = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL);
+  if (retired_toggle) g_object_add_weak_pointer(G_OBJECT(retired_toggle), (gpointer *)&retired_toggle);
+  if (blocked && retired_toggle) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(retired_toggle), FALSE);
+  else ok = FALSE;
+  guint pending = host.tool_settings_refresh;
+  ok = retired_toggle && pending && ok;
+  if (blocked) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), FALSE);
+  ok = pinned && host.pin_enabled && mc_linux_pins_enabled() &&
+      gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(host.pin_toggle)) &&
+      host.tool_settings_refresh == pending && host.tool_snapshot == previous &&
+      !g_strcmp0(original, host.tool_layout) && ok;
+  if (blocked) ok = g_unlink(host.plugin_root) == 0 && ok;
+  if (moved) ok = g_rename(backup, host.plugin_root) == 0 && ok;
+  g_free(backup);
+  ok = smoke_flush_tool_settings() && !retired_toggle && ok;
+  if (retired_toggle) g_object_remove_weak_pointer(G_OBJECT(retired_toggle), (gpointer *)&retired_toggle);
+  ok = g_file_get_contents(host.config_path, &after, NULL, NULL) && !g_strcmp0(before, after) && ok;
+  g_free(before); g_free(after);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), FALSE);
+  ok = !pinned && !host.pin_enabled && !mc_linux_pins_enabled() && ok;
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(host.pin_toggle), TRUE);
+  ok = host.pin_enabled && mc_linux_pins_enabled() && smoke_flush_tool_settings() && ok;
+  GtkWidget *toggle = smoke_tool_setting(host.tool_settings, "builtin.image.numberedRectangle", NULL);
+  if (toggle) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), TRUE); else ok = FALSE;
+  ok = smoke_flush_tool_settings() && ok;
+  int index = smoke_tool_index("builtin.image.numberedRectangle");
+  ok = index >= 0 && tool_registry_snapshot_value(host.tool_snapshot, MC_TOOL_GROUP_SCREENSHOT,
+      index, MC_TOOL_ENABLED) == 1 && ok;
+  int arrow_before = smoke_tool_index("builtin.image.arrow");
+  GtkWidget *up = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", "↑");
+  if (up) gtk_button_clicked(GTK_BUTTON(up)); else ok = FALSE;
+  ok = arrow_before > 0 && smoke_tool_index("builtin.image.arrow") == arrow_before - 1 && ok;
+  char *saved_layout = g_strdup(host.tool_layout);
+  ok = save_settings() && ok;
+  GKeyFile *settings = g_key_file_new();
+  ok = g_key_file_load_from_file(settings, host.config_path, G_KEY_FILE_NONE, NULL) &&
+      !g_key_file_has_key(settings, "Tools", "layout", NULL) && ok;
+  g_key_file_unref(settings);
+  load_settings();
+  ok = !g_strcmp0(saved_layout, host.tool_layout) && ok;
+  /* Restart the actual driver from the durable index, rather than making
+   * load_settings appear to restore a second copy of the layout. */
+  if (mc_desktop_plugins_close(host.plugins)) host.plugins = NULL; else ok = FALSE;
+  if (host.plugin_poll) { g_source_remove(host.plugin_poll); host.plugin_poll = 0; }
+  open_plugins();
+  capture_host.on_user_tool = host.plugins ? invoke_capture_plugin : NULL;
+  ok = host.plugins && !g_strcmp0(saved_layout, host.tool_layout) && ok;
+  g_free(saved_layout);
+  ok = change_tool_enabled("builtin.image.numberedRectangle", FALSE) && smoke_flush_tool_settings() && ok;
+  GtkWidget *down = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", "↓");
+  if (down) gtk_button_clicked(GTK_BUTTON(down)); else ok = FALSE;
+  ok = !g_strcmp0(original, host.tool_layout) && ok;
+  GtkWidget *retired_settings = host.tool_settings;
+  g_object_add_weak_pointer(G_OBJECT(retired_settings), (gpointer *)&retired_settings);
+  ok = host.tool_settings_refresh != 0 && ok;
+  gtk_widget_destroy(host.window);
+  ok = !host.window && !host.tool_settings_refresh && !retired_settings && ok;
+  if (retired_settings) g_object_remove_weak_pointer(G_OBJECT(retired_settings), (gpointer *)&retired_settings);
+  show_preferences();
+  GtkWidget *current = smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL);
+  if (current) g_object_add_weak_pointer(G_OBJECT(current), (gpointer *)&current);
+  for (int i = 0; i < 32; i++) g_main_context_iteration(NULL, FALSE);
+  ok = current && smoke_tool_setting(host.tool_settings, "builtin.image.arrow", NULL) == current &&
+      !g_strcmp0(original, host.tool_layout) && criticals == 0 && ok;
+  if (current) g_object_remove_weak_pointer(G_OBJECT(current), (gpointer *)&current);
+  if (pinned) { g_object_remove_weak_pointer(G_OBJECT(pinned), (gpointer *)&pinned); mc_linux_pins_close(); }
+  g_log_remove_handler("GLib-GObject", log_handler);
+  g_free(original);
+  ok = smoke_plugin_package() && ok;
+  g_print("Linux v2 plugin settings %s: real CAS rollback, GTK enable/reorder, pin ownership, restart, one durable layout and deferred refresh lifetime.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
 static gboolean smoke_tool_settings(void) {
+  if (host.plugins) return smoke_plugin_settings();
   /* Exercise the actual GTK callbacks and disk boundary, not only pure snapshot
    * operations. A regular file as a parent makes the failure deterministic even
    * when the fixture runs with broad filesystem permissions. */
@@ -1022,7 +1385,7 @@ static gboolean smoke_recording_recents(void) {
 
 static gboolean smoke_check(gpointer data) {
   (void)data;
-  gboolean passed = host.core_ok && host.window && gtk_widget_get_visible(host.window);
+  gboolean passed = host.core_ok && host.plugins && host.window && gtk_widget_get_visible(host.window);
   passed = passed && gtk_notebook_get_n_pages(GTK_NOTEBOOK(host.notebook)) == 6;
   passed = save_smoke_screenshot() && passed;
   gtk_notebook_set_current_page(GTK_NOTEBOOK(host.notebook), 1);
@@ -1081,6 +1444,8 @@ static void startup(GApplication *application, gpointer data) {
   g_application_hold(application);
   g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &host.system_dark, NULL);
   load_settings();
+  open_plugins();
+  capture_host.on_user_tool = host.plugins ? invoke_capture_plugin : NULL;
   mc_linux_recording_init(host.application, recording_changed, NULL);
   mc_linux_recording_set_completed(recording_completed, NULL);
   mc_linux_pins_init(host.application, host.config_path);
@@ -1181,6 +1546,9 @@ int main(int argc, char **argv) {
   char *executable = g_file_read_link("/proc/self/exe", NULL);
   char *directory = executable ? g_path_get_dirname(executable) : g_get_current_dir();
   host.icon_path = g_build_filename(directory, "moojicut.png", NULL);
+  /* No PATH/current-directory fallback for executable authority. */
+  if (executable && g_path_is_absolute(executable))
+    host.plugin_worker = g_build_filename(directory, "MoojiPluginWorker", NULL);
   g_free(directory);
   g_free(executable);
   GApplicationFlags flags = G_APPLICATION_HANDLES_COMMAND_LINE;
@@ -1199,10 +1567,21 @@ int main(int argc, char **argv) {
   g_signal_connect(host.application, "command-line", G_CALLBACK(command_line), NULL);
   int result = g_application_run(G_APPLICATION(host.application), argc, argv);
   host.quitting = TRUE;
+  if (host.plugin_poll) { g_source_remove(host.plugin_poll); host.plugin_poll = 0; }
+  if (host.quit_poll) { g_source_remove(host.quit_poll); host.quit_poll = 0; }
+  if (host.plugin_picker) gtk_widget_destroy(host.plugin_picker);
+  close_plugin_result();
   MCGlobalShortcuts *shortcuts = host.global_shortcuts; host.global_shortcuts = NULL;
   mc_global_shortcuts_close(shortcuts);
   cancel_recording();
   mc_linux_capture_close();
+  /* Normal quit drains through finish_quit with a responsive GTK loop. A
+   * noninteractive smoke/application termination still owns worker cleanup. */
+  while (host.plugins) {
+    mc_desktop_plugins_pump(host.plugins);
+    if (mc_desktop_plugins_close(host.plugins)) host.plugins = NULL;
+    else g_usleep(2000);
+  }
   mc_linux_capture_publish_tools(0);
   if (host.tool_snapshot > 0) tool_registry_snapshot_close(host.tool_snapshot);
   mc_linux_pins_set_enabled(FALSE);
@@ -1218,6 +1597,7 @@ int main(int argc, char **argv) {
   g_free(host.icon_path);
   g_free(host.shortcut_status);
   g_free(host.tool_layout);
+  g_free(host.plugin_root); g_free(host.plugin_worker); g_free(host.plugin_message);
   g_free(host.last_video_source); g_free(host.last_video_draft);
   for (unsigned i = 0; i < 3; i++) g_free(host.shortcut_actual[i]);
   return result ? result : host.exit_code;

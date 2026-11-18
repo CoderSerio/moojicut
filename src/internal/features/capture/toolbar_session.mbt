@@ -542,6 +542,7 @@ fn toolbar_issue(
   candidate : Int32,
 ) -> Int32 {
   let ticket = capture_toolbar_ticket.val
+  toolbar_plugin_cancel(t.image)
   capture_toolbar_ticket.val += 1
   t.effect = effect
   t.ticket = ticket
@@ -840,6 +841,7 @@ pub fn toolbar_close(handle : Int32) -> Int32 {
     Some(t) => t
     None => return 0
   }
+  toolbar_plugin_cancel(t.image)
   toolbar_config_retire(handle)
   if t.candidate != 0 {
     ignore(candidate_close(t.candidate))

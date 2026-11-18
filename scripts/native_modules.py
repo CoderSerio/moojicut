@@ -23,6 +23,8 @@ SHARED_PREFIXES = {
     "shared.graphics": "platform/shared/graphics/",
     "shared.storage": "platform/shared/storage/",
     "shared.plugin_host.worker": "platform/shared/plugin_host/",
+    "shared.plugin_host.desktop": "platform/shared/plugin_host/",
+    "shared.plugin_host.desktop_gio": "platform/shared/plugin_host/",
     "shared.plugin_host.package": "platform/shared/plugin_host/",
     "shared.plugin_host.storage": "platform/shared/plugin_host/",
     "shared.plugin_host.protocol": "platform/shared/plugin_host/",

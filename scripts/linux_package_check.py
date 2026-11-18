@@ -17,6 +17,7 @@ import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -29,6 +30,8 @@ import plugin_worker_fixture
 FIXTURES = ("gst-media", "mp4-mux", "media-worker", "media-waveform", "video-editor-host", "video-editor",
             "plugin-worker-host")
 SAMPLE_PATH = "samples/capture-info.zip"
+PRODUCT_SAMPLE_PATH = "samples/numbered-box.zip"
+SAMPLE_PATHS = (SAMPLE_PATH, PRODUCT_SAMPLE_PATH)
 CHECK_COUNT = 9
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MAX_UNPACKED_BYTES = 2 * 1024 * 1024 * 1024
@@ -98,13 +101,49 @@ def elf_x64(path):
     return path
 
 
-def write_fixture_kit(destination, package_path, commit, executables, plugin_fixture_path):
-    """Bind existing ELF fixtures and the same MoonBit sample ZIP to a release.
+def product_sample_contents(package_path):
+    """Validate the fixed v2 app fixture without extracting or executing it.
+
+    This is fixture identity/bounds checking, not the product's package policy;
+    the unchanged application must still validate/import the entire real ZIP.
+    """
+    package = plugin_worker_fixture.regular_file(package_path, plugin_worker_fixture.ZIP_LIMIT)
+    limits = plugin_worker_fixture.MEMBER_LIMITS
+    with zipfile.ZipFile(package) as archive:
+        entries = archive.infolist()
+        names = [entry.filename for entry in entries]
+        if (len(names) != len(set(names)) or set(names) not in
+                ({"manifest.json", "plugin.wasm"}, set(limits))):
+            raise ValueError("Expected exactly the numbered-box ZIP members")
+        contents = {}
+        for entry in entries:
+            if (stat.S_IFMT(entry.external_attr >> 16) not in (0, stat.S_IFREG) or entry.flag_bits & 1 or
+                    entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) or
+                    not 0 < entry.file_size <= limits[entry.filename]):
+                raise ValueError("Unsupported, linked or oversized product ZIP member: " + entry.filename)
+            contents[entry.filename] = archive.read(entry)
+    manifest = plugin_worker_fixture.decode_json(contents["manifest.json"])
+    if (not isinstance(manifest, dict) or type(manifest.get("apiVersion")) is not int or
+            manifest.get("apiVersion") != 2 or
+            manifest.get("pluginId") != "com.moojicut.examples.numbered-box" or
+            manifest.get("entry") != "plugin.wasm" or manifest.get("runtime") != "extism-1" or
+            manifest.get("tools") != [
+                {"toolId": "numbered-box", "title": "编号框", "gesture": "dragRect", "effect": "capture.annotations.add"},
+                {"toolId": "describe", "title": "查看尺寸", "gesture": "invoke", "effect": "result.text"},
+            ]):
+        raise ValueError("ZIP is not the expected packaged numbered-box v2 sample")
+    if contents["plugin.wasm"][:8] != b"\0asm\1\0\0\0":
+        raise ValueError("Product sample must contain core Wasm; actual execution belongs to app-smoke")
+
+
+def write_fixture_kit(destination, package_path, commit, executables, plugin_fixture_path, product_fixture_path):
+    """Bind existing ELF fixtures and the two distinct MoonBit ZIPs to a release.
 
     destination is the complete archive filename (no overwrite). executables
     is the existing directory containing the fixed names in FIXTURES.
     plugin_fixture_path is the capture-info ZIP already used by the build's
-    worker checks. It is hashed as-is; no recompilation/repackaging is allowed.
+    worker checks. product_fixture_path is the numbered-box v2 ZIP used by
+    app-smoke. Both are hashed as-is; no recompilation/repackaging is allowed.
     Runtime files are deliberately excluded; target tests use the release's
     exact runtime. Returns the absolute destination Path.
     """
@@ -123,10 +162,13 @@ def write_fixture_kit(destination, package_path, commit, executables, plugin_fix
             raise ValueError("Fixture is not executable: " + name)
         files.append({"path": "bin/" + name, "sha256": sha256(binary), "bytes": binary.stat().st_size})
         sources["bin/" + name] = binary
-    sample = regular_file(plugin_fixture_path)
-    plugin_worker_fixture.sample_contents(sample)
-    files.append({"path": SAMPLE_PATH, "sha256": sha256(sample), "bytes": sample.stat().st_size})
-    sources[SAMPLE_PATH] = sample
+    for name, source, validate in (
+            (SAMPLE_PATH, plugin_fixture_path, plugin_worker_fixture.sample_contents),
+            (PRODUCT_SAMPLE_PATH, product_fixture_path, product_sample_contents)):
+        sample = regular_file(source)
+        validate(sample)
+        files.append({"path": name, "sha256": sha256(sample), "bytes": sample.stat().st_size})
+        sources[name] = sample
     manifest = {"schemaVersion": 1, "platform": "linux", "arch": "x64", "commit": commit,
                 "packageSha256": metadata["sha256"], "files": files}
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -147,7 +189,7 @@ def write_fixture_kit(destination, package_path, commit, executables, plugin_fix
                 if len(payload) != entry["bytes"] or hashlib.sha256(payload).hexdigest() != entry["sha256"]:
                     raise ValueError("Fixture changed while creating kit: " + entry["path"])
                 info = tarfile.TarInfo(entry["path"])
-                info.mode, info.size = (0o644 if entry["path"] == SAMPLE_PATH else 0o755), len(payload)
+                info.mode, info.size = (0o644 if entry["path"] in SAMPLE_PATHS else 0o755), len(payload)
                 output.addfile(info, io.BytesIO(payload))
         if sha256(package_path) != metadata["sha256"]:
             raise ValueError("Release changed while creating fixture kit")
@@ -165,7 +207,7 @@ def safe_unpack(archive, destination, *, kit=False):
         raise ValueError("Archive exceeds compressed size limit")
     if destination.exists() or destination.is_symlink():
         raise ValueError("Extraction destination must be fresh")
-    allowed = {"manifest.json", "bin", "samples", SAMPLE_PATH, *("bin/" + name for name in FIXTURES)}
+    allowed = {"manifest.json", "bin", "samples", *SAMPLE_PATHS, *("bin/" + name for name in FIXTURES)}
     with tarfile.open(archive, "r:gz") as source:
         members = source.getmembers()
         if len(members) > 20000:
@@ -211,22 +253,24 @@ def verify_kit(directory, metadata, commit):
             manifest.get("arch") != "x64" or manifest.get("commit") != commit or
             manifest.get("packageSha256") != metadata["sha256"]):
         raise ValueError("Fixture kit does not match the package/commit")
-    expected = {SAMPLE_PATH, *("bin/" + name for name in FIXTURES)}
+    expected = {*SAMPLE_PATHS, *("bin/" + name for name in FIXTURES)}
     entries = manifest.get("files")
     if not isinstance(entries, list) or len(entries) != len(expected):
-        raise ValueError("Fixture kit must contain exactly the hashed binaries and sample ZIP")
+        raise ValueError("Fixture kit must contain exactly the hashed binaries and both sample ZIPs")
     seen = set()
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("path") not in expected or entry["path"] in seen:
             raise ValueError("Invalid or duplicate fixture manifest path")
         seen.add(entry["path"])
-        sample = entry["path"] == SAMPLE_PATH
+        sample = entry["path"] in SAMPLE_PATHS
         path = regular_file(directory / entry["path"]) if sample else elf_x64(directory / entry["path"])
         if (entry.get("sha256") != sha256(path) or entry.get("bytes") != path.stat().st_size or
                 (not sample and os.name == "posix" and not path.stat().st_mode & 0o111)):
             raise ValueError("Fixture hash/size/mode mismatch: " + entry["path"])
-        if sample:
+        if entry["path"] == SAMPLE_PATH:
             plugin_worker_fixture.sample_contents(path)
+        elif entry["path"] == PRODUCT_SAMPLE_PATH:
+            product_sample_contents(path)
     actual = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_file()}
     if actual != expected | {"manifest.json"}:
         raise ValueError("Fixture kit contains unlisted files")
@@ -358,6 +402,8 @@ def check_package(package, fixtures, output, commit, *, execute=run_command, inh
             environment = (clean_environment(output, inherited) if name == "plugin-worker-host" else
                            bootstrap_environment(output, name, inherited) if bootstrap else
                            fixture_environment(binary, output, name, inherited))
+            if name == "app-smoke":
+                environment["MOOJICUT_PLUGIN_SAMPLE"] = str((output / "fixtures" / PRODUCT_SAMPLE_PATH).resolve())
             try:
                 result = execute(command, env=environment, cwd=output, log=logs / (name + ".log"), timeout=timeout)
                 if (name == "plugin-worker-host" and result.get("returncode") == 0 and

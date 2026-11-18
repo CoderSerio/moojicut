@@ -19,8 +19,23 @@ pub fn tool_registry_resolve(request_json : String) -> String {
 }
 
 ///|
+#export_name("tool_registry_resolve_packages")
+pub fn tool_registry_resolve_packages(request_json : String) -> String {
+  @tool_registry.tool_registry_resolve_packages(request_json)
+}
+
+///|
 #export_name("tool_registry_snapshot_open")
 pub fn tool_registry_snapshot_open(response : String, capabilities : Int) -> Int { @tool_registry.tool_registry_snapshot_open(response, capabilities) }
+
+///|
+#export_name("tool_registry_snapshot_open_packages")
+pub fn tool_registry_snapshot_open_packages(
+  registry : String,
+  capabilities : Int,
+) -> Int {
+  @tool_registry.tool_registry_snapshot_open_packages(registry, capabilities)
+}
 
 ///|
 #export_name("tool_registry_snapshot_count")

@@ -19,6 +19,7 @@ import {
   "moojicut/core/internal/features/video_editor/core" @video_project,
   "moojicut/core/internal/features/video_editor/ui" @video_ui,
   "moonbitlang/core/json",
+  "moonbitlang/core/encoding/utf8",
 }
 
 pkgtype(kind: "foreign_library")

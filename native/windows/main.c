@@ -8,7 +8,9 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,12 +19,14 @@
 #include "resource.h"
 #include "updates.h"
 #include "bindings/c/tool_registry.h"
+#include "bindings/c/image_session.h"
 #include "plugins/feature/capture/windows/capture.h"
 #include "plugins/feature/pin/windows/pinning.h"
 #include "plugins/feature/recording/windows/recording.h"
 #include "platform/windows/app/video_editor.h"
 #include "platform/windows/media/runtime.h"
 #include "platform/shared/app/video_editor_host.h"
+#include "platform/shared/plugin_host/desktop.h"
 
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "0.1.0-alpha.2"
@@ -37,6 +41,7 @@
 #define RECORD_HOTKEY 6103
 #define STOP_HOTKEY 6104
 #define RECORD_TIMER 6105
+#define PLUGIN_TIMER 6106
 #define SETTINGS_SUBCLASS 1
 
 extern int32_t preview_core_check(void);
@@ -70,7 +75,15 @@ static int32_t tool_snapshot;
 static BOOL tool_publishing, smoke_fail_tool_save;
 static unsigned smoke_tool_save_attempts;
 static HWND tools_window;
+static MCDesktopPlugins *desktop_plugins;
+static BOOL plugins_closing, plugin_chooser_active;
+static HWND plugin_chooser, plugin_result_window;
+static wchar_t plugin_status[512];
+static unsigned smoke_plugin_result_count;
+static wchar_t smoke_plugin_text[256];
+static BOOL smoke_plugin_document_changed;
 static void refresh_tools_page(HWND page, int selected);
+static void refresh_tool_selection(HWND page);
 static wchar_t shortcut_registration_error[180];
 static void refresh_global_shortcuts(void);
 static bool open_recording_editor(void *context, const wchar_t *source) {
@@ -147,7 +160,52 @@ static void capture_set_pins_hidden(void *context, BOOL hidden) {
     mc_pins_hide(hidden);
 }
 static BOOL capture_pin_enabled(void *context) { (void)context; return mc_pin_enabled(); }
-static const MCCaptureHost capture_services = {&instance, capture_pin_image, capture_set_pins_hidden, capture_pin_enabled};
+static char *utf8_from_wide(const wchar_t *value) {
+    if (!value) return NULL;
+    int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, NULL, 0, NULL, NULL);
+    char *result = size > 0 ? malloc((size_t)size) : NULL;
+    if (result && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, result, size, NULL, NULL) != size) {
+        free(result); result = NULL;
+    }
+    return result;
+}
+static wchar_t *wide_from_utf8(const char *value) {
+    if (!value) return NULL;
+    int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0);
+    wchar_t *result = size > 0 ? calloc((size_t)size, sizeof(*result)) : NULL;
+    if (result && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, result, size) != size) {
+        free(result); result = NULL;
+    }
+    return result;
+}
+static wchar_t *result_display_text(const char *text) {
+    wchar_t *wide = wide_from_utf8(text);
+    if (!wide) return NULL;
+    size_t length = wcslen(wide), extra = 0;
+    for (size_t i = 0; i < length; i++) if (wide[i] == L'\n' && (!i || wide[i - 1] != L'\r')) extra++;
+    if (!extra) return wide;
+    wchar_t *display = calloc(length + extra + 1, sizeof(*display));
+    if (display) for (size_t i = 0, out = 0; i < length; i++) {
+        if (wide[i] == L'\n' && (!i || wide[i - 1] != L'\r')) display[out++] = L'\r';
+        display[out++] = wide[i];
+    }
+    free(wide); return display;
+}
+static char *utf8_from_moon(moonbit_string_t value) {
+    int count = Moonbit_array_length(value);
+    wchar_t *wide = calloc((size_t)count + 1, sizeof(*wide));
+    if (!wide) return NULL;
+    memcpy(wide, value, (size_t)count * sizeof(*wide));
+    char *result = utf8_from_wide(wide); free(wide); return result;
+}
+static BOOL capture_user_tool(void *context, int32_t image, const wchar_t *id, const wchar_t *payload) {
+    (void)context;
+    if (!desktop_plugins || update_exit_pending || plugins_closing) return FALSE;
+    char *stable = utf8_from_wide(id), *request = utf8_from_wide(payload);
+    BOOL accepted = stable && request && mc_desktop_plugins_invoke(desktop_plugins, image, stable, request);
+    free(stable); free(request); return accepted;
+}
+static MCCaptureHost capture_services = {&instance, capture_pin_image, capture_set_pins_hidden, capture_pin_enabled, NULL};
 
 static void start_capture(void) {
     if (update_exit_pending) return;
@@ -212,7 +270,134 @@ static int find_tool_action(int32_t snapshot, const wchar_t *action) {
     }
     return -1;
 }
+static bool plugins_preflight(void *context, int32_t candidate, const char *registry_json) {
+    (void)context; (void)registry_json;
+    if (tool_publishing || update_exit_pending) return false;
+    tool_publishing = TRUE;
+    int pin = find_tool_action(candidate, L"pin");
+    BOOL enabled = pin >= 0 && tool_registry_snapshot_value(candidate, 0, pin, MC_TOOL_ENABLED) == 1;
+    BOOL ready = mc_capture_prepare_tools(candidate) && mc_pin_can_set_enabled(enabled);
+    if (!ready) { mc_capture_discard_tools(); tool_publishing = FALSE; }
+    return ready != FALSE;
+}
+static void plugins_discard(void *context) {
+    (void)context; mc_capture_discard_tools(); tool_publishing = FALSE;
+}
+static void plugins_publish(void *context, int32_t snapshot, const char *registry_json) {
+    (void)context; (void)registry_json;
+    int pin = find_tool_action(snapshot, L"pin");
+    BOOL enabled = pin >= 0 && tool_registry_snapshot_value(snapshot, 0, pin, MC_TOOL_ENABLED) == 1;
+    int32_t previous = tool_snapshot;
+    mc_pin_set_enabled(enabled);
+    tool_snapshot = snapshot;
+    mc_capture_commit_tools(snapshot);
+    if (previous > 0) tool_registry_snapshot_close(previous);
+    tool_publishing = FALSE;
+    if (tools_window) refresh_tools_page(tools_window, -1);
+}
+static void plugins_message(void *context, const char *text, bool error) {
+    (void)context;
+    wchar_t *message = wide_from_utf8(text);
+    if (!message) return;
+    wcsncpy_s(plugin_status, ARRAYSIZE(plugin_status), message, _TRUNCATE);
+    if (tools_window) SetDlgItemTextW(tools_window, IDC_TOOL_STATUS, plugin_status);
+    if (smoke_mode) fwprintf(error ? stderr : stdout, L"Windows plugin driver: %ls\n", message);
+    else if (error && tray_added) {
+        NOTIFYICONDATAW notice = tray;
+        notice.uFlags = NIF_INFO;
+        wcscpy_s(notice.szInfoTitle, ARRAYSIZE(notice.szInfoTitle), L"Mooji Cut");
+        wcsncpy_s(notice.szInfo, ARRAYSIZE(notice.szInfo), message, _TRUNCATE);
+        notice.dwInfoFlags = NIIF_WARNING;
+        Shell_NotifyIconW(NIM_MODIFY, &notice);
+    }
+    free(message);
+}
+static LRESULT CALLBACK plugin_result_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_CREATE) {
+        HWND edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+            ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY, 10, 10, 1, 1, window, (HMENU)(INT_PTR)1, instance, NULL);
+        if (!edit) return -1;
+        SendMessageW(edit, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        return 0;
+    }
+    if (message == WM_SIZE) {
+        RECT bounds; GetClientRect(window, &bounds);
+        MoveWindow(GetDlgItem(window, 1), 10, 10, max(1, bounds.right - 20), max(1, bounds.bottom - 20), TRUE);
+        return 0;
+    }
+    if (message == WM_SETFOCUS) { SetFocus(GetDlgItem(window, 1)); return 0; }
+    if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
+    if (message == WM_NCDESTROY && plugin_result_window == window) plugin_result_window = NULL;
+    return DefWindowProcW(window, message, wp, lp);
+}
+static void plugins_result(void *context, int32_t image, const char *tool_id, const char *title, const char *text, bool changed) {
+    (void)context; (void)tool_id;
+    if (smoke_mode) {
+        wchar_t *decoded = wide_from_utf8(text ? text : "");
+        smoke_plugin_result_count++;
+        smoke_plugin_document_changed = changed;
+        wcsncpy_s(smoke_plugin_text, ARRAYSIZE(smoke_plugin_text), decoded ? decoded : L"", _TRUNCATE);
+        free(decoded);
+    }
+    if (update_exit_pending || !mc_capture_plugin_result(image, changed)) return;
+    if (!text || !*text || smoke_mode) return;
+    wchar_t *heading = wide_from_utf8(title), *body = result_display_text(text);
+    if (!heading || !body) { free(heading); free(body); return; }
+    if (!plugin_result_window) {
+        WNDCLASSEXW klass = {0}; klass.cbSize = sizeof(klass); klass.hInstance = instance;
+        klass.lpfnWndProc = plugin_result_proc; klass.lpszClassName = L"MoojiCut.PluginResult";
+        klass.hCursor = LoadCursorW(NULL, IDC_ARROW); klass.hIcon = app_icon;
+        klass.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        if (RegisterClassExW(&klass) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS)
+            plugin_result_window = CreateWindowExW(0, klass.lpszClassName, heading, WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT, CW_USEDEFAULT, 560, 360, host, NULL, instance, NULL);
+    }
+    if (plugin_result_window) {
+        SetWindowTextW(plugin_result_window, *heading ? heading : L"Mooji Cut");
+        SetDlgItemTextW(plugin_result_window, 1, body);
+        ShowWindow(plugin_result_window, SW_SHOWNORMAL);
+    }
+    free(heading); free(body);
+}
+static BOOL open_desktop_plugins(const wchar_t *root, const wchar_t *worker) {
+    if (desktop_plugins) return FALSE;
+    char *store = utf8_from_wide(root), *executable = utf8_from_wide(worker);
+    moonbit_string_t layout = tool_registry_snapshot_layout(tool_snapshot);
+    char *seed = utf8_from_moon(layout); moonbit_decref(layout);
+    MCDesktopPluginHooks hooks = {NULL, plugins_preflight, plugins_publish, plugins_discard, plugins_message, plugins_result, NULL};
+    if (store && executable && seed) desktop_plugins = mc_desktop_plugins_open(store, executable, seed,
+        MC_TOOL_CAP_COMMANDS | MC_TOOL_CAP_USER, &hooks);
+    free(store); free(executable); free(seed);
+    if (desktop_plugins) {
+        capture_services.on_user_tool = capture_user_tool;
+        plugins_closing = FALSE;
+        SetTimer(host, PLUGIN_TIMER, 25, NULL);
+    }
+    return desktop_plugins != NULL;
+}
+static BOOL plugin_worker_path(wchar_t *path, DWORD capacity) {
+    DWORD count = GetModuleFileNameW(NULL, path, capacity);
+    if (!count || count >= capacity) return FALSE;
+    wchar_t *slash = wcsrchr(path, L'\\');
+    if (!slash || (size_t)(slash - path) + 23 >= capacity) return FALSE;
+    wcscpy_s(slash + 1, capacity - (size_t)(slash + 1 - path), L"MoojiPluginWorker.exe");
+    return TRUE;
+}
+static void initialize_desktop_plugins(void) {
+    wchar_t base[MAX_PATH], parent[MAX_PATH + 32], root[MAX_PATH + 48], worker[32768];
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, base)) ||
+        !plugin_worker_path(worker, ARRAYSIZE(worker))) return;
+    swprintf_s(parent, ARRAYSIZE(parent), L"%ls\\MoojiCut", base);
+    if (!CreateDirectoryW(parent, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return;
+    DWORD attributes = GetFileAttributesW(parent);
+    if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return;
+    swprintf_s(root, ARRAYSIZE(root), L"%ls\\plugins-v2", parent);
+    if (!open_desktop_plugins(root, worker))
+        wcscpy_s(plugin_status, ARRAYSIZE(plugin_status), L"插件服务暂不可用；内置工具仍可使用。");
+}
 static BOOL save_tool_layout(int32_t snapshot) {
+    if (desktop_plugins) return FALSE; /* v2 has one authoritative durable index. */
     if (smoke_mode) smoke_tool_save_attempts++;
     if (smoke_mode && smoke_fail_tool_save) return FALSE;
     moonbit_string_t value = tool_registry_snapshot_layout(snapshot);
@@ -255,6 +440,7 @@ static BOOL publish_tools(int32_t candidate, BOOL persist) {
     return ok;
 }
 static void load_tool_layout(BOOL legacy_pin_enabled) {
+    if (desktop_plugins) return;
     DWORD bytes = 0;
     moonbit_string_t saved = moonbit_make_string_raw(0);
     BOOL present = RegGetValueW(HKEY_CURRENT_USER, registry_path, L"ToolLayout", RRF_RT_REG_BINARY,
@@ -360,6 +546,14 @@ static BOOL set_pin_enabled(BOOL enabled) {
     int pin = find_tool_action(tool_snapshot, L"pin");
     if (pin < 0) return FALSE;
     moonbit_string_t id = tool_registry_snapshot_text(tool_snapshot, 0, pin, MC_TOOL_ID);
+    if (desktop_plugins) {
+        char *stable = utf8_from_moon(id); moonbit_decref(id);
+        BOOL ok = stable && !plugins_closing && !update_exit_pending &&
+            mc_desktop_plugins_enabled(desktop_plugins, stable, enabled != FALSE);
+        free(stable);
+        if (tools_window) refresh_tools_page(tools_window, -1);
+        return ok;
+    }
     int32_t candidate = tool_registry_snapshot_set_enabled(tool_snapshot, id, enabled ? 1 : 0);
     moonbit_decref(id);
     BOOL ok = publish_tools(candidate, TRUE);
@@ -440,14 +634,19 @@ static void refresh_tool_selection(HWND page) {
     int group = tool_page_group(page);
     int index = (int)SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCURSEL, 0, 0);
     BOOL valid = index >= 0 && index < tool_registry_snapshot_count(tool_snapshot, group);
-    EnableWindow(GetDlgItem(page, IDC_TOOL_ENABLED), valid);
+    BOOL editable = !update_exit_pending && !plugins_closing && !plugin_chooser_active &&
+        (!desktop_plugins || !mc_desktop_plugins_busy(desktop_plugins));
+    EnableWindow(GetDlgItem(page, IDC_TOOL_ENABLED), valid && editable);
     CheckDlgButton(page, IDC_TOOL_ENABLED, valid &&
         tool_registry_snapshot_value(tool_snapshot, group, index, MC_TOOL_ENABLED) == 1 ? BST_CHECKED : BST_UNCHECKED);
-    EnableWindow(GetDlgItem(page, IDC_TOOL_UP), valid && tool_neighbor(group, index, -1) >= 0);
-    EnableWindow(GetDlgItem(page, IDC_TOOL_DOWN), valid && tool_neighbor(group, index, 1) >= 0);
+    EnableWindow(GetDlgItem(page, IDC_TOOL_UP), valid && editable && tool_neighbor(group, index, -1) >= 0);
+    EnableWindow(GetDlgItem(page, IDC_TOOL_DOWN), valid && editable && tool_neighbor(group, index, 1) >= 0);
+    EnableWindow(GetDlgItem(page, IDC_TOOL_IMPORT), desktop_plugins && editable);
+    BOOL custom = valid && tool_registry_snapshot_value(tool_snapshot, group, index, MC_TOOL_CAPABILITY) == MC_TOOL_CAP_USER;
+    EnableWindow(GetDlgItem(page, IDC_TOOL_UNINSTALL), desktop_plugins && editable && custom);
     wchar_t *reason = valid ? copy_tool_text(tool_snapshot, group, index, MC_TOOL_UNAVAILABLE_REASON) : NULL;
     SetDlgItemTextW(page, IDC_TOOL_STATUS, reason && *reason ? reason :
-        valid ? L"修改自动保存；上下调整同组顺序。" : L"暂无可管理项。");
+        *plugin_status ? plugin_status : valid ? L"修改自动保存；上下调整同组顺序。" : L"暂无可管理项。");
     free(reason);
 }
 static void refresh_tools_page(HWND page, int selected) {
@@ -470,6 +669,36 @@ static void refresh_tools_page(HWND page, int selected) {
         selected >= 0 && selected < count ? selected : 0, 0);
     refresh_tool_selection(page);
 }
+static UINT_PTR CALLBACK plugin_import_hook(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
+    (void)wp; (void)lp;
+    if (message == WM_INITDIALOG) {
+        plugin_chooser = GetParent(dialog);
+        if (update_exit_pending) PostMessageW(plugin_chooser, WM_COMMAND, IDCANCEL, 0);
+    } else if (message == WM_DESTROY) plugin_chooser = NULL;
+    return 0;
+}
+static void import_plugin(HWND page) {
+    if (!desktop_plugins || plugins_closing || update_exit_pending || plugin_chooser_active ||
+        mc_desktop_plugins_busy(desktop_plugins)) return;
+    wchar_t path[32768] = {0};
+    OPENFILENAMEW picker = {0}; picker.lStructSize = sizeof(picker); picker.hwndOwner = settings;
+    picker.lpstrTitle = L"导入 Mooji Cut 插件";
+    picker.lpstrFilter = L"Mooji Cut 插件 (*.zip)\0*.zip\0\0";
+    picker.lpstrFile = path; picker.nMaxFile = ARRAYSIZE(path);
+    picker.Flags = OFN_EXPLORER | OFN_ENABLEHOOK | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    picker.lpfnHook = plugin_import_hook;
+    plugin_chooser_active = TRUE; refresh_tool_selection(page);
+    BOOL chosen = GetOpenFileNameW(&picker);
+    plugin_chooser_active = FALSE; plugin_chooser = NULL;
+    if (chosen && desktop_plugins && !plugins_closing && !update_exit_pending) {
+        char *value = utf8_from_wide(path);
+        BOOL accepted = value && mc_desktop_plugins_import(desktop_plugins, value);
+        free(value);
+        if (!accepted && IsWindow(page)) SetDlgItemTextW(page, IDC_TOOL_STATUS, L"无法导入插件，请检查 ZIP 文件后重试。");
+    }
+    if (tools_window) refresh_tool_selection(tools_window);
+    if (update_exit_pending) PostMessageW(host, WM_CLOSE, 0, 0);
+}
 static INT_PTR CALLBACK tools_page(HWND page, UINT message, WPARAM wp, LPARAM lp) {
     if (message == WM_INITDIALOG) {
         tools_window = page;
@@ -486,14 +715,42 @@ static INT_PTR CALLBACK tools_page(HWND page, UINT message, WPARAM wp, LPARAM lp
     int control = LOWORD(wp);
     if (control == IDC_TOOL_GROUP && HIWORD(wp) == CBN_SELCHANGE) { refresh_tools_page(page, 0); return TRUE; }
     if (control == IDC_TOOL_LIST && HIWORD(wp) == LBN_SELCHANGE) { refresh_tool_selection(page); return TRUE; }
-    if (HIWORD(wp) != BN_CLICKED || (control != IDC_TOOL_ENABLED && control != IDC_TOOL_UP && control != IDC_TOOL_DOWN)) return FALSE;
+    if (HIWORD(wp) != BN_CLICKED) return FALSE;
+    if (control == IDC_TOOL_IMPORT) { import_plugin(page); return TRUE; }
+    if (control != IDC_TOOL_ENABLED && control != IDC_TOOL_UP && control != IDC_TOOL_DOWN && control != IDC_TOOL_UNINSTALL) return FALSE;
+    if (update_exit_pending || plugins_closing || plugin_chooser_active ||
+        (desktop_plugins && mc_desktop_plugins_busy(desktop_plugins))) return TRUE;
     int group = tool_page_group(page), index = (int)SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCURSEL, 0, 0);
     if (index < 0) return TRUE;
     moonbit_string_t id = tool_registry_snapshot_text(tool_snapshot, group, index, MC_TOOL_ID);
     int32_t candidate = 0;
-    if (control == IDC_TOOL_ENABLED) candidate = tool_registry_snapshot_set_enabled(tool_snapshot, id,
+    BOOL ok = FALSE;
+    plugin_status[0] = L'\0';
+    if (desktop_plugins) {
+        char *stable = utf8_from_moon(id);
+        if (control == IDC_TOOL_UNINSTALL) {
+            moonbit_string_t plugin = tool_registry_snapshot_text(tool_snapshot, group, index, MC_TOOL_PLUGIN_ID);
+            char *identity = utf8_from_moon(plugin); moonbit_decref(plugin);
+            ok = identity && mc_desktop_plugins_uninstall(desktop_plugins, identity);
+            free(identity);
+        } else if (control == IDC_TOOL_ENABLED) {
+            ok = stable && mc_desktop_plugins_enabled(desktop_plugins, stable,
+                IsDlgButtonChecked(page, IDC_TOOL_ENABLED) == BST_CHECKED);
+        } else {
+            int next = tool_neighbor(group, index, control == IDC_TOOL_UP ? -1 : 1);
+            if (next >= 0) {
+                int before_index = control == IDC_TOOL_UP ? next : tool_neighbor(group, next, 1);
+                moonbit_string_t before = before_index >= 0 ?
+                    tool_registry_snapshot_text(tool_snapshot, group, before_index, MC_TOOL_ID) : moonbit_make_string_raw(0);
+                char *target = utf8_from_moon(before); moonbit_decref(before);
+                ok = stable && target && mc_desktop_plugins_move(desktop_plugins, stable, target);
+                free(target);
+            }
+        }
+        free(stable);
+    } else if (control == IDC_TOOL_ENABLED) candidate = tool_registry_snapshot_set_enabled(tool_snapshot, id,
         IsDlgButtonChecked(page, IDC_TOOL_ENABLED) == BST_CHECKED ? 1 : 0);
-    else {
+    else if (control == IDC_TOOL_UP || control == IDC_TOOL_DOWN) {
         int next = tool_neighbor(group, index, control == IDC_TOOL_UP ? -1 : 1);
         if (next >= 0) {
             int before_index = control == IDC_TOOL_UP ? next : tool_neighbor(group, next, 1);
@@ -503,7 +760,7 @@ static INT_PTR CALLBACK tools_page(HWND page, UINT message, WPARAM wp, LPARAM lp
             moonbit_decref(before);
         }
     }
-    BOOL ok = publish_tools(candidate, TRUE);
+    if (!desktop_plugins) ok = publish_tools(candidate, TRUE);
     int selected = index;
     if (ok) for (int i = 0; i < tool_registry_snapshot_count(tool_snapshot, group); i++) {
         moonbit_string_t found = tool_registry_snapshot_text(tool_snapshot, group, i, MC_TOOL_ID);
@@ -711,6 +968,18 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         return 0;
     case WM_REFRESH_SHORTCUTS: refresh_global_shortcuts(); return 0;
     case WM_TIMER:
+        if (wp == PLUGIN_TIMER) {
+            if (desktop_plugins) {
+                mc_desktop_plugins_pump(desktop_plugins);
+                if (plugins_closing && mc_desktop_plugins_close(desktop_plugins)) {
+                    desktop_plugins = NULL; capture_services.on_user_tool = NULL;
+                    KillTimer(window, PLUGIN_TIMER);
+                    PostMessageW(window, WM_CLOSE, 0, 0);
+                }
+            }
+            if (tools_window) refresh_tool_selection(tools_window);
+            return 0;
+        }
         if (smoke_mode && (wp == CAPTURE_TIMER || wp == RECORD_TIMER)) {
             KillTimer(window, (UINT_PTR)wp); return 0;
         }
@@ -753,11 +1022,22 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         update_exit_pending = TRUE;
         KillTimer(host, CAPTURE_TIMER);
         KillTimer(host, RECORD_TIMER);
+        if (plugin_chooser_active) {
+            if (plugin_chooser) PostMessageW(plugin_chooser, WM_COMMAND, IDCANCEL, 0);
+            return 0;
+        }
         if (mc_recording_busy()) {
             mc_recording_close();
         }
         if (!mc_win_video_editor_request_close_all(TRUE) || mc_recording_busy()) return 0;
         if (!mc_updates_prepare_close()) return 0;
+        mc_capture_close();
+        if (desktop_plugins) {
+            plugins_closing = TRUE;
+            if (!mc_desktop_plugins_close(desktop_plugins)) return 0;
+            desktop_plugins = NULL; capture_services.on_user_tool = NULL;
+        }
+        KillTimer(window, PLUGIN_TIMER);
         DestroyWindow(window); return 0;
     case WM_DESTROY:
         unregister_shortcuts();
@@ -765,6 +1045,7 @@ static LRESULT CALLBACK host_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         if (tool_snapshot) { tool_registry_snapshot_close(tool_snapshot); tool_snapshot = 0; }
         mc_pins_shutdown();
         mc_updates_shutdown();
+        if (plugin_result_window) DestroyWindow(plugin_result_window);
         if (settings) DestroyWindow(settings);
         if (tray_added) Shell_NotifyIconW(NIM_DELETE, &tray);
         tray_added = FALSE;
@@ -999,6 +1280,142 @@ cleanup:
     return passed ? 0 : 1;
 }
 
+static BOOL smoke_plugins_idle(DWORD milliseconds) {
+    ULONGLONG deadline = GetTickCount64() + milliseconds;
+    while (desktop_plugins && mc_desktop_plugins_busy(desktop_plugins)) {
+        mc_desktop_plugins_pump(desktop_plugins);
+        MSG message;
+        for (unsigned n = 0; n < 64 && PeekMessageW(&message, NULL, 0, 0, PM_REMOVE); n++) {
+            if (message.message == WM_QUIT) { PostQuitMessage((int)message.wParam); return FALSE; }
+            TranslateMessage(&message); DispatchMessageW(&message);
+        }
+        if (GetTickCount64() >= deadline) return FALSE;
+        Sleep(5);
+    }
+    return desktop_plugins != NULL;
+}
+static BOOL smoke_plugins_close(void) {
+    if (!desktop_plugins) return TRUE;
+    KillTimer(host, PLUGIN_TIMER);
+    ULONGLONG deadline = GetTickCount64() + 15000;
+    while (!mc_desktop_plugins_close(desktop_plugins)) {
+        mc_desktop_plugins_pump(desktop_plugins);
+        if (GetTickCount64() >= deadline) return FALSE;
+        Sleep(5);
+    }
+    desktop_plugins = NULL; capture_services.on_user_tool = NULL; plugins_closing = FALSE;
+    return TRUE;
+}
+static int smoke_find_tool_id(int group, const wchar_t *id) {
+    for (int i = 0; i < tool_registry_snapshot_count(tool_snapshot, group); i++) {
+        wchar_t *current = copy_tool_text(tool_snapshot, group, i, MC_TOOL_ID);
+        BOOL same = current && !wcscmp(current, id); free(current);
+        if (same) return i;
+    }
+    return -1;
+}
+static int run_plugins_smoke(void) {
+    wchar_t temporary[MAX_PATH], parent[MAX_PATH], root[MAX_PATH + 48], worker[32768], sample[32768];
+    wchar_t *stable = NULL, *custom_id = NULL, *custom_plugin = NULL;
+    BOOL ok = FALSE; HWND page = NULL; int32_t image = 0; const char *stage = "open";
+    DWORD count = GetTempPathW(ARRAYSIZE(temporary), temporary);
+    if (!count || count >= ARRAYSIZE(temporary) || !GetTempFileNameW(temporary, L"mcp", 0, parent)) return 1;
+    if (!DeleteFileW(parent) || !CreateDirectoryW(parent, NULL)) return 1;
+    swprintf_s(root, ARRAYSIZE(root), L"%ls\\plugins-v2", parent);
+    if (!plugin_worker_path(worker, ARRAYSIZE(worker)) || !open_desktop_plugins(root, worker)) goto cleanup;
+    stage = "settings controls";
+    if (!show_settings()) goto cleanup;
+    PropSheet_SetCurSel(settings, NULL, 5); page = PropSheet_GetCurrentPageHwnd(settings);
+    if (!page || !IsWindowEnabled(GetDlgItem(page, IDC_TOOL_IMPORT)) ||
+        IsWindowEnabled(GetDlgItem(page, IDC_TOOL_UNINSTALL))) goto cleanup;
+    stable = copy_tool_text(tool_snapshot, 0, 0, MC_TOOL_ID);
+    if (!stable) goto cleanup;
+    unsigned registry_saves = smoke_tool_save_attempts;
+    stage = "disable and move";
+    CheckDlgButton(page, IDC_TOOL_ENABLED, BST_UNCHECKED);
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_ENABLED, BN_CLICKED), 0);
+    if (tool_registry_snapshot_value(tool_snapshot, 0, 0, MC_TOOL_ENABLED) != 0 ||
+        smoke_tool_save_attempts != registry_saves) goto cleanup;
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_DOWN, BN_CLICKED), 0);
+    int moved = smoke_find_tool_id(0, stable);
+    if (moved <= 0 || SendDlgItemMessageW(page, IDC_TOOL_LIST, LB_GETCURSEL, 0, 0) != moved) goto cleanup;
+    if (!smoke_plugins_close()) goto cleanup;
+    stage = "reopen with a different seed";
+    /* A different seed proves reopening reads the v2 durable state, not the
+     * current controls or the old Windows registry value. */
+    moonbit_string_t identity = moonbit_make_string_raw((int32_t)wcslen(stable));
+    memcpy(identity, stable, wcslen(stable) * sizeof(wchar_t));
+    int32_t changed_seed = tool_registry_snapshot_set_enabled(tool_snapshot, identity, 1);
+    moonbit_decref(identity);
+    if (!publish_tools(changed_seed, FALSE) || !open_desktop_plugins(root, worker)) goto cleanup;
+    moved = smoke_find_tool_id(0, stable);
+    if (moved <= 0 || tool_registry_snapshot_value(tool_snapshot, 0, moved, MC_TOOL_ENABLED) != 0 ||
+        smoke_tool_save_attempts != registry_saves) goto cleanup;
+    refresh_tools_page(page, moved);
+    count = GetEnvironmentVariableW(L"MOOJICUT_PLUGIN_SAMPLE", sample, ARRAYSIZE(sample));
+    if (count >= ARRAYSIZE(sample)) goto cleanup;
+    if (count) {
+        stage = "sample ZIP import and real health";
+        int before = tool_registry_snapshot_count(tool_snapshot, 0);
+        char *path = utf8_from_wide(sample);
+        BOOL accepted = path && mc_desktop_plugins_import(desktop_plugins, path); free(path);
+        if (!accepted || !smoke_plugins_idle(30000) || tool_registry_snapshot_count(tool_snapshot, 0) <= before) goto cleanup;
+        int custom = -1;
+        for (int i = 0; i < tool_registry_snapshot_count(tool_snapshot, 0); i++)
+            if (tool_registry_snapshot_value(tool_snapshot, 0, i, MC_TOOL_CAPABILITY) == MC_TOOL_CAP_USER) { custom = i; break; }
+        if (custom < 0) goto cleanup;
+        custom_id = copy_tool_text(tool_snapshot, 0, custom, MC_TOOL_ID);
+        custom_plugin = copy_tool_text(tool_snapshot, 0, custom, MC_TOOL_PLUGIN_ID);
+        if (!custom_id || !custom_plugin) goto cleanup;
+        /* The packaged v2 sample exercises the same application callback as
+         * a capture USER_TOOL effect, using a real cropped MoonBit document. */
+        image = image_session_create_viewport(640, 480, 90, 60, 320, 180);
+        stage = "sample Unicode text";
+        unsigned result_count = smoke_plugin_result_count;
+        if (!image || !capture_user_tool(NULL, image,
+            L"user.com.moojicut.examples.numbered-box/describe", L"{\"effect\":\"result.text\"}") ||
+            !smoke_plugins_idle(15000) || smoke_plugin_result_count != result_count + 1 ||
+            wcscmp(smoke_plugin_text, L"320 × 180 像素") || smoke_plugin_document_changed || image_session_count(image)) goto cleanup;
+        stage = "sample annotations and undo";
+        if (!capture_user_tool(NULL, image, L"user.com.moojicut.examples.numbered-box/numbered-box",
+            L"{\"effect\":\"capture.annotations.add\",\"capture\":{\"width\":320,\"height\":180,\"format\":\"png\",\"revision\":0},"
+            L"\"selection\":{\"x\":8,\"y\":12,\"width\":64,\"height\":32}}") ||
+            !smoke_plugins_idle(15000) || smoke_plugin_result_count != result_count + 2 ||
+            !smoke_plugin_document_changed || image_session_count(image) != 2 ||
+            image_session_value(image, 0, 1) != 98 || image_session_value(image, 0, 2) != 72 ||
+            image_session_undo(image) != 1 || image_session_count(image)) goto cleanup;
+        mc_desktop_plugins_close_capture(desktop_plugins, image);
+        image_session_dispose(image); image = 0;
+        stage = "sample disable, reopen and uninstall";
+        refresh_tools_page(page, custom);
+        if (!IsWindowEnabled(GetDlgItem(page, IDC_TOOL_UNINSTALL))) goto cleanup;
+        CheckDlgButton(page, IDC_TOOL_ENABLED, BST_UNCHECKED);
+        SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_ENABLED, BN_CLICKED), 0);
+        if (tool_registry_snapshot_value(tool_snapshot, 0, custom, MC_TOOL_ENABLED) != 0) goto cleanup;
+        if (!smoke_plugins_close() || !open_desktop_plugins(root, worker)) goto cleanup;
+        custom = smoke_find_tool_id(0, custom_id);
+        if (custom < 0 || tool_registry_snapshot_value(tool_snapshot, 0, custom, MC_TOOL_ENABLED) != 0) goto cleanup;
+        refresh_tools_page(page, custom);
+        SendMessageW(page, WM_COMMAND, MAKEWPARAM(IDC_TOOL_UNINSTALL, BN_CLICKED), 0);
+        if (smoke_find_tool_id(0, custom_id) >= 0 || tool_registry_snapshot_count(tool_snapshot, 0) != before) goto cleanup;
+        printf("Windows v2 plugin ZIP settings smoke passed: actual worker health, Unicode result, cropped annotations + undo, disable, reopen, uninstall.\n");
+    }
+    ok = smoke_tool_save_attempts == registry_saves;
+cleanup:
+    if (!ok) fprintf(stderr, "Windows v2 plugin app smoke failed at %s.\n", stage);
+    if (image) {
+        if (desktop_plugins) mc_desktop_plugins_close_capture(desktop_plugins, image);
+        image_session_dispose(image);
+    }
+    if (!smoke_plugins_close()) ok = FALSE;
+    if (settings) DestroyWindow(settings);
+    free(stable); free(custom_id); free(custom_plugin);
+    /* Leave the unique isolated profile as failure evidence. No user profile
+     * or release package is ever written by this smoke. */
+    printf("Windows v2 plugin app smoke %s: durable settings, ordering, restart and no legacy registry writes.\n", ok ? "passed" : "FAILED");
+    return ok ? 0 : 1;
+}
+
 int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, int show) {
     INITCOMMONCONTROLSEX controls = {sizeof(controls), ICC_WIN95_CLASSES | ICC_HOTKEY_CLASS};
     WNDCLASSEXW klass;
@@ -1081,10 +1498,12 @@ int WINAPI wWinMain(HINSTANCE application, HINSTANCE previous, PWSTR command, in
         if (result == 0 && (!set_pin_enabled(TRUE) || !smoke_saved_tool_layout_matches(tool_snapshot))) result = 1;
         if (result == 0 && !mc_updates_smoke(instance)) result = 1;
         if (result == 0) result = mc_recording_smoke(instance);
+        if (result == 0) result = run_plugins_smoke();
         RegDeleteTreeW(HKEY_CURRENT_USER, registry_path);
         DestroyWindow(host);
     } else {
         if (!mc_updates_initialize(instance, host)) return 1;
+        initialize_desktop_plugins();
         taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
         refresh_global_shortcuts();
         if (!add_tray() || preferences_requested || open_on_start) show_settings();

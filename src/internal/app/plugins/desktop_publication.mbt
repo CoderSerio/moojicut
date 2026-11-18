@@ -42,7 +42,12 @@ fn DesktopPlugins::prepare_install(
   let manifest = host_string(fields, "manifest")
   let parsed = @contract.parse_plugin_package(manifest)
   let digest = host_string(fields, "digest")
-  let requested = host_strings(fields, "granted", 16)
+  let requested = if fields.get("importApproved") == Some(Json(true)) &&
+    !fields.contains("granted") {
+    parsed.contributions().map(contribution => contribution.id())
+  } else {
+    host_strings(fields, "granted", 16)
+  }
   let manifests = self.manifests.copy()
   manifests[parsed.plugin_id] = manifest
   let preview = desktop_registry(manifests, self.index.layout())

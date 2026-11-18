@@ -204,8 +204,13 @@ static NSDictionary *MCDefaultImageToolConfiguration(void) {
 static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     if (![candidate isKindOfClass:NSDictionary.class] || ![NSJSONSerialization isValidJSONObject:candidate]) return 0;
     moonbit_string_t input = MCEditJSON(candidate);
-    int32_t snapshot = tool_registry_snapshot_open(input,
-        MC_TOOL_CAP_OCR | MC_TOOL_CAP_TRANSLATE | MC_TOOL_CAP_SCROLL | MC_TOOL_CAP_COMMANDS | MC_TOOL_CAP_USER);
+    int capabilities = MC_TOOL_CAP_OCR | MC_TOOL_CAP_TRANSLATE | MC_TOOL_CAP_SCROLL |
+        MC_TOOL_CAP_COMMANDS | MC_TOOL_CAP_USER;
+    int32_t snapshot = tool_registry_snapshot_open_packages(input, capabilities);
+    // Keep the current product's legacy registry until its application cutover.
+    // Both openers independently reconstruct/verify the complete descriptor set.
+    if (!snapshot) snapshot = tool_registry_snapshot_open(input,
+        capabilities);
     moonbit_decref(input);
     return snapshot;
 }
@@ -937,7 +942,7 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
         (self.onOCR ? MC_TOOL_CAP_OCR : 0) |
         (self.onTranslate ? MC_TOOL_CAP_TRANSLATE : 0) |
         (self.overlayMode && self.onScrollCapture ? MC_TOOL_CAP_SCROLL : 0) |
-        (self.onUserTool ? MC_TOOL_CAP_USER : 0);
+        ((self.onUserToolV2 || self.onUserTool) ? MC_TOOL_CAP_USER : 0);
     moonbit_string_t request = MCEditJSON(@{
         @"hasRegion":(!self.overlayMode || self.hasCaptureRegion) ? @YES : @NO, @"blocked":@(blocked),
         @"fieldFocused":@([self nativeFieldFocused]), @"pinAvailable":self.onPinPNGData ? @YES : @NO,
@@ -1018,7 +1023,17 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
         case MC_CAPTURE_TOOLBAR_OCR: success = self.onOCR != nil; if (success) self.onOCR(self); break;
         case MC_CAPTURE_TOOLBAR_TRANSLATE: success = self.onTranslate != nil; if (success) self.onTranslate(self); break;
         case MC_CAPTURE_TOOLBAR_SCROLL: success = self.onScrollCapture != nil; if (success) self.onScrollCapture(self); break;
-        case MC_CAPTURE_TOOLBAR_USER_TOOL: success = self.onUserTool != nil; if (success) self.onUserTool(self,identifier); break;
+        case MC_CAPTURE_TOOLBAR_USER_TOOL: {
+            BOOL (^dispatch)(MCImageEditorController *, NSString *, NSString *, int32_t) = self.onUserToolV2;
+            if (dispatch) {
+                NSString *payload = MCEditReadString(capture_toolbar_text(toolbar, MC_CAPTURE_TOOLBAR_PAYLOAD));
+                success = dispatch(self, identifier, payload, self.imageSession);
+            } else {
+                success = self.onUserTool != nil;
+                if (success) self.onUserTool(self,identifier);
+            }
+            break;
+        }
         default: success = NO; break;
     }
     if (self.toolbarHandle != toolbar) return;
@@ -1092,6 +1107,19 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 - (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error {
     NSAssert(NSThread.isMainThread,@"Tool configuration must be applied on the main thread");
     return [self preparedToolConfigurationPublication:candidate error:error] != nil;
+}
+- (void)discardToolConfigurationPublication {
+    if (self.configurationTicket) capture_toolbar_config_close(self.configurationTicket);
+    self.configurationTicket = 0; self.configurationCandidate = nil;
+}
+- (BOOL)refreshPluginDocumentForSession:(int32_t)session {
+    NSAssert(NSThread.isMainThread,@"Plugin document refresh belongs to the main thread");
+    if (!self.window || session <= 0 || session != self.imageSession) return NO;
+    NSDictionary *document = MCEditRead(image_session_document(session));
+    if (!document) return NO;
+    self.document = document;
+    [self refresh];
+    return YES;
 }
 - (void)completeToolConfigurationPublication:(NSDictionary *)candidate {
     self.configurationTicket = 0; self.configurationCandidate = nil;
@@ -1316,6 +1344,9 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 - (void)setOnUserTool:(void (^)(MCImageEditorController *,NSString *))handler {
     _onUserTool = [handler copy]; [self positionFloatingToolbar];
 }
+- (void)setOnUserToolV2:(BOOL (^)(MCImageEditorController *,NSString *,NSString *,int32_t))handler {
+    _onUserToolV2 = [handler copy]; [self positionFloatingToolbar];
+}
 - (void)setPluginIcons:(NSDictionary<NSString *,NSImage *> *)icons {
     _pluginIcons = [icons copy] ?: @{};
     NSMutableDictionary *keys = [NSMutableDictionary dictionary], *assets = [NSMutableDictionary dictionary];
@@ -1401,6 +1432,48 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     [self.window invalidateCursorRectsForView:self.canvas];
 }
 - (NSDictionary *)shapeEvent:(NSString *)phase point:(NSPoint)point {
+    BOOL beginning = [phase isEqual:@"begin"];
+    // The shared image/toolbar session owns plugin drag geometry, generation,
+    // crop-relative release payload and one-shot dispatch. Native never creates
+    // a provisional annotation or translates the plugin selection itself.
+    BOOL pluginGesture = [(beginning ? self.activeCommand : self.gestureCommand) isEqual:@"plugin.run"];
+    if (pluginGesture) {
+        if (beginning) {
+            if (![self finishSharedText:YES] || ![self syncToolbarContext]) return nil;
+            moonbit_string_t command = MCEditString(@"plugin.run");
+            int32_t kind = (int32_t)self.activeTool;
+            int accepted = image_session_tool_begin(self.imageSession, command, point.x, point.y,
+                (int32_t)editor_style_get(self.styleHandle,kind,MC_STYLE_COLOR),
+                editor_style_get(self.styleHandle,kind,MC_STYLE_STROKE),
+                editor_style_get(self.styleHandle,kind,MC_STYLE_OPACITY), 0,
+                editor_style_get(self.styleHandle,kind,MC_STYLE_BLOCK));
+            moonbit_decref(command);
+            self.gestureCommand = accepted ? @"plugin.run" : nil;
+            return accepted ? @{@"active":@YES, @"command":NSNull.null, @"preview":NSNull.null} : nil;
+        }
+        int32_t event = [phase isEqual:@"move"] ? 0 : [phase isEqual:@"end"] ? 1 : [phase isEqual:@"cancel"] ? 2 : -1;
+        if (event < 0) return nil;
+        BOOL accepted = image_session_shape_event(self.imageSession,event,point.x,point.y) == 1;
+        NSDictionary *preview = nil;
+        if (accepted && event == 0 && image_session_preview_value(self.imageSession,0) == 1) {
+            unsigned rgb = (unsigned)image_session_preview_value(self.imageSession,5);
+            preview = @{@"type":@"rect", @"x":@(image_session_preview_value(self.imageSession,1)),
+                @"y":@(image_session_preview_value(self.imageSession,2)),
+                @"width":@(image_session_preview_value(self.imageSession,3)),
+                @"height":@(image_session_preview_value(self.imageSession,4)),
+                @"color":[NSString stringWithFormat:@"#%06x",rgb],
+                @"stroke":@(image_session_preview_value(self.imageSession,6)),
+                @"opacity":@(image_session_preview_value(self.imageSession,8))};
+        }
+        if (event != 0 || !accepted) {
+            if (!accepted) image_session_shape_event(self.imageSession,2,0,0);
+            self.gestureCommand = nil; self.gestureRevision = nil;
+            self.canvas.pending = nil;
+        }
+        if (accepted && event == 1 && capture_toolbar_value(self.toolbarHandle,MC_CAPTURE_TOOLBAR_EFFECT) != MC_CAPTURE_TOOLBAR_NONE)
+            [self handleToolbarEffect];
+        return accepted ? @{@"active":@(event == 0), @"preview":preview ?: NSNull.null, @"command":NSNull.null} : nil;
+    }
     NSMutableDictionary *request = [@{@"session":@(self.captureUIHandle), @"type":phase,
         @"x":@(point.x), @"y":@(point.y)} mutableCopy];
     if ([phase isEqual:@"begin"]) {
@@ -1529,6 +1602,7 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 - (void)cancel:(id)sender { (void)sender; [self activateToolbarItem:@"host.cancel"]; }
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
+    [self discardToolConfigurationPublication];
     if (self.textEdit) capture_text_cancel(self.imageSession,self.textEdit,
         (int32_t)capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_VERSION));
     [self endNativeTextInput];

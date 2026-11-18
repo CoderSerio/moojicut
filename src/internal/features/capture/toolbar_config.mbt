@@ -42,6 +42,8 @@ pub fn toolbar_config_prepare(
     None => return 0
   }
   if !toolbar_valid_entries(entries) ||
+    // Configuration preflight cannot erase another window's live preview.
+    toolbar_plugin_gestures.contains(t.image) ||
     t.effect != 0 ||
     t.blocked ||
     !toolbar_edit_valid(t) ||
@@ -116,6 +118,7 @@ pub fn toolbar_config_ready(handle : Int32, ticket : Int32) -> Int32 {
     _ => return 0
   }
   if toolbar_config_owners.get(handle) != Some(ticket) ||
+    toolbar_plugin_gestures.contains(t.image) ||
     t.effect != 0 ||
     t.blocked ||
     t.generation != c.generation ||

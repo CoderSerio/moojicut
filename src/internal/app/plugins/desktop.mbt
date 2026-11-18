@@ -22,6 +22,26 @@ let desktop_plugins : Map[Int32, DesktopPlugins] = Map([])
 let next_plugin_desktop : Ref[Int32] = Ref(1)
 
 ///|
+// The host restores only these archives and verifies them before opening.
+pub fn desktop_plugin_requirements(index_json : String) -> String {
+  @protocol.response(() => {
+    let packages = if index_json == "" {
+      []
+    } else {
+      parse_plugin_index(index_json)
+      .packages()
+      .map(entry => {
+        Json::object({
+          "pluginId": Json(entry.plugin_id),
+          "digest": Json(entry.digest),
+        })
+      })
+    }
+    plugin_ok({ "packages": Json::array(packages) })
+  })
+}
+
+///|
 fn plugin_ok(fields : Map[String, Json]) -> Json {
   fields["ok"] = Json(true)
   Json::object(fields)
@@ -115,7 +135,9 @@ pub fn desktop_plugin_open(
       // Desktop settings persist contribution switches in the toolbar layout.
       // No desktop publication currently produces a disabled package record.
       if !entry.enabled {
-        raise InputError("invalid_index", "A disabled package is not an active desktop record")
+        raise InputError(
+          "invalid_index", "A disabled package is not an active desktop record",
+        )
       }
       let manifest = @contract.parse_plugin_package(
         manifests.get(entry.plugin_id).unwrap_or(""),

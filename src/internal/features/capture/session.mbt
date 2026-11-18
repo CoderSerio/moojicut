@@ -356,10 +356,12 @@ pub fn image_session_shape_begin(id : Int, kind : Int, x : Double, y : Double,
 }
 
 ///|
-// The descriptor's dragRect interaction reuses rectangle input and rendering;
-// the feature handler builds a checked, atomic document command at gesture end.
+// The descriptor's dragRect interaction reuses rectangle input and rendering.
+// Built-ins commit a command; plugin.run dispatches through the owning toolbar
+// at release without changing the image document.
 pub fn image_session_tool_begin(id : Int, command : String, x : Double, y : Double,
   color : Int, stroke : Double, opacity : Double, _shape : Int, block : Double) -> Int {
+  if command == "plugin.run" { return toolbar_plugin_begin(id, x, y, color, stroke, opacity, block) }
   if command != "capture.numberedRectangle" { return 0 }
   if image_session_shape_begin(id, 1, x, y, color, stroke, opacity, 0, block) == 0 { return 0 }
   native_image_sessions[id].contribution = command
@@ -367,8 +369,10 @@ pub fn image_session_tool_begin(id : Int, command : String, x : Double, y : Doub
 }
 
 ///|
-// phase: 0=move, 1=end, 2=cancel. A no-area end succeeds without adding history.
+// phase: 0=move, 1=end, 2=cancel. A no-area end succeeds without adding history
+// or issuing a plugin effect. Hosts poll/ACK the toolbar after plugin release.
 pub fn image_session_shape_event(id : Int, phase : Int, x : Double, y : Double) -> Int {
+  if toolbar_plugin_gestures.contains(id) { return toolbar_plugin_event(id, phase, x, y) }
   let s = match native_image_sessions.get(id) { Some(s) => s; None => return 0 }
   let name = match phase { 0 => "move"; 1 => "end"; 2 => "cancel"; _ => return 0 }
   let result = @json.parse(@capture_ui.event(Json::object({

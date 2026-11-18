@@ -31,9 +31,15 @@ fn host_coordinate(
 fn host_selection(
   fields : Map[String, Json],
 ) -> @contract.PluginSelection? raise InputError {
-  match fields.get("selection") {
-    Some(Null) => None
-    Some(Object(rect)) =>
+  let selection = if fields.get("payload") is Some(String(payload)) {
+    let data = @contract.parse_object(payload, 16384)
+    data.get("selection").unwrap_or(Json::null())
+  } else {
+    fields.get("selection").unwrap_or(Json::null())
+  }
+  match selection {
+    Null => None
+    Object(rect) =>
       Some({
         x: host_coordinate(rect, "x"),
         y: host_coordinate(rect, "y"),

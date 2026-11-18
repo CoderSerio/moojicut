@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include "bindings/c/image_session.h"
 #include "bindings/c/plugin_application.h"
+#include "bindings/c/tool_registry.h"
 #include "native/macos/plugins/MCPluginPackageStore.h"
 #include "platform/shared/plugin_host/package_store.h"
 #include "platform/shared/plugin_host/worker_process.h"
@@ -114,6 +115,26 @@ static NSString *ReadIndex(const char *path) {
     return index;
 }
 
+static void CheckRegistry(NSDictionary *registry, NSString *numbered) {
+    moonbit_string_t result = MoonString(JSON(registry));
+    int32_t snapshot = tool_registry_snapshot_open_packages(result, MC_TOOL_CAP_USER | MC_TOOL_CAP_COMMANDS);
+    moonbit_decref(result);
+    NSCAssert(snapshot > 0, @"Open a v2 tool snapshot for the editor");
+    BOOL found = NO;
+    int32_t count = tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT);
+    for (int32_t i = 0; i < count; i++) {
+        moonbit_string_t raw = tool_registry_snapshot_text(snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_ID);
+        NSString *identifier = [[NSString alloc] initWithCharacters:raw length:(NSUInteger)Moonbit_array_length(raw)];
+        moonbit_decref(raw);
+        if ([identifier isEqual:numbered]) {
+            found = tool_registry_snapshot_value(snapshot, MC_TOOL_GROUP_SCREENSHOT, i, MC_TOOL_INTERACTION) ==
+                MC_TOOL_INTERACTION_DRAG_RECT;
+            break;
+        }
+    }
+    NSCAssert(found && tool_registry_snapshot_close(snapshot), @"Retain the drag gesture in the native snapshot");
+}
+
 static void CheckInstall(NSString *root, NSString *worker, NSURL *zipURL) {
     MCPluginPackageStore *reader = [[MCPluginPackageStore alloc] initWithRootURL:
         [NSURL fileURLWithPath:root isDirectory:YES]];
@@ -138,16 +159,25 @@ static void CheckInstall(NSString *root, NSString *worker, NSURL *zipURL) {
     NSDictionary *reserve = Require(app, @{@"op":@"reserveInstall", @"ticket":prepare[@"ticket"]});
     NSCAssert(reserve[@"expected"] == NSNull.null, @"A fresh install expects no durable index");
     NSCAssert([reserve[@"registry"][@"groups"][@"screenshot"] count] > 0, @"Prepare tool projection before touching disk");
+    CheckRegistry(reserve[@"registry"], numbered);
     Publish(app, path, reserve);
     NSCAssert(plugin_application_close(app), @"Close after installation drained");
 
+    NSString *indexText = ReadIndex(path);
+    moonbit_string_t rawIndex = MoonString(indexText);
+    NSDictionary *requirements = TakeResponse(plugin_application_requirements(rawIndex));
+    moonbit_decref(rawIndex);
+    NSArray *packages = requirements[@"packages"];
+    NSCAssert([requirements[@"ok"] boolValue] && packages.count == 1, @"Request the startup read plan");
+    NSString *restoredDigest = packages.firstObject[@"digest"];
+    NSCAssert([restoredDigest isEqual:digest], @"Restore exactly the installed content identity");
     MCPluginStoreBytes restoredZip = {0};
-    NSCAssert(mc_plugin_store_read_zip(path, digest.UTF8String, &restoredZip, NULL) == MC_PLUGIN_STORE_OK, @"Restore package");
+    NSCAssert(mc_plugin_store_read_zip(path, restoredDigest.UTF8String, &restoredZip, NULL) == MC_PLUGIN_STORE_OK, @"Restore package");
     NSData *verifiedZip = [NSData dataWithBytes:restoredZip.bytes length:restoredZip.size];
     NSCAssert([Digest(verifiedZip) isEqual:digest] && [verifiedZip isEqual:zip], @"Verify the restored archive");
     mc_plugin_store_bytes_free(&restoredZip);
     NSArray *verified = @[@{@"manifest":manifest, @"digest":digest}];
-    app = Open(ReadIndex(path), verified);
+    app = Open(indexText, verified);
     int32_t capture = image_session_create_viewport(640, 480, 90, 60, 320, 180);
     NSCAssert(capture > 0, @"Create a real screenshot session");
     NSDictionary *annotations = Require(app, @{@"op":@"startCall", @"capture":@(capture), @"tool":numbered,
