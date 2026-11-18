@@ -19,7 +19,7 @@
 | 二级属性与圆色块 | 全部内置标注属性接共享 frame、草稿事务与系统输入桥；B2b 本地完整回归通过 | 同一属性 frame/事务、真实控件与完整截图自动回归通过；旧控件已移除 | 同一属性 frame/事务、真实控件与完整截图自动回归通过；旧控件已移除 |
 | 基础录屏 | 区域/窗口/整屏及系统音频 | 区域 MP4，静音 | X11 区域与 Wayland ScreenCast/PipeWire，静音 WebM |
 | v2 视频编辑 | 共享根会话/UI、正式预览/导出与波形，本地回归通过 | 媒体、实际窗口编辑、保存失败恢复、重开及模态退出通过；构建打包通过 | Ubuntu 22 全部通过；其同一包在无开发 SDK 的 Ubuntu 24 上八项检查全部通过 |
-| OCR、翻译、用户 ZIP 插件 | 已有后端；用户插件仍为元信息输入/文本输出 v1 | 未接对应后端 | 未接对应后端 |
+| OCR、翻译、用户 ZIP 插件 | 已有后端。用户插件仍为元信息输入/文本输出 v1 | 随包 worker 已通过 CI。ZIP 导入、工具管理、OCR、翻译待接 | 随包 worker 已通过 Ubuntu 22 和 Ubuntu 24 CI。产品缺口与 Windows 相同 |
 | 更新安装 | 内置安装链 | 下载校验后手动换装 | 下载校验后手动换装 |
 
 Windows/Linux 的共享画布与生产录制后编辑流程均已接线；E1 批次的媒体/窗口/发行包验证已通过，B2a 源码 `37c4b8f` 通过 Windows、Ubuntu 22 完整 CI 和 Ubuntu 24 同包八项检查，见末尾各批记录。画布不拥有第二份剪辑模型，切分、空隙、历史和视口规则仍由 MoonBit 决定。最新 B2b 源码 `4de2741` 的[目标 CI](https://github.com/CoderSerio/moojicut/actions/runs/44237977671) 已补齐全部内置标注属性的自动验证，主工具栏的接入和验证另见 B2c。完整共享选区 UI 和真实输入法体验待验。三端麦克风/暂停、完整属性 Schema、用户插件 v2、独立 CLI/IPC 仍未完成。
@@ -464,6 +464,6 @@ Windows 回归改按实际注册的控件查工具提示。贴图测试在托管
 
 公共 worker、Wasm 运行限额与私有进程消息位于 `platform/shared/plugin_host`。macOS 产品入口仍使用既有插件管理器，进程执行改用共享 POSIX 适配。真实 MoonBit 示例已通过安装、执行、取消、超时、输出限额与回收验证。macOS 的隔离 App 已构建，只有 worker 链接 Wasm 引擎。
 
-Windows/Linux 的打包脚本都从构建清单编译同一个 worker，并随包附带固定版本的 Extism 和对应许可证。两端的 helper 和进程适配测试均已交叉编译、链接。目标 CI 从一次构建取得同一份 MoonBit ZIP，在两端分别运行打包前后的 worker，Ubuntu 24 用同一份 Ubuntu 22 包再运行一次。目标加载和运行仍以本批 CI 结果为准。
+Windows/Linux 从构建清单编译同一个 worker，随包附带固定版本的 Extism 和对应许可证。提交 `4242d77` 的 Windows/MSVC 和 Ubuntu 22 CI 共用同一次构建的 MoonBit ZIP，打包前后都通过中文结果、二进制传输、取消、超时、限额及进程回收测试。Ubuntu 24 使用同一个 Ubuntu 22 包，九项检查全部通过。两端 MoonBit 核心各 287 项、构建脚本各 115 项通过。[执行层兼容 CI](https://github.com/CoderSerio/moojicut/actions/runs/44256036651)
 
 本批两项依赖检查通过，原生历史 include 例外仍为 12 对。Windows/Linux 的用户 ZIP 导入与启停、插件 v2、通用属性和录屏扩展仍待实施。此处使用 v1 示例验证进程（启动、传输、回收），新产品协议按 D11 直接替换 v1。
