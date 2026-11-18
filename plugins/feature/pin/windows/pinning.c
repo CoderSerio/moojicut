@@ -751,45 +751,82 @@ static BOOL pin_menu_disable_smoke(HWND window, BOOL (*check_draining_transactio
       state.preflight_rejected && state.transaction_ok && mc_pin_can_set_enabled(TRUE) &&
       !IsWindow(window) && !pins && !hotkey_host && !menu_leases && feature_state == MC_FEATURE_DISABLED;
 }
+static BOOL pin_smoke_hosted_ci(void) {
+  const wchar_t *names[] = {L"CI", L"GITHUB_ACTIONS", L"RUNNER_ENVIRONMENT"};
+  const wchar_t *values[] = {L"true", L"true", L"github-hosted"};
+  for (size_t i = 0; i < ARRAYSIZE(names); i++) {
+    wchar_t value[32]; DWORD length = GetEnvironmentVariableW(names[i], value, ARRAYSIZE(value));
+    if (!length || length >= ARRAYSIZE(value) || _wcsicmp(value, values[i])) return FALSE;
+  }
+  return TRUE;
+}
+static void pin_smoke_pump_click(HWND window, BOOL *down, BOOL *up) {
+  ULONGLONG deadline = GetTickCount64() + 1000;
+  do {
+    MSG message;
+    while (GetTickCount64() < deadline && PeekMessageW(&message, window, 0, 0, PM_REMOVE)) {
+      if (message.message == WM_QUIT) { PostQuitMessage((int)message.wParam); return; }
+      if (message.hwnd != window) continue;
+      if (message.message == WM_LBUTTONDOWN) *down = TRUE;
+      if (message.message == WM_LBUTTONUP) *up = TRUE;
+      TranslateMessage(&message); DispatchMessageW(&message);
+    }
+    if (*down && *up) return;
+    MsgWaitForMultipleObjects(0, NULL, FALSE, 5, QS_INPUT | QS_SENDMESSAGE);
+  } while (IsWindow(window) && GetTickCount64() < deadline);
+}
 static BOOL pin_smoke_foreground(HWND window, BOOL isolated_ci) {
   SetForegroundWindow(window); SetFocus(window);
   if (GetForegroundWindow() == window && GetFocus() == window) return TRUE;
-  /* SetFocus only changes this thread's focus. The hosted CI desktop can
-   * still have a runner/console window in the foreground. Attach only during
-   * this isolated fixture's activation, never in production or a local run.
-   * AttachThreadInput resets key state; detach and restore on every path. */
-  if (!isolated_ci) return FALSE;
-  HWND foreground = GetForegroundWindow();
-  DWORD current = GetCurrentThreadId(), other = GetWindowThreadProcessId(foreground, NULL);
-  BYTE saved[256];
-  if (!other || other == current || !GetKeyboardState(saved)) {
-    fprintf(stderr, "Windows pin foreground setup FAILED: current=%lu other=%lu foreground=%p error=%lu\n",
-        current, other, (void *)foreground, GetLastError());
-    return FALSE;
+  /* Only the disposable GitHub-hosted desktop may receive synthetic input.
+   * A right-edge click takes the real resize/capture path without moving the
+   * image or entering the caption drag loop. Never click a foreign HWND. */
+  if (!isolated_ci || !pin_smoke_hosted_ci()) return FALSE;
+  DWORD process = 0;
+  if (GetWindowThreadProcessId(window, &process) != GetCurrentThreadId() ||
+      process != GetCurrentProcessId()) return FALSE;
+  RECT client; POINT saved, point, actual;
+  if (!GetClientRect(window, &client) || client.right < 2 || client.bottom < 2 ||
+      !GetCursorPos(&saved) || GetCapture() || (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) return FALSE;
+  point = (POINT){client.right - 1, client.bottom / 2};
+  if (!ClientToScreen(window, &point) || WindowFromPoint(point) != window) return FALSE;
+  BOOL moved = SetCursorPos(point.x, point.y);
+  BOOL safe = moved && GetCursorPos(&actual) && actual.x == point.x && actual.y == point.y &&
+      WindowFromPoint(actual) == window && !GetCapture();
+  INPUT input[2] = {0};
+  input[0].type = input[1].type = INPUT_MOUSE;
+  input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN; input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+  UINT inserted = safe ? SendInput(2, input, sizeof(INPUT)) : 0;
+  DWORD input_error = inserted == 2 ? ERROR_SUCCESS : GetLastError();
+  UINT released = 0;
+  if (inserted == 1 && GetCursorPos(&actual) && WindowFromPoint(actual) == window)
+    released = SendInput(1, &input[1], sizeof(INPUT));
+  BOOL down = FALSE, up = FALSE;
+  if (inserted) pin_smoke_pump_click(window, &down, &up);
+  /* A partial/blocked stream must not leave our injected button held. The
+   * capture/point guard also applies to this cleanup release. */
+  if (inserted && (!up || (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) &&
+      (GetCapture() == window || (GetCursorPos(&actual) && WindowFromPoint(actual) == window))) {
+    released = SendInput(1, &input[1], sizeof(INPUT));
+    up = FALSE;
+    pin_smoke_pump_click(window, &down, &up);
   }
-  BOOL attached = AttachThreadInput(current, other, TRUE);
-  DWORD attach_error = attached ? ERROR_SUCCESS : GetLastError();
-  BOOL requested = FALSE;
-  if (attached) {
-    requested = SetForegroundWindow(window);
-    SetActiveWindow(window); SetFocus(window);
-  }
-  BOOL detached = !attached || AttachThreadInput(current, other, FALSE);
-  DWORD detach_error = detached ? ERROR_SUCCESS : GetLastError();
-  BOOL restored = SetKeyboardState(saved);
   BOOL active = GetForegroundWindow() == window && GetFocus() == window;
-  if (!attached || !detached || !restored || !active)
-    fprintf(stderr, "Windows pin foreground setup FAILED: current=%lu other=%lu attached=%d attachError=%lu requested=%d detached=%d detachError=%lu restored=%d foreground=%p focus=%p expected=%p\n",
-        current, other, attached, attach_error, requested, detached, detach_error, restored,
-        (void *)GetForegroundWindow(), (void *)GetFocus(), (void *)window);
-  return attached && detached && restored && active;
+  BOOL clean = GetCapture() == NULL && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000);
+  if (GetCapture() == window) ReleaseCapture();
+  BOOL restored = SetCursorPos(saved.x, saved.y);
+  BOOL ok = safe && inserted == 2 && down && up && active && clean && restored;
+  if (!ok)
+    fprintf(stderr, "Windows pin foreground input FAILED: safe=%d inserted=%u error=%lu release=%u down=%d up=%d active=%d clean=%d restored=%d point=%ld,%ld foreground=%p focus=%p capture=%p expected=%p\n",
+        safe, inserted, input_error, released, down, up, active, clean, restored, point.x, point.y,
+        (void *)GetForegroundWindow(), (void *)GetFocus(), (void *)GetCapture(), (void *)window);
+  return ok;
 }
 static BOOL pin_interaction_smoke(Pin *pin) {
   BOOL ok = TRUE, restore_keyboard = FALSE;
   BOOL was_visible = IsWindowVisible(pin->window);
   BYTE saved[256] = {0};
-  wchar_t ci[16]; DWORD length = GetEnvironmentVariableW(L"CI", ci, ARRAYSIZE(ci));
-  BOOL isolated_ci = length && length < ARRAYSIZE(ci) && _wcsicmp(ci, L"true") == 0;
+  BOOL isolated_ci = pin_smoke_hosted_ci();
 #define PIN_CHECK(condition) do { if (!(condition)) { RECT actual = {0}; GetWindowRect(pin->window, &actual); \
     fprintf(stderr, "Windows pin interaction FAILED line %d: %s (zoom=%.17g rect=%ld,%ld,%ld,%ld handle=%d visible=%d selected=%d hidden=%d captureHidden=%d focus=%p foreground=%p capture=%p pin=%p)\n", \
         __LINE__, #condition, pin->zoom, actual.left, actual.top, actual.right, actual.bottom, pin->resize_handle, \
