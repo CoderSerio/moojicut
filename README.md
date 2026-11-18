@@ -58,13 +58,13 @@
 
 [官网下载](https://coderserio.github.io/moojicut/#download)
 
-当前版本：**[0.1.0-alpha.22](https://github.com/CoderSerio/moojicut/releases/latest)**。项目仍在 alpha 阶段，各系统的已交付能力如下；上文介绍完整产品功能，具体可用范围以此表为准。
+当前版本：**[0.1.0-alpha.23](https://github.com/CoderSerio/moojicut/releases/latest)**。项目仍在 alpha 阶段，各系统的已交付能力如下；上文介绍完整产品功能，具体可用范围以此表为准。
 
 | 平台与下载 | 运行要求 | 当前功能范围 |
 | --- | --- | --- |
-| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-macos-arm64.zip) | macOS 26+ | 截图标注、贴图、OCR/翻译、插件管理与导入；区域/窗口/整屏录制、系统声音及上述时间线编辑。 |
-| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-windows-x64.zip) | Windows 10/11，Intel / AMD | 截图标注、贴图、插件导入、区域静音录屏及共享时间线编辑。 |
-| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-linux-x64.tar.gz) | Ubuntu 22.04+ 兼容环境及[系统依赖](docs/guide.zh-CN.md#下载与开始使用) | 截图标注、贴图、插件导入、静音 WebM 录屏及共享时间线编辑。X11 自由框选，Wayland 通过系统门户选源。 |
+| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.23/moojicut-0.1.0-alpha.23-macos-arm64.zip) | macOS 26+ | 截图标注、贴图、OCR/翻译、插件管理与导入；区域/窗口/整屏录制、系统声音及上述时间线编辑。 |
+| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.23/moojicut-0.1.0-alpha.23-windows-x64.zip) | Windows 10/11，Intel / AMD | 截图标注、贴图、插件导入、区域静音录屏及共享时间线编辑。 |
+| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.23/moojicut-0.1.0-alpha.23-linux-x64.tar.gz) | Ubuntu 22.04+ 兼容环境及[系统依赖](docs/guide.zh-CN.md#下载与开始使用) | 截图标注、贴图、插件导入、静音 WebM 录屏及共享时间线编辑。X11 自由框选，Wayland 通过系统门户选源。 |
 
 OCR 和翻译目前由 macOS 提供。Windows / Linux 录屏最高 1920 × 1080 / 15 fps，暂不支持录制声音或暂停；自定义插件图标使用默认占位图。Wayland 的置顶、定位与输入受桌面环境约束；系统授权、多显示器和混合 DPI 仍待实机验收。
 
