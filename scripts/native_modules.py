@@ -21,6 +21,7 @@ SHARED_PREFIXES = {
     "shared.media_engine": "platform/shared/media/",
     "shared.image": "platform/shared/image/",
     "shared.graphics": "platform/shared/graphics/",
+    "shared.storage": "platform/shared/storage/",
 }
 
 

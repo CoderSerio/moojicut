@@ -123,7 +123,7 @@ static bool actual_export(const char *path) {
     return ok;
 }
 
-enum WaitFor { WAIT_READY, WAIT_CLOSED, WAIT_FAILED, WAIT_CHOOSER, WAIT_EXPORT, WAIT_SAVE_FAILED };
+enum WaitFor { HOST_WAIT_READY, HOST_WAIT_CLOSED, HOST_WAIT_FAILED, HOST_WAIT_CHOOSER, HOST_WAIT_EXPORT, HOST_WAIT_SAVE_FAILED };
 static bool wait_host(MCVideoEditorHost *host, enum WaitFor condition) {
     gint64 deadline = g_get_monotonic_time() + 45000000;
     while (g_get_monotonic_time() < deadline) {
@@ -132,17 +132,17 @@ static bool wait_host(MCVideoEditorHost *host, enum WaitFor condition) {
         bool ready = phase == MC_VIDEO_HOST_OPEN &&
             mc_video_editor_host_value(host, MC_EDITOR_MEDIA_READY) == 1 &&
             mc_video_editor_host_value(host, MC_EDITOR_DIRTY) == 0;
-        if ((condition == WAIT_READY && ready) ||
-            (condition == WAIT_CLOSED && phase == MC_VIDEO_HOST_CLOSED) ||
-            (condition == WAIT_FAILED && phase == MC_VIDEO_HOST_FAILED) ||
-            (condition == WAIT_CHOOSER && mc_video_editor_host_chooser(host) > 0) ||
-            (condition == WAIT_SAVE_FAILED && phase == MC_VIDEO_HOST_OPEN &&
+        if ((condition == HOST_WAIT_READY && ready) ||
+            (condition == HOST_WAIT_CLOSED && phase == MC_VIDEO_HOST_CLOSED) ||
+            (condition == HOST_WAIT_FAILED && phase == MC_VIDEO_HOST_FAILED) ||
+            (condition == HOST_WAIT_CHOOSER && mc_video_editor_host_chooser(host) > 0) ||
+            (condition == HOST_WAIT_SAVE_FAILED && phase == MC_VIDEO_HOST_OPEN &&
              mc_video_editor_host_value(host, MC_EDITOR_MEDIA_READY) == 1 &&
              mc_video_editor_host_value(host, MC_EDITOR_DIRTY) == 1 &&
              mc_video_editor_host_error(host)[0]) ||
-            (condition == WAIT_EXPORT && phase == MC_VIDEO_HOST_OPEN &&
+            (condition == HOST_WAIT_EXPORT && phase == MC_VIDEO_HOST_OPEN &&
              mc_video_editor_host_value(host, MC_EDITOR_EXPORT_BUSY) == 0)) return true;
-        if (phase == MC_VIDEO_HOST_FAILED && condition != WAIT_FAILED && condition != WAIT_CLOSED) break;
+        if (phase == MC_VIDEO_HOST_FAILED && condition != HOST_WAIT_FAILED && condition != HOST_WAIT_CLOSED) break;
         g_usleep(1000);
     }
     g_snprintf(error_text, sizeof error_text, "host wait %d, phase %d: %.850s", condition,
@@ -152,7 +152,7 @@ static bool wait_host(MCVideoEditorHost *host, enum WaitFor condition) {
 
 static bool close_host(MCVideoEditorHost *host) {
     bool requested = mc_video_editor_host_request_close(host, true);
-    bool closed = requested && wait_host(host, WAIT_CLOSED);
+    bool closed = requested && wait_host(host, HOST_WAIT_CLOSED);
     return closed && mc_video_editor_host_video(host) == NULL && mc_video_editor_host_free(host);
 }
 
@@ -311,7 +311,7 @@ static bool save_failure_recovery(const char *source, const char *directory, con
     char *retained = g_build_filename(preserved, "edit.json", NULL);
     if (!check(g_mkdir(folder, 0700) == 0, "create isolated draft directory for real IO failure")) return false;
     MCVideoEditorHost *host = mc_video_editor_host_create(source, draft, true, error_text, sizeof error_text);
-    if (!check(host && wait_host(host, WAIT_READY), "save-failure fixture opens and persists its initial draft")) return false;
+    if (!check(host && wait_host(host, HOST_WAIT_READY), "save-failure fixture opens and persists its initial draft")) return false;
     char *old_hash = file_hash(draft);
     double old_revision = mc_video_editor_host_number(host, MC_EDITOR_REVISION);
     /* Unlike chmod, replacing a parent directory with our own regular file
@@ -320,18 +320,18 @@ static bool save_failure_recovery(const char *source, const char *directory, con
                g_file_set_contents(folder, "owned blocker", -1, NULL),
                "replace draft parent with a regular file to force actual save IO failure")) return false;
     check(command(host, "mute-while-save-blocked", "{\"type\":\"mute\",\"muted\":true}") &&
-          wait_host(host, WAIT_SAVE_FAILED), "failed durable save reports error while the edited preview remains usable");
+          wait_host(host, HOST_WAIT_SAVE_FAILED), "failed durable save reports error while the edited preview remains usable");
     char *memory = document(host);
     check(memory && g_regex_match_simple("\"muted\"\\s*:\\s*true", memory, 0, 0) &&
           mc_video_editor_host_number(host, MC_EDITOR_REVISION) == old_revision + 1 &&
           mc_video_editor_host_number(host, MC_EDITOR_SAVED_REVISION) == old_revision &&
           hash_matches(retained, old_hash) && hash_matches(source, original),
           "save failure retains edited memory and dirty revision while preserving old draft and source bytes");
-    check(mc_video_editor_host_request_close(host, false) && wait_host(host, WAIT_SAVE_FAILED) &&
+    check(mc_video_editor_host_request_close(host, false) && wait_host(host, HOST_WAIT_SAVE_FAILED) &&
           !mc_video_editor_host_free(host), "close cannot discard dirty memory or report CLOSED after failed save");
     if (!check(g_unlink(folder) == 0 && g_rename(preserved, folder) == 0,
                "restore the exact original draft file after removing only the fixture-owned blocker")) return false;
-    check(mc_video_editor_host_retry(host) && wait_host(host, WAIT_READY),
+    check(mc_video_editor_host_retry(host) && wait_host(host, HOST_WAIT_READY),
           "retry acknowledges a real successful save after filesystem recovery");
     char *disk = NULL;
     check(g_file_get_contents(draft, &disk, NULL, NULL) && memory &&
@@ -355,7 +355,7 @@ static bool legacy_migration(const char *source, const char *directory, const ch
     char *v2_hash = file_hash(legacy_v2);
     MCVideoEditorHost *host = mc_video_editor_host_create_with_legacy(source, new_v2, legacy_v2,
         true, error_text, sizeof error_text);
-    if (!check(host && wait_host(host, WAIT_READY), "legacy-location v2 opens and publishes the genuinely missing new draft")) return false;
+    if (!check(host && wait_host(host, HOST_WAIT_READY), "legacy-location v2 opens and publishes the genuinely missing new draft")) return false;
     char *restored = document(host), *disk = NULL;
     check(restored && strcmp(restored, v2_document) == 0 &&
           g_file_get_contents(new_v2, &disk, NULL, NULL) && strcmp(g_strstrip(disk), v2_document) == 0 &&
@@ -372,7 +372,7 @@ static bool legacy_migration(const char *source, const char *directory, const ch
     char *v1_hash = file_hash(legacy_v1);
     host = mc_video_editor_host_create_with_legacy(source, new_v1, legacy_v1,
         true, error_text, sizeof error_text);
-    if (!check(host && wait_host(host, WAIT_READY), "host migrates legacy v1 through the shared document core")) return false;
+    if (!check(host && wait_host(host, HOST_WAIT_READY), "host migrates legacy v1 through the shared document core")) return false;
     restored = document(host);
     disk = NULL;
     check(restored && g_regex_match_simple("\"schemaVersion\"\\s*:\\s*2", restored, 0, 0) &&
@@ -392,7 +392,7 @@ static bool legacy_migration(const char *source, const char *directory, const ch
     char *bad_hash = file_hash(bad_new);
     host = mc_video_editor_host_create_with_legacy(source, bad_new, legacy_v2,
         true, error_text, sizeof error_text);
-    check(host && wait_host(host, WAIT_FAILED) && hash_matches(bad_new, bad_hash) && hash_matches(legacy_v2, v2_hash),
+    check(host && wait_host(host, HOST_WAIT_FAILED) && hash_matches(bad_new, bad_hash) && hash_matches(legacy_v2, v2_hash),
           "an existing bad new draft fails without falling back to or modifying legacy data");
     if (host) check(close_host(host), "failed migration guard still drains and frees");
     g_free(v2_hash); g_free(v1_hash); g_free(bad_hash);
@@ -428,7 +428,7 @@ int main(int argc, char **argv) {
     MCVideoEditorHost *host = mc_video_editor_host_create(source, draft, true, error_text, sizeof error_text);
     if (!check(host != NULL, "production host starts asynchronous source/draft IO")) return 1;
     check(!mc_video_editor_host_free(host), "opening host cannot be freed before worker drain");
-    if (!check(wait_host(host, WAIT_READY), "async probe, MoonBit session, preview apply and initial draft save complete")) return 1;
+    if (!check(wait_host(host, HOST_WAIT_READY), "async probe, MoonBit session, preview apply and initial draft save complete")) return 1;
     check(g_file_test(draft, G_FILE_TEST_IS_REGULAR) &&
           mc_video_editor_host_number(host, MC_EDITOR_SAVED_REVISION) ==
           mc_video_editor_host_number(host, MC_EDITOR_REVISION), "initial saved revision is backed by an actual draft file");
@@ -443,9 +443,9 @@ int main(int argc, char **argv) {
           mc_video_editor_host_value(host, MC_EDITOR_DIRTY) == 0,
           "public appearance event advances presentation serial without creating a document edit");
     check(command(host, "split-one", "{\"type\":\"split\",\"clipId\":\"v1\",\"atTicks\":90000}") &&
-          wait_host(host, WAIT_READY), "complete JSON command splits linked audio/video through the public host");
+          wait_host(host, HOST_WAIT_READY), "complete JSON command splits linked audio/video through the public host");
     check(command(host, "move-two", "{\"type\":\"move\",\"clipId\":\"v2\",\"startTicks\":180000}") &&
-          wait_host(host, WAIT_READY), "absolute linked move saves and applies a real one-second gap");
+          wait_host(host, HOST_WAIT_READY), "absolute linked move saves and applies a real one-second gap");
     char *saved_document = document(host);
     check(clip_start(saved_document, "v2", 180000) && clip_start(saved_document, "a2", 180000),
           "public document keeps linked video and audio at the requested output position");
@@ -456,21 +456,21 @@ int main(int argc, char **argv) {
     check(seek_gap && frame_at(host, 1500, true), "host preview exposes actual black pixels in the output gap");
     check(seek_pointer(host, 2500) && frame_at(host, 2500, false), "seek after the gap returns moved source pixels");
 
-    check(activate(host, "export") && wait_host(host, WAIT_CHOOSER), "shared export semantic opens one pending chooser ticket");
+    check(activate(host, "export") && wait_host(host, HOST_WAIT_CHOOSER), "shared export semantic opens one pending chooser ticket");
     int32_t ticket = mc_video_editor_host_chooser(host);
     check(ticket > 0 && mc_video_editor_host_chooser(host) == ticket &&
           !mc_video_editor_host_choose(host, ticket + 1, output), "pending chooser remains stable and rejects a foreign ticket");
-    check(mc_video_editor_host_choose(host, ticket, NULL) && wait_host(host, WAIT_EXPORT) &&
+    check(mc_video_editor_host_choose(host, ticket, NULL) && wait_host(host, HOST_WAIT_EXPORT) &&
           !g_file_test(output, G_FILE_TEST_EXISTS), "chooser cancellation completes without creating an export");
     check(hard_link(source, alias), "create an actual source hard-link export alias");
-    check(activate(host, "export") && wait_host(host, WAIT_CHOOSER), "export can be requested again after chooser cancellation");
+    check(activate(host, "export") && wait_host(host, HOST_WAIT_CHOOSER), "export can be requested again after chooser cancellation");
     ticket = mc_video_editor_host_chooser(host);
-    check(mc_video_editor_host_choose(host, ticket, alias) && wait_host(host, WAIT_EXPORT) &&
+    check(mc_video_editor_host_choose(host, ticket, alias) && wait_host(host, HOST_WAIT_EXPORT) &&
           mc_video_editor_host_error(host)[0] && hash_matches(alias, original) && hash_matches(source, original),
           "source alias export is rejected without overwriting either hard link");
-    check(activate(host, "export") && wait_host(host, WAIT_CHOOSER), "failed alias export leaves the editor usable");
+    check(activate(host, "export") && wait_host(host, HOST_WAIT_CHOOSER), "failed alias export leaves the editor usable");
     ticket = mc_video_editor_host_chooser(host);
-    check(mc_video_editor_host_choose(host, ticket, output) && wait_host(host, WAIT_EXPORT) && actual_export(output),
+    check(mc_video_editor_host_choose(host, ticket, output) && wait_host(host, HOST_WAIT_EXPORT) && actual_export(output),
           "host chooser drives actual H.264/AAC MP4 export and drained publication");
     char *disk_document = NULL;
     check(g_file_get_contents(draft, &disk_document, NULL, NULL) && saved_document &&
@@ -479,7 +479,7 @@ int main(int argc, char **argv) {
     char *draft_hash = file_hash(draft);
     check(close_host(host), "request_close reaches actual CLOSED with no frame before free succeeds");
     host = mc_video_editor_host_create(source, draft, true, error_text, sizeof error_text);
-    if (!check(host && wait_host(host, WAIT_READY), "saved production editor reopens through asynchronous IO")) return 1;
+    if (!check(host && wait_host(host, HOST_WAIT_READY), "saved production editor reopens through asynchronous IO")) return 1;
     char *reopened = document(host);
     check(saved_document && reopened && strcmp(saved_document, reopened) == 0 && hash_matches(draft, draft_hash),
           "reopen restores exactly the durable document without rewriting valid draft bytes");
@@ -488,11 +488,11 @@ int main(int argc, char **argv) {
     check(g_file_set_contents(bad_draft, "{broken draft", -1, NULL), "create malformed existing draft");
     char *bad_hash = file_hash(bad_draft);
     host = mc_video_editor_host_create(source, bad_draft, true, error_text, sizeof error_text);
-    check(host && wait_host(host, WAIT_FAILED) && hash_matches(bad_draft, bad_hash) && hash_matches(source, original),
+    check(host && wait_host(host, HOST_WAIT_FAILED) && hash_matches(bad_draft, bad_hash) && hash_matches(source, original),
           "malformed existing draft fails without replacing it or the original media");
     if (host) check(close_host(host), "failed editor still closes and releases the real worker");
     host = mc_video_editor_host_create(source, alias, true, error_text, sizeof error_text);
-    check(host && wait_host(host, WAIT_FAILED) && hash_matches(alias, original) && hash_matches(source, original),
+    check(host && wait_host(host, HOST_WAIT_FAILED) && hash_matches(alias, original) && hash_matches(source, original),
           "draft/source identity alias is rejected without overwriting the recording");
     if (host) check(close_host(host), "source-alias failure can be drained and freed");
     if (!save_failure_recovery(source, directory, original)) return 1;
@@ -504,7 +504,7 @@ int main(int argc, char **argv) {
           mc_video_editor_host_phase(host) == MC_VIDEO_HOST_CLOSING && !mc_video_editor_host_free(host),
           "immediate close keeps ownership while asynchronous probe and draft read are pending");
     if (host) {
-        check(wait_host(host, WAIT_CLOSED) && mc_video_editor_host_video(host) == NULL &&
+        check(wait_host(host, HOST_WAIT_CLOSED) && mc_video_editor_host_video(host) == NULL &&
               mc_video_editor_host_free(host) && !g_file_test(early_draft, G_FILE_TEST_EXISTS),
               "early close drains outstanding work and never creates a replacement draft");
     }

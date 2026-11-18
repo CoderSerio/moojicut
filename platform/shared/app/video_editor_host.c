@@ -1,17 +1,13 @@
 #include "platform/shared/app/video_editor_host.h"
 #include "bindings/c/video_media_plan.h"
 #include "platform/shared/media/waveform.h"
+#include "platform/shared/storage/file_sync.h"
 #include <gio/gio.h>
 #include <glib/gstdio.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
 #include <string.h>
-#ifdef _WIN32
-#include <io.h>
-#else
-#include <unistd.h>
-#endif
 
 #define DRAFT_LIMIT (4u * 1024u * 1024u)
 #define AUX_TOKEN (UINT64_C(1) << 63)
@@ -138,19 +134,11 @@ done:
 }
 
 static bool sync_path(const char *path, char *error, size_t capacity) {
-    int descriptor = g_open(path, O_RDWR, 0);
-    if (descriptor < 0) { error_text(error, capacity, g_strerror(errno)); return false; }
-#ifdef _WIN32
-    int result = _commit(descriptor);
-    int saved_errno = errno;
-    _close(descriptor);
-#else
-    int result = fsync(descriptor);
-    int saved_errno = errno;
-    close(descriptor);
-#endif
-    if (result) error_text(error, capacity, g_strerror(saved_errno));
-    return result == 0;
+    GError *failure = NULL;
+    bool success = mc_file_sync(path, &failure);
+    if (!success) error_text(error, capacity, failure->message);
+    g_clear_error(&failure);
+    return success;
 }
 
 static bool read_draft(DraftJob *job, GFile *file) {
@@ -212,20 +200,24 @@ static bool save_draft(DraftJob *job, GFile *file) {
         g_free(directory);
         int fd = g_mkstemp_full(temporary, O_RDWR, 0600);
         if (fd >= 0) {
-#ifdef _WIN32
-            _close(fd);
-#else
-            close(fd);
-#endif
+            // The descriptor belongs to GLib's CRT on Windows; g_close also
+            // returns its own GError rather than exposing another CRT's errno.
+            bool closed = g_close(fd, &failure);
             GFile *staging = g_file_new_for_path(temporary);
-            bool written = g_file_replace_contents(staging, job->bytes, strlen(job->bytes), NULL, FALSE,
+            bool written = closed && g_file_replace_contents(staging, job->bytes, strlen(job->bytes), NULL, FALSE,
                                                    G_FILE_CREATE_PRIVATE, NULL, NULL, &failure);
             if (written && sync_path(temporary, job->error, sizeof job->error)) {
                 committed = g_file_move(staging, file, G_FILE_COPY_NO_FALLBACK_FOR_MOVE, NULL, NULL, NULL, &failure);
             }
             g_file_delete(staging, NULL, NULL); /* Only our unique staging file. */
             g_object_unref(staging);
-        } else error_text(job->error, sizeof job->error, g_strerror(errno));
+        } else {
+#ifdef _WIN32
+            error_text(job->error, sizeof job->error, "Cannot create a private draft staging file");
+#else
+            error_text(job->error, sizeof job->error, g_strerror(errno));
+#endif
+        }
         g_free(temporary);
     }
     if (committed) {

@@ -618,7 +618,8 @@
         "shared.graphics"
       ],
       "includes": [
-        "shared.bindings"
+        "shared.bindings",
+        "shared.storage"
       ]
     },
     "shared.media_engine": {
@@ -633,6 +634,16 @@
         "platform/shared/media/mp4_mux.h",
         "platform/shared/media/media_worker.h",
         "platform/shared/media/waveform.h"
+      ],
+      "requires": [],
+      "includes": [
+        "shared.storage"
+      ]
+    },
+    "shared.storage": {
+      "sources": [],
+      "files": [
+        "platform/shared/storage/file_sync.h"
       ],
       "requires": []
     },

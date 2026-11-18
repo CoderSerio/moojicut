@@ -1,14 +1,13 @@
 #include "platform/shared/media/media_worker.h"
 #include "platform/shared/media/mp4_mux.h"
+#include "platform/shared/storage/file_sync.h"
 #include <gio/gio.h>
 #include <glib/gstdio.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <math.h>
 #include <string.h>
 #ifdef _WIN32
 #include <windows.h>
-#include <io.h>
 #else
 #include <unistd.h>
 #endif
@@ -190,16 +189,11 @@ static bool atomic_publish(const char *path, const char *destination, char *erro
 }
 
 static bool sync_file(const char *path, char *error, size_t capacity) {
-    int fd = g_open(path, O_RDWR, 0);
-    if (fd < 0) return reject(error, capacity, g_strerror(errno));
-#ifdef _WIN32
-    int result = _commit(fd), saved = errno;
-    _close(fd);
-#else
-    int result = fsync(fd), saved = errno;
-    close(fd);
-#endif
-    return result == 0 || reject(error, capacity, g_strerror(saved));
+    GError *failure = NULL;
+    bool success = mc_file_sync(path, &failure);
+    if (!success) error_text(error, capacity, failure->message);
+    g_clear_error(&failure);
+    return success;
 }
 
 static void clean_export(Worker *worker) {
@@ -269,7 +263,12 @@ static void start_export(Worker *worker, Request *request) {
     char *parent = g_path_get_dirname(request->path);
     worker->staging = g_build_filename(parent, ".moojicut-export-XXXXXX", NULL); g_free(parent);
     if (!g_mkdtemp_full(worker->staging, 0700)) {
+#ifdef _WIN32
+        // GLib's DLL sets its own CRT errno, not the application's errno.
+        export_complete(worker, MC_MEDIA_FAILED, "Cannot create a private export staging directory"); return;
+#else
         export_complete(worker, MC_MEDIA_FAILED, g_strerror(errno)); return;
+#endif
     }
     worker->staging_created = true;
     worker->raw = g_build_filename(worker->staging, request->request.flag ? "encoded.mp4" : "encoded.mkv", NULL);
