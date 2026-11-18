@@ -1612,7 +1612,12 @@ static BOOL smoke_action_enabled(const wchar_t *action) {
 }
 static BOOL CALLBACK smoke_find_toolbar_tip(HWND window,LPARAM result) {
   wchar_t name[64]={0}; GetClassNameW(window,name,ARRAYSIZE(name));
-  if (GetWindow(window,GW_OWNER)==capture.toolbar_view && !wcscmp(name,TOOLTIPS_CLASSW)) {
+  if (wcscmp(name,TOOLTIPS_CLASSW)) return TRUE;
+  /* A WS_POPUP tooltip created with a child HWND belongs to the top-level
+   * editor. Identify this canvas by its registered tool, not GW_OWNER (both
+   * the toolbar and property canvas have the same top-level owner). */
+  TOOLINFOW tool={sizeof(tool)}; tool.hwnd=capture.toolbar_view; tool.uId=1;
+  if (SendMessageW(window,TTM_GETTOOLINFOW,0,(LPARAM)&tool)) {
     *(HWND *)result=window; return FALSE;
   }
   return TRUE;
@@ -1716,67 +1721,51 @@ done:
   return ok;
 }
 static BOOL context_toolbar_smoke(void) {
+#define CONTEXT_CHECK(condition) do { if (!(condition)) { fprintf(stderr,"Windows toolbar context FAILED line %d: %s (tool=%d edit=%d version=%d generation=%d)\n",__LINE__,#condition,capture.tool,capture.text_edit,capture.text_edit ? text_version():0,capture.toolbar_generation); return FALSE; } } while (0)
   RECT initial = capture.toolbar;
-  if (style_visible(MC_STYLE_COLOR) || style_visible(MC_STYLE_FONT) ||
-      style_visible(MC_STYLE_STROKE))
-    return FALSE;
+  CONTEXT_CHECK(!style_visible(MC_STYLE_COLOR) && !style_visible(MC_STYLE_FONT) &&
+      !style_visible(MC_STYLE_STROKE));
   smoke_select_tool(TOOL_TEXT);
-  if (!style_visible(MC_STYLE_COLOR) || !style_visible(MC_STYLE_FONT) ||
-      !style_visible(MC_STYLE_OPACITY) ||
-      style_visible(MC_STYLE_STROKE) || capture.font_size != 32)
-    return FALSE;
-  if (!choose_style(MC_STYLE_COLOR, 0x246BFD) || !choose_style(MC_STYLE_OPACITY, .5))
-    return FALSE;
+  CONTEXT_CHECK(style_visible(MC_STYLE_COLOR) && style_visible(MC_STYLE_FONT) &&
+      style_visible(MC_STYLE_OPACITY) && !style_visible(MC_STYLE_STROKE) && capture.font_size == 32);
+  CONTEXT_CHECK(choose_style(MC_STYLE_COLOR, 0x246BFD) && choose_style(MC_STYLE_OPACITY, .5));
   smoke_select_tool(TOOL_RECT);
-  if (!style_visible(MC_STYLE_COLOR) || !style_visible(MC_STYLE_STROKE) ||
-      style_visible(MC_STYLE_FONT) ||
-      capture.color != 0xF26769 || capture.opacity != 1)
-    return FALSE;
-  if (!choose_style(MC_STYLE_STROKE, 8) || !choose_style(MC_STYLE_COLOR, 0x25A56A) ||
-      !choose_style(MC_STYLE_OPACITY, .3))
-    return FALSE;
+  CONTEXT_CHECK(style_visible(MC_STYLE_COLOR) && style_visible(MC_STYLE_STROKE) &&
+      !style_visible(MC_STYLE_FONT) && capture.color == 0xF26769 && capture.opacity == 1);
+  CONTEXT_CHECK(choose_style(MC_STYLE_STROKE, 8) && choose_style(MC_STYLE_COLOR, 0x25A56A) &&
+      choose_style(MC_STYLE_OPACITY, .3));
   step_style(TRUE);
-  if (capture.stroke != 9)
-    return FALSE;
+  CONTEXT_CHECK(capture.stroke == 9);
   step_style(FALSE);
-  if (capture.stroke != 8)
-    return FALSE;
+  CONTEXT_CHECK(capture.stroke == 8);
   smoke_select_tool(TOOL_ARROW);
-  if (capture.color != 0xF26769 || capture.opacity != 1 || capture.stroke != 4)
-    return FALSE;
-  if (!choose_style(MC_STYLE_COLOR, 0xFFFFFF) || !choose_style(MC_STYLE_OPACITY, .8))
-    return FALSE;
+  CONTEXT_CHECK(capture.color == 0xF26769 && capture.opacity == 1 && capture.stroke == 4);
+  CONTEXT_CHECK(choose_style(MC_STYLE_COLOR, 0xFFFFFF) && choose_style(MC_STYLE_OPACITY, .8));
   smoke_select_tool(TOOL_REDACT);
-  if (!style_visible(MC_STYLE_COLOR) || !style_visible(MC_STYLE_OPACITY) ||
-      style_visible(MC_STYLE_FONT) || style_visible(MC_STYLE_STROKE) ||
-      capture.color != 0x111111 || capture.opacity != 1)
-    return FALSE;
-  if (!choose_style(MC_STYLE_COLOR, 0x25A56A) || !choose_style(MC_STYLE_OPACITY, .2))
-    return FALSE;
+  CONTEXT_CHECK(style_visible(MC_STYLE_COLOR) && style_visible(MC_STYLE_OPACITY) &&
+      !style_visible(MC_STYLE_FONT) && !style_visible(MC_STYLE_STROKE) &&
+      capture.color == 0x111111 && capture.opacity == 1);
+  CONTEXT_CHECK(choose_style(MC_STYLE_COLOR, 0x25A56A) && choose_style(MC_STYLE_OPACITY, .2));
   smoke_select_tool(TOOL_TEXT);
-  if (capture.color != 0x246BFD || capture.opacity != .5)
-    return FALSE;
+  CONTEXT_CHECK(capture.color == 0x246BFD && capture.opacity == .5);
   smoke_select_tool(TOOL_RECT);
-  if (capture.color != 0x25A56A || capture.opacity != .3 || capture.stroke != 8)
-    return FALSE;
+  CONTEXT_CHECK(capture.color == 0x25A56A && capture.opacity == .3 && capture.stroke == 8);
   smoke_select_tool(TOOL_ARROW);
-  if (capture.color != 0xFFFFFF || capture.opacity != .8)
-    return FALSE;
+  CONTEXT_CHECK(capture.color == 0xFFFFFF && capture.opacity == .8);
   smoke_select_tool(TOOL_REDACT);
-  if (capture.color != 0x25A56A || capture.opacity != .2)
-    return FALSE;
+  CONTEXT_CHECK(capture.color == 0x25A56A && capture.opacity == .2);
   // Restore the drawing defaults before the existing geometry/export fixture.
   for (int tool = TOOL_RECT; tool <= TOOL_REDACT; tool++) {
     smoke_select_tool(tool);
     unsigned mask = (unsigned)editor_style_visible_mask(tool, 0);
     for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
-      if ((mask & (1u << field)) && !choose_style(field,
-          tool == TOOL_REDACT && field == MC_STYLE_COLOR ? 0x111111 : editor_style_default(field)))
-        return FALSE;
+      if (mask & (1u << field)) CONTEXT_CHECK(choose_style(field,
+          tool == TOOL_REDACT && field == MC_STYLE_COLOR ? 0x111111 : editor_style_default(field)));
   }
   int unavailable=0;
   HWND tooltip=NULL; EnumThreadWindows(GetCurrentThreadId(),smoke_find_toolbar_tip,(LPARAM)&tooltip);
-  if (!tooltip) return FALSE;
+  CONTEXT_CHECK(tooltip);
+  CONTEXT_CHECK(smoke_action_enabled(L"pin"));
   for (int i=0;i<ui_frame_semantic_count(capture.toolbar_frame);i++) {
     if (ui_frame_semantic_value(capture.toolbar_frame,i,MC_UI_SEM_ENABLED)==1) continue;
     moonbit_string_t id=ui_frame_semantic_text(capture.toolbar_frame,i,MC_UI_SEM_ID);
@@ -1789,19 +1778,21 @@ static BOOL context_toolbar_smoke(void) {
       ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_WIDTH)/2)*scale);
     hit.pt.y=rounded((ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_Y)+
       ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_HEIGHT)/2)*scale);
-    if (!SendMessageW(tooltip,TTM_HITTESTW,0,(LPARAM)&hit)) return FALSE;
+    CONTEXT_CHECK(SendMessageW(tooltip,TTM_HITTESTW,0,(LPARAM)&hit));
     wchar_t label[256]={0}; TOOLINFOW tip={sizeof(tip)}; tip.hwnd=capture.toolbar_view;
     tip.uId=hit.ti.uId; tip.lpszText=label;
     SendMessageW(tooltip,TTM_GETTEXTW,ARRAYSIZE(label),(LPARAM)&tip);
     moonbit_string_t expected=ui_frame_semantic_text(capture.toolbar_frame,i,MC_UI_SEM_TOOLTIP);
     BOOL matches=(size_t)Moonbit_array_length(expected)==wcslen(label) &&
       !memcmp(expected,label,wcslen(label)*sizeof(wchar_t)); moonbit_decref(expected);
-    if (!matches || !*label) return FALSE;
+    CONTEXT_CHECK(matches && *label);
   }
-  if (unavailable < 2) return FALSE;
+  CONTEXT_CHECK(unavailable >= 2);
   editor_command(ID_SELECT);
-  return EqualRect(&initial, &capture.toolbar) && !style_visible(MC_STYLE_COLOR) &&
-         !style_visible(MC_STYLE_FONT);
+  CONTEXT_CHECK(EqualRect(&initial, &capture.toolbar) && !style_visible(MC_STYLE_COLOR) &&
+      !style_visible(MC_STYLE_FONT));
+#undef CONTEXT_CHECK
+  return TRUE;
 }
 static BOOL independent_text_style_smoke(void) {
   smoke_select_tool(TOOL_TEXT);
@@ -2501,10 +2492,18 @@ int mc_capture_smoke(HINSTANCE instance) {
   /* Real child focus, IME and layered EDIT hit-testing require the generated
    * fixture window to be shown. Its pixels come only from the synthetic image. */
   ShowWindow(capture.editor, SW_SHOWNOACTIVATE); SetForegroundWindow(capture.editor); UpdateWindow(capture.editor);
-  if (!context_toolbar_smoke() || !shared_toolbar_smoke() || !independent_text_style_smoke() ||
-      !shared_text_fields_smoke() || !text_ime_rejection_smoke() || !text_cover_preview_smoke() ||
-      !text_document_boundaries_smoke() || !shape_variants_smoke() || !shared_properties_smoke() || !contribution_smoke())
-    CAPTURE_FAIL();
+#define CAPTURE_SUITE(test) do { if (!(test())) { fprintf(stderr,"Windows screenshot smoke FAILED suite %s\n",#test); CAPTURE_FAIL(); } } while (0)
+  CAPTURE_SUITE(context_toolbar_smoke);
+  CAPTURE_SUITE(shared_toolbar_smoke);
+  CAPTURE_SUITE(independent_text_style_smoke);
+  CAPTURE_SUITE(shared_text_fields_smoke);
+  CAPTURE_SUITE(text_ime_rejection_smoke);
+  CAPTURE_SUITE(text_cover_preview_smoke);
+  CAPTURE_SUITE(text_document_boundaries_smoke);
+  CAPTURE_SUITE(shape_variants_smoke);
+  CAPTURE_SUITE(shared_properties_smoke);
+  CAPTURE_SUITE(contribution_smoke);
+#undef CAPTURE_SUITE
   if (image_session_add(capture.session, TOOL_REDACT, 40, 60, 80, 60, 0, 4) != 1)
     CAPTURE_FAIL();
   begin_text((POINT){50, 70}, -1);
