@@ -29,6 +29,9 @@ static BOOL expected_storage_error;
 static unsigned error_dialogs;
 static BOOL quit_pending;
 static unsigned reopened_notifications;
+static HWND diagnostic_editor;
+static const char *diagnostic_stage = "startup";
+static ULONGLONG diagnostic_started, diagnostic_last;
 static LRESULT CALLBACK owner_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     if (message == MC_WIN_VIDEO_EDITOR_CHANGED) {
         if (lp == MC_VIDEO_HOST_OPEN || lp == MC_VIDEO_HOST_FAILED) {
@@ -53,6 +56,43 @@ static double number(const char *json, const char *name) {
 }
 static BOOL flag(const char *json, const char *name) {
     const char *at = field(json, name); return at && !strncmp(at, "true", 4);
+}
+/* Preserve progress even when a native modal loop never returns to the next
+ * assertion. These diagnostics do not dismiss dialogs or change test state. */
+static BOOL CALLBACK diagnostic_child(HWND window, LPARAM data) {
+    unsigned *count = (unsigned *)data;
+    if (++*count > 24) return FALSE;
+    wchar_t name[96], title[256];
+    GetClassNameW(window, name, ARRAYSIZE(name)); GetWindowTextW(window, title, ARRAYSIZE(title));
+    printf("INFO dialog child id=%d class=%ls visible=%d enabled=%d text=%ls\n",
+        GetDlgCtrlID(window), name, IsWindowVisible(window), IsWindowEnabled(window), title);
+    return TRUE;
+}
+static BOOL CALLBACK diagnostic_window(HWND window, LPARAM data) {
+    (void)data;
+    if (!IsWindowVisible(window)) return TRUE;
+    wchar_t name[96], title[256];
+    GetClassNameW(window, name, ARRAYSIZE(name)); GetWindowTextW(window, title, ARRAYSIZE(title));
+    printf("INFO thread window hwnd=%p owner=%p class=%ls enabled=%d title=%ls\n",
+        (void *)window, (void *)GetWindow(window, GW_OWNER), name, IsWindowEnabled(window), title);
+    if (!wcscmp(name, L"#32770")) {
+        unsigned count = 0; EnumChildWindows(window, diagnostic_child, (LPARAM)&count);
+    }
+    return TRUE;
+}
+static void diagnose(void) {
+    char *state = mc_win_video_editor_state(diagnostic_editor);
+    printf("INFO stage=%s elapsed=%llums window=%d busy=%d phase=%.0f revision=%.0f ready=%d dirty=%d error=%.700s\n",
+        diagnostic_stage, (unsigned long long)(GetTickCount64() - diagnostic_started),
+        IsWindow(diagnostic_editor), mc_win_video_editor_busy(), number(state, "phase"),
+        number(state, "revision"), flag(state, "mediaReady"), flag(state, "dirty"),
+        state && field(state, "error") ? field(state, "error") : "none");
+    mc_win_video_editor_text_free(state);
+    EnumThreadWindows(GetCurrentThreadId(), diagnostic_window, 0);
+    fflush(stdout); diagnostic_last = GetTickCount64();
+}
+static void stage(const char *name, HWND editor) {
+    diagnostic_stage = name; diagnostic_editor = editor; diagnostic_started = GetTickCount64(); diagnose();
 }
 static void pump(unsigned milliseconds) {
     ULONGLONG until = GetTickCount64() + milliseconds;
@@ -188,16 +228,33 @@ static BOOL wait_closed(void) {
 }
 static BOOL CALLBACK dismiss_error(HWND window, LPARAM data) {
     (void)data;
-    wchar_t name[64]; GetClassNameW(window, name, ARRAYSIZE(name));
-    if (!wcscmp(name, L"#32770") && IsWindowVisible(window) && GetDlgItem(window, IDRETRY)) {
-        error_dialogs++;
-        if (!expected_storage_error) check(FALSE, "unexpected native error dialog");
-        PostMessageW(window, TDM_CLICK_BUTTON, IDCANCEL, 0);
+    wchar_t name[64], title[128];
+    GetClassNameW(window, name, ARRAYSIZE(name)); GetWindowTextW(window, title, ARRAYSIZE(title));
+    if (wcscmp(name, L"#32770") || wcscmp(title, L"Mooji Cut") || !IsWindowVisible(window) ||
+        GetWindowThreadProcessId(window, NULL) != GetCurrentThreadId()) return TRUE;
+    HWND owner = GetWindow(window, GW_OWNER);
+    BOOL owned = FALSE;
+    for (unsigned depth = 0; owner && depth < 32; depth++, owner = GetWindow(owner, GW_OWNER)) {
+        /* The final chooser has its own close/reentrancy assertion. Never let
+         * the error-dialog helper satisfy that separate test accidentally. */
+        if (owner == closing_window) return TRUE;
+        char *state = mc_win_video_editor_state(owner);
+        owned = state != NULL; mc_win_video_editor_text_free(state);
+        if (owned) break;
     }
+    if (!owned) return TRUE;
+    /* Native TaskDialog buttons are not ordinary child HWNDs. Identify our
+     * owned dialog, then use its documented button-ID message directly. */
+    error_dialogs++;
+    printf("INFO dismiss owned error dialog stage=%s expected=%d\n", diagnostic_stage, expected_storage_error);
+    fflush(stdout);
+    if (!expected_storage_error) check(FALSE, "unexpected native error dialog");
+    PostMessageW(window, TDM_CLICK_BUTTON, IDCANCEL, 0);
     return TRUE;
 }
 static void CALLBACK dismiss_errors(HWND window, UINT message, UINT_PTR id, DWORD time) {
     (void)window; (void)message; (void)id; (void)time;
+    if (GetTickCount64() - diagnostic_last >= 10000) diagnose();
     EnumThreadWindows(GetCurrentThreadId(), dismiss_error, 0);
 }
 static BOOL save_failed(HWND editor) {
@@ -231,36 +288,44 @@ int wmain(int argc, wchar_t **argv) {
     HWND owner = CreateWindowExW(0, owner_class.lpszClassName, L"Fixture owner", WS_OVERLAPPED,
         0, 0, 0, 0, NULL, NULL, instance, NULL);
     HWND editor = mc_win_video_editor_open_ex(instance, owner, argv[1], draft, TRUE);
+    stage("initial ready", editor);
     check(editor && mc_win_video_editor_busy(), "real editor opens and retains async host ownership");
     if (!editor || !settled(editor, 0)) { check(FALSE, "initial probe/apply/draft IO reaches ready"); goto done; }
     check(TRUE, "initial probe/apply/draft IO reaches ready");
     wchar_t peer_draft[32768]; swprintf_s(peer_draft, ARRAYSIZE(peer_draft), L"%ls\\peer-v2.json", argv[2]);
+    stage("second editor ready", editor);
     HWND peer = mc_win_video_editor_open_ex(instance, owner, argv[1], peer_draft, TRUE);
     check(peer && settled(peer, 0), "a second real editor shares the executor with independent draft ownership");
     if (peer) {
+        stage("second editor close", editor);
         SendMessageW(peer, WM_CLOSE, 0, 0); ULONGLONG deadline = GetTickCount64() + 15000;
         while (IsWindow(peer) && GetTickCount64() < deadline) pump(5);
         check(!IsWindow(peer) && IsWindow(editor) && mc_win_video_editor_busy(), "closing one window leaves the other editor live");
         mc_win_video_editor_activate(editor);
     }
     pump(100);
+    stage("initial screenshot", editor);
     check(screenshot(editor, image, TRUE), "canvas paints actual decoded BGRA video and the shared UI");
     DWORD affinity = 0;
     check(GetWindowDisplayAffinity(editor, &affinity) && affinity == WDA_NONE, "editor remains capturable by screenshot tools");
+    stage("clip selection and ruler seek", editor);
     check(click(editor, L"clip:v1") && click(editor, L"playhead"), "real clip selection and ruler seek input");
     pump(150);
+    stage("split and durable save", editor);
     check(click(editor, L"project-split") && settled(editor, 1), "split goes through shared root, media apply, and saved draft");
     wchar_t second[256] = {0}, gap[256] = {0}; POINT at; double clip_width = 0;
     if (!matching_id(editor, L"clip:v", TRUE, second, ARRAYSIZE(second)) || !point(editor, second, &at, &clip_width)) {
         check(FALSE, "split exposes second video clip"); goto done;
     }
     int delta = MulDiv(100, (int)GetDpiForWindow(editor), 96);
+    stage("drag cancellation", editor);
     SendMessageW(canvas(editor), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(at.x, at.y));
     SendMessageW(canvas(editor), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(at.x + delta, at.y));
     check(revision(editor) == 1 && GetCapture() == canvas(editor), "body drag previews without committing");
     SendMessageW(canvas(editor), WM_CANCELMODE, 0, 0);
     SendMessageW(canvas(editor), WM_LBUTTONUP, 0, MAKELPARAM(at.x + delta, at.y));
     check(revision(editor) == 1 && GetCapture() != canvas(editor), "cancel releases capture and prevents a late commit");
+    stage("drag gap commit", editor);
     SendMessageW(canvas(editor), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(at.x, at.y));
     SendMessageW(canvas(editor), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(at.x + delta, at.y));
     SendMessageW(canvas(editor), WM_LBUTTONUP, 0, MAKELPARAM(at.x + delta, at.y));
@@ -273,35 +338,44 @@ int wmain(int argc, wchar_t **argv) {
         check(linked >= 2 && gap_end > gap_start, "video and linked audio move together in the authoritative document");
         mc_win_video_editor_text_free(state);
     } else check(FALSE, "gap has shared timeline bounds");
+    stage("undo and viewport keys", editor);
     key(editor, 'Z', TRUE); check(settled(editor, 3), "Ctrl+Z restores the linked edit through the root session");
     POINT unused; double before = 0, after = 0;
     point(editor, second, &unused, &before); key(editor, VK_OEM_PLUS, TRUE); point(editor, second, &unused, &after);
     check(after > before, "Ctrl+plus changes shared timeline zoom"); key(editor, '0', TRUE);
+    stage("automation undo", editor);
     check(mc_win_video_editor_command(editor, "{\"expectedRevision\":3,\"requestId\":\"window-undo\",\"op\":{\"type\":\"undo\"}}") && settled(editor, 4),
         "automation uses the same authoritative command and media lane");
     HANDLE locked = CreateFileW(draft, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     check(locked != INVALID_HANDLE_VALUE, "hold a real Windows file lock against draft replacement");
     if (locked != INVALID_HANDLE_VALUE) {
+        stage("locked draft write", editor);
         expected_storage_error = TRUE;
         check(mc_win_video_editor_command(editor, "{\"expectedRevision\":4,\"requestId\":\"locked-redo\",\"op\":{\"type\":\"redo\"}}") && save_failed(editor),
             "real draft write failure retains the edited document");
         pump(100); quit_pending = TRUE; unsigned notified_before = reopened_notifications;
+        stage("close with failed save", editor);
         BOOL pending = !mc_win_video_editor_request_close_all(TRUE);
         ULONGLONG wake_deadline = GetTickCount64() + 15000;
         while (quit_pending && GetTickCount64() < wake_deadline) pump(5);
         check(pending && !quit_pending && reopened_notifications > notified_before && save_failed(editor) && IsWindow(editor),
             "failed save during close keeps the window and shared session alive");
         CloseHandle(locked); pump(150);
+        stage("retry durable save", editor);
         check(error_dialogs > 0 && mc_win_video_editor_retry(editor) && settled(editor, 5),
             "retry after releasing the lock durably saves the same document");
         expected_storage_error = FALSE;
     }
+    stage("play pause and final screenshot", editor);
     check(click(editor, L"play"), "play enters actual media worker"); pump(180); check(click(editor, L"play"), "pause uses shared transport"); pump(100);
     check(screenshot(editor, image, TRUE), "final window screenshot contains decoded video after editing");
+    stage("close before reopen", editor);
     check(!mc_win_video_editor_request_close_all(TRUE) && wait_closed(), "close waits for actual worker and draft drain");
     editor = mc_win_video_editor_open_ex(instance, owner, argv[1], draft, TRUE);
+    stage("reopen saved revision", editor);
     check(editor && settled(editor, 5), "reopening restores the saved v2 revision without touching original media");
     if (editor && IsWindow(editor)) {
+        stage("close during system export chooser", editor);
         closing_window = editor; chooser_started = GetTickCount64();
         UINT_PTR cancellation = SetTimer(NULL, 0, 10, cancel_chooser);
         check(cancellation && click(editor, L"export"), "shared export opens the actual system chooser");
@@ -309,6 +383,7 @@ int wmain(int argc, wchar_t **argv) {
         if (cancellation) KillTimer(NULL, cancellation); closing_window = NULL;
     }
 done:
+    stage("final resource drain", editor);
     mc_win_video_editor_request_close_all(TRUE); check(wait_closed(), "all editor resources are closed");
     check(original && original == hash(argv[1]), "preview edits and closure preserve original source bytes");
     if (owner) DestroyWindow(owner);

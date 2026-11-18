@@ -18,7 +18,7 @@
 | 工具贡献、启停和排序 | 共享 MoonBit 目录 | 共享 MoonBit 目录 | 共享 MoonBit 目录 |
 | 二级属性与圆色块 | 共享尺寸/间距值，原生控件 | 共享尺寸/间距值，原生控件 | 共享尺寸/间距值，原生控件 |
 | 基础录屏 | 区域/窗口/整屏及系统音频 | 区域 MP4，静音 | X11 区域与 Wayland ScreenCast/PipeWire，静音 WebM |
-| v2 视频编辑 | 共享根会话/UI、正式预览/导出与波形，本地回归通过 | 已接共享窗口、预览/导出/波形与草稿，目标 CI 待验 | Ubuntu 22 已过真实媒体、共享宿主、编辑窗口及包验证；Ubuntu 24 同包验证待验 |
+| v2 视频编辑 | 共享根会话/UI、正式预览/导出与波形，本地回归通过 | 五项媒体/共享宿主、App 和画布检查通过；编辑窗口 fixture 超时待收口 | Ubuntu 22 已过真实媒体、共享宿主、编辑窗口及包验证；Ubuntu 24 同包验证被依赖下载阻塞，尚未运行 |
 | OCR、翻译、用户 ZIP 插件 | 已有后端；用户插件仍为元信息输入/文本输出 v1 | 未接对应后端 | 未接对应后端 |
 | 更新安装 | 内置安装链 | 下载校验后手动换装 | 下载校验后手动换装 |
 
@@ -66,7 +66,7 @@ Windows/Linux 的共享画布已通过独立宿主调用真实 v2 MoonBit 工程
 | `plugins/feature/capture_text` | macOS Vision OCR、Apple Translation、结果窗口与任务控制 | `capture/extensions/ocr`、`translation` 管工作流、输入输出、可编辑结果、取消；通用结果控件归 shared/ui | `platform/<os>/text_services` 执行 OCR/翻译；三端实现与模型资源待分别验证，不能在无后端时承诺同等可用 |
 | `plugins/feature/scroll_capture` | 仅 macOS 原型；默认关闭；采集、HUD、重叠拼接混合 | `capture/extensions/scroll_capture` 管会话/UI与拼接计划；重叠算法优先共享 MoonBit | 获取帧留 capture；实测若需底层像素计算，才提到 platform/shared/image；继续默认关闭，独立页面稳定性验收 |
 | `plugins/feature/recording` | macOS 采集/选区；Windows 已移除旧编辑器与剪辑导出，采集/编码仍待归位；Linux 宿主已接 platform/linux/recording | `recording/core` 与倒计时 UI 已共享；完整会话编排与音源仍需提取，Win/Linux 完成素材经 App 回调交接 | `recording`、`audio` 管采集和时间戳，媒体执行归 `media`；Windows 区域选区与 Linux 基础视频流已接，音频/暂停待补 |
-| `plugins/feature/video_editor` | macOS 旧接线路径仍在；Windows/Linux 已接 platform 下薄窗口及共用原生宿主 | `video_editor/core`、ui、根会话已实现；macOS 根会话消费者迁移待做 | `media` 管 probe/preview/seek/export/waveform；`graphics/windowing` 提供嵌入表面；本批 Win/Linux 目标运行仍待 CI，不造平台专用简化编辑器 |
+| `plugins/feature/video_editor` | macOS 旧文件路径仍在，但已消费共享根会话；Windows/Linux 已接 platform 下薄窗口及共用原生宿主 | `video_editor/core`、ui、根会话已实现，三端消费同一文档和会话规则 | `media` 管 probe/preview/seek/export/waveform；`graphics/windowing` 提供嵌入表面；Ubuntu 22 通过，Windows 窗口及 Ubuntu 24 同包检查待收口，不造平台专用简化编辑器 |
 
 截图扩展清单必须覆盖矩形、箭头、文字、实心/马赛克覆盖、OCR、翻译、贴图、滚动截图及用户自定义贡献。选择、取消、确认是宿主会话控制；撤销重做消费文档历史。每个按钮可配置，不意味着每个按钮都要独立 Wasm 包或三份系统代码。
 
@@ -382,6 +382,10 @@ Ubuntu 24 增加独立的同包验证任务：下载 Ubuntu 22 生成的发行�
 [95e2ad5 的目标运行](https://github.com/CoderSerio/moojicut/actions/runs/44203666177) 中 **Ubuntu 22 整个任务通过**，包括真实编辑窗口的选中、切分、拖出空隙、黑帧预览、撤销、保存失败拒关/重试、重新打开及最终发行包验证。Windows 的正式应用、共享画布和隔离运行库通过，剩余失败是共享媒体 C 的 MSVC 严格编译差异：`g_snprintf` 的长度参数在 Windows 是 32 位，TLS 初始化不能直接使用 DLL 导入的析构地址，且 `noreturn` 函数必须返回 void。修正使用标准 `snprintf`、本地析构转发和符合 GThread 签名的线程入口，保留所有警告；本地严格编译和实际媒体 148 项再次通过，Windows 媒体与窗口仍待 CI。Ubuntu 24 此轮被 Windows 失败连带跳过；流水线已改成只依据 Linux 已验证包和 fixture 上传后的提交输出启动同包检查，不会把缺失包或上传失败视作成功，也不改变整个构建的失败结论。
 
 [8669931 的目标运行](https://github.com/CoderSerio/moojicut/actions/runs/44205075228) 中 Ubuntu 22 再次全部通过；Windows 的严格媒体编译、实际预览/变速/空隙、底层 MP4 编码封装及波形检查通过。共享宿主 fixture 的 `WAIT_FAILED` 与 Windows 系统宏冲突，已统一添加 `HOST_WAIT_` 前缀。worker 导出收尾和编辑器首次保存异常退出，执行位置与已发现的跨 CRT 文件描述符使用吻合：[GLib 明确要求此描述符只能交给同一 C 运行库](https://docs.gtk.org/glib/func.open.html)。现由 `platform/shared/storage/file_sync.h` 统一同步既有文件，Windows 使用完整 Win32 句柄生命周期，GLib 临时描述符由 `g_close` 释放；错误不再读取另一运行库的 errno。原片保护、etag 与原子发布策略保留，本地严格 worker 46 项和宿主 58 项回归通过，Windows 崩溃关闭仍需新 CI 证实。Ubuntu 24 已能独立启动，但本轮停在从 Ubuntu 镜像下载 61.2 MB 的字体包，尚未进入应用验证；因新修复待统一验证而取消旧运行，该系统仍未验收。
+
+[442b3d4 的目标运行](https://github.com/CoderSerio/moojicut/actions/runs/44207105092) 中 Ubuntu 22 全部通过；Windows 五项实际媒体/共享宿主检查、核心、App 和共享画布全部通过，已证实修复导出收尾与首次草稿保存的跨 CRT 崩溃。Windows 唯一剩余失败是编辑窗口 fixture 超时：预期的保存错误使用 TaskDialog，旧 fixture 通过 `GetDlgItem(IDRETRY)` 判断按钮而未能可靠关闭它。现按线程、窗口类、标题和实际编辑器 owner 链识别，再发送官方 `TDM_CLICK_BUTTON`；意外错误仍判失败，最终导出选择器有独立关闭断言，不被此辅助函数关闭。该修正仍待真实 Windows CI，不能据此提前宣布窗口通过。新增阶段日志与超时 stdout/stderr 保留，原有断言和 240 秒上限不变；构建脚本测试 **103/103** 通过。
+
+Ubuntu 24 两次均在 EC2 Ubuntu 镜像下载 `fonts-noto-cjk` 时停滞，第二次超过 7 分钟，取消前未进入应用验证。CI 现仅将该官方镜像地址改为 Ubuntu 主归档的 HTTPS 地址，保留全部依赖、中文字体和包签名校验；增加有限网络超时/重试和安装步骤上限。测试仍使用 Ubuntu 22 的同一个包和 fixture，不安装 SDK 或重新编译。本轮没有发布或安装新包。
 
 ### 下一切片：B2a 共享文字标注与属性输入（尚未实现）
 

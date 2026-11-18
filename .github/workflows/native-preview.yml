@@ -216,6 +216,8 @@ jobs:
             .artifacts/${{ matrix.platform }}/shared-canvas/*.png
             .artifacts/${{ matrix.platform }}/video-editor-*/*.png
             .artifacts/${{ matrix.platform }}/video-editor-*/*.bmp
+            .artifacts/${{ matrix.platform }}/video-editor-*/*.log
+            .artifacts/${{ matrix.platform }}/video-editor-*/*.json
           if-no-files-found: ignore
           retention-days: 14
 
@@ -233,9 +235,27 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install desktop runtime dependencies
+        timeout-minutes: 8
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-0t64 libayatana-appindicator3-1 libcurl4t64 libportal-gtk3-1 libpulse0 libpipewire-0.3-0t64 xvfb dbus-x11 fonts-noto-cjk libxtst6
+          # The runner's EC2 mirror repeatedly stalled on the CJK font package.
+          # Keep the same Ubuntu suites, packages and signature verification.
+          sudo python3 - <<'PY'
+          from pathlib import Path
+          import re
+          sources = [Path('/etc/apt/sources.list'), *Path('/etc/apt/sources.list.d').glob('*.list'), *Path('/etc/apt/sources.list.d').glob('*.sources')]
+          for path in sources:
+              if not path.is_file():
+                  continue
+              original = path.read_text()
+              updated = re.sub(r'https?://[a-z0-9-]+\.ec2\.archive\.ubuntu\.com/ubuntu\b', 'https://archive.ubuntu.com/ubuntu', original)
+              updated = re.sub(r'mirror\+file:/+etc/apt/apt-mirrors\.txt(?=\s|$)', 'https://archive.ubuntu.com/ubuntu', updated)
+              if updated != original:
+                  path.write_text(updated)
+                  print('Using official Ubuntu archive:', path)
+          PY
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=45 -o Acquire::https::Timeout=45)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y libgtk-3-0t64 libayatana-appindicator3-1 libcurl4t64 libportal-gtk3-1 libpulse0 libpipewire-0.3-0t64 xvfb dbus-x11 fonts-noto-cjk libxtst6
       - uses: actions/download-artifact@v4
         with:
           name: preview-linux-x64

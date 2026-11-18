@@ -4,6 +4,7 @@ import contextlib
 import io
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 
@@ -12,6 +13,23 @@ from desktop import DesktopBuild
 
 
 class DesktopEnvironmentTest(unittest.TestCase):
+    def test_timed_out_process_keeps_its_last_stdout_stderr_and_fails(self):
+        build = DesktopBuild.__new__(DesktopBuild)
+        build.env = dict(os.environ)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "run.log"
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), self.assertRaises(subprocess.TimeoutExpired):
+                build.run(sys.executable, "-X", "utf8", "-u", "-c",
+                          "import sys,time; print('阶段: dialog'); print('pending save',file=sys.stderr); time.sleep(10)",
+                          timeout=1, log=log)
+            saved = log.read_text(encoding="utf-8")
+        self.assertIn("阶段: dialog", stdout.getvalue())
+        self.assertIn("pending save", stderr.getvalue())
+        self.assertIn("阶段: dialog", saved)
+        self.assertIn("pending save", saved)
+        self.assertIn("TIMEOUT", saved)
+
     def test_independent_window_checks_still_run_but_a_media_failure_rejects_the_build(self):
         build = DesktopBuild.__new__(DesktopBuild)
         calls = []

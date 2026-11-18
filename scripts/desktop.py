@@ -53,15 +53,28 @@ class DesktopBuild:
         self.module = re.search(r'^name\s*=\s*"([^"]+)"', manifest, re.M).group(1)
         self.compiler = self.run(self.home / "bin" / ("moonc" + suffix), "-v").strip()
 
-    def run(self, *args, cwd=ROOT, env=None):
+    def run(self, *args, cwd=ROOT, env=None, timeout=240, log=None):
         print("+", " ".join(str(arg) for arg in args), flush=True)
-        result = subprocess.run([str(arg) for arg in args], cwd=cwd, env=self.env if env is None else env,
-                                text=True, encoding="utf-8", errors="replace",
-                                capture_output=True, timeout=240)
-        if result.stdout:
-            print(result.stdout, end="", flush=True)
-        if result.stderr:
-            print(result.stderr, end="", file=sys.stderr, flush=True)
+        def output(stdout, stderr, suffix=""):
+            # TimeoutExpired may retain bytes even with text=True. Preserve
+            # the last real fixture step before raising the original failure.
+            def decoded(value):
+                return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+            stdout, stderr = decoded(stdout), decoded(stderr)
+            if stdout:
+                print(stdout, end="", flush=True)
+            if stderr or suffix:
+                print(stderr + suffix, end="", file=sys.stderr, flush=True)
+            if log is not None:
+                Path(log).write_text(stdout + "\nSTDERR:\n" + stderr + suffix, encoding="utf-8")
+        try:
+            result = subprocess.run([str(arg) for arg in args], cwd=cwd, env=self.env if env is None else env,
+                                    text=True, encoding="utf-8", errors="replace",
+                                    capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            output(error.stdout, error.stderr, "\nTIMEOUT after " + str(timeout) + " seconds\n")
+            raise
+        output(result.stdout, result.stderr)
         if result.returncode:
             raise RuntimeError("{} failed (exit {}).".format(args[0], result.returncode))
         return result.stdout
@@ -349,7 +362,7 @@ class DesktopBuild:
                      "-I", self.home / "include", "-I", ROOT, *self.media.includes,
                      *sources, fixture, self.core_archive, *flags, *self.media.libraries, "-lm", "-o", executable)
         self.run(executable, self.media.directory / "media/generated-source.mkv", directory,
-                 cwd=self.directory, env=self.app_test_environment())
+                 cwd=self.directory, env=self.app_test_environment(), log=directory / "run.log")
 
     def canvas_smoke(self):
         # Exercise the shared v2 editor through real native input/painting and
