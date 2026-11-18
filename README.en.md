@@ -50,21 +50,21 @@ Enable, disable, and reorder tools in Settings → Plugin Management to suit the
 - **Use it after import:** Import the ZIP, then run its tools from the screenshot toolbar. A result window displays text and offers a copy action. Installing a plugin does not require rebuilding the app.
 - **Run in a separate process:** Plugins execute in a dedicated worker process. The host validates packages, enforces invocation limits, handles cancellation, and checks results.
 
-The repository includes a working [Capture Info example](plugins/examples/capture-info/README.md): one MoonBit plugin provides two tools, “Capture Info” and “View Dimensions.” Use it as a starting point for your own extension. See the [plugin runtime and protocol guide (简体中文)](plugins/user-runtime/README.md) for details.
+The [Numbered Box example](plugins/examples/numbered-box) includes a drag-to-annotate tool and a tool that shows screenshot dimensions. Build the ZIP once and import it on all three platforms. Rebuild older v1 ZIPs for the new contract. [Plugin authoring guide (简体中文)](plugins/user-runtime/README.md)
 
-User plugins currently accept screenshot metadata and return text. Pixel processing, annotation changes, and recording and video editing extensions are planned around the same plugin system. See the [plugin design (简体中文)](docs/architecture.md#插件机制).
+Screenshot plugins receive image metadata and selection coordinates. They can display text or add a batch of annotations that users can undo in one step. [Plugin design (简体中文)](docs/architecture.md#插件机制)
 
 ## Downloads and Compatibility
 
-Current release: **[0.1.0-alpha.20](https://github.com/CoderSerio/moojicut/releases/latest)**. The project is still in alpha. The sections above describe the full product feature set; the table below shows what is currently available on each system.
+Current release: **[0.1.0-alpha.21](https://github.com/CoderSerio/moojicut/releases/latest)**. The project is still in alpha. The sections above describe the full product feature set; the table below shows what is currently available on each system.
 
 | Platform and download | Requirements | Current features |
 | --- | --- | --- |
-| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-macos-arm64.zip) | macOS 26+ | Screenshot annotations, pinned images, OCR and translation, plugin management and import; region, window, and full-screen recording with system audio, plus the timeline editing features described above. |
-| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-windows-x64.zip) | Windows 10/11, Intel / AMD | Screenshot annotations, pinned images, and silent region recording. The existing editor supports trimming the start and end, removing sections, and cropping the frame. |
-| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-linux-x64.tar.gz) | An Ubuntu 22.04+ compatible environment with the [system dependencies (简体中文)](docs/guide.zh-CN.md#下载与开始使用) | Screenshot annotations, pinned images, and silent WebM recording. Select a region on X11 or choose a source through the system portal on Wayland. No video editor is integrated yet. |
+| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-macos-arm64.zip) | macOS 26+ | Screenshot annotations, pinned images, OCR and translation, plugin management and import; region, window, and full-screen recording with system audio, plus the timeline editing features described above. |
+| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-windows-x64.zip) | Windows 10/11, Intel / AMD | Screenshot annotations, pinned images, plugin import, silent region recording, and shared timeline editing. |
+| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-linux-x64.tar.gz) | An Ubuntu 22.04+ compatible environment with the [system dependencies (简体中文)](docs/guide.zh-CN.md#下载与开始使用) | Screenshot annotations, pinned images, plugin import, silent WebM recording, and shared timeline editing. Select a region on X11 or choose a source through the system portal on Wayland. |
 
-Windows and Linux do not yet include OCR, translation, user plugins, or the shared timeline editor. Recording supports up to 1920 × 1080 at 15 fps, without audio or pause support. On Wayland, keeping windows on top, positioning, and input depend on the desktop environment. System authorization, multiple displays, and mixed DPI setups still need testing on physical devices.
+OCR and translation are available on macOS. Windows and Linux record up to 1920 × 1080 at 15 fps, without audio or pause support. Both show the default icon for imported plugins. On Wayland, keeping windows on top, positioning, and input depend on the desktop environment. System authorization, multiple displays, and mixed DPI setups still need testing on physical devices.
 
 Scrolling capture is currently disabled. Video editing uses a single recording; importing multiple source files, subtitles, transitions, and zoom-and-pan keyframes are not yet supported. User plugins cannot currently access image pixels, the network, or files, or provide custom interfaces. The CLI and recording and editing plugin extensions are still in development.
 
@@ -76,7 +76,7 @@ MoonBit handles shared interactions, image documents, recording state, and video
 
 - [Build from source (简体中文)](docs/guide.zh-CN.md#从源码构建)
 - [Architecture and implementation plan (简体中文)](docs/architecture.md)
-- [Create your first plugin (简体中文)](plugins/examples/capture-info/README.md)
+- [Create your first plugin (简体中文)](plugins/user-runtime/README.md)
 
 Bug reports, interaction improvements, plugins, and code contributions are welcome.
 

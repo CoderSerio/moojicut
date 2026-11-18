@@ -50,21 +50,21 @@
 - **即装即用**：导入 ZIP 后从截图工具栏调用，结果窗口展示并支持复制文本；安装插件无需重新编译应用。
 - **独立执行**：插件运行在单独的 worker 进程中，宿主负责包校验、调用限额、取消与结果检查。
 
-仓库提供可运行的 [Capture Info 示例](plugins/examples/capture-info/README.md)：一个 MoonBit 插件提供「截图信息」和「查看尺寸」两个工具。可以从它开始制作自己的扩展，详见[插件运行与协议说明](plugins/user-runtime/README.md)。
+仓库提供可运行的 [Numbered Box 示例](plugins/examples/numbered-box)，包含拖框标注和查看尺寸两个工具。同一个 ZIP 可以导入三端。旧 v1 ZIP 需要按新契约重新构建。[插件运行与协议说明](plugins/user-runtime/README.md)
 
-目前用户插件支持截图元信息输入和文本输出。像素处理、标注写入，以及录屏和视频编辑扩展将继续沿统一插件机制推进，详见[插件设计](docs/architecture.md#插件机制)。
+截图插件接收截图信息和框选坐标，可显示文本或批量添加标注。一批标注可以一次撤销。[插件设计](docs/architecture.md#插件机制)
 
 ## 下载与兼容性
 
-当前版本：**[0.1.0-alpha.20](https://github.com/CoderSerio/moojicut/releases/latest)**。项目仍在 alpha 阶段，各系统的已交付能力如下；上文介绍完整产品功能，具体可用范围以此表为准。
+当前版本：**[0.1.0-alpha.21](https://github.com/CoderSerio/moojicut/releases/latest)**。项目仍在 alpha 阶段，各系统的已交付能力如下；上文介绍完整产品功能，具体可用范围以此表为准。
 
 | 平台与下载 | 运行要求 | 当前功能范围 |
 | --- | --- | --- |
-| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-macos-arm64.zip) | macOS 26+ | 截图标注、贴图、OCR/翻译、插件管理与导入；区域/窗口/整屏录制、系统声音及上述时间线编辑。 |
-| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-windows-x64.zip) | Windows 10/11，Intel / AMD | 截图标注、贴图、区域静音录屏；现有编辑器支持修剪首尾、删除片段和裁画面。 |
-| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.20/moojicut-0.1.0-alpha.20-linux-x64.tar.gz) | Ubuntu 22.04+ 兼容环境及[系统依赖](docs/guide.zh-CN.md#下载与开始使用) | 截图标注、贴图、静音 WebM 录屏；X11 自由框选，Wayland 通过系统门户选源。尚无录后编辑器。 |
+| [macOS · Apple Silicon ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-macos-arm64.zip) | macOS 26+ | 截图标注、贴图、OCR/翻译、插件管理与导入；区域/窗口/整屏录制、系统声音及上述时间线编辑。 |
+| [Windows · x64 ZIP](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-windows-x64.zip) | Windows 10/11，Intel / AMD | 截图标注、贴图、插件导入、区域静音录屏及共享时间线编辑。 |
+| [Linux · x86_64 tar.gz](https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.21/moojicut-0.1.0-alpha.21-linux-x64.tar.gz) | Ubuntu 22.04+ 兼容环境及[系统依赖](docs/guide.zh-CN.md#下载与开始使用) | 截图标注、贴图、插件导入、静音 WebM 录屏及共享时间线编辑。X11 自由框选，Wayland 通过系统门户选源。 |
 
-Windows / Linux 暂未接入 OCR/翻译、用户插件或共享时间线编辑器；录屏最高 1920 × 1080 / 15 fps，暂不支持录制声音或暂停。Wayland 的置顶、定位与输入受桌面环境约束；系统授权、多显示器和混合 DPI 仍待实机验收。
+OCR 和翻译目前由 macOS 提供。Windows / Linux 录屏最高 1920 × 1080 / 15 fps，暂不支持录制声音或暂停；自定义插件图标使用默认占位图。Wayland 的置顶、定位与输入受桌面环境约束；系统授权、多显示器和混合 DPI 仍待实机验收。
 
 滚动截图入口暂时关闭。视频编辑目前使用单一录屏，暂未支持导入多个素材、字幕、转场或缩放聚焦关键帧。当前用户插件不开放图像像素、网络、文件或自定义界面能力；CLI 和录屏/剪辑插件扩展仍在开发中。
 
@@ -76,7 +76,7 @@ MoonBit 承载共享交互、图像文档、录制状态和视频编辑规则，
 
 - [源码构建](docs/guide.zh-CN.md#从源码构建)
 - [架构与实施规划](docs/architecture.md)
-- [制作第一个插件](plugins/examples/capture-info/README.md)
+- [制作第一个插件](plugins/user-runtime/README.md)
 
 欢迎提交问题、改进交互、开发插件或贡献代码。
 

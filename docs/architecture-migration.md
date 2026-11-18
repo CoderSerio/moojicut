@@ -19,10 +19,10 @@
 | 二级属性与圆色块 | 全部内置标注属性接共享 frame、草稿事务与系统输入桥；B2b 本地完整回归通过 | 同一属性 frame/事务、真实控件与完整截图自动回归通过；旧控件已移除 | 同一属性 frame/事务、真实控件与完整截图自动回归通过；旧控件已移除 |
 | 基础录屏 | 区域/窗口/整屏及系统音频 | 区域 MP4，静音 | X11 区域与 Wayland ScreenCast/PipeWire，静音 WebM |
 | v2 视频编辑 | 共享根会话/UI、正式预览/导出与波形，本地回归通过 | 媒体、实际窗口编辑、保存失败恢复、重开及模态退出通过；构建打包通过 | Ubuntu 22 全部通过；其同一包在无开发 SDK 的 Ubuntu 24 上八项检查全部通过 |
-| OCR、翻译、用户 ZIP 插件 | 已有后端。用户插件仍为元信息输入/文本输出 v1 | 随包 worker 已通过 CI。ZIP 导入、工具管理、OCR、翻译待接 | 随包 worker 已通过 Ubuntu 22 和 Ubuntu 24 CI。产品缺口与 Windows 相同 |
+| OCR、翻译、用户 ZIP 插件 | OCR、翻译及 v2 ZIP | v2 ZIP，OCR 和翻译待接 | v2 ZIP，OCR 和翻译待接 |
 | 更新安装 | 内置安装链 | 下载校验后手动换装 | 下载校验后手动换装 |
 
-Windows/Linux 的共享画布与生产录制后编辑流程均已接线；E1 批次的媒体/窗口/发行包验证已通过，B2a 源码 `37c4b8f` 通过 Windows、Ubuntu 22 完整 CI 和 Ubuntu 24 同包八项检查，见末尾各批记录。画布不拥有第二份剪辑模型，切分、空隙、历史和视口规则仍由 MoonBit 决定。最新 B2b 源码 `4de2741` 的[目标 CI](https://github.com/CoderSerio/moojicut/actions/runs/44237977671) 已补齐全部内置标注属性的自动验证，主工具栏的接入和验证另见 B2c。完整共享选区 UI 和真实输入法体验待验。三端麦克风/暂停、完整属性 Schema、用户插件 v2、独立 CLI/IPC 仍未完成。
+Windows/Linux 的共享画布与生产录制后编辑流程均已接线；E1 批次的媒体/窗口/发行包验证已通过，B2a 源码 `37c4b8f` 通过 Windows、Ubuntu 22 完整 CI 和 Ubuntu 24 同包八项检查，见末尾各批记录。画布不拥有第二份剪辑模型，切分、空隙、历史和视口规则仍由 MoonBit 决定。最新 B2b 源码 `4de2741` 的[目标 CI](https://github.com/CoderSerio/moojicut/actions/runs/44237977671) 已补齐全部内置标注属性的自动验证，主工具栏的接入和验证另见 B2c。完整共享选区 UI 和真实输入法体验待验。三端麦克风/暂停、完整属性 Schema、用户插件像素能力和独立 CLI/IPC 仍未完成。
 
 结构约束仍在构建入口执行，新增画布没有增加原生跨层 include 例外。现有 12 对历史例外、旧 components/plugins/feature 和宿主混合职责仍按下表迁移；目录归位、生产接入、自动回归和实机效果分别验收。
 
@@ -480,4 +480,8 @@ MoonBit 合同定义纯安装检查、点击或框选调用、文本结果和成
 
 macOS/Linux 共用 POSIX 磁盘适配，Windows 使用相同接口与 Win32 原语。macOS 上真实 ZIP 从健康检查、暂存、落盘到恢复、排序、停用和卸载均通过原生宿主回归。编号框与文本结果经真实 worker 执行，支持一次撤销，退役调用的结果会被丢弃。Windows/Linux 的原生磁盘回归已纳入兼容 CI。
 
-正式设置页、工具栏手势和结果窗口仍需接到此接口。协议切换时同步更新各端应用与打包示例，并替换旧产品入口。
+三端的正式设置页和工具栏均接入共享 v2 宿主。以同一个 numbered-box ZIP 自动验证导入、调用、批量标注、撤销和卸载。v1 ZIP 需重建，自定义 PNG 图标在 Windows/Linux 当前使用默认图标。
+
+### alpha.21 发布交付
+
+源码 `1f3dab50ff9a4a58ca7d87138191432b9a5e0a80` 构建三端正式包。Windows x64、Ubuntu 22 和同包 Ubuntu 24 自动验证通过；macOS arm64 通过原生回归、包签名和更新签名校验。macOS 签名身份与公开 alpha.20 包一致。真实原位升级、系统授权及设备交互由后续实机验证。 [发布构建](https://github.com/CoderSerio/moojicut/actions/runs/44313847105) · [发布下载](https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.21)
