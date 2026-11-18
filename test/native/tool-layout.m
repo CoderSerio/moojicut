@@ -638,8 +638,8 @@ static BOOL toolbarAppearance(void) {
           MCToolbarPosition(e.toolbar,@"builtin.capture.ocr") < pin &&
           MCToolbarPosition(e.toolbar,@"host.undo") < pin && MCToolbarPosition(e.toolbar,@"host.redo") < pin &&
           MCToolbarPosition(e.toolbar,@"host.cancel") == pin + 1 && MCToolbarPosition(e.toolbar,@"host.confirm") == pin + 2 &&
-          items.count == 12,
-          "exactly two shared groups: editing/OCR/translation/history, then pin/cancel/confirm");
+          items.count == 11,
+          "exactly two shared groups: editing/OCR/history, then pin/cancel/confirm");
     for (NSString *mode in @[@"light", @"dark"]) {
         e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
         NSBitmapImageRep *normal = toolbarPixels(e);
