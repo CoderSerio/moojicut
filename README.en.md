@@ -56,7 +56,7 @@ Screenshot plugins receive image metadata and selection coordinates. They can di
 
 ## Downloads and Compatibility
 
-[Official downloads and Cloudflare mirrors](https://coderserio.github.io/moojicut/#download)
+[Official downloads](https://coderserio.github.io/moojicut/#download)
 
 Current release: **[0.1.0-alpha.22](https://github.com/CoderSerio/moojicut/releases/latest)**. The project is still in alpha. The sections above describe the full product feature set; the table below shows what is currently available on each system.
 

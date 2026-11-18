@@ -1,6 +1,22 @@
 import { createMotionController } from "./src/motion-controller.js";
-import { updateDownloads } from "./src/downloads.js";
+import {
+  detectPlatform,
+  enableDownloadFallback,
+  recommendPlatform,
+  updateDownloads,
+} from "./src/downloads.js";
 import verifiedMirrors from "./verified-mirrors.json";
+
+recommendPlatform(document, detectPlatform(navigator));
+enableDownloadFallback(document, (url) => window.location.assign(url));
+// The HTML already contains download links for this deployment.
+fetch(`${import.meta.env.BASE_URL}releases.json`, { cache: "no-cache" })
+  .then((response) => {
+    if (!response.ok) throw new Error("No release snapshot");
+    return response.json();
+  })
+  .then((release) => updateDownloads(document, release, verifiedMirrors))
+  .catch(() => {});
 
 const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
 const hasObserver = "IntersectionObserver" in window;
@@ -111,37 +127,3 @@ toolButtons.forEach((button) =>
       `${total} optional ${total === 1 ? "tool" : "tools"} shown. Your toolbar, your way.`;
   }),
 );
-
-const agent = navigator.userAgent;
-const mobile =
-  /Android|iPhone|iPad|iPod/i.test(agent) ||
-  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const platform = mobile
-  ? null
-  : /Windows/i.test(agent)
-    ? "windows"
-    : /Macintosh|Mac OS X/i.test(agent)
-      ? "macos"
-      : /Linux|X11/i.test(agent)
-        ? "linux"
-        : null;
-if (platform) {
-  document
-    .querySelector(`[data-platform="${platform}"]`)
-    .classList.add("suggested");
-  const name = { macos: "Mac", windows: "Windows", linux: "Linux" }[platform];
-  document.querySelector("#platform-hint").textContent =
-    `Looks like you’re on ${name}. Check the system and chip requirements below.`;
-} else if (mobile)
-  document.querySelector("#platform-hint").textContent =
-    "Made for your desktop. Open this page on your computer to download.";
-// Same-origin snapshot; the HTML also contains working no-JavaScript download links.
-fetch(`${import.meta.env.BASE_URL}releases.json`, { cache: "no-cache" })
-  .then((response) => {
-    if (!response.ok) throw new Error("No release snapshot");
-    return response.json();
-  })
-  .then((release) => {
-    updateDownloads(document, release, verifiedMirrors);
-  })
-  .catch(() => {});

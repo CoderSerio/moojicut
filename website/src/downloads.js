@@ -6,7 +6,7 @@ const suffixes = {
 };
 
 // The allowlist is bundled with the page, independently of the fetched snapshot.
-// A newer GitHub release can replace primary links without inheriting old mirrors.
+// A newer release can replace the links without inheriting old mirrors.
 export function validatedRelease(release, manifest) {
   if (!release || typeof release.version !== "string" || !versionPattern.test(release.version))
     return null;
@@ -32,7 +32,7 @@ export function validatedRelease(release, manifest) {
       if (expected && /^[a-f0-9]{64}$/.test(expected.sha256)
         && Number.isSafeInteger(expected.size) && expected.size > 0
         && actual?.url === url && actual.sha256 === expected.sha256 && actual.size === expected.size)
-        mirrors[key] = url;
+        mirrors[key] = { url, size: expected.size };
     }
   }
   return { version, downloads: release.downloads, mirrors };
@@ -41,14 +41,18 @@ export function validatedRelease(release, manifest) {
 export function updateDownloads(document, release, manifest) {
   const validated = validatedRelease(release, manifest);
   if (!validated) return false;
-  document.querySelectorAll("[data-mirror]").forEach((link) => {
-    const url = validated.mirrors[link.dataset.mirror];
-    link.hidden = !url;
-    link.removeAttribute("href");
-    if (url) link.href = url;
-  });
   document.querySelectorAll("[data-download]").forEach((link) => {
-    link.href = validated.downloads[link.dataset.download];
+    const platform = link.dataset.download;
+    const github = validated.downloads[platform];
+    const mirror = validated.mirrors[platform];
+    link.href = mirror?.url ?? github;
+    if (mirror) {
+      link.dataset.fallback = github;
+      link.dataset.mirrorSize = String(mirror.size);
+    } else {
+      delete link.dataset.fallback;
+      delete link.dataset.mirrorSize;
+    }
   });
   document.querySelectorAll("[data-version]").forEach((label) => {
     label.textContent = validated.version;
@@ -57,4 +61,65 @@ export function updateDownloads(document, release, manifest) {
     link.href = `https://github.com/CoderSerio/moojicut/releases/tag/v${validated.version}`;
   });
   return true;
+}
+
+export function detectPlatform({ userAgent = "", userAgentData, platform = "", maxTouchPoints = 0 }) {
+  const hint = userAgentData?.platform;
+  if (userAgentData?.mobile || /Android|iPhone|iPad|iPod/i.test(userAgent)
+      || (platform === "MacIntel" && maxTouchPoints > 1)) return "mobile";
+  if (hint === "Chrome OS" || /\bCrOS\b/i.test(userAgent)) return null;
+  if (hint === "Windows") return "windows";
+  if (hint === "macOS") return "macos";
+  if (hint === "Linux") return "linux";
+  if (/Windows NT/i.test(userAgent) || /^Win/i.test(platform)) return "windows";
+  if (/Macintosh|Mac OS X/i.test(userAgent) || /^Mac/i.test(platform)) return "macos";
+  if (/Linux|X11/i.test(userAgent) || /^Linux/i.test(platform)) return "linux";
+  return null;
+}
+
+export function recommendPlatform(document, platform) {
+  const names = { macos: "Mac", windows: "Windows", linux: "Linux" };
+  document.querySelectorAll("[data-platform]").forEach((card) => {
+    card.classList.toggle("suggested", card.dataset.platform === platform);
+  });
+  if (!platform) return;
+  document.querySelector("#platform-hint").textContent = platform === "mobile"
+    ? "Open this page on your computer to get Mooji Cut."
+    : `${names[platform]} is the recommended download for this device.`;
+}
+
+export async function availableDownload(mirror, fallback, size, request = fetch) {
+  try {
+    // Check the visitor's connection before handing control to the browser.
+    const response = await request(mirror, {
+      method: "HEAD",
+      credentials: "omit",
+      redirect: "error",
+      cache: "no-store",
+      signal: AbortSignal.timeout(1500),
+    });
+    if (response.status === 200 && response.headers.get("Content-Length") === size) return mirror;
+  } catch {
+    // A blocked origin, timeout, or offline mirror all use the same fallback.
+  }
+  return fallback;
+}
+
+export function enableDownloadFallback(document, navigate) {
+  document.querySelectorAll("[data-download]").forEach((link) => {
+    let pending = false;
+    link.addEventListener("click", async (event) => {
+      const { fallback, mirrorSize } = link.dataset;
+      if (!fallback || event.defaultPrevented || event.button !== 0
+          || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      if (pending) return;
+      pending = true;
+      try {
+        navigate(await availableDownload(link.href, fallback, mirrorSize));
+      } finally {
+        pending = false;
+      }
+    });
+  });
 }

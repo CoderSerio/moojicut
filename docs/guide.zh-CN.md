@@ -6,7 +6,7 @@
 
 ## 下载与开始使用
 
-打开[官网下载页](https://coderserio.github.io/moojicut/#download)，按系统选择 GitHub 主下载或 Cloudflare 备用下载。两个入口提供相同的安装包。alpha.22 已提供下表三种平台的安装包及 SHA256 校验文件；其他架构尚无发布包。
+打开[官网下载页](https://coderserio.github.io/moojicut/#download)，按系统下载。官网优先使用验证过的 Cloudflare 镜像，连接失败时切换至同版本的 GitHub 下载。alpha.22 提供下表三种平台的安装包及 SHA-256 校验文件。
 
 | 系统 | 运行要求 | 打开方式 |
 | --- | --- | --- |

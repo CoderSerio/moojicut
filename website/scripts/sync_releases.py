@@ -68,8 +68,7 @@ def release_snapshot(releases, manifest):
                 continue
             for key, verified in entry["downloads"].items():
                 asset = assets[expected[key]]
-                # Missing GitHub digests cannot establish byte equality. Keep the
-                # primary download available but omit this optional mirror.
+                # Use GitHub when the mirror cannot establish byte equality.
                 if asset.get("digest") != "sha256:" + verified["sha256"] or asset["size"] != verified["size"]:
                     continue
                 snapshot.setdefault("mirrors", {})[key] = {
@@ -83,16 +82,26 @@ def release_snapshot(releases, manifest):
 def render_downloads(content, snapshot):
     """Keep the no-JavaScript page and fetched snapshot on the same release."""
     version = snapshot["version"]
-    content = re.sub(r"(?<=/releases/download/v)\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?/moojicut-\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?-", f"{version}/moojicut-{version}-", content)
     content = re.sub(r"(?<=/releases/tag/v)\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?", version, content)
     content = re.sub(r"(<span data-version>)[^<]+", lambda match: match[1] + version, content)
     for key in SUFFIXES:
         mirror = snapshot.get("mirrors", {}).get(key)
-        attributes = f'href="{html.escape(mirror["url"], quote=True)}"' if mirror else "hidden"
-        link = f'<a class="mirror-download" data-mirror="{key}" {attributes}>Cloudflare mirror</a>'
-        content, count = re.subn(rf'<a class="mirror-download" data-mirror="{key}"[^>]*>Cloudflare mirror</a>', lambda _: link, content)
+        github = html.escape(snapshot["downloads"][key], quote=True)
+        primary = html.escape(mirror["url"], quote=True) if mirror else github
+
+        def replace_link(match):
+            prefix, spacing = match.groups()
+            attributes = f'{prefix}{spacing}href="{primary}"'
+            if mirror:
+                attributes += f'{spacing}data-fallback="{github}"{spacing}data-mirror-size="{mirror["size"]}"'
+            return attributes
+
+        content, count = re.subn(
+            rf'(data-download="{key}")(\s+)href="[^"]*"(?:\s+data-(?:fallback|mirror-size)="[^"]*")*',
+            replace_link, content,
+        )
         if count != 1:
-            raise ValueError(f"Expected exactly one {key} mirror placeholder")
+            raise ValueError(f"Expected exactly one {key} download link")
     return content
 
 

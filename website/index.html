@@ -74,7 +74,8 @@
         </symbol>
         <symbol id="i-github" viewBox="0 0 24 24">
           <path
-            d="M9 19c-4 1-4-2-5-2m10 5v-4a3 3 0 0 0-.8-2.3c3-.3 6-1.4 6-6.3 0-1.4-.5-2.5-1.3-3.4.2-.4.6-1.8-.1-3.5 0 0-1.1-.4-3.6 1.3a12 12 0 0 0-6.4 0C5.3 2.1 4.2 2.5 4.2 2.5c-.7 1.7-.3 3.1-.1 3.5a5 5 0 0 0-1.3 3.4c0 4.9 3 6 6 6.3A3 3 0 0 0 8 18v4"
+            fill="currentColor" stroke="none"
+            d="M12 .75a11.25 11.25 0 0 0-3.56 21.93c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.33-3.79-1.33-.5-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.73 1.16 1.73 1.16 1 1.72 2.63 1.22 3.27.93.1-.73.4-1.22.72-1.5-2.5-.28-5.12-1.25-5.12-5.56 0-1.23.44-2.23 1.16-3.02-.12-.28-.5-1.43.11-2.98 0 0 .95-.3 3.1 1.15a10.8 10.8 0 0 1 5.64 0c2.15-1.45 3.09-1.15 3.09-1.15.61 1.55.23 2.7.12 2.98.72.79 1.15 1.79 1.15 3.02 0 4.32-2.63 5.27-5.14 5.55.4.35.76 1.04.76 2.09v3.1c0 .3.2.65.77.54A11.25 11.25 0 0 0 12 .75Z"
           />
         </symbol>
         <symbol id="i-play" viewBox="0 0 24 24">
@@ -93,15 +94,13 @@
           <circle cx="8" cy="17" r="2" />
         </symbol>
         <symbol id="i-mac" viewBox="0 0 24 24">
-          <rect x="3" y="3" width="18" height="13" rx="2" />
-          <path d="M12 16v5m-4 0h8" />
+          <path fill="currentColor" stroke="none" d="M13 3.1c.8-.9 2.1-1.6 3.3-1.7.2 1.3-.4 2.7-1.1 3.5-.8 1-2 1.8-3.3 1.7-.1-1.3.4-2.6 1.1-3.5ZM16.5 6.9c1.6 0 3 .8 3.9 2-1.9 1.1-2.6 2.7-2.4 4.1.1 1.5 1 2.9 2.9 3.7-.4 1.3-1 2.5-1.7 3.4-.9 1.2-1.8 2.2-3 2.2s-1.8-.8-3.7-.8-2.5.8-3.7.8c-1.1 0-2-1-3-2.3C4.5 18.4 3.3 15.5 3.3 13c0-3.9 2.4-6 5.1-6 1.5 0 2.6.9 3.7.9 1.1 0 2.5-1 4.4-1Z" />
         </symbol>
         <symbol id="i-windows" viewBox="0 0 24 24">
           <path d="m3 5 18-2v18L3 19zM11 4v16M3 12h18" />
         </symbol>
         <symbol id="i-linux" viewBox="0 0 24 24">
-          <rect x="3" y="4" width="18" height="16" rx="3" />
-          <path d="m7 9 3 3-3 3m6 0h4" />
+          <path fill="currentColor" fill-rule="evenodd" stroke="none" d="M12 1.2c3.2 0 5 2.6 5 5.9v1.2c0 1.9.7 2.8 2 4.7 1.8 2.5 2.2 4.4 1.6 5.7l1.2 1.1c1 1 .4 2.3-1 2.4h-4.6c-1.2 0-2-.6-2.2-1.4a9 9 0 0 1-4 0c-.2.8-1 1.4-2.2 1.4H3.2c-1.4-.1-2-1.4-1-2.4l1.2-1.1C2.8 17.4 3.2 15.5 5 13c1.3-1.9 2-2.8 2-4.7V7.1c0-3.3 1.8-5.9 5-5.9Zm0 9.8c-2.7 0-5 2.9-5 5.3 0 2 2.2 3.3 5 3.3s5-1.3 5-3.3c0-2.4-2.3-5.3-5-5.3ZM10 5.7c-.6 0-1 .6-1 1.3s.4 1.3 1 1.3 1-.6 1-1.3-.4-1.3-1-1.3Zm4 0c-.6 0-1 .6-1 1.3s.4 1.3 1 1.3 1-.6 1-1.3-.4-1.3-1-1.3Zm-2 2.7-2 .9 2 1.2 2-1.2-2-.9Z" />
         </symbol>
       </defs>
     </svg>
@@ -112,8 +111,8 @@
       >
       <nav aria-label="Main navigation">
         <a href="#tools">Features</a><a href="#editor">Editor</a
-        ><a href="https://github.com/CoderSerio/moojicut"
-          >Open source <span aria-hidden="true">↗</span></a
+        ><a class="github-link" href="https://github.com/CoderSerio/moojicut"
+          ><svg class="icon" aria-hidden="true"><use href="#i-github" /></svg> GitHub</a
         >
       </nav>
       <a class="button small" href="#download"
@@ -135,7 +134,7 @@
           <a
             class="release-badge"
             data-release-link
-            href="https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.16"
+            href="https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.22"
             ><span class="status-dot"></span> Small app. Open possibilities.
             <svg class="icon"><use href="#i-arrow" /></svg
           ></a>
@@ -435,84 +434,86 @@
             <h2 id="download-title">Make room for clarity.</h2>
             <p>Free &amp; open source. No subscription. No account.</p>
             <span class="version"
-              >Preview <span data-version>0.1.0-alpha.16</span>
+              >Preview <span data-version>0.1.0-alpha.22</span>
               <span aria-hidden="true">·</span>
               <a
                 data-release-link
-                href="https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.16"
+                href="https://github.com/CoderSerio/moojicut/releases/tag/v0.1.0-alpha.22"
                 >What’s new ↗</a
               ></span
             >
           </div>
-          <p id="platform-hint">
-            Choose your computer. The download starts directly from GitHub.
-          </p>
+          <p id="platform-hint">Choose the download for your computer.</p>
           <div class="download-grid" data-reveal>
             <article class="download-card" data-platform="macos">
-              <svg class="platform-icon icon"><use href="#i-mac" /></svg>
+              <svg class="platform-icon icon" aria-hidden="true"><use href="#i-mac" /></svg>
               <h3>For Mac</h3>
               <p>macOS 26+ · Apple Silicon</p>
               <a
-                class="button"
+                class="button secondary"
                 data-download="macos"
-                href="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-macos-arm64.zip"
+                href="https://moojicut-downloads.pages.dev/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-macos-arm64.zip"
+                data-fallback="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-macos-arm64.zip"
+                data-mirror-size="9748972"
                 >Download for Mac
                 <svg class="icon"><use href="#i-down" /></svg></a
-              ><a class="mirror-download" data-mirror="macos" hidden>Cloudflare mirror</a>
+              >
               <span class="package-note">ZIP · Apple Silicon</span>
               <details>
                 <summary>Install &amp; get started <span>+</span></summary>
                 <p>
-                  Unzip and move Mooji Cut to Applications. This preview is not
-                  notarized: macOS may ask you to approve it in System Settings
-                  → Privacy &amp; Security. Allow Screen Recording, then reopen
-                  the app. Future releases can be installed from its update
-                  settings.
+                  Open the ZIP and drag Mooji Cut into Applications. Open it
+                  from Applications and allow Screen Recording when prompted.
+                  macOS may ask you to confirm this preview in System Settings
+                  → Privacy &amp; Security. Check for updates in Mooji Cut Settings.
                 </p>
               </details>
             </article>
             <article class="download-card" data-platform="windows">
-              <svg class="platform-icon icon"><use href="#i-windows" /></svg>
+              <svg class="platform-icon icon" aria-hidden="true"><use href="#i-windows" /></svg>
               <h3>For Windows</h3>
               <p>Windows 10 / 11 · Intel or AMD 64-bit</p>
               <a
                 class="button secondary"
                 data-download="windows"
-                href="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-windows-x64.zip"
+                href="https://moojicut-downloads.pages.dev/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-windows-x64.zip"
+                data-fallback="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-windows-x64.zip"
+                data-mirror-size="27001527"
                 >Download for Windows
                 <svg class="icon"><use href="#i-down" /></svg></a
-              ><a class="mirror-download" data-mirror="windows" hidden>Cloudflare mirror</a>
+              >
               <span class="package-note">Portable ZIP · No installer</span>
               <details>
                 <summary>Install &amp; get started <span>+</span></summary>
                 <p>
-                  Extract the entire ZIP, then run MoojiCut.exe. This preview is
-                  unsigned. Screenshots, pinned images, silent screen recording,
-                  timeline editing, and ZIP plugins are included. OCR and
-                  translation are currently available on Mac only.
+                  Right-click the ZIP and choose <strong>Extract All</strong>.
+                  Open the extracted <strong>MoojiCut</strong> folder and double-click
+                  <code>MoojiCut.exe</code>. Keep the other files in the same folder.
+                  Windows may show a warning for this unsigned preview.
                 </p>
               </details>
             </article>
             <article class="download-card" data-platform="linux">
-              <svg class="platform-icon icon"><use href="#i-linux" /></svg>
+              <svg class="platform-icon icon" aria-hidden="true"><use href="#i-linux" /></svg>
               <h3>For Linux</h3>
               <p>Ubuntu 22.04+ compatible · x86_64</p>
               <a
                 class="button secondary"
                 data-download="linux"
-                href="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.16/moojicut-0.1.0-alpha.16-linux-x64.tar.gz"
+                href="https://moojicut-downloads.pages.dev/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-linux-x64.tar.gz"
+                data-fallback="https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.22/moojicut-0.1.0-alpha.22-linux-x64.tar.gz"
+                data-mirror-size="20151091"
                 >Download for Linux
                 <svg class="icon"><use href="#i-down" /></svg></a
-              ><a class="mirror-download" data-mirror="linux" hidden>Cloudflare mirror</a>
+              >
               <span class="package-note">tar.gz · Portable folder</span>
               <details>
                 <summary>Install &amp; get started <span>+</span></summary>
                 <p>
-                  Extract the archive and run <code>./launch.sh</code>. Requires
-                  glibc 2.35+, GTK 3, Ayatana AppIndicator, and libcurl. X11
-                  capture is tested; Wayland depends on your desktop’s portal.
-                  Includes pinned images, silent WebM recording, timeline
-                  editing, and ZIP plugins. OCR and translation are Mac-only.
+                  Extract the archive, open a terminal in the <strong>MoojiCut</strong>
+                  folder, and run <code>./launch.sh</code>. See <code>README.txt</code>
+                  in that folder for the system packages you need. On Wayland,
+                  capture depends on your desktop’s portal.
                 </p>
               </details>
             </article>
@@ -549,8 +550,8 @@
                 <p>
                   Yes, on supported systems. The Mac preview currently has the
                   fullest feature set, including the new video editor. Windows
-                  and Linux support are earlier in development. See each
-                  download’s installation notes for the current differences.
+                  and Linux support are earlier in development. See the
+                  <a href="https://github.com/CoderSerio/moojicut/blob/main/README.en.md#downloads-and-compatibility">compatibility guide</a> for the current differences.
                 </p>
               </details>
             </div>
@@ -561,7 +562,8 @@
               Cut</a
             ><span>A little clarity. A lot of possibility.</span>
             <div>
-              <a href="https://github.com/CoderSerio/moojicut">GitHub ↗</a
+              <a class="github-link" href="https://github.com/CoderSerio/moojicut"
+                ><svg class="icon" aria-hidden="true"><use href="#i-github" /></svg> GitHub</a
               ><a href="https://github.com/CoderSerio/moojicut/issues"
                 >Feedback ↗</a
               >

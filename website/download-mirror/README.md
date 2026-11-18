@@ -40,4 +40,10 @@ GET、HEAD、断点续传、无效路径和写入拒绝。生产桶仅用于正�
 4. 从公开入口完整下载六个文件并重新计算 SHA-256。核对 HEAD 的 Content-Length
    和 Range 的 206、Content-Range 与分段内容。
 5. 更新 `website/verified-mirrors.json`。官网构建会再比较 GitHub Release 的摘要和
-   大小，匹配后才显示镜像链接。
+   大小，匹配后将该平台的下载按钮指向 Cloudflare。
+
+## Beta 多源交付计划
+
+- CI 对每个平台和架构生成一次产物，以版本化路径上传同一份字节到 GitHub、Cloudflare R2 和已配置的阿里云 OSS。每个公开源通过外网长度、完整 SHA-256 和断点请求检查后才能加入发布清单。清单按版本记录文件名、长度、摘要和候选地址。发布应用更新时，连同签名过的更新清单一起同步。
+- 官网由访问者浏览器对已启用跨域读取的镜像并行发出小段 Range 请求。用首包耗时和实测吞吐估算剩余下载时间，限时取消慢请求，并在当前会话短暂缓存结果。候选镜像不可用时回到同版本 GitHub 下载。浏览器接管文件下载后，页面无法切换一次已经开始的传输。[OSS CDN 配置](https://www.alibabacloud.com/help/en/oss/user-guide/cdn-acceleration)
+- 应用内更新需要同时支持更新清单和包文件的镜像，按候选地址重试。只有能确认版本、大小与摘要匹配时才尝试跨源继续下载。macOS 保留 Sparkle 的签名验证，安装前验证完整产物。手动下载的 DMG 和自动更新的 ZIP 可以分别发布。Alpha 仍手动发布镜像，应用内更新沿用现有签名流程。[Sparkle 发布更新](https://sparkle-project.org/documentation/publishing/)

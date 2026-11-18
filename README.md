@@ -56,7 +56,7 @@
 
 ## 下载与兼容性
 
-[官网下载与 Cloudflare 备用入口](https://coderserio.github.io/moojicut/#download)
+[官网下载](https://coderserio.github.io/moojicut/#download)
 
 当前版本：**[0.1.0-alpha.22](https://github.com/CoderSerio/moojicut/releases/latest)**。项目仍在 alpha 阶段，各系统的已交付能力如下；上文介绍完整产品功能，具体可用范围以此表为准。
 

@@ -70,14 +70,19 @@ class ReleaseDownloads(unittest.TestCase):
 
     def test_real_html_removes_stale_links_in_no_javascript_fallback(self):
         page = (ROOT / "index.html").read_text()
-        shown = sync.render_downloads(page, sync.release_snapshot([release()], manifest()))
+        mirrored = sync.release_snapshot([release()], manifest())
+        shown = sync.render_downloads(page, mirrored)
         self.assertEqual(shown.count(f'href="{ORIGIN}/v{VERSION}/'), 3)
+        self.assertEqual(shown.count('data-mirror-size="1234"'), 3)
+        self.assertEqual(shown.count('data-fallback="https://github.com/'), 3)
+        self.assertEqual(sync.render_downloads(shown, mirrored), shown)
         next_release = sync.release_snapshot([release("0.1.0-alpha.23")], manifest())
         hidden = sync.render_downloads(shown, next_release)
         self.assertNotIn(ORIGIN, hidden)
+        self.assertNotIn('data-fallback=', hidden)
+        self.assertNotIn('data-mirror-size=', hidden)
         for key in sync.SUFFIXES:
-            self.assertIn(f'data-mirror="{key}" hidden', hidden)
-            self.assertIn(next_release["downloads"][key], hidden)
+            self.assertIn(f'href="{next_release["downloads"][key]}"', hidden)
         self.assertIn("<span data-version>0.1.0-alpha.23</span>", hidden)
 
     def test_unexpected_primary_url_is_not_published(self):
