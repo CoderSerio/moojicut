@@ -9,6 +9,7 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include "moonbit.h"
 #include <string.h>
+#include "capture-toolbar-fixture.h"
 
 // Compile MCCaptureController.m with both CG APIs redirected to these fakes.
 // No real TCC request, screencapture process, modal window, or clipboard access
@@ -27,10 +28,9 @@ static NSMutableArray<NSWindow *> *orderedOutWindows;
 @interface MCImageEditorController (MCSuspensionTest)
 @property (readonly) MCImageCanvas *canvas;
 @property (readonly) NSDictionary<NSString *, MCSharedTextInputView *> *textPropertyInputs;
-@property (readonly) NSSegmentedControl *tools;
+@property (readonly) MCSharedCanvasView *toolbar;
 - (BOOL)setCaptureRegion:(NSRect)rect;
 - (void)addTextAtPoint:(NSPoint)point;
-- (void)chooseTool:(id)sender;
 @end
 @interface NSWindow (MCSuspensionTest)
 - (void)mc_permission_orderOut:(id)sender;
@@ -420,12 +420,7 @@ static BOOL exerciseSuspendedCapture(void) {
           "suspension fixture has an undoable annotation");
     CHECK([first setCaptureRegion:NSMakeRect(20,20,700,440)], "second overlay can keep independent property input");
     for (MCImageEditorController *editor in overlays) {
-        for (NSInteger index = 0; index < editor.tools.segmentCount; index++) {
-            if ([editor.tools tagForSegment:index] != 3) continue;
-            editor.tools.selectedSegment = index;
-            [editor chooseTool:editor.tools];
-            break;
-        }
+        MCToolbarClick(editor.toolbar, @"builtin.image.text");
     }
     MCSharedTextInputView *numericInput = first.textPropertyInputs[@"style.fontSize"];
     [first.window makeFirstResponder:numericInput];

@@ -131,7 +131,6 @@
           "plugins/feature/image_editor/macos/MCImageEditorController.h"
         ],
         "includes": [
-          "component.icons",
           "component.selection",
           "component.theme",
           "shared.bindings"
@@ -552,8 +551,7 @@
           "shared.graphics"
         ],
         "includes": [
-          "shared.bindings",
-          "shared.icons"
+          "shared.bindings"
         ]
       },
       "platform.app": {
@@ -628,6 +626,7 @@
       "sources": [],
       "files": [
         "bindings/c/capture_edit.h",
+        "bindings/c/capture_toolbar.h",
         "bindings/c/capture_ui.h",
         "bindings/c/editor_style.h",
         "bindings/c/feature_runtime.h",

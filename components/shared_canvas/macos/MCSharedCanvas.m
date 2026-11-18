@@ -66,6 +66,18 @@ static void MCCanvasPaintText(void *context, const MCCanvasText *command) {
         attributes:attributes];
     [NSGraphicsContext restoreGraphicsState];
 }
+static void MCCanvasPaintAsset(void *context, MCCanvasRect rect, const uint16_t *key, size_t length) {
+    MCSharedCanvasView *canvas = (__bridge MCSharedCanvasView *)context;
+    NSString *identifier = [[NSString alloc] initWithCharacters:key length:length];
+    NSImage *image = canvas.imageAssets[identifier];
+    if (!image || image.size.width <= 0 || image.size.height <= 0 || rect.width <= 0 || rect.height <= 0) return;
+    CGFloat scale = MIN(rect.width / image.size.width, rect.height / image.size.height);
+    NSSize size = NSMakeSize(image.size.width * scale, image.size.height * scale);
+    NSRect destination = NSMakeRect(rect.x + (rect.width-size.width)/2, rect.y + (rect.height-size.height)/2,
+        size.width, size.height);
+    [image drawInRect:destination fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1
+        respectFlipped:YES hints:nil];
+}
 static NSString *MCCanvasOwnedString(moonbit_string_t value) {
     NSString *text = [[NSString alloc] initWithCharacters:value length:Moonbit_array_length(value)];
     moonbit_decref(value); return text;
@@ -106,6 +118,7 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 @property (nonatomic, copy) NSString *serializedFrame;
 @property CGSize lastDeliveredSize;
 - (void)emitEvent:(NSDictionary *)event;
+- (void)focusForPress;
 - (void)cancelInput;
 - (void)updateVideoSurface;
 - (void)updateSemantics;
@@ -157,7 +170,7 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
     if ((![role isEqualToString:NSAccessibilityButtonRole] && ![role isEqualToString:NSAccessibilitySliderRole] &&
          ![role isEqualToString:NSAccessibilityCheckBoxRole]) ||
         !self.isAccessibilityEnabled || !identifier.length || !self.canvas.onEvent) return NO;
-    [self.canvas.window makeFirstResponder:self.canvas];
+    [self.canvas focusForPress];
     [self.canvas emitEvent:@{ @"type":@"activate", @"id":identifier }];
     return YES;
 }
@@ -299,9 +312,15 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 - (void)drawRect:(NSRect)dirtyRect {
     [self drawLayer:MC_UI_LAYER_COMMANDS dirtyRect:dirtyRect];
 }
+- (void)setImageAssets:(NSDictionary<NSString *, NSImage *> *)imageAssets {
+    _imageAssets = [imageAssets copy];
+    self.needsDisplay = YES;
+    self.overlaySurface.needsDisplay = YES;
+}
 - (void)drawLayer:(int32_t)layer dirtyRect:(NSRect)dirtyRect {
     [NSGraphicsContext saveGraphicsState]; NSRectClip(NSIntersectionRect(dirtyRect,self.bounds));
-    const MCCanvasPainter painter = {NULL,MCCanvasPaintRect,MCCanvasPaintLine,MCCanvasPaintText};
+    const MCCanvasPainter painter = {(__bridge void *)self,MCCanvasPaintRect,MCCanvasPaintLine,
+        MCCanvasPaintText,MCCanvasPaintAsset};
     mc_canvas_draw_layer(self.frameHandle,layer,&painter);
     [NSGraphicsContext restoreGraphicsState];
 }
@@ -358,9 +377,12 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
     [self sendPointer:@"pointerMove" event:event];
 }
 - (void)mouseDown:(NSEvent *)event {
-    [self.window makeFirstResponder:self];
+    [self focusForPress];
     self.inputActive = YES; self.pointerDown = YES;
     [self sendPointer:@"pointerDown" event:event];
+}
+- (void)focusForPress {
+    if (!self.preserveFocusOnPress || !self.preserveFocusOnPress()) [self.window makeFirstResponder:self];
 }
 - (void)mouseDragged:(NSEvent *)event {
     if (self.pointerDown) [self sendPointer:@"pointerMove" event:event];

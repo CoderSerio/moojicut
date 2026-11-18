@@ -295,6 +295,9 @@ pub fn image_session_text(id : Int, index : Int) -> String {
 
 ///|
 pub fn image_session_dispose(id : Int) -> Unit {
+  if capture_toolbar_owners.get(id) is Some(toolbar) {
+    ignore(toolbar_close(toolbar))
+  }
   text_dispose_session(id)
   if native_image_sessions.get(id) is Some(session) { @capture_ui.close(session.gesture) }
   native_image_sessions.remove(id)

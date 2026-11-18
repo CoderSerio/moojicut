@@ -14,8 +14,9 @@ typedef struct {
 } MCCaptureHost;
 void mc_capture_refresh_capabilities(void);
 /* Main thread configuration transaction. Snapshot handles remain host-owned.
- * Prepare is non-mutating and refuses active IME/text/drag input. Commit must
- * follow a successful durable save; discard releases prepared native views. */
+ * Prepare is non-mutating; invalid input, IME, drag or modal ownership veto it.
+ * Unaffected valid drafts retain their token/focus. Commit follows a successful
+ * durable save; discard releases the shared configuration candidate. */
 BOOL mc_capture_prepare_tools(int32_t snapshot);
 void mc_capture_commit_tools(int32_t snapshot);
 void mc_capture_discard_tools(void);

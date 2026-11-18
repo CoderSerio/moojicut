@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <math.h>
-#include "bindings/c/capture_edit.h"
+#include "bindings/c/capture_toolbar.h"
 
 static NSError *MCCaptureError(NSString *message) {
     return [NSError errorWithDomain:@"dev.moojicut.capture" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
@@ -71,7 +71,7 @@ static NSError *MCCaptureError(NSString *message) {
         NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
         moonbit_string_t request = moonbit_make_string_raw((int32_t)json.length);
         [json getCharacters:request range:NSMakeRange(0,json.length)];
-        int accepted = capture_candidate_commit_many(request); moonbit_decref(request);
+        int accepted = capture_toolbar_config_commit_many(request); moonbit_decref(request);
         if (!accepted) return;
     }
     for (MCImageEditorController *editor in editors) [editor completeToolConfigurationPublication:candidate];

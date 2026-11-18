@@ -696,9 +696,9 @@ static void capture_closed(gpointer data) {
   (void)data;
   mc_linux_pins_hide(FALSE);
 }
-static void pin_capture_result(GdkPixbuf *image, const GdkRectangle *bounds, gpointer data) {
+static gboolean pin_capture_result(GdkPixbuf *image, const GdkRectangle *bounds, gpointer data) {
   (void)data;
-  if (host.pin_enabled) mc_linux_pin_image_at(image, bounds);
+  return host.pin_enabled && mc_linux_pin_image_at(image, bounds);
 }
 static gboolean can_pin_capture(gpointer data) { (void)data; return mc_linux_pins_enabled(); }
 static const MCLinuxCaptureHost capture_host = {pin_capture_result, capture_closed, NULL, can_pin_capture};

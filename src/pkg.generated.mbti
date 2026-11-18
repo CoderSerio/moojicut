@@ -8,9 +8,17 @@ pub fn capture_candidate_commit(Int32, Int32) -> Int32
 
 pub fn capture_candidate_commit_many(String) -> Int32
 
+pub fn capture_candidate_count(Int32) -> Int32
+
 pub fn capture_candidate_document(Int32) -> String
 
 pub fn capture_candidate_ready(Int32, Int32) -> Int32
+
+pub fn capture_candidate_text(Int32, Int32) -> String
+
+pub fn capture_candidate_value(Int32, Int32, Int32) -> Double
+
+pub fn capture_candidate_viewport_value(Int32, Int32) -> Double
 
 pub fn capture_properties_begin(Int32, Int32, Int32, String, Double, String) -> Int32
 
@@ -33,6 +41,34 @@ pub fn capture_text_text(Int32, Int32, Int32) -> String
 pub fn capture_text_ui_event(Int32, Int32, Int32, String, Double, Double) -> Int32
 
 pub fn capture_text_value(Int32, Int32, Int32) -> Double
+
+pub fn capture_toolbar_ack(Int32, Int32, Int32, String) -> Int32
+
+pub fn capture_toolbar_activate(Int32, Int32, String) -> Int32
+
+pub fn capture_toolbar_close(Int32) -> Int32
+
+pub fn capture_toolbar_config_close(Int32) -> Int32
+
+pub fn capture_toolbar_config_commit_many(String) -> Int32
+
+pub fn capture_toolbar_config_prepare(Int32, Int32) -> Int32
+
+pub fn capture_toolbar_config_ready(Int32, Int32) -> Int32
+
+pub fn capture_toolbar_context(Int32, String) -> Int32
+
+pub fn capture_toolbar_event(Int32, Int32, String) -> Int32
+
+pub fn capture_toolbar_frame(Int32, Double, Int32) -> String
+
+pub fn capture_toolbar_open(Int32, Int32, Int32) -> Int32
+
+pub fn capture_toolbar_text(Int32, Int32) -> String
+
+pub fn capture_toolbar_tool_enabled(Int32, Int32) -> Int32
+
+pub fn capture_toolbar_value(Int32, Int32) -> Double
 
 pub fn capture_ui_close(Int32) -> Unit
 

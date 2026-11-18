@@ -32,6 +32,9 @@ typedef struct {
   void (*line)(void *, double x1, double y1, double x2, double y2,
                int32_t color, double line_width);
   void (*text)(void *, const MCCanvasText *);
+  /* Optional. Resolve only against the view's registered, prepared resources.
+   * Key is borrowed during the call. Unresolved IDs draw nothing. */
+  void (*asset)(void *, MCCanvasRect, const uint16_t *key, size_t length);
 } MCCanvasPainter;
 
 bool mc_canvas_draw_layer(int32_t frame, int32_t layer, const MCCanvasPainter *painter);

@@ -2,6 +2,10 @@
 package "moojicut/core/internal/app/tools"
 
 // Values
+pub fn capture_toolbar_config_prepare(Int32, Int32) -> Int32
+
+pub fn capture_toolbar_open(Int32, Int32, Int32) -> Int32
+
 pub fn tool_registry_normalize(String) -> String
 
 pub fn tool_registry_resolve(String) -> String

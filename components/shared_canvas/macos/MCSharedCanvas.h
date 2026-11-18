@@ -11,6 +11,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSDictionary *frameDescription;
 @property (nonatomic, copy, nullable) void (^onEvent)(NSDictionary *event);
 @property (nonatomic, copy, nullable) void (^onFrameNeeded)(CGSize size);
+// Prepared images keyed by opaque frame resource IDs.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSImage *> *imageAssets;
+// A host may keep focus in a system input while the canvas handles the press.
+@property (nonatomic, copy, nullable) BOOL (^preserveFocusOnPress)(void);
 
 // Borrowed producer JSON. The common MoonBit frame boundary validates an
 // immutable snapshot before replacing the current frame. Failure preserves it.

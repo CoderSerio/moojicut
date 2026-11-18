@@ -121,7 +121,7 @@ static BOOL paint_canvas(Canvas *canvas, HDC target, const RECT *bounds, UINT dp
   IntersectClipRect(target, bounds->left, bounds->top, bounds->right, bounds->bottom);
   FillRect(target, bounds, (HBRUSH)GetStockObject(BLACK_BRUSH));
   Paint paint = {0}; paint.dc = target; paint.scale = dpi / 96.0; paint.left = bounds->left; paint.top = bounds->top;
-  MCCanvasPainter painter = {&paint, draw_rectangle, draw_line, draw_text};
+  MCCanvasPainter painter = {&paint, draw_rectangle, draw_line, draw_text, NULL};
   BOOL ok = !canvas->frame || mc_canvas_draw_layer(canvas->frame, MC_UI_LAYER_COMMANDS, &painter);
   MCCanvasRect video;
   if (ok && canvas->callbacks.video && mc_canvas_video_rect(canvas->frame, &video)) {
@@ -321,10 +321,15 @@ static LRESULT canvas_message(Canvas *canvas, UINT message, WPARAM wp, LPARAM lp
   case WM_ERASEBKGND: return 1;
   case WM_SETCURSOR:
     if (LOWORD(lp) == HTCLIENT) { SetCursor(canvas_cursor(canvas)); return TRUE; } break;
-  case WM_LBUTTONDOWN:
-    SetFocus(window); if (canvas->dead) return 0;
+  case WM_LBUTTONDOWN: {
+    BOOL preserve = canvas->callbacks.preserve_focus_on_press &&
+        canvas->callbacks.preserve_focus_on_press(canvas->context, window);
+    if (canvas->dead) return 0;
+    if (!preserve) SetFocus(window);
+    if (canvas->dead) return 0;
     canvas->active = TRUE; canvas->pointer_down = TRUE;
     pointer(canvas, MC_UI_INPUT_POINTER_DOWN, GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
+  }
   case WM_MOUSEMOVE:
     if (!canvas->tracking) { TRACKMOUSEEVENT tracking = {sizeof(tracking), TME_LEAVE, window, 0};
       canvas->tracking = TrackMouseEvent(&tracking); }

@@ -4,6 +4,7 @@
 #import "components/shared_canvas/macos/MCSharedCanvas.h"
 #import "platform/macos/graphics/MCSystemColorPanel.h"
 #import <objc/runtime.h>
+#import "capture-toolbar-fixture.h"
 #include "moonbit.h"
 #include <math.h>
 
@@ -24,13 +25,10 @@
 
 @interface MCImageEditorController (MCInlineTextTest)
 @property (readonly) MCImageCanvas *canvas;
-@property (readonly) NSSegmentedControl *tools;
+@property (readonly) MCSharedCanvasView *toolbar;
 @property (readonly) NSDictionary<NSString *, MCSharedTextInputView *> *textPropertyInputs;
 @property (readonly) MCSharedCanvasView *textPropertiesCanvas;
-@property (readonly) NSButton *confirmButton;
-@property (readonly) NSButton *cancelButton;
 - (void)prepareWindow;
-- (void)chooseTool:(id)sender;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)sharedColorChanged:(id)sender;
 @end
@@ -40,13 +38,7 @@
 } while (0)
 
 static void selectTool(MCImageEditorController *editor, NSInteger kind) {
-    for (NSInteger index = 0; index < editor.tools.segmentCount; index++) {
-        if ([editor.tools tagForSegment:index] == kind) {
-            editor.tools.selectedSegment = index;
-            [editor chooseTool:editor.tools];
-            return;
-        }
-    }
+    MCToolbarClick(editor.toolbar,MCToolbarToolID(kind));
 }
 
 static MCImageEditorController *fixture(CGFloat scale, NSError **error) {
@@ -111,8 +103,13 @@ static BOOL creationAndEditing(void) {
     CHECK(text != nil && editor.window.attachedSheet == nil, "adding text creates an inline editor without a sheet");
     if (!text) { [editor cancel:nil]; return NO; }
     CHECK(!editor.window.visible, "test window stays hidden");
-    CHECK(editor.confirmButton.keyEquivalent.length == 0 && editor.cancelButton.keyEquivalent.length == 0,
-          "window Return and Escape shortcuts do not steal text input");
+    NSEvent *newline = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+        timestamp:0 windowNumber:editor.window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r"
+        isARepeat:NO keyCode:36];
+    [text keyDown:newline];
+    CHECK([text.string isEqual:@"\n"] && canvas.textView == text && editor.window != nil && history(editor) == 0,
+          "real Return key belongs to the multiline field rather than the screenshot confirm action");
+    [text selectAll:nil]; [text deleteBackward:nil];
     CHECK([editor.document[@"annotations"] count] == 0 && history(editor) == 0,
           "an unfinished input is a draft, not an undoable document mutation");
 
@@ -138,7 +135,7 @@ static BOOL creationAndEditing(void) {
           "a completed text edit produces exactly one annotation and undo entry");
     NSDictionary *original = [editor.document[@"annotations"] firstObject];
     CHECK([original[@"text"] isEqualToString:contents], "committed MoonBit text matches the inline content");
-    CHECK(editor.confirmButton.keyEquivalent.length > 0, "confirm keyboard shortcut returns outside text editing");
+    CHECK(MCToolbarEnabled(editor.toolbar,@"host.confirm"), "shared confirm becomes available outside text editing");
 
     [canvas beginEditingText:original];
     [canvas.textView selectAll:nil];

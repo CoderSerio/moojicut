@@ -9,12 +9,12 @@
 #include "capture.h"
 #include "bindings/c/image_session.h"
 #include "bindings/c/capture_edit.h"
+#include "bindings/c/capture_toolbar.h"
 #include "platform/windows/graphics/text_input.h"
 #include "platform/windows/graphics/shared_canvas.h"
 #include "bindings/c/capture_ui.h"
 #include "bindings/c/tool_registry.h"
 #include "platform/shared/image/pixelate.h"
-#include "components/icons/shared/mc_icons.h"
 #include "components/hud/windows/hud.h"
 #include "bindings/c/editor_style.h"
 #include "moonbit.h"
@@ -37,19 +37,9 @@ enum {
   ID_UNDO = 8105,
   ID_REDO,
   ID_COPY,
-  ID_CANCEL,
-  ID_TEXT_INPUT,
-  ID_CONTRIBUTION_BASE = 9000
+  ID_CANCEL
 };
 enum { ID_STYLE_BASE = 8500 };
-enum { MAX_TOOL_BUTTONS = 261 };
-typedef struct {
-  HWND window;
-  int command, icon, slot, kind, interaction;
-  BOOL available, registered;
-  wchar_t *id, *action, *handler, *label;
-} ToolButton;
-typedef struct { ToolButton buttons[MAX_TOOL_BUTTONS]; int count; } ToolButtons;
 typedef struct {
   HDC dc;
   HBITMAP bitmap;
@@ -59,13 +49,13 @@ typedef struct {
 } Surface;
 typedef struct {
   HINSTANCE instance;
-  HWND owner, overlay, editor, text, tooltip, text_properties;
+  HWND owner, overlay, editor, text, toolbar_view, text_properties;
   MCWinTextInputs *body_inputs, *property_inputs;
   int32_t text_edit;
   int text_index;
   BOOL text_syncing, text_finishing, color_picker;
-  ToolButtons toolbar_buttons, prepared_buttons;
-  int active_button;
+  int32_t toolbar_session, toolbar_frame, toolbar_generation, prepared_toolbar;
+  BOOL toolbar_dispatching, toolbar_syncing, toolbar_dark;
   MCCaptureHost host;
   HFONT font, text_font;
   HBRUSH text_background;
@@ -75,7 +65,7 @@ typedef struct {
   RECT desktop_bounds, canvas, viewport, toolbar, drag_bounds, draft;
   POINT start, end;
   double zoom, opacity, font_size, stroke;
-  int32_t session, style_bank, tool_snapshot, owned_tools, prepared_text_candidate;
+  int32_t session, style_bank, tool_snapshot, owned_tools;
   moonbit_string_t drag_id;
   double drag_revision;
   int tool, color, selected, editing, drag_mode, handle, shape, block;
@@ -96,25 +86,21 @@ static void text_property_event(void *context, HWND window, const MCCanvasInput 
 static BOOL text_field_key(void *context, HWND field, const MCCanvasInput *event);
 static HBRUSH text_background(void *context, HWND field, HDC target);
 #define TEXT_FIELD_ACTION (WM_APP + 0x725)
-static BOOL build_tool_buttons(int32_t snapshot, ToolButtons *buttons);
-static void clear_tool_buttons(ToolButtons *buttons);
-static void publish_tool_buttons(void);
-static ToolButton *find_button(int command);
+#define TOOLBAR_FOCUS_CHANGED (WM_APP + 0x726)
+static BOOL toolbar_context(void);
+static void toolbar_input(void *context, HWND window, const MCCanvasInput *input);
+static BOOL toolbar_activate(const wchar_t *id);
+static void toolbar_sync_native(void);
 static BOOL custom_drag(void) {
-  return capture.active_button >= 0 && capture.active_button < capture.toolbar_buttons.count &&
-    capture.toolbar_buttons.buttons[capture.active_button].interaction == MC_TOOL_INTERACTION_DRAG_RECT;
+  return capture.toolbar_session && capture_toolbar_value(capture.toolbar_session,
+      MC_CAPTURE_TOOLBAR_INTERACTION) == MC_TOOL_INTERACTION_DRAG_RECT;
 }
 static const wchar_t *EDITOR_CLASS = L"MoojiCut.Capture.Editor";
 static BOOL pin_enabled(void) {
   return !capture.host.pin_enabled || capture.host.pin_enabled(capture.host.context);
 }
 void mc_capture_refresh_capabilities(void) {
-  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
-    ToolButton *button = &capture.toolbar_buttons.buttons[i];
-    BOOL enabled = button->available;
-    if (button->action && !wcscmp(button->action, L"pin")) enabled = enabled && pin_enabled();
-    EnableWindow(button->window, enabled);
-  }
+  if (capture.editor && capture.toolbar_session) layout_editor(capture.editor);
 }
 static void set_pins_hidden(BOOL hidden) {
   if (capture.host.set_pins_hidden)
@@ -342,16 +328,14 @@ static HBRUSH text_background(void *context, HWND field, HDC target) {
   return capture.text_background;
 }
 
-static HGLOBAL image_dib(void) {
+static HGLOBAL rendered_dib(RECT viewport) {
   SIZE_T stride, bytes;
   HGLOBAL memory;
   BITMAPINFOHEADER *header;
   BYTE *out;
   int x, y;
-  if (!render_image())
-    return NULL;
-  int width = capture.viewport.right - capture.viewport.left,
-      height = capture.viewport.bottom - capture.viewport.top;
+  int width = viewport.right - viewport.left,
+      height = viewport.bottom - viewport.top;
   stride = ((SIZE_T)width * 3 + 3) & ~(SIZE_T)3;
   bytes = stride * (SIZE_T)height;
   memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(*header) + bytes);
@@ -373,7 +357,7 @@ static HGLOBAL image_dib(void) {
   for (y = 0; y < height; y++) {
     const BYTE *source =
         capture.rendered.pixels +
-        ((SIZE_T)(y + capture.viewport.top) * capture.image.width + capture.viewport.left) * 4;
+        ((SIZE_T)(y + viewport.top) * capture.image.width + viewport.left) * 4;
     BYTE *row = out + (SIZE_T)(height - 1 - y) * stride;
     for (x = 0; x < width; x++)
       memcpy(row + (SIZE_T)x * 3, source + (SIZE_T)x * 4, 3);
@@ -382,20 +366,45 @@ static HGLOBAL image_dib(void) {
   return memory;
 }
 
+static HGLOBAL image_dib(void) {
+  return render_image() ? rendered_dib(capture.viewport) : NULL;
+}
+static HGLOBAL candidate_dib(int32_t candidate) {
+  int count = capture_candidate_count(candidate);
+  if (count < 0) return NULL;
+  if (!capture.rendered.dc && !surface_new(&capture.rendered, capture.image.width, capture.image.height)) return NULL;
+  BitBlt(capture.rendered.dc, 0, 0, capture.image.width, capture.image.height, capture.image.dc, 0, 0, SRCCOPY);
+  GdiFlush(); capture.dirty = TRUE; // Candidate pixels are not the live renderer's cache.
+  for (int pass = 0; pass < 2; pass++) for (int i = 0; i < count; i++) {
+    int kind = (int)capture_candidate_value(candidate, i, 0);
+    if ((kind == TOOL_REDACT) != (pass == 1)) continue;
+    moonbit_string_t text = kind == TOOL_TEXT ? capture_candidate_text(candidate, i) : NULL;
+    BOOL ok = blend_annotation(kind, capture_candidate_value(candidate,i,1), capture_candidate_value(candidate,i,2),
+        capture_candidate_value(candidate,i,3), capture_candidate_value(candidate,i,4),
+        (int)capture_candidate_value(candidate,i,5), capture_candidate_value(candidate,i,6),
+        (const wchar_t *)text, text ? Moonbit_array_length(text) : 0, capture_candidate_value(candidate,i,7),
+        capture_candidate_value(candidate,i,8), (int)capture_candidate_value(candidate,i,9),
+        (int)capture_candidate_value(candidate,i,10));
+    if (text) moonbit_decref(text);
+    if (!ok) return NULL;
+  }
+  GdiFlush();
+  RECT viewport;
+  viewport.left = rounded(capture_candidate_viewport_value(candidate,0));
+  viewport.top = rounded(capture_candidate_viewport_value(candidate,1));
+  viewport.right = viewport.left + rounded(capture_candidate_viewport_value(candidate,2));
+  viewport.bottom = viewport.top + rounded(capture_candidate_viewport_value(candidate,3));
+  return rendered_dib(viewport);
+}
 static BOOL copy_image(void) {
   HGLOBAL dib = image_dib();
   BOOL success = FALSE;
-  if (!dib)
-    return FALSE;
+  if (!dib) return FALSE;
   if (OpenClipboard(capture.editor)) {
-    if (EmptyClipboard() && SetClipboardData(CF_DIB, dib)) {
-      dib = NULL;
-      success = TRUE;
-    }
+    if (EmptyClipboard() && SetClipboardData(CF_DIB, dib)) { dib = NULL; success = TRUE; }
     CloseClipboard();
   }
-  if (dib)
-    GlobalFree(dib);
+  if (dib) GlobalFree(dib);
   return success;
 }
 
@@ -430,10 +439,8 @@ static BOOL ensure_property_edit(void) {
       index >= 0 ? MC_CAPTURE_TEXT_EXISTING : MC_CAPTURE_TEXT_DEFAULTS,
       id, image_session_revision(capture.session), 0, 0, 1, 1);
   else {
-    const wchar_t *handler = index < 0 && custom_drag() ? capture.toolbar_buttons.buttons[capture.active_button].handler : L"";
-    int length = (int)wcslen(handler);
-    moonbit_string_t command = moonbit_make_string_raw(length);
-    memcpy(command, handler, (size_t)length * sizeof(wchar_t));
+    moonbit_string_t command = index < 0 && custom_drag() ?
+      capture_toolbar_text(capture.toolbar_session, MC_CAPTURE_TOOLBAR_COMMAND) : moonbit_make_string_raw(0);
     capture.text_edit = capture_properties_begin(capture.session, capture.style_bank, tool,
         id, image_session_revision(capture.session), command);
     moonbit_decref(command);
@@ -512,37 +519,38 @@ static void preserve_text(int index) {
   moonbit_decref(value);
 }
 static void layout_editor(HWND window) {
-  RECT client;
-  GetClientRect(window, &client);
+  if (!window || capture.toolbar_syncing) return;
+  capture.toolbar_syncing = TRUE;
+  RECT client; GetClientRect(window, &client);
+  if (client.right<=0 || client.bottom<=0) { capture.toolbar_syncing=FALSE; return; }
   sync_properties();
   double scale = (double)GetDpiForWindow(window) / 96;
-  double *frame = capture_ui_toolbar_frame(client.right / scale, client.bottom / scale,
-    capture.viewport.left / scale, capture.viewport.top / scale,
-    (capture.viewport.right - capture.viewport.left) / scale,
-    (capture.viewport.bottom - capture.viewport.top) / scale,
-    capture.toolbar_buttons.count * 30 + 6, capture.text_edit ?
-      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH) : 0);
-  int x = rounded(frame[0] * scale), y = rounded(frame[1] * scale);
-  SetRect(&capture.toolbar, x, y, x + rounded(frame[2] * scale), y + rounded(frame[3] * scale));
-  moonbit_decref(frame);
-  int left = 6;
-  int previous_slot = MC_TOOL_SLOT_TOOLS;
-  for (int position = 0; position < capture.toolbar_buttons.count; position++) {
-    ToolButton *button = &capture.toolbar_buttons.buttons[position];
-    if (button->slot != previous_slot) left += 8;
-    previous_slot = button->slot;
-    int bx = x + dpi_px(window, left), by = y + dpi_px(window, 6);
-    MoveWindow(button->window, bx, by, dpi_px(window, 28), dpi_px(window, 28), TRUE);
-    left += 30;
-    TOOLINFOW tip = {sizeof(tip)}; tip.hwnd = window; tip.uId = button->command;
-    SetRect(&tip.rect, bx, by, bx + dpi_px(window, 28), by + dpi_px(window, 28));
-    SendMessageW(capture.tooltip, TTM_NEWTOOLRECTW, 0, (LPARAM)&tip);
+  if (capture.toolbar_session && toolbar_context()) {
+    double max_width = fmax(32, client.right / scale - 28);
+    moonbit_string_t json = capture_toolbar_frame(capture.toolbar_session, max_width, capture.toolbar_dark);
+    int32_t frame_id = ui_frame_open(json); moonbit_decref(json);
+    double width = capture_toolbar_value(capture.toolbar_session, MC_CAPTURE_TOOLBAR_WIDTH);
+    double height = capture_toolbar_value(capture.toolbar_session, MC_CAPTURE_TOOLBAR_HEIGHT);
+    double properties = capture.text_edit ? capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH) : 0;
+    double property_height = capture.text_edit ? capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_HEIGHT) : 0;
+    double *frame = capture_ui_measured_toolbar_frame(client.right / scale, client.bottom / scale,
+        capture.viewport.left / scale, capture.viewport.top / scale,
+        (capture.viewport.right-capture.viewport.left)/scale, (capture.viewport.bottom-capture.viewport.top)/scale,
+        fmax(width,properties)+12, height+12+(properties>0 ? property_height+4 : 0));
+    int x = rounded(frame[0]*scale), y = rounded(frame[1]*scale);
+    SetRect(&capture.toolbar,x,y,x+rounded(frame[2]*scale),y+rounded(frame[3]*scale)); moonbit_decref(frame);
+    MoveWindow(capture.toolbar_view,x+dpi_px(window,6),y+dpi_px(window,6),rounded(width*scale),rounded(height*scale),TRUE);
+    if (frame_id) {
+      if (mc_win_canvas_set_frame(capture.toolbar_view,frame_id)) {
+        capture.toolbar_frame=frame_id;
+        capture.toolbar_generation=(int32_t)capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_GENERATION);
+      } else ui_frame_close(frame_id);
+    }
+    refresh_text_frames(x+dpi_px(window,6),y+rounded((height+10)*scale),scale);
   }
-  refresh_text_frames(x + dpi_px(window, 6), y + dpi_px(window, 40), scale);
-  capture.canvas = capture.viewport;
-  capture.zoom = 1;
-  sync_properties();
-  InvalidateRect(window, NULL, FALSE);
+  capture.canvas=capture.viewport; capture.zoom=1;
+  capture.toolbar_syncing=FALSE;
+  InvalidateRect(window,NULL,FALSE);
 }
 /* Use the export font and wrapping rules for all live/committed text geometry.
  * Grow height on style/reflow so increasing the font cannot silently hide a line. */
@@ -782,234 +790,157 @@ static void region_label(HDC dc, RECT rect) {
   TextOutW(dc, maximum(0, rect.left), maximum(0, rect.top - 24), label, (int)wcslen(label));
   SelectObject(dc, old);
 }
-static LRESULT CALLBACK hud_button_proc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id,
-                                        DWORD_PTR data) {
-  (void)id;
-  (void)data;
-  if (message == WM_MOUSEMOVE && !GetPropW(window, L"MoojiCut.Hover")) {
-    SetPropW(window, L"MoojiCut.Hover", (HANDLE)1);
-    TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, window, 0};
-    TrackMouseEvent(&track);
-    InvalidateRect(window, NULL, FALSE);
-  } else if (message == WM_MOUSELEAVE) {
-    RemovePropW(window, L"MoojiCut.Hover");
-    InvalidateRect(window, NULL, FALSE);
-  } else if (message == WM_NCDESTROY) {
-    RemovePropW(window, L"MoojiCut.Hover");
-    RemoveWindowSubclass(window, hud_button_proc, 2);
-  }
-  return DefSubclassProc(window, message, wp, lp);
-}
-static HWND hud_button(HWND parent, int id, const wchar_t *label) {
-  HWND button = CreateWindowW(L"BUTTON", label, WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1,
-                              parent, (HMENU)(INT_PTR)id, capture.instance, NULL);
-  SetWindowSubclass(button, hud_button_proc, 2, 0);
-  return button;
-}
 static wchar_t *tool_text(int32_t snapshot, int index, int key) {
-  moonbit_string_t text = tool_registry_snapshot_text(snapshot, MC_TOOL_GROUP_SCREENSHOT, index, key);
-  int length = Moonbit_array_length(text);
-  wchar_t *copy = calloc((SIZE_T)length + 1, sizeof(wchar_t));
-  if (copy) memcpy(copy, text, (SIZE_T)length * sizeof(wchar_t));
-  moonbit_decref(text);
-  return copy;
+  moonbit_string_t text=tool_registry_snapshot_text(snapshot,MC_TOOL_GROUP_SCREENSHOT,index,key);
+  int length=Moonbit_array_length(text);
+  wchar_t *copy=calloc((SIZE_T)length+1,sizeof(wchar_t));
+  if (copy) memcpy(copy,text,(SIZE_T)length*sizeof(wchar_t));
+  moonbit_decref(text); return copy;
 }
-static int tool_value(int32_t snapshot, int index, int key) {
-  return tool_registry_snapshot_value(snapshot, MC_TOOL_GROUP_SCREENSHOT, index, key);
+static int tool_value(int32_t snapshot,int index,int key) {
+  return tool_registry_snapshot_value(snapshot,MC_TOOL_GROUP_SCREENSHOT,index,key);
 }
-static MCIcon tool_icon(const wchar_t *name) {
-  char key[96];
-  if (!name || !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, -1, key, sizeof(key), NULL, NULL))
-    return MC_ICON_RECTANGLE;
-  MCIcon icon = mc_icon_from_name(key);
-  return icon == MC_ICON_COUNT ? MC_ICON_RECTANGLE : icon;
+static moonbit_string_t moon_text(const wchar_t *text) {
+  size_t length=wcslen(text); moonbit_string_t result=moonbit_make_string_raw((int32_t)length);
+  memcpy(result,text,length*sizeof(wchar_t)); return result;
 }
-static void clear_tool_buttons(ToolButtons *buttons) {
-  for (int i = 0; i < buttons->count; i++) {
-    ToolButton *button = &buttons->buttons[i];
-    if (capture.tooltip && button->registered) {
-      TOOLINFOW tip = {sizeof(tip)}; tip.hwnd = capture.editor; tip.uId = button->command;
-      SendMessageW(capture.tooltip, TTM_DELTOOLW, 0, (LPARAM)&tip);
-      tip.uFlags = TTF_IDISHWND; tip.uId = (UINT_PTR)button->window;
-      SendMessageW(capture.tooltip, TTM_DELTOOLW, 0, (LPARAM)&tip);
-    }
-    if (button->window) DestroyWindow(button->window);
-    free(button->id); free(button->action); free(button->handler); free(button->label);
+static BOOL toolbar_context(void) {
+  if (!capture.toolbar_session || capture.closing) return FALSE;
+  HWND focus=GetFocus();
+  BOOL field=mc_win_text_inputs_contains(capture.body_inputs,focus) || mc_win_text_inputs_contains(capture.property_inputs,focus);
+  wchar_t json[512];
+  swprintf_s(json,ARRAYSIZE(json),L"{\"hasRegion\":%s,\"blocked\":%s,\"fieldFocused\":%s,\"toolbarFocused\":%s,\"bodyEditing\":%s,\"pinAvailable\":%s,\"capabilities\":%d,\"edit\":%d,\"editVersion\":%d,\"measuredHeight\":%.17g}",
+      capture.viewport.right>capture.viewport.left && capture.viewport.bottom>capture.viewport.top ? L"true":L"false",
+      capture.dragging || capture.color_picker || capture.composing ? L"true":L"false",field ? L"true":L"false",focus==capture.toolbar_view ? L"true":L"false",capture.editing!=-2 && capture.text ? L"true":L"false",pin_enabled()?L"true":L"false",
+      MC_TOOL_CAP_COMMANDS,capture.text_edit,capture.text_edit ? text_version():0,measure_text());
+  moonbit_string_t facts=moon_text(json); BOOL ok=capture_toolbar_context(capture.toolbar_session,facts)==1;
+  moonbit_decref(facts); return ok;
+}
+static void toolbar_sync_native(void) {
+  BOOL retired=capture.text_edit && capture_text_value(capture.session,capture.text_edit,MC_CAPTURE_TEXT_VERSION)<0;
+  if (retired) {
+    capture.text_finishing=TRUE; capture.text_edit=0; capture.text_index=-1; capture.editing=-2; capture.composing=FALSE;
+    mc_win_text_inputs_set_frame(capture.body_inputs,0,0,0,1);
+    mc_win_text_inputs_set_frame(capture.property_inputs,0,0,0,1); capture.text=NULL;
+    capture.text_finishing=FALSE; capture.selected=-1;
   }
-  ZeroMemory(buttons, sizeof(*buttons));
+  capture.tool=(int)capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_KIND);
+  if (capture.tool<0) capture.tool=TOOL_SELECT;
+  if (!capture.text_edit) { capture.selected=-1; load_tool_style(capture.tool); }
+  else sync_text_preview();
+  sync_viewport(); changed();
 }
-static BOOL add_host_button(ToolButtons *buttons, int command, int icon, int slot, const wchar_t *label) {
-  if (buttons->count >= MAX_TOOL_BUTTONS) return FALSE;
-  ToolButton *button = &buttons->buttons[buttons->count++];
-  button->command = command; button->icon = icon; button->slot = slot; button->available = TRUE;
-  button->label = _wcsdup(label);
-  if (!button->label) return FALSE;
-  button->window = hud_button(capture.editor, command, button->label);
-  return button->window != NULL;
-}
-static BOOL add_contribution_buttons(int32_t snapshot, ToolButtons *buttons, int slot) {
-  int count = tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT);
-  if (count < 0 || count > MAX_TOOL_BUTTONS - 5) return FALSE;
-  for (int i = 0; i < count; i++) {
-    if (tool_value(snapshot, i, MC_TOOL_ENABLED) != 1 || tool_value(snapshot, i, MC_TOOL_SLOT) != slot) continue;
-    ToolButton *button = &buttons->buttons[buttons->count++];
-    button->command = ID_CONTRIBUTION_BASE + i; button->slot = slot;
-    button->kind = tool_value(snapshot, i, MC_TOOL_KIND);
-    button->interaction = tool_value(snapshot, i, MC_TOOL_INTERACTION);
-    button->available = tool_value(snapshot, i, MC_TOOL_AVAILABLE) == 1;
-    button->id = tool_text(snapshot, i, MC_TOOL_ID);
-    button->action = tool_text(snapshot, i, MC_TOOL_ACTION);
-    button->handler = tool_text(snapshot, i, MC_TOOL_COMMAND);
-    button->label = tool_text(snapshot, i, MC_TOOL_TITLE);
-    wchar_t *icon = tool_text(snapshot, i, MC_TOOL_ICON);
-    button->icon = tool_icon(icon); free(icon);
-    if (!button->id || !button->action || !button->handler || !button->label) return FALSE;
-    if (!button->available) {
-      wchar_t *reason = tool_text(snapshot, i, MC_TOOL_UNAVAILABLE_REASON);
-      SIZE_T a = wcslen(button->label), b = reason ? wcslen(reason) : 0;
-      wchar_t *label = calloc(a + b + 4, sizeof(wchar_t));
-      if (!label) { free(reason); return FALSE; }
-      swprintf_s(label, a + b + 4, L"%s · %s", button->label, reason ? reason : L"");
-      free(reason); free(button->label); button->label = label;
+static void toolbar_effect(void) {
+  int32_t toolbar=capture.toolbar_session;
+  int effect=(int)capture_toolbar_value(toolbar,MC_CAPTURE_TOOLBAR_EFFECT);
+  int32_t ticket=(int32_t)capture_toolbar_value(toolbar,MC_CAPTURE_TOOLBAR_TICKET);
+  if (effect<=MC_CAPTURE_TOOLBAR_NONE || ticket<=0) return;
+  BOOL success=FALSE, close=FALSE;
+  const wchar_t *error=L"";
+  if (effect==MC_CAPTURE_TOOLBAR_REFRESH) success=TRUE;
+  else if (effect==MC_CAPTURE_TOOLBAR_CANCEL) { success=TRUE; close=TRUE; }
+  else if (effect==MC_CAPTURE_TOOLBAR_COPY) {
+    toolbar_sync_native(); success=copy_image(); close=success;
+    if (!success) error=L"剪贴板暂时被占用，请重试。";
+  } else if (effect==MC_CAPTURE_TOOLBAR_PIN) {
+    int32_t candidate=(int32_t)capture_toolbar_value(toolbar,MC_CAPTURE_TOOLBAR_CANDIDATE);
+    HGLOBAL dib=candidate_dib(candidate);
+    if (dib) {
+      int x=capture.desktop_bounds.left+rounded(capture_candidate_viewport_value(candidate,0));
+      int y=capture.desktop_bounds.top+rounded(capture_candidate_viewport_value(candidate,1));
+      success=capture.host.pin_image && capture.host.pin_image(capture.host.context,dib,x,y);
+      if (!success) GlobalFree(dib);
     }
-    button->window = hud_button(capture.editor, button->command, button->label);
-    if (!button->window) return FALSE;
+    close=success; if (!success) error=L"无法贴图，请重试。";
+  } else error=L"当前平台尚未提供此能力。";
+  moonbit_string_t detail=moon_text(error);
+  BOOL accepted=capture_toolbar_ack(toolbar,ticket,success,detail)==1; moonbit_decref(detail);
+  if (!accepted || capture.toolbar_session!=toolbar) return;
+  if (close) { mc_capture_close(); return; }
+  toolbar_sync_native();
+  if (!success && !capture.smoke && *error) MessageBoxW(capture.editor,error,L"Mooji Cut",MB_OK|MB_ICONWARNING);
+}
+static void toolbar_input(void *context,HWND window,const MCCanvasInput *input) {
+  (void)context; (void)window;
+  if (!capture.toolbar_session || capture.toolbar_dispatching || capture.closing) return;
+  if (input->type==MC_UI_INPUT_APPEARANCE) {
+    capture.toolbar_dark=input->text_length==4 && !memcmp(input->text,L"dark",4*sizeof(wchar_t));
+    layout_editor(capture.editor); return;
   }
-  return TRUE;
-}
-static BOOL build_tool_buttons(int32_t snapshot, ToolButtons *buttons) {
-  ZeroMemory(buttons, sizeof(*buttons));
-  BOOL ok = add_host_button(buttons, ID_SELECT, MC_ICON_SELECT, MC_TOOL_SLOT_TOOLS, L"选择 / 移动") &&
-    add_contribution_buttons(snapshot, buttons, MC_TOOL_SLOT_TOOLS) &&
-    add_host_button(buttons, ID_UNDO, MC_ICON_UNDO, MC_TOOL_SLOT_TOOLS, L"撤销 Ctrl+Z") &&
-    add_host_button(buttons, ID_REDO, MC_ICON_REDO, MC_TOOL_SLOT_TOOLS, L"重做 Ctrl+Y") &&
-    add_contribution_buttons(snapshot, buttons, MC_TOOL_SLOT_FINISH) &&
-    add_host_button(buttons, ID_CANCEL, MC_ICON_CLOSE, MC_TOOL_SLOT_FINISH, L"取消 Esc") &&
-    add_host_button(buttons, ID_COPY, MC_ICON_CHECK, MC_TOOL_SLOT_FINISH, L"确认并复制 Ctrl+Enter");
-  if (!ok) clear_tool_buttons(buttons);
-  return ok;
-}
-static ToolButton *find_button(int command) {
-  for (int i = 0; i < capture.toolbar_buttons.count; i++)
-    if (capture.toolbar_buttons.buttons[i].command == command) return &capture.toolbar_buttons.buttons[i];
-  return NULL;
-}
-static void publish_tool_buttons(void) {
-  wchar_t *active = capture.active_button >= 0 && capture.active_button < capture.toolbar_buttons.count
-    && capture.toolbar_buttons.buttons[capture.active_button].id
-    ? _wcsdup(capture.toolbar_buttons.buttons[capture.active_button].id) : NULL;
-  clear_tool_buttons(&capture.toolbar_buttons);
-  capture.toolbar_buttons = capture.prepared_buttons;
-  ZeroMemory(&capture.prepared_buttons, sizeof(capture.prepared_buttons));
-  capture.active_button = -1;
-  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
-    ToolButton *button = &capture.toolbar_buttons.buttons[i];
-    /* Re-register after retiring old IDs; prepared controls were hidden. */
-    TOOLINFOW tip = {sizeof(tip)}; tip.hwnd = capture.editor; tip.uId = button->command;
-    tip.uFlags = TTF_SUBCLASS; tip.lpszText = button->label;
-    SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
-    /* Enabled child buttons receive their own mouse input. The parent region
-     * also supplies the same reason when a disabled child cannot receive it. */
-    if (button->available) {
-      tip.uFlags = TTF_SUBCLASS | TTF_IDISHWND; tip.uId = (UINT_PTR)button->window;
-      SendMessageW(capture.tooltip, TTM_ADDTOOLW, 0, (LPARAM)&tip);
+  int32_t origin=capture.toolbar_session;
+  capture.toolbar_dispatching=TRUE;
+  if (toolbar_context()) {
+    moonbit_string_t event=mc_canvas_input_json(input);
+    BOOL handled=capture_toolbar_event(capture.toolbar_session,capture.toolbar_generation,event)==1;
+    moonbit_decref(event);
+    if (handled) toolbar_effect();
+    if (capture.toolbar_session!=origin) return;
+    if (capture.editor) {
+      if (input->type==MC_UI_INPUT_POINTER_DOWN && handled) mc_win_canvas_set_capture(capture.toolbar_view,TRUE);
+      if (input->type==MC_UI_INPUT_POINTER_UP || input->type==MC_UI_INPUT_CANCEL) mc_win_canvas_set_capture(capture.toolbar_view,FALSE);
+      layout_editor(capture.editor);
     }
-    button->registered = TRUE;
-    ShowWindow(button->window, SW_SHOWNA);
-    if (active && button->id && !wcscmp(active, button->id) && button->available) capture.active_button = i;
   }
-  free(active);
-  if (capture.active_button < 0) { capture.tool = TOOL_SELECT; capture.selected = -1; load_tool_style(TOOL_SELECT); }
-  mc_capture_refresh_capabilities();
-  layout_editor(capture.editor);
+  capture.toolbar_dispatching=FALSE;
+}
+static BOOL toolbar_activate(const wchar_t *id) {
+  if (!capture.toolbar_session || capture.toolbar_dispatching || capture.closing || !toolbar_context()) return FALSE;
+  int32_t origin=capture.toolbar_session;
+  capture.toolbar_dispatching=TRUE;
+  moonbit_string_t value=moon_text(id);
+  BOOL handled=capture_toolbar_activate(capture.toolbar_session,capture.toolbar_generation,value)==1;
+  moonbit_decref(value);
+  if (handled) toolbar_effect();
+  if (capture.toolbar_session!=origin) return handled;
+  if (capture.editor) layout_editor(capture.editor);
+  capture.toolbar_dispatching=FALSE; return handled;
+}
+static BOOL toolbar_preserve_focus(void *context,HWND window) {
+  (void)context; (void)window; HWND focus=GetFocus();
+  return mc_win_text_inputs_contains(capture.body_inputs,focus) || mc_win_text_inputs_contains(capture.property_inputs,focus);
+}
+static LRESULT CALLBACK toolbar_focus_proc(HWND window,UINT message,WPARAM wp,LPARAM lp,UINT_PTR id,DWORD_PTR data) {
+  (void)id; (void)data;
+  if ((message==WM_SETFOCUS || message==WM_KILLFOCUS) && capture.editor && !capture.closing)
+    PostMessageW(capture.editor,TOOLBAR_FOCUS_CHANGED,(WPARAM)capture.toolbar_session,0);
+  if (message==WM_NCDESTROY) RemoveWindowSubclass(window,toolbar_focus_proc,3);
+  return DefSubclassProc(window,message,wp,lp);
 }
 void mc_capture_discard_tools(void) {
-  clear_tool_buttons(&capture.prepared_buttons); prepared_tools = 0;
-  if (capture.prepared_text_candidate) { capture_candidate_close(capture.prepared_text_candidate); capture.prepared_text_candidate = 0; }
+  if (capture.prepared_toolbar) capture_toolbar_config_close(capture.prepared_toolbar);
+  capture.prepared_toolbar=0; prepared_tools=0;
 }
 BOOL mc_capture_prepare_tools(int32_t snapshot) {
   mc_capture_discard_tools();
-  if (tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT) < 0) return FALSE;
-  if (capture.editor && (capture.color_picker || capture.composing || capture.editing != -2 || capture.dragging || GetCapture())) return FALSE;
-  if (capture.text_edit) {
-    capture.prepared_text_candidate = capture_text_prepare(capture.session, capture.text_edit,
-        text_version(), MC_CAPTURE_CANDIDATE_PUBLISH, measure_text());
-    if (!capture.prepared_text_candidate) return FALSE;
+  if (tool_registry_snapshot_count(snapshot,MC_TOOL_GROUP_SCREENSHOT)<0) return FALSE;
+  if (capture.editor) {
+    if (!toolbar_context()) return FALSE;
+    capture.prepared_toolbar=capture_toolbar_config_prepare(capture.toolbar_session,snapshot);
+    if (!capture.prepared_toolbar) return FALSE;
   }
-  if (capture.editor && !build_tool_buttons(snapshot, &capture.prepared_buttons)) { mc_capture_discard_tools(); return FALSE; }
-  prepared_tools = snapshot;
-  return TRUE;
+  prepared_tools=snapshot; return TRUE;
 }
 void mc_capture_commit_tools(int32_t snapshot) {
-  if (snapshot != prepared_tools) return;
-  if (capture.prepared_text_candidate) {
-    if (!capture_candidate_commit(capture.session, capture.prepared_text_candidate)) return;
-    capture_candidate_close(capture.prepared_text_candidate); capture.prepared_text_candidate = 0;
-    capture.text_edit = 0; capture.text_index = -1;
-  }
-  configured_tools = snapshot; prepared_tools = 0;
+  if (snapshot!=prepared_tools) return;
   if (capture.editor) {
-    capture.tool_snapshot = snapshot;
-    publish_tool_buttons();
-    if (capture.owned_tools) { tool_registry_snapshot_close(capture.owned_tools); capture.owned_tools = 0; }
+    wchar_t json[128]; swprintf_s(json,ARRAYSIZE(json),L"[{\"toolbar\":%d,\"candidate\":%d}]",capture.toolbar_session,capture.prepared_toolbar);
+    moonbit_string_t request=moon_text(json); BOOL ok=capture_toolbar_config_commit_many(request)==1; moonbit_decref(request);
+    if (!ok) return;
+  }
+  configured_tools=snapshot; mc_capture_discard_tools();
+  if (capture.editor) {
+    capture.tool_snapshot=snapshot;
+    mc_win_canvas_cancel(capture.toolbar_view); toolbar_sync_native();
+    if (capture.owned_tools) { tool_registry_snapshot_close(capture.owned_tools); capture.owned_tools=0; }
   }
 }
 static BOOL add_shape(void) {
   return image_session_shape_event(capture.session, 1, capture.end.x, capture.end.y) == 1;
 }
 static void editor_command(int command) {
-  ToolButton *button = find_button(command);
-  if (button && !IsWindowEnabled(button->window)) return;
-  BOOL pin = button && button->action && !wcscmp(button->action, L"pin");
-  if (pin && !pin_enabled()) return;
-  if ((command == ID_UNDO || command == ID_REDO) && capture.text_edit &&
-      capture_text_value(capture.session, capture.text_edit, command == ID_UNDO ? MC_CAPTURE_TEXT_CAN_UNDO : MC_CAPTURE_TEXT_CAN_REDO) == 1) {
-    const wchar_t *json = command == ID_REDO ? L"{\"type\":\"redo\"}" : L"{\"type\":\"undo\"}";
-    int length = (int)wcslen(json); moonbit_string_t event = moonbit_make_string_raw(length);
-    memcpy(event, json, (size_t)length * sizeof(wchar_t));
-    text_field_event(NULL, NULL, event); moonbit_decref(event); return;
-  }
-  if (!finish_text(FALSE)) return;
-  if (command == ID_SELECT || (button && (button->interaction == MC_TOOL_INTERACTION_ANNOTATION ||
-      button->interaction == MC_TOOL_INTERACTION_DRAG_RECT))) {
-    capture.active_button = command == ID_SELECT ? -1 : (int)(button - capture.toolbar_buttons.buttons);
-    capture.tool = command == ID_SELECT ? TOOL_SELECT :
-      button->interaction == MC_TOOL_INTERACTION_DRAG_RECT ? TOOL_RECT : button->kind;
-    capture.selected = -1;
-    load_tool_style(capture.tool);
-    layout_editor(capture.editor);
-    changed();
-    for (int i = 0; i < capture.toolbar_buttons.count; i++)
-      InvalidateRect(capture.toolbar_buttons.buttons[i].window, NULL, FALSE);
-    SetFocus(capture.editor);
-  } else if (command == ID_UNDO || command == ID_REDO) {
-    if (command == ID_UNDO)
-      image_session_undo(capture.session);
-    else
-      image_session_redo(capture.session);
-    capture.selected = -1;
-    load_tool_style(capture.tool);
-    sync_viewport();
-    layout_editor(capture.editor);
-    changed();
-  } else if (command == ID_CANCEL)
-    mc_capture_close();
-  else if (command == ID_COPY) {
-    if (copy_image())
-      mc_capture_close();
-    else if (!capture.smoke)
-      MessageBoxW(capture.editor, L"剪贴板暂时被占用，请重试。", L"Mooji Cut", MB_OK | MB_ICONWARNING);
-  } else if (pin) {
-    HGLOBAL dib = image_dib();
-    if (dib) {
-      int x = capture.desktop_bounds.left + capture.viewport.left,
-          y = capture.desktop_bounds.top + capture.viewport.top;
-      if (capture.host.pin_image && capture.host.pin_image(capture.host.context, dib, x, y)) {
-        mc_capture_close();
-      } else
-        GlobalFree(dib);
-    }
-  }
+  const wchar_t *id=command==ID_SELECT ? L"host.select" : command==ID_UNDO ? L"host.undo" :
+      command==ID_REDO ? L"host.redo" : command==ID_CANCEL ? L"host.cancel" : command==ID_COPY ? L"host.confirm" : NULL;
+  if (id) toolbar_activate(id);
 }
 static void paint_editor(HDC dc) {
   BitBlt(dc, 0, 0, capture.dimmed.width, capture.dimmed.height, capture.dimmed.dc, 0, 0, SRCCOPY);
@@ -1050,11 +981,11 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     capture.font =
         CreateFontW(-dpi_px(window, 14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    capture.tooltip =
-        CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT,
-                        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, NULL, capture.instance, NULL);
-    if (!capture.tooltip || !build_tool_buttons(capture.tool_snapshot, &capture.prepared_buttons)) return -1;
-    MCWinCanvasCallbacks row_callbacks = {text_property_event, NULL, NULL, NULL};
+    MCWinCanvasCallbacks toolbar_callbacks={toolbar_input,NULL,NULL,NULL,toolbar_preserve_focus};
+    capture.toolbar_view=mc_win_canvas_create(window,capture.instance,ID_SELECT,&toolbar_callbacks,NULL);
+    if (!capture.toolbar_view || !SetWindowSubclass(capture.toolbar_view,toolbar_focus_proc,3,0)) return -1;
+    ShowWindow(capture.toolbar_view,SW_SHOWNOACTIVATE);
+    MCWinCanvasCallbacks row_callbacks = {text_property_event, NULL, NULL, NULL, NULL};
     capture.text_properties = mc_win_canvas_create(window, capture.instance, ID_STYLE_BASE + 50, &row_callbacks, NULL);
     if (!capture.text_properties) return -1;
     ShowWindow(capture.text_properties, SW_HIDE);
@@ -1062,14 +993,21 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     capture.body_inputs = mc_win_text_inputs_create(window, capture.instance, &text_callbacks, NULL);
     capture.property_inputs = mc_win_text_inputs_create(window, capture.instance, &text_callbacks, NULL);
     if (!capture.body_inputs || !capture.property_inputs) return -1;
-    publish_tool_buttons();
+    layout_editor(window);
     return 0;
   }
+  case TOOLBAR_FOCUS_CHANGED:
+    if (capture.toolbar_session==(int32_t)wp && !capture.closing) layout_editor(window);
+    return 0;
+  case WM_SETFOCUS:
+    if (capture.toolbar_session && !capture.closing) layout_editor(window);
+    return 0;
   case TEXT_FIELD_ACTION:
     if (capture.text_edit == (int32_t)wp && !capture.color_picker) {
       BOOL defaults = capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS;
       HWND focus = GetFocus();
-      BOOL within = mc_win_text_inputs_contains(capture.property_inputs, focus) || mc_win_text_inputs_contains(capture.body_inputs, focus);
+      BOOL within = mc_win_text_inputs_contains(capture.property_inputs, focus) || mc_win_text_inputs_contains(capture.body_inputs, focus) ||
+          focus == capture.toolbar_view || focus == capture.text_properties;
       if (lp == MC_TEXT_CANCEL || lp == MC_TEXT_ACCEPT || (lp == MC_TEXT_BLUR && defaults && !within)) {
         if (finish_text(lp == MC_TEXT_CANCEL)) SetFocus(window);
         layout_editor(window);
@@ -1083,25 +1021,6 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
   case WM_DISPLAYCHANGE:
     mc_capture_close();
     return 0;
-  case WM_DRAWITEM: {
-    DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
-    int kind = -1, value = 0;
-    BOOL selected = FALSE;
-    for (int i = 0; i < capture.toolbar_buttons.count; i++)
-      if (item->CtlID == (UINT)capture.toolbar_buttons.buttons[i].command) {
-        kind = capture.toolbar_buttons.buttons[i].icon;
-        selected = capture.active_button == i ||
-          (capture.active_button < 0 && item->CtlID == ID_SELECT && capture.tool == TOOL_SELECT);
-      }
-    if (kind >= 0) {
-      mc_hud_button(item->hDC, &item->rcItem, kind, value, selected,
-                    GetPropW(item->hwndItem, L"MoojiCut.Hover") != NULL,
-                    (item->itemState & ODS_SELECTED) != 0, (item->itemState & ODS_FOCUS) != 0,
-                    !IsWindowEnabled(item->hwndItem), (float)GetDpiForWindow(window) / 96);
-      return TRUE;
-    }
-    break;
-  }
   case WM_CTLCOLOREDIT:
     if ((HWND)lp == capture.text) {
       SetTextColor((HDC)wp, color_ref(capture.color));
@@ -1110,14 +1029,8 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     }
     break;
   case WM_COMMAND:
-    if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) >= ID_CONTRIBUTION_BASE) {
-      ToolButton *button = find_button(LOWORD(wp));
-      /* Snapshot reordering may reuse a numeric child ID. A queued notification
-       * from a retired HWND must never invoke the new contribution at that ID. */
-      if (!button || button->window != (HWND)lp) return 0;
-    }
-    if (HIWORD(wp) == BN_CLICKED)
-      editor_command(LOWORD(wp));
+    // Main toolbar actions are emitted only by the immutable shared frame.
+    // Retired BUTTON notifications from older layouts cannot invoke anything.
     return 0;
   case WM_ERASEBKGND:
     return 1;
@@ -1198,10 +1111,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       image_session_shape_event(capture.session, 2, 0, 0);
       BOOL began;
       if (custom_drag()) {
-        const wchar_t *name = capture.toolbar_buttons.buttons[capture.active_button].handler;
-        int length = (int)wcslen(name);
-        moonbit_string_t command = moonbit_make_string_raw(length);
-        memcpy(command, name, (SIZE_T)length * sizeof(wchar_t));
+        moonbit_string_t command=capture_toolbar_text(capture.toolbar_session,MC_CAPTURE_TOOLBAR_COMMAND);
         began = image_session_tool_begin(capture.session, command, p.x, p.y,
           capture.color, capture.stroke, capture.opacity, 0, capture.block);
         moonbit_decref(command);
@@ -1296,7 +1206,6 @@ static BOOL open_editor(void) {
   capture.selected = -1;
   capture.editing = -2;
   capture.tool = TOOL_SELECT;
-  capture.active_button = -1;
   capture.tool_snapshot = configured_tools;
   if (!capture.tool_snapshot) {
     moonbit_string_t empty = moonbit_make_string_raw(0);
@@ -1309,6 +1218,8 @@ static BOOL open_editor(void) {
   capture.style_bank = editor_style_create();
   if (capture.style_bank <= 0)
     return FALSE;
+  capture.toolbar_session=capture_toolbar_open(capture.session,capture.style_bank,capture.tool_snapshot);
+  if (!capture.toolbar_session) return FALSE;
   load_tool_style(capture.tool);
   capture.dirty = TRUE;
   HWND editor = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_CONTROLPARENT, EDITOR_CLASS,
@@ -1423,7 +1334,6 @@ void mc_capture_close(void) {
   capture.closing = TRUE;
   MCCaptureHost services = capture.host;
   HWND overlay = capture.overlay, editor = capture.editor;
-  clear_tool_buttons(&capture.toolbar_buttons);
   mc_capture_discard_tools();
   capture.overlay = NULL;
   capture.editor = NULL;
@@ -1437,6 +1347,10 @@ void mc_capture_close(void) {
   mc_win_text_inputs_destroy(capture.body_inputs); capture.body_inputs = NULL;
   mc_win_text_inputs_destroy(capture.property_inputs); capture.property_inputs = NULL;
   if (capture.text_properties) DestroyWindow(capture.text_properties);
+  if (capture.toolbar_view) DestroyWindow(capture.toolbar_view);
+  capture.toolbar_view=NULL; capture.toolbar_frame=0;
+  if (capture.toolbar_session) capture_toolbar_close(capture.toolbar_session);
+  capture.toolbar_session=0;
   capture.text_properties = NULL; capture.text = NULL;
   if (editor)
     DestroyWindow(editor);
@@ -1460,35 +1374,23 @@ void mc_capture_close(void) {
 bool mc_capture_handle_message(MSG *message) {
   if (!capture.editor || (message->hwnd != capture.editor && !IsChild(capture.editor, message->hwnd)))
     return false;
-  if (message->message >= WM_MOUSEFIRST && message->message <= WM_MOUSELAST)
-    SendMessageW(capture.tooltip, TTM_RELAYEVENT, 0, (LPARAM)message);
   // Let the native EDIT/IME consume candidate selection and cancellation keys.
   if (mc_win_text_inputs_contains(capture.body_inputs, message->hwnd) ||
       mc_win_text_inputs_contains(capture.property_inputs, message->hwnd)) return false;
   if (capture.composing) return false;
   if (message->message == WM_KEYDOWN) {
     BOOL control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    BOOL text = GetFocus() == capture.text;
-    if (message->wParam == VK_ESCAPE) {
-      if (capture.editing != -2) {
-        finish_text(TRUE);
-        SetFocus(capture.editor);
-      } else
-        mc_capture_close();
-      return true;
+    BOOL text=GetFocus()==capture.text;
+    const wchar_t *key=message->wParam==VK_ESCAPE ? L"Escape" : message->wParam==VK_RETURN ? L"Enter" :
+      control && message->wParam=='Z' ? L"z" : control && message->wParam=='Y' ? L"y" :
+      control && message->wParam=='C' ? L"c" : NULL;
+    if (key) {
+      MCCanvasInput input={0}; input.type=MC_UI_INPUT_KEY;
+      input.flags=(control ? MC_UI_INPUT_MOD:0) | ((GetKeyState(VK_SHIFT)&0x8000)?MC_UI_INPUT_SHIFT:0);
+      input.text=(const uint16_t *)key; input.text_length=wcslen(key);
+      toolbar_input(NULL,capture.toolbar_view,&input); return true;
     }
-    if (control && message->wParam == VK_RETURN) {
-      if (text) {
-        if (finish_text(FALSE))
-          SetFocus(capture.editor);
-      } else
-        editor_command(ID_COPY);
-      return true;
-    }
-    if (text && control && message->wParam == 'A') {
-      SendMessageW(capture.text, EM_SETSEL, 0, -1);
-      return true;
-    }
+    if (message->hwnd==capture.toolbar_view) return false;
     if (!text && !control && capture.selected >= 0 && message->wParam >= VK_LEFT &&
         message->wParam <= VK_DOWN) {
       RECT r = annotation_rect(capture.selected);
@@ -1510,20 +1412,6 @@ bool mc_capture_handle_message(MSG *message) {
       moonbit_decref(id);
       changed();
       return true;
-    }
-    if (!text && control) {
-      if (message->wParam == 'Z') {
-        editor_command(GetKeyState(VK_SHIFT) & 0x8000 ? ID_REDO : ID_UNDO);
-        return true;
-      }
-      if (message->wParam == 'Y') {
-        editor_command(ID_REDO);
-        return true;
-      }
-      if (message->wParam == 'C') {
-        editor_command(ID_COPY);
-        return true;
-      }
     }
     if (!text && message->wParam == VK_DELETE && capture.selected >= 0) {
       if (!finish_text(FALSE)) return true;
@@ -1661,28 +1549,171 @@ static void step_style(BOOL increase) {
   if (input) { SetFocus(input); SendMessageW(input, WM_KEYDOWN, increase ? VK_UP : VK_DOWN, 1); }
   if (!inline_edit) { finish_text(FALSE); layout_editor(capture.editor); }
 }
-static ToolButton *smoke_annotation_button(int kind) {
-  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
-    ToolButton *button = &capture.toolbar_buttons.buttons[i];
-    if (button->interaction == MC_TOOL_INTERACTION_ANNOTATION && button->kind == kind) return button;
+static int smoke_toolbar_semantic(const wchar_t *id) {
+  int count=ui_frame_semantic_count(capture.toolbar_frame);
+  for (int i=0;i<count;i++) {
+    moonbit_string_t value=ui_frame_semantic_text(capture.toolbar_frame,i,MC_UI_SEM_ID);
+    BOOL equal=(size_t)Moonbit_array_length(value)==wcslen(id) && !memcmp(value,id,wcslen(id)*sizeof(wchar_t));
+    moonbit_decref(value); if (equal) return i;
+  }
+  return -1;
+}
+static void smoke_toolbar_pointer(int index,UINT message) {
+  double scale=(double)GetDpiForWindow(capture.toolbar_view)/96;
+  int x=rounded((ui_frame_semantic_number(capture.toolbar_frame,index,MC_UI_SEM_X)+
+      ui_frame_semantic_number(capture.toolbar_frame,index,MC_UI_SEM_WIDTH)/2)*scale);
+  int y=rounded((ui_frame_semantic_number(capture.toolbar_frame,index,MC_UI_SEM_Y)+
+      ui_frame_semantic_number(capture.toolbar_frame,index,MC_UI_SEM_HEIGHT)/2)*scale);
+  SendMessageW(capture.toolbar_view,message,message==WM_LBUTTONUP ? 0:MK_LBUTTON,MAKELPARAM(x,y));
+}
+static BOOL smoke_toolbar_click(const wchar_t *id) {
+  int index=smoke_toolbar_semantic(id);
+  for (int page=0;index<0 && page<512;page++) {
+    int previous=smoke_toolbar_semantic(L"__toolbar.previous");
+    if (previous<0 || ui_frame_semantic_value(capture.toolbar_frame,previous,MC_UI_SEM_ENABLED)!=1) break;
+    smoke_toolbar_pointer(previous,WM_LBUTTONDOWN); smoke_toolbar_pointer(previous,WM_LBUTTONUP);
+    index=smoke_toolbar_semantic(id);
+  }
+  for (int page=0;index<0 && page<512;page++) {
+    int next=smoke_toolbar_semantic(L"__toolbar.next");
+    if (next<0 || ui_frame_semantic_value(capture.toolbar_frame,next,MC_UI_SEM_ENABLED)!=1) break;
+    smoke_toolbar_pointer(next,WM_LBUTTONDOWN); smoke_toolbar_pointer(next,WM_LBUTTONUP);
+    index=smoke_toolbar_semantic(id);
+  }
+  if (index<0) return FALSE;
+  smoke_toolbar_pointer(index,WM_LBUTTONDOWN); smoke_toolbar_pointer(index,WM_LBUTTONUP);
+  return TRUE;
+}
+static wchar_t *smoke_contribution_id(int kind,const wchar_t *action) {
+  int count=tool_registry_snapshot_count(capture.tool_snapshot,MC_TOOL_GROUP_SCREENSHOT);
+  for (int i=0;i<count;i++) {
+    if (!tool_value(capture.tool_snapshot,i,MC_TOOL_ENABLED)) continue;
+    if (action) {
+      wchar_t *candidate=tool_text(capture.tool_snapshot,i,MC_TOOL_ACTION);
+      BOOL same=candidate && !wcscmp(candidate,action); free(candidate); if (!same) continue;
+    } else if (tool_value(capture.tool_snapshot,i,MC_TOOL_INTERACTION)!=MC_TOOL_INTERACTION_ANNOTATION ||
+        tool_value(capture.tool_snapshot,i,MC_TOOL_KIND)!=kind) continue;
+    return tool_text(capture.tool_snapshot,i,MC_TOOL_ID);
   }
   return NULL;
 }
 static void smoke_select_tool(int kind) {
-  ToolButton *button = smoke_annotation_button(kind);
-  if (kind == TOOL_SELECT) editor_command(ID_SELECT);
-  else if (button) SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(button->command, BN_CLICKED), (LPARAM)button->window);
-}
-static ToolButton *smoke_action_button(const wchar_t *action) {
-  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
-    ToolButton *button = &capture.toolbar_buttons.buttons[i];
-    if (button->action && !wcscmp(button->action, action)) return button;
-  }
-  return NULL;
+  wchar_t *id=kind==TOOL_SELECT ? _wcsdup(L"host.select") : smoke_contribution_id(kind,NULL);
+  if (id) { smoke_toolbar_click(id); free(id); }
 }
 static void smoke_invoke_action(const wchar_t *action) {
-  ToolButton *button = smoke_action_button(action);
-  if (button) SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(button->command, BN_CLICKED), (LPARAM)button->window);
+  wchar_t *id=smoke_contribution_id(0,action);
+  if (id) { smoke_toolbar_click(id); free(id); }
+}
+static BOOL smoke_action_enabled(const wchar_t *action) {
+  wchar_t *id=smoke_contribution_id(0,action);
+  int index=id ? smoke_toolbar_semantic(id):-1; free(id);
+  return index>=0 && ui_frame_semantic_value(capture.toolbar_frame,index,MC_UI_SEM_ENABLED)==1;
+}
+static BOOL CALLBACK smoke_find_toolbar_tip(HWND window,LPARAM result) {
+  wchar_t name[64]={0}; GetClassNameW(window,name,ARRAYSIZE(name));
+  if (GetWindow(window,GW_OWNER)==capture.toolbar_view && !wcscmp(name,TOOLTIPS_CLASSW)) {
+    *(HWND *)result=window; return FALSE;
+  }
+  return TRUE;
+}
+static void smoke_drain_field_actions(void) {
+  MSG message;
+  while (PeekMessageW(&message,capture.editor,TEXT_FIELD_ACTION,TOOLBAR_FOCUS_CHANGED,PM_REMOVE)) DispatchMessageW(&message);
+}
+static BOOL smoke_accessible_child(IAccessible *accessible,const wchar_t *id,VARIANT *child) {
+  VariantInit(child);
+  int index=smoke_toolbar_semantic(id);
+  if (index<0) return FALSE;
+  moonbit_string_t label=ui_frame_semantic_text(capture.toolbar_frame,index,MC_UI_SEM_LABEL);
+  LONG count=0; BOOL found=FALSE;
+  if (SUCCEEDED(IAccessible_get_accChildCount(accessible,&count)) && count>0 && count<=512) {
+    VARIANT *children=calloc((size_t)count,sizeof(VARIANT)); LONG received=0;
+    if (children && SUCCEEDED(AccessibleChildren(accessible,0,count,children,&received))) {
+      for (LONG i=0;i<received;i++) {
+        BSTR name=NULL;
+        if (SUCCEEDED(IAccessible_get_accName(accessible,children[i],&name)) && name &&
+            SysStringLen(name)==(UINT)Moonbit_array_length(label) &&
+            !memcmp(name,label,SysStringLen(name)*sizeof(wchar_t))) {
+          found=SUCCEEDED(VariantCopy(child,&children[i]));
+        }
+        SysFreeString(name); VariantClear(&children[i]);
+      }
+    }
+    free(children);
+  }
+  moonbit_decref(label); return found;
+}
+static BOOL shared_toolbar_smoke(void) {
+  BOOL ok=TRUE; IAccessible *accessible=NULL; VARIANT child; VariantInit(&child);
+  RECT window_rect; GetWindowRect(capture.editor,&window_rect);
+  int initial_count=image_session_count(capture.session);
+#define TOOLBAR_CHECK(condition) do { if (!(condition)) { fprintf(stderr,"Windows shared toolbar FAILED line %d: %s\n",__LINE__,#condition); ok=FALSE; goto done; } } while (0)
+  smoke_select_tool(TOOL_RECT);
+  HWND stroke=mc_win_text_inputs_field(capture.property_inputs,L"style.stroke");
+  int32_t edit=capture.text_edit; double revision=image_session_revision(capture.session);
+  TOOLBAR_CHECK(stroke); SetFocus(stroke);
+  TOOLBAR_CHECK(GetFocus()==stroke && SetWindowTextW(stroke,L"-"));
+  smoke_select_tool(TOOL_ARROW); smoke_drain_field_actions();
+  TOOLBAR_CHECK(capture.tool==TOOL_RECT && capture.text_edit==edit && IsWindow(stroke) &&
+      image_session_revision(capture.session)==revision && capture_text_value(capture.session,edit,MC_CAPTURE_TEXT_VALID)==0);
+  SetFocus(stroke); TOOLBAR_CHECK(SetWindowTextW(stroke,L"5.25"));
+  TOOLBAR_CHECK(smoke_toolbar_click(L"host.undo")); smoke_drain_field_actions();
+  TOOLBAR_CHECK(capture.text_edit==edit && IsWindow(stroke) && capture_text_value(capture.session,edit,MC_CAPTURE_TEXT_VALID)==0);
+  TOOLBAR_CHECK(smoke_toolbar_click(L"host.redo")); smoke_drain_field_actions();
+  TOOLBAR_CHECK(capture.text_edit==edit && capture.stroke==5.25 && image_session_revision(capture.session)==revision);
+  TOOLBAR_CHECK(SetWindowTextW(stroke,L"4") && finish_text(FALSE)); changed();
+  SendMessageW(capture.editor,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(200,80));
+  SendMessageW(capture.editor,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(240,120));
+  SendMessageW(capture.editor,WM_LBUTTONUP,0,MAKELPARAM(240,120));
+  TOOLBAR_CHECK(image_session_count(capture.session)==initial_count+1);
+  stroke=mc_win_text_inputs_field(capture.property_inputs,L"style.stroke");
+  TOOLBAR_CHECK(stroke); SetFocus(stroke); revision=image_session_revision(capture.session);
+  int undo=smoke_toolbar_semantic(L"host.undo");
+  TOOLBAR_CHECK(undo>=0 && ui_frame_semantic_value(capture.toolbar_frame,undo,MC_UI_SEM_ENABLED)==0);
+  TOOLBAR_CHECK(smoke_toolbar_click(L"host.undo")); smoke_drain_field_actions();
+  TOOLBAR_CHECK(GetFocus()==stroke && image_session_count(capture.session)==initial_count+1 &&
+      image_session_revision(capture.session)==revision);
+  SetFocus(capture.editor); editor_command(ID_UNDO);
+  TOOLBAR_CHECK(image_session_count(capture.session)==initial_count);
+  SetFocus(capture.toolbar_view);
+  SendMessageW(capture.toolbar_view,WM_KEYDOWN,VK_HOME,1);
+  SendMessageW(capture.toolbar_view,WM_KEYDOWN,VK_RIGHT,1);
+  MSG enter={0}; enter.hwnd=capture.toolbar_view; enter.message=WM_KEYDOWN; enter.wParam=VK_RETURN;
+  TOOLBAR_CHECK(mc_capture_handle_message(&enter) && capture.editor && capture.tool==TOOL_RECT);
+  wchar_t *arrow=smoke_contribution_id(TOOL_ARROW,NULL);
+  int arrow_index=arrow ? smoke_toolbar_semantic(arrow):-1; free(arrow);
+  TOOLBAR_CHECK(arrow_index>=0);
+  smoke_toolbar_pointer(arrow_index,WM_LBUTTONDOWN);
+  SendMessageW(capture.toolbar_view,WM_CANCELMODE,0,0);
+  smoke_toolbar_pointer(arrow_index,WM_LBUTTONUP);
+  TOOLBAR_CHECK(capture.tool==TOOL_RECT && GetCapture()!=capture.toolbar_view);
+  TOOLBAR_CHECK(SUCCEEDED(AccessibleObjectFromWindow(capture.toolbar_view,(DWORD)OBJID_CLIENT,&IID_IAccessible,(void **)&accessible)) && accessible);
+  TOOLBAR_CHECK(smoke_accessible_child(accessible,L"builtin.capture.ocr",&child));
+  VARIANT state; VariantInit(&state);
+  HRESULT state_result=IAccessible_get_accState(accessible,child,&state);
+  BOOL unavailable=SUCCEEDED(state_result) && state.vt==VT_I4 && (state.lVal&STATE_SYSTEM_UNAVAILABLE)!=0;
+  VariantClear(&state);
+  TOOLBAR_CHECK(unavailable);
+  IAccessible_accDoDefaultAction(accessible,child);
+  TOOLBAR_CHECK(capture.tool==TOOL_RECT && image_session_count(capture.session)==initial_count);
+  VariantClear(&child);
+  MoveWindow(capture.editor,window_rect.left,window_rect.top,140,window_rect.bottom-window_rect.top,FALSE);
+  TOOLBAR_CHECK(smoke_toolbar_semantic(L"__toolbar.next")>=0);
+  SetFocus(capture.toolbar_view); SendMessageW(capture.toolbar_view,WM_KEYDOWN,VK_END,1);
+  int confirm=smoke_toolbar_semantic(L"host.confirm");
+  TOOLBAR_CHECK(confirm>=0 && ui_frame_semantic_value(capture.toolbar_frame,confirm,MC_UI_SEM_FOCUSED)==1);
+  SendMessageW(capture.toolbar_view,WM_KEYDOWN,VK_HOME,1);
+  TOOLBAR_CHECK(smoke_toolbar_semantic(L"host.select")>=0);
+done:
+  VariantClear(&child); if (accessible) IAccessible_Release(accessible);
+  if (capture.editor) {
+    MoveWindow(capture.editor,window_rect.left,window_rect.top,window_rect.right-window_rect.left,window_rect.bottom-window_rect.top,FALSE);
+    if (ok) smoke_select_tool(TOOL_SELECT);
+  }
+  printf("Windows shared toolbar %s: pointer and keyboard, numeric focus/history, cancel, MSAA unavailable state, overflow.\n",ok?"passed":"FAILED");
+#undef TOOLBAR_CHECK
+  return ok;
 }
 static BOOL context_toolbar_smoke(void) {
   RECT initial = capture.toolbar;
@@ -1743,32 +1774,29 @@ static BOOL context_toolbar_smoke(void) {
           tool == TOOL_REDACT && field == MC_STYLE_COLOR ? 0x111111 : editor_style_default(field)))
         return FALSE;
   }
-  int unavailable = 0;
-  for (int i = 0; i < capture.toolbar_buttons.count; i++) {
-    ToolButton *entry = &capture.toolbar_buttons.buttons[i];
-    if (entry->available) continue;
+  int unavailable=0;
+  HWND tooltip=NULL; EnumThreadWindows(GetCurrentThreadId(),smoke_find_toolbar_tip,(LPARAM)&tooltip);
+  if (!tooltip) return FALSE;
+  for (int i=0;i<ui_frame_semantic_count(capture.toolbar_frame);i++) {
+    if (ui_frame_semantic_value(capture.toolbar_frame,i,MC_UI_SEM_ENABLED)==1) continue;
+    moonbit_string_t id=ui_frame_semantic_text(capture.toolbar_frame,i,MC_UI_SEM_ID);
+    BOOL contribution=Moonbit_array_length(id)>8 && !memcmp(id,L"builtin.",8*sizeof(wchar_t));
+    moonbit_decref(id); if (!contribution) continue;
     unavailable++;
-    if (IsWindowEnabled(entry->window))
-      return FALSE;
-    RECT button;
-    GetWindowRect(entry->window, &button);
-    POINT point = {(button.left + button.right) / 2, (button.top + button.bottom) / 2};
-    ScreenToClient(capture.editor, &point);
-    TTHITTESTINFOW hit = {0};
-    hit.hwnd = capture.editor;
-    hit.pt = point;
-    hit.ti.cbSize = sizeof(hit.ti);
-    if (!SendMessageW(capture.tooltip, TTM_HITTESTW, 0, (LPARAM)&hit) ||
-        hit.ti.uId != (UINT_PTR)entry->command)
-      return FALSE;
-    wchar_t label[128] = {0};
-    TOOLINFOW tip = {sizeof(tip)};
-    tip.hwnd = capture.editor;
-    tip.uId = entry->command;
-    tip.lpszText = label;
-    SendMessageW(capture.tooltip, TTM_GETTEXTW, ARRAYSIZE(label), (LPARAM)&tip);
-    if (!*label || !wcsstr(label, L" · "))
-      return FALSE;
+    double scale=(double)GetDpiForWindow(capture.toolbar_view)/96;
+    TTHITTESTINFOW hit={0}; hit.hwnd=capture.toolbar_view; hit.ti.cbSize=sizeof(hit.ti);
+    hit.pt.x=rounded((ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_X)+
+      ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_WIDTH)/2)*scale);
+    hit.pt.y=rounded((ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_Y)+
+      ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_HEIGHT)/2)*scale);
+    if (!SendMessageW(tooltip,TTM_HITTESTW,0,(LPARAM)&hit)) return FALSE;
+    wchar_t label[256]={0}; TOOLINFOW tip={sizeof(tip)}; tip.hwnd=capture.toolbar_view;
+    tip.uId=hit.ti.uId; tip.lpszText=label;
+    SendMessageW(tooltip,TTM_GETTEXTW,ARRAYSIZE(label),(LPARAM)&tip);
+    moonbit_string_t expected=ui_frame_semantic_text(capture.toolbar_frame,i,MC_UI_SEM_TOOLTIP);
+    BOOL matches=(size_t)Moonbit_array_length(expected)==wcslen(label) &&
+      !memcmp(expected,label,wcslen(label)*sizeof(wchar_t)); moonbit_decref(expected);
+    if (!matches || !*label) return FALSE;
   }
   if (unavailable < 2) return FALSE;
   editor_command(ID_SELECT);
@@ -2113,10 +2141,13 @@ done:
   return ok;
 }
 static BOOL shape_variants_smoke(void) {
-  int original_session = capture.session, original_bank = capture.style_bank;
+  if (!finish_text(FALSE)) return FALSE;
+  int original_session=capture.session, original_bank=capture.style_bank, original_toolbar=capture.toolbar_session;
   capture.session = image_session_create_viewport(capture.image.width, capture.image.height, 10, 20, 320, 200);
   capture.style_bank = editor_style_create();
-  BOOL ok = TRUE;
+  capture.toolbar_session=capture_toolbar_open(capture.session,capture.style_bank,capture.tool_snapshot);
+  capture.tool=TOOL_SELECT; capture.selected=-1; changed();
+  BOOL ok=capture.toolbar_session>0;
   for (int tool = TOOL_RECT; tool <= TOOL_REDACT; tool += 3) {
     for (int shape = 0; shape < editor_style_shape_count(tool); shape++) {
       smoke_select_tool(tool);
@@ -2146,8 +2177,10 @@ static BOOL shape_variants_smoke(void) {
     }
   }
   ok = finish_text(FALSE) && ok;
+  capture_toolbar_close(capture.toolbar_session);
   image_session_dispose(capture.session); editor_style_dispose(capture.style_bank);
-  capture.session = original_session; capture.style_bank = original_bank;
+  capture.session=original_session; capture.style_bank=original_bank; capture.toolbar_session=original_toolbar;
+  capture.tool=TOOL_SELECT; capture.selected=-1; changed();
   editor_command(ID_SELECT); changed();
   printf("Windows shape variants smoke %s: native input, shared gesture commit, ellipse pixels, mosaic, undo.\n", ok ? "passed" : "FAILED");
   return ok;
@@ -2316,6 +2349,7 @@ done:
   return ok;
 }
 static BOOL contribution_smoke(void) {
+  IAccessible *accessible=NULL; VARIANT retired_child; VariantInit(&retired_child);
   int32_t baseline = capture.tool_snapshot;
   int count = tool_registry_snapshot_count(baseline, 0), index = -1;
   for (int i = 0; i < count; i++) if (tool_value(baseline, i, MC_TOOL_INTERACTION) == MC_TOOL_INTERACTION_DRAG_RECT) { index = i; break; }
@@ -2325,9 +2359,7 @@ static BOOL contribution_smoke(void) {
   moonbit_decref(id);
   BOOL ok = enabled > 0;
   RECT original_toolbar = capture.toolbar;
-  ToolButton *prior_rectangle = smoke_annotation_button(TOOL_RECT);
-  HWND retired_button = prior_rectangle ? prior_rectangle->window : NULL;
-  int retired_command = prior_rectangle ? prior_rectangle->command : 0;
+  int32_t retired_generation=capture.toolbar_generation;
   int initial_count = image_session_count(capture.session);
   capture.composing = TRUE;
   ok = !mc_capture_prepare_tools(enabled) && capture.tool_snapshot == baseline && ok;
@@ -2339,11 +2371,12 @@ static BOOL contribution_smoke(void) {
   if (!mc_capture_prepare_tools(enabled)) { ok = FALSE; goto cleanup; }
   mc_capture_commit_tools(enabled);
   ok = capture.toolbar.right - capture.toolbar.left > original_toolbar.right - original_toolbar.left && ok;
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(retired_command, BN_CLICKED), (LPARAM)retired_button);
-  ok = capture.active_button == -1 && capture.tool == TOOL_SELECT && ok;
-  ToolButton *button = find_button(ID_CONTRIBUTION_BASE + index);
-  if (!button) { ok = FALSE; goto cleanup; }
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(button->command, BN_CLICKED), (LPARAM)button->window);
+  moonbit_string_t stale=moon_text(L"{\"type\":\"activate\",\"id\":\"builtin.image.rectangle\"}");
+  ok=capture_toolbar_event(capture.toolbar_session,retired_generation,stale)==0 && capture.tool==TOOL_SELECT && ok;
+  moonbit_decref(stale);
+  wchar_t *contribution=tool_text(enabled,index,MC_TOOL_ID);
+  if (!contribution || !smoke_toolbar_click(contribution)) { free(contribution); ok=FALSE; goto cleanup; }
+  free(contribution);
   ok = custom_drag() && !style_visible(MC_STYLE_SHAPE) && ok;
   SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(90, 90));
   SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(200, 165));
@@ -2364,18 +2397,28 @@ static BOOL contribution_smoke(void) {
     moonbit_decref(label);
     HGLOBAL dib = image_dib(); ok = dib != NULL && ok; if (dib) GlobalFree(dib);
   }
+  wchar_t *accessible_id=tool_text(enabled,index,MC_TOOL_ID);
+  if (!accessible_id || FAILED(AccessibleObjectFromWindow(capture.toolbar_view,(DWORD)OBJID_CLIENT,&IID_IAccessible,(void **)&accessible)) ||
+      !accessible || !smoke_accessible_child(accessible,accessible_id,&retired_child)) {
+    free(accessible_id); ok=FALSE; goto cleanup;
+  }
+  free(accessible_id);
   id = tool_registry_snapshot_text(enabled, 0, index, MC_TOOL_ID);
   disabled = tool_registry_snapshot_set_enabled(enabled, id, 0); moonbit_decref(id);
   if (!disabled || !mc_capture_prepare_tools(disabled)) { ok = FALSE; goto cleanup; }
   mc_capture_commit_tools(disabled);
-  ok = !find_button(ID_CONTRIBUTION_BASE + index) && image_session_count(capture.session) == initial_count + 2 &&
-    render_image() && ok;
+  wchar_t *removed=tool_text(disabled,index,MC_TOOL_ID);
+  ok=removed && smoke_toolbar_semantic(removed)<0 && image_session_count(capture.session)==initial_count+2 && render_image() && ok;
+  free(removed);
+  ok=IAccessible_accDoDefaultAction(accessible,retired_child)==E_INVALIDARG &&
+      capture.tool==TOOL_SELECT && image_session_count(capture.session)==initial_count+2 && ok;
   editor_command(ID_UNDO);
   ok = image_session_count(capture.session) == initial_count && ok;
   editor_command(ID_REDO);
   ok = image_session_count(capture.session) == initial_count + 2 && ok;
   editor_command(ID_UNDO);
 cleanup:
+  VariantClear(&retired_child); if (accessible) IAccessible_Release(accessible);
   if (capture.dragging) ReleaseCapture();
   if (mc_capture_prepare_tools(baseline)) mc_capture_commit_tools(baseline); else ok = FALSE;
   if (disabled) tool_registry_snapshot_close(disabled);
@@ -2387,11 +2430,20 @@ cleanup:
 typedef struct {
   BOOL accept, valid_image, enabled;
   int attempts, accepted, hidden, restored, x, y, width, height;
+  uint64_t digest;
 } CaptureHostSmoke;
+static uint64_t smoke_dib_digest(HGLOBAL dib) {
+  const BYTE *bytes=GlobalLock(dib);
+  if (!bytes) return 0;
+  SIZE_T size=GlobalSize(dib); uint64_t hash=UINT64_C(1469598103934665603);
+  for (SIZE_T i=0;i<size;i++) hash=(hash^bytes[i])*UINT64_C(1099511628211);
+  GlobalUnlock(dib); return hash;
+}
 static BOOL smoke_pin_enabled(void *context) { return ((CaptureHostSmoke *)context)->enabled; }
 static BOOL smoke_pin_image(void *context, HGLOBAL dib, int x, int y) {
   CaptureHostSmoke *host = context;
   host->attempts++;
+  host->digest=smoke_dib_digest(dib);
   host->x = x;
   host->y = y;
   BITMAPINFOHEADER *info = GlobalLock(dib);
@@ -2449,7 +2501,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   /* Real child focus, IME and layered EDIT hit-testing require the generated
    * fixture window to be shown. Its pixels come only from the synthetic image. */
   ShowWindow(capture.editor, SW_SHOWNOACTIVATE); SetForegroundWindow(capture.editor); UpdateWindow(capture.editor);
-  if (!context_toolbar_smoke() || !independent_text_style_smoke() ||
+  if (!context_toolbar_smoke() || !shared_toolbar_smoke() || !independent_text_style_smoke() ||
       !shared_text_fields_smoke() || !text_ime_rejection_smoke() || !text_cover_preview_smoke() ||
       !text_document_boundaries_smoke() || !shape_variants_smoke() || !shared_properties_smoke() || !contribution_smoke())
     CAPTURE_FAIL();
@@ -2458,10 +2510,11 @@ int mc_capture_smoke(HINSTANCE instance) {
   begin_text((POINT){50, 70}, -1);
   SetWindowTextW(capture.text, L"截图测试 MoonBit\r\n第二行");
   double initial_font = capture.font_size;
-  for (int i = 0; i < capture.toolbar_buttons.count; i++)
-    if (!capture.toolbar_buttons.buttons[i].available)
-      SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(capture.toolbar_buttons.buttons[i].command, BN_CLICKED),
-        (LPARAM)capture.toolbar_buttons.buttons[i].window);
+  for (int i=0;i<ui_frame_semantic_count(capture.toolbar_frame);i++)
+    if (ui_frame_semantic_value(capture.toolbar_frame,i,MC_UI_SEM_ENABLED)==0) {
+      // Disabled real canvas semantics must not finish the inline draft.
+      smoke_toolbar_pointer(i,WM_LBUTTONDOWN); smoke_toolbar_pointer(i,WM_LBUTTONUP);
+    }
   if (!capture.editor || capture.editing != -1 || image_session_count(capture.session) != 1)
     CAPTURE_FAIL();
   step_style(TRUE);
@@ -2587,8 +2640,8 @@ int mc_capture_smoke(HINSTANCE instance) {
   // Keep the optional visual fixture readable after the large-font regression.
   if (!finish_text(FALSE)) CAPTURE_FAIL();
   image_session_remove(capture.session, capture.selected);
+  smoke_select_tool(TOOL_TEXT);
   capture.selected = index;
-  capture.tool = TOOL_TEXT;
   capture.color = (int)image_session_value(capture.session, index, 5);
   capture.opacity = image_session_value(capture.session, index, 8);
   capture.stroke = image_session_value(capture.session, index, 6);
@@ -2619,12 +2672,23 @@ int mc_capture_smoke(HINSTANCE instance) {
   host.enabled = FALSE;
   mc_capture_refresh_capabilities();
   smoke_invoke_action(L"pin");
-  if ((!smoke_action_button(L"pin") || IsWindowEnabled(smoke_action_button(L"pin")->window)) || host.attempts || !mc_capture_busy())
+  if (smoke_action_enabled(L"pin") || host.attempts || !mc_capture_busy())
     CAPTURE_FAIL();
   host.enabled = TRUE;
   mc_capture_refresh_capabilities();
-  smoke_invoke_action(L"pin");
-  if (host.attempts != 1 || host.accepted || host.restored || !mc_capture_busy() || !host.valid_image)
+  HGLOBAL before_pin=image_dib();
+  if (!before_pin) CAPTURE_FAIL();
+  uint64_t before_digest=smoke_dib_digest(before_pin); GlobalFree(before_pin);
+  int before_pin_count=image_session_count(capture.session);
+  double before_pin_revision=image_session_revision(capture.session);
+  begin_text((POINT){100,80},-1);
+  if (!capture.text || !SetWindowTextW(capture.text,L"Uncommitted pin draft")) CAPTURE_FAIL();
+  int32_t pin_edit=capture.text_edit; HWND pin_input=capture.text;
+  smoke_invoke_action(L"pin"); smoke_drain_field_actions();
+  if (host.attempts != 1 || host.accepted || host.restored || !mc_capture_busy() || !host.valid_image ||
+      host.digest==before_digest || capture.text_edit!=pin_edit || capture.text!=pin_input ||
+      !text_equals(L"Uncommitted pin draft") || image_session_count(capture.session)!=before_pin_count ||
+      image_session_revision(capture.session)!=before_pin_revision)
     CAPTURE_FAIL();
   host.accept = TRUE;
   smoke_invoke_action(L"pin");

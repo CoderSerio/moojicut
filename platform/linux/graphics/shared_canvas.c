@@ -21,6 +21,7 @@ struct _MCLinuxCanvas {
   GtkDrawingArea parent;
   MCLinuxCanvasCallbacks callbacks;
   void *context;
+  gboolean (*preserve_focus_on_press)(void *context);
   int32_t frame;
   GPtrArray *nodes;
   gboolean dead, destroying, captured, pointer_down, cancelling, painting;
@@ -133,7 +134,7 @@ gboolean mc_linux_canvas_paint(GtkWidget *widget, cairo_t *cr, double width, dou
   g_object_ref(canvas); canvas->painting = TRUE;
   cairo_save(cr); cairo_rectangle(cr, 0, 0, width, height); cairo_clip(cr);
   cairo_set_source_rgb(cr, 0, 0, 0); cairo_paint(cr);
-  MCCanvasPainter painter = {cr, draw_rect, draw_line, draw_text};
+  MCCanvasPainter painter = {cr, draw_rect, draw_line, draw_text, NULL};
   gboolean ok = !canvas->frame || mc_canvas_draw_layer(canvas->frame, MC_UI_LAYER_COMMANDS, &painter);
   MCCanvasRect video;
   if (ok && canvas->callbacks.video && mc_canvas_video_rect(canvas->frame, &video)) {
@@ -212,6 +213,10 @@ static gint action_count(AtkAction *action) {
   return node->role == MC_UI_ROLE_SLIDER ? 3
     : node->role == MC_UI_ROLE_BUTTON || node->role == MC_UI_ROLE_CHECKBOX ? 1 : 0;
 }
+static void focus_for_press(MCLinuxCanvas *canvas) {
+  if (!canvas->preserve_focus_on_press || !canvas->preserve_focus_on_press(canvas->context))
+    gtk_widget_grab_focus(GTK_WIDGET(canvas));
+}
 static const gchar *action_name(AtkAction *action, gint index) {
   static const gchar *names[] = {"activate", "increment", "decrement"};
   return index >= 0 && index < action_count(action) ? names[index] : NULL;
@@ -223,7 +228,7 @@ static gboolean do_action(AtkAction *action, gint index) {
   if (!canvas) return FALSE;
   g_object_ref(node);
   gchar *id = g_strdup(node->id);
-  gtk_widget_grab_focus(GTK_WIDGET(canvas));
+  focus_for_press(canvas);
   MCLinuxCanvas *after_focus = node_owner(node);
   gboolean valid = after_focus && node->enabled;
   if (valid) emit_text(after_focus, MC_UI_INPUT_ACTIVATE, id, 0);
@@ -457,7 +462,7 @@ static gboolean canvas_draw(GtkWidget *widget, cairo_t *cr) {
 static gboolean button_press(GtkWidget *widget, GdkEventButton *event) {
   MCLinuxCanvas *canvas = (MCLinuxCanvas *)widget;
   if (event->button != 1 || event->type != GDK_BUTTON_PRESS || canvas->dead) return FALSE;
-  g_object_ref(canvas); gtk_widget_grab_focus(widget);
+  g_object_ref(canvas); focus_for_press(canvas);
   if (!canvas->dead) {
     canvas->pointer_down = TRUE;
     MCCanvasInput input = {MC_UI_INPUT_POINTER_DOWN,event->x,event->y,0,0,modifiers(event->state),NULL,0}; emit_input(canvas,&input);
@@ -625,4 +630,8 @@ GtkWidget *mc_linux_canvas_new(const MCLinuxCanvasCallbacks *callbacks, void *co
   if (callbacks) canvas->callbacks = *callbacks;
   canvas->context = context;
   return GTK_WIDGET(canvas);
+}
+void mc_linux_canvas_preserve_focus_on_press(GtkWidget *widget, gboolean (*preserve)(void *)) {
+  MCLinuxCanvas *canvas = canvas_for(widget);
+  if (canvas && !canvas->dead) canvas->preserve_focus_on_press = preserve;
 }

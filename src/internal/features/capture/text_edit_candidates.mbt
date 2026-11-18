@@ -259,6 +259,67 @@ pub fn candidate_document(ticket : Int32) -> String {
 }
 
 ///|
+fn candidate_annotations(ticket : Int32) -> Array[Json] {
+  match text_candidates.get(ticket) {
+    Some(c) =>
+      match c.document.get("annotations") {
+        Some(Array(a)) => a
+        _ => []
+      }
+    None => []
+  }
+}
+
+///|
+pub fn candidate_count(ticket : Int32) -> Int32 {
+  candidate_annotations(ticket).length()
+}
+
+///|
+pub fn candidate_value(ticket : Int32, index : Int32, field : Int32) -> Double {
+  let a = candidate_annotations(ticket)
+  if index < 0 || index >= a.length() {
+    return 0
+  }
+  match a[index] {
+    Object(annotation) => native_annotation_value(annotation, field)
+    _ => 0
+  }
+}
+
+///|
+pub fn candidate_text(ticket : Int32, index : Int32) -> String {
+  let a = candidate_annotations(ticket)
+  if index < 0 || index >= a.length() {
+    return ""
+  }
+  match a[index] {
+    Object(annotation) => image_string(annotation, "text", "")
+    _ => ""
+  }
+}
+
+///|
+pub fn candidate_viewport_value(ticket : Int32, field : Int32) -> Double {
+  let c = match text_candidates.get(ticket) {
+    Some(c) => c
+    None => return 0
+  }
+  let rect = match c.document.get("viewport") {
+    Some(Object(r)) => r
+    _ => return 0
+  }
+  let key = match field {
+    0 => "x"
+    1 => "y"
+    2 => "width"
+    3 => "height"
+    _ => return 0
+  }
+  image_number(rect, key, 0)
+}
+
+///|
 pub fn candidate_ready(session : Int32, ticket : Int32) -> Int32 {
   let c = match text_candidates.get(ticket) {
     Some(c) if c.session == session => c

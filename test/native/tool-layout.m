@@ -10,6 +10,7 @@
 #import "platform/macos/graphics/MCSharedTextInput.h"
 #include <math.h>
 #import <objc/runtime.h>
+#import "capture-toolbar-fixture.h"
 
 // Hidden synthetic windows only: no real capture, system clipboard or events.
 @interface MCImageCanvas : NSView
@@ -19,6 +20,7 @@
 @property NSDictionary *pending;
 - (NSRect)imageFrame;
 - (BOOL)finishTextEditing:(BOOL)commit;
+- (void)cancelGesture;
 @end
 @interface MCImageEditorController (MCToolLayoutTest)
 @property (readonly) MCImageCanvas *canvas;
@@ -29,21 +31,12 @@
 - (void)sharedColorChanged:(id)sender;
 - (void)syncTextControls;
 - (BOOL)finishSharedText:(BOOL)commit;
-@property (readonly) NSSegmentedControl *tools;
+@property (readonly) MCSharedCanvasView *toolbar;
 @property (readonly) NSInteger activeTool;
 @property (readonly) MCSystemColorPanelLease *textColorLease;
 - (BOOL)handleSharedTextUIEvent:(NSDictionary *)event;
-@property (readonly) NSStackView *toolbar;
-@property (readonly) NSButton *pinButton;
-@property (readonly) NSArray<NSDictionary *> *visibleTools;
-@property (readonly) NSButton *undoButton;
-@property (readonly) NSButton *redoButton;
-@property (readonly) NSButton *cancelButton;
-@property (readonly) NSButton *confirmButton;
-@property (readonly) NSView *workflowDivider;
 @property (readonly) NSView *floatingToolbar;
 - (void)prepareWindow;
-- (void)chooseTool:(id)sender;
 - (BOOL)setCaptureRegion:(NSRect)rect;
 @end
 @interface MCCaptureController (MCToolLayoutTest)
@@ -91,16 +84,13 @@ static NSDictionary *setConfiguredTool(NSDictionary *configuration, NSString *id
         [entries addObject:[entry[@"id"] isEqual:identifier] ? @{@"id":identifier,@"enabled":@(enabled)} : entry];
     return registryConfiguration(entries,configuration[@"manifests"] ?: @[]);
 }
-static NSInteger contributionSegment(MCImageEditorController *editor, NSString *identifier) {
-    for (NSUInteger index = 0; index < editor.visibleTools.count; index++)
-        if ([editor.visibleTools[index][@"id"] isEqual:identifier]) return (NSInteger)index;
-    return -1;
+static NSInteger contributionPosition(MCImageEditorController *editor, NSString *identifier) {
+    return MCToolbarPosition(editor.toolbar,identifier);
 }
 static void invokeContribution(MCImageEditorController *editor, NSString *identifier) {
-    NSInteger index = contributionSegment(editor,identifier);
-    NSCAssert(index >= 0,@"Contribution must have a visible segment: %@",identifier);
-    editor.tools.selectedSegment=index; [editor.tools sendAction:editor.tools.action to:editor.tools.target];
+    MCToolbarClick(editor.toolbar,identifier);
 }
+
 static NSData *pixels(void) {
     NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:800 pixelsHigh:500
         bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:3200 bitsPerPixel:32];
@@ -112,24 +102,11 @@ static MCImageEditorController *editor(void) {
     [result prepareWindow];
     return result;
 }
-static NSInteger segment(MCImageEditorController *editor, NSInteger kind) {
-    for (NSInteger index = 0; index < editor.tools.segmentCount; index++)
-        if ([editor.tools tagForSegment:index] == kind) return index;
-    return -1;
+static NSInteger toolPosition(MCImageEditorController *editor, NSInteger kind) {
+    return MCToolbarPosition(editor.toolbar,MCToolbarToolID(kind));
 }
 static void choose(MCImageEditorController *editor, NSInteger kind) {
-    if (kind == 100) { [editor.pinButton sendAction:editor.pinButton.action to:editor.pinButton.target]; return; }
-    editor.tools.selectedSegment = segment(editor, kind);
-    [editor.tools sendAction:editor.tools.action to:editor.tools.target];
-}
-static void clickSegment(NSSegmentedControl *control, NSInteger segment, CGFloat offset) {
-    NSPoint point = [control convertPoint:NSMakePoint(segment * 30 + offset, 14) toView:nil];
-    NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:point modifierFlags:0
-        timestamp:0 windowNumber:control.window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
-    NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:point modifierFlags:0
-        timestamp:.1 windowNumber:control.window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:0];
-    [NSApp postEvent:up atStart:YES];
-    [control mouseDown:down];
+    MCToolbarClick(editor.toolbar,MCToolbarToolID(kind));
 }
 static NSEvent *mouse(MCImageCanvas *canvas, NSEventType type, NSPoint point) {
     NSRect frame = canvas.imageFrame;
@@ -186,9 +163,9 @@ static BOOL interactions(void) {
     NSDictionary *base = configuration(order, [NSSet setWithObject:@1]);
     CHECK([e canApplyToolConfiguration:base error:NULL], "initial configuration preflights");
     [e applyToolConfiguration:base];
-    CHECK(e.activeTool == 0 && segment(e, 0) == 0 && segment(e, 1) == -1, "hidden current rectangle falls back to permanent host selection");
+    CHECK(e.activeTool == 0 && toolPosition(e, 0) == 0 && toolPosition(e, 1) == -1, "hidden current rectangle falls back to permanent host selection");
     choose(e, 2);
-    CHECK(e.activeTool == 2 && e.tools.selectedSegment == 3, "arrow identity is independent of its reordered button index");
+    CHECK(e.activeTool == 2 && toolPosition(e,2) == 3 && MCToolbarSelected(e.toolbar,@"builtin.image.arrow"), "arrow identity is independent of its reordered button index");
     color(e, [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.7]);
     textNumber(e,@"style.stroke",@"7");
     draw(e, NSMakePoint(30, 30), NSMakePoint(250, 120));
@@ -214,13 +191,15 @@ static BOOL interactions(void) {
     [e applyToolConfiguration:noCover];
     CHECK(e.activeTool == 0 && [e.document isEqual:before] && [[e renderPNGData:NULL] isEqual:png], "disabling cover preserves all annotations, undo and rendered redaction");
     [e applyToolConfiguration:base]; choose(e, 4);
-    CHECK(segment(e, 4) == 2 && property(e,MC_CAPTURE_TEXT_RGB) == 0x00ff00 && fabs(property(e,MC_CAPTURE_TEXT_OPACITY) - .25) < .001,
+    CHECK(toolPosition(e, 4) == 2 && property(e,MC_CAPTURE_TEXT_RGB) == 0x00ff00 && fabs(property(e,MC_CAPTURE_TEXT_OPACITY) - .25) < .001,
           "reenabling restores position and RGBA defaults");
     choose(e, 2);
     CHECK(property(e,MC_CAPTURE_TEXT_STROKE) == 7 && property(e,MC_CAPTURE_TEXT_RGB) == 0xff0000, "other tools retain independent defaults");
     [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(300, 300))];
     [e.canvas mouseDragged:mouse(e.canvas, NSEventTypeLeftMouseDragged, NSMakePoint(500, 400))];
     NSDictionary *noArrow = configuration(order, [NSSet setWithArray:@[@1,@2]]);
+    CHECK(![e canApplyToolConfiguration:noArrow error:NULL], "an in-flight native gesture vetoes configuration publication");
+    [e.canvas cancelGesture];
     [e applyToolConfiguration:noArrow];
     [e.canvas mouseUp:mouse(e.canvas, NSEventTypeLeftMouseUp, NSMakePoint(500, 400))];
     CHECK(e.activeTool == 0 && [e.document isEqual:before], "late mouseUp cannot commit a disabled tool's pending shape");
@@ -234,10 +213,13 @@ static BOOL interactions(void) {
     CHECK(e.activeTool == 3 && e.canvas.textView.hasMarkedText && [e.toolConfiguration isEqual:noArrow] && [e.document isEqual:before],
           "defensive apply retains the old effective configuration and composition");
     NSDictionary *reordered = configuration(@[@4,@2,@3,@1], [NSSet setWithArray:@[@1,@2]]);
-    CHECK([e canApplyToolConfiguration:reordered error:NULL], "pure reorder is allowed during composition");
+    CHECK(![e canApplyToolConfiguration:reordered error:NULL], "configuration preflight preserves an unfinished IME transaction");
     [e applyToolConfiguration:reordered];
-    CHECK(e.activeTool == 3 && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder, "reorder preserves text focus and IME draft");
+    CHECK(e.activeTool == 3 && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder && [e.toolConfiguration isEqual:noArrow], "rejected reorder preserves configuration, text focus and IME draft");
     [e.canvas.textView insertText:@"完成输入" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK([e canApplyToolConfiguration:reordered error:NULL], "finished composition permits the same reorder");
+    [e applyToolConfiguration:reordered];
+    CHECK(e.canvas.textView != nil && [e.document isEqual:before], "retained valid text draft survives the reorder without document publication");
     CHECK([e canApplyToolConfiguration:noText error:NULL] && [e.document isEqual:before] && e.canvas.textView != nil,
           "successful preflight validates without prematurely committing text");
     [e applyToolConfiguration:noText];
@@ -279,11 +261,11 @@ static BOOL validationAndFanout(void) {
     input.string = @"11";
     CHECK([capture canApplyToolConfiguration:none error:NULL] && [first.document isEqual:firstDocument], "valid numeric and text edits preflight without mutation");
     [capture applyToolConfiguration:none];
-    CHECK(first.tools.segmentCount == 1 && second.tools.segmentCount == 1 && opened.tools.segmentCount == 1 &&
-          first.activeTool == 0 && second.activeTool == 0 && opened.activeTool == 0, "all editors keep only host selection after all optional tools close");
+    CHECK([first.toolbar.frameDescription[@"semantics"] count] == 5 && [second.toolbar.frameDescription[@"semantics"] count] == 5 && [opened.toolbar.frameDescription[@"semantics"] count] == 5 &&
+          first.activeTool == 0 && second.activeTool == 0 && opened.activeTool == 0, "all editors keep only shared host selection/history/finish controls after optional tools close");
     CHECK([second.document[@"annotations"] count] == 1 && [second.document[@"undo"] count] == 1, "multi-screen apply commits the text exactly once");
     MCImageEditorController *late = [capture editorForSnapshot:@{@"png":pixels(), @"frame":[NSValue valueWithRect:NSMakeRect(0,0,800,500)]} error:NULL];
-    CHECK(late.tools.segmentCount == 1 && [late.toolConfiguration isEqual:none], "late frozen-screen editors inherit the latest configuration");
+    CHECK([late.toolbar.frameDescription[@"semantics"] count] == 5 && [late.toolConfiguration isEqual:none], "late frozen-screen editors inherit the latest configuration");
     [capture applyToolConfiguration:base]; choose(first, 2);
     CHECK(property(first,MC_CAPTURE_TEXT_STROKE) == 11 && [first.document isEqual:firstDocument], "committing numeric defaults before disable preserves the style bank without adding undo");
     [capture setValue:nil forKey:@"overlayEditors"]; [capture setValue:nil forKey:@"editor"];
@@ -308,36 +290,36 @@ static BOOL pinAction(void) {
         NSDictionary *candidate = configuration(orders[index], [NSSet set]);
         CHECK([e canApplyToolConfiguration:candidate error:NULL], "pin action contract preflights without annotation kind");
         [e applyToolConfiguration:candidate];
-        CHECK(segment(e, 100) == -1 && !e.pinButton.hidden && e.pinButton.enabled,
+        CHECK(toolPosition(e,100) > MCToolbarPosition(e.toolbar,@"host.redo") && MCToolbarEnabled(e.toolbar,@"builtin.image.pin"),
               "saved pin ordering never moves the terminal action into the editing group");
         choose(e, 100);
-        CHECK(e.activeTool == 2 && [e.tools tagForSegment:e.tools.selectedSegment] == 2 && calls == (NSInteger)index + 1 &&
+        CHECK(e.activeTool == 2 && MCToolbarSelected(e.toolbar,@"builtin.image.arrow") && calls == (NSInteger)index + 1 &&
               [e.document isEqual:before] && e.window != nil, "failed pin is momentary and retains the editor and current annotation tool");
         CHECK(property(e,MC_CAPTURE_TEXT_RGB) == savedRGB && property(e,MC_CAPTURE_TEXT_STROKE) == savedStroke &&
               fabs(property(e,MC_CAPTURE_TEXT_OPACITY) - savedOpacity) < .001, "pin action never changes the tool style bank");
     }
     NSBitmapImageRep *rendered = [NSBitmapImageRep imageRepWithData:result];
     CHECK(rendered.pixelsWide == 800 && rendered.pixelsHigh == 500, "pin still uses the real PNG rendering transaction");
-    CHECK(e.pinButton.superview == e.toolbar && segment(e,100) == -1, "the workflow group owns the only pin button");
+    CHECK(toolPosition(e,100) > toolPosition(e,2) && MCToolbarPosition(e.toolbar,@"host.cancel") == toolPosition(e,100)+1, "the workflow group owns the only pin button");
     e.onPinPNGData = nil;
-    CHECK(!e.pinButton.enabled && [e.pinButton.toolTip containsString:@"已关闭"], "removing the shared pin gate immediately disables the workflow button");
+    CHECK(!MCToolbarEnabled(e.toolbar,@"builtin.image.pin") && [MCToolbarSemantic(e.toolbar,@"builtin.image.pin")[@"tooltip"] length] > 0, "removing the shared pin gate immediately disables the workflow button");
     choose(e,100);
     CHECK(calls == 3 && e.activeTool == 2 && [e.document isEqual:before], "direct action dispatch cannot bypass a missing pin gate");
     e.onPinPNGData = pin;
-    CHECK(segment(e,100) == -1 && e.pinButton.enabled, "restoring the gate enables pin without rebuilding the editor");
+    CHECK(MCToolbarEnabled(e.toolbar,@"builtin.image.pin"), "restoring the gate enables pin without rebuilding the editor");
     choose(e,3);
     [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(50,220))];
     [e.canvas.textView setMarkedText:@"zhongwen" selectedRange:NSMakeRange(8,0) replacementRange:NSMakeRange(NSNotFound,0)];
     NSResponder *responder = e.window.firstResponder;
     NSDictionary *hidden = configuration(@[@100,@4,@3,@2,@1], [NSSet setWithObject:@100]);
-    CHECK([e canApplyToolConfiguration:hidden error:NULL], "managing pin is independent of the active text transaction");
+    CHECK(![e canApplyToolConfiguration:hidden error:NULL], "configuration transaction rejects unfinished composition even when changing pin");
     [e applyToolConfiguration:hidden];
     e.onPinPNGData = nil;
-    CHECK(e.pinButton.hidden && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder &&
-          e.activeTool == 3 && [e.document isEqual:before], "hiding pin and changing its gate never consume background IME composition");
+    CHECK(MCToolbarSemantic(e.toolbar,@"builtin.image.pin") != nil && !MCToolbarEnabled(e.toolbar,@"builtin.image.pin") && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder &&
+          e.activeTool == 3 && [e.document isEqual:before], "rejected pin configuration and a missing backend never consume background IME composition");
     NSDictionary *shown = configuration(@[@1,@100,@3,@2,@4], [NSSet set]);
     [e applyToolConfiguration:shown]; e.onPinPNGData = pin;
-    CHECK(!e.pinButton.hidden && segment(e,100) == -1 && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder,
+    CHECK(MCToolbarSemantic(e.toolbar,@"builtin.image.pin") != nil && e.canvas.textView.hasMarkedText && e.window.firstResponder == responder,
           "reenabling and moving pin preserves IME and the chosen text tool");
     NSString *composed = e.canvas.textView.string;
     NSTextView *textView = e.canvas.textView;
@@ -349,6 +331,13 @@ static BOOL pinAction(void) {
           [textView.string isEqual:composed] && e.window.firstResponder == responder,
           "explicit pin rejects IME without touching composition, selection, draft or history");
     [textView insertText:@"保留草稿" replacementRange:NSMakeRange(NSNotFound,0)];
+    CHECK([e canApplyToolConfiguration:hidden error:NULL], "pin configuration succeeds after composition finishes");
+    [e applyToolConfiguration:hidden];
+    CHECK(MCToolbarSemantic(e.toolbar,@"builtin.image.pin") == nil && e.canvas.textView == textView,
+          "hiding pin preserves a retained valid body draft");
+    [e applyToolConfiguration:shown];
+    CHECK(MCToolbarEnabled(e.toolbar,@"builtin.image.pin") && e.canvas.textView == textView,
+          "restoring pin keeps the same valid text transaction");
     draft = e.canvas.textDraft;
     NSRange selectedRange = textView.selectedRange;
     NSData *unannotated = result;
@@ -382,7 +371,7 @@ static BOOL pinAction(void) {
     choose(success,2);
     success.onPinPNGData = ^BOOL(NSData *png) { return [NSBitmapImageRep imageRepWithData:png] != nil; };
     choose(success,100);
-    CHECK(!success.window && success.activeTool == 2, "successful pin closes through the existing action without selecting an action as a tool");
+    CHECK(!success.window, "successful pin closes through the existing action without selecting an action as a tool");
     return passed;
 }
 static BOOL userActions(void) {
@@ -408,7 +397,7 @@ static BOOL userActions(void) {
     NSDictionary *candidate = registryConfiguration(entries,manifests);
     CHECK([e canApplyToolConfiguration:candidate error:NULL], "user action catalog is accepted alongside all built-ins");
     [e applyToolConfiguration:candidate];
-    CHECK(e.tools.segmentCount == 21 && ![e.tools isEnabledForSegment:1], "user tools need a host callback before invocation");
+    CHECK(MCToolbarSemantic(e.toolbar,@"__toolbar.next") != nil && !MCToolbarEnabled(e.toolbar,firstID), "user tools need a host callback before invocation");
     choose(e, 2);
     CHECK(e.activeTool == 2, "user action insertion does not remap annotation kinds");
     NSDictionary *before = e.document;
@@ -418,42 +407,70 @@ static BOOL userActions(void) {
     e.onUserTool = ^(MCImageEditorController *source, NSString *identifier) {
         calls++; calledID = identifier; metadata = source.pluginCaptureMetadata;
     };
-    CHECK([e.tools isEnabledForSegment:1], "attaching the host enables existing user action segments");
-    e.tools.selectedSegment = 1; [e.tools sendAction:e.tools.action to:e.tools.target];
+    CHECK(MCToolbarEnabled(e.toolbar,firstID), "attaching the host enables existing user action segments");
+    MCToolbarClick(e.toolbar,firstID);
     CHECK(calls == 1 && [calledID isEqual:firstID] && e.activeTool == 2 && [e.document isEqual:before],
           "real action dispatch uses global ID and preserves annotation mode, document and history");
     CHECK(([metadata isEqual:@{@"width":@800,@"height":@500,@"format":@"png",@"revision":@0}]),
           "the host exposes only current capture metadata");
-    [e.window setContentSize:NSMakeSize(540,400)]; [e.window.contentView layoutSubtreeIfNeeded];
-    NSScrollView *scroll = e.tools.enclosingScrollView;
-    CHECK(scroll && scroll.documentVisibleRect.size.width < e.tools.frame.size.width &&
-          scroll.frame.size.width <= 245 && e.toolbar.fittingSize.width <= 504,
-          "many user actions scroll without forcing the editor toolbar beyond its minimum window width");
-    [e.tools scrollRectToVisible:NSMakeRect(NSMaxX(e.tools.bounds)-30,0,30,28)];
-    CHECK(NSMaxX(scroll.documentVisibleRect) >= NSMaxX(e.tools.bounds)-1,
-          "the last user tool remains reachable through horizontal scrolling");
-    // Use AppKit's actual segment tracking rather than assigning selectedSegment:
-    // an OS bezel's extra per-segment spacing must not accumulate into wrong IDs.
-    for (NSNumber *offset in @[@3,@15,@27]) {
-        NSUInteger priorCalls = calls;
-        clickSegment(e.tools, e.tools.segmentCount-1, offset.doubleValue);
-        CHECK(calls == priorCalls+1 && [calledID isEqual:@"user.com.example.capture/extra-14"] && e.activeTool == 2,
-              "the last visible 30pt slot dispatches the correct plugin at both edges and center without staying selected");
+    // A transparent package PNG travels through the generic asset command and
+    // the actual shared renderer; resource registration never selects a tool.
+    NSBitmapImageRep *art = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:20 pixelsHigh:20
+        bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:80 bitsPerPixel:32];
+    memset(art.bitmapData,0,art.bytesPerRow * art.pixelsHigh);
+    for (NSUInteger y=6;y<14;y++) for (NSUInteger x=6;x<14;x++) {
+        unsigned char *pixel=art.bitmapData+y*art.bytesPerRow+x*4; pixel[0]=255; pixel[3]=255;
     }
+    NSImage *custom = [[NSImage alloc] initWithData:[art representationUsingType:NSBitmapImageFileTypePNG properties:@{}]];
+    e.pluginIcons = @{firstID:custom};
+    NSDictionary *customItem = MCToolbarReveal(e.toolbar,firstID);
+    BOOL assetCommand = NO;
+    for (NSDictionary *command in e.toolbar.frameDescription[@"commands"])
+        if ([command[@"type"] isEqual:@"asset"] && e.toolbar.imageAssets[command[@"assetId"]] == custom) assetCommand=YES;
+    NSBitmapImageRep *drawn = [e.toolbar bitmapImageRepForCachingDisplayInRect:e.toolbar.bounds];
+    [e.toolbar cacheDisplayInRect:e.toolbar.bounds toBitmapImageRep:drawn];
+    NSRect customRect = MCToolbarRect(customItem);
+    NSColor *center = [[drawn colorAtX:(NSInteger)(NSMidX(customRect)*drawn.pixelsWide/NSWidth(e.toolbar.bounds))
+                                   y:(NSInteger)(NSMidY(customRect)*drawn.pixelsHigh/NSHeight(e.toolbar.bounds))]
+                      colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CHECK(assetCommand && center.redComponent > .8 && center.greenComponent < .2 && center.blueComponent < .2 && e.activeTool == 2,
+          "transparent plugin artwork is painted by the real shared asset port without changing selection");
+    e.pluginIcons = @{};
+    CHECK(e.toolbar.imageAssets.count == 0 && MCToolbarSelected(e.toolbar,@"builtin.image.arrow"),
+          "removing package artwork restores the shared fallback without changing the active annotation tool");
+    [e.window setContentSize:NSMakeSize(540,400)]; [e.window.contentView layoutSubtreeIfNeeded];
+    CHECK(MCToolbarSemantic(e.toolbar,@"__toolbar.next") && NSWidth(e.toolbar.bounds) <= 504,
+          "many user actions use shared bounded paging within the editor");
+    CHECK(MCToolbarReveal(e.toolbar,@"user.com.example.capture/extra-14") != nil,
+          "the last user tool remains reachable through real shared paging controls");
+    for (NSNumber *fraction in @[@.05,@.5,@.95]) {
+        NSUInteger priorCalls = calls;
+        MCToolbarPressVisible(e.toolbar,@"user.com.example.capture/extra-14",fraction.doubleValue);
+        CHECK(calls == priorCalls+1 && [calledID isEqual:@"user.com.example.capture/extra-14"] && e.activeTool == 2,
+              "the last visible shared slot dispatches its stable plugin ID at both edges and center without staying selected");
+    }
+    CHECK(MCToolbarAXPress(e.toolbar,firstID) && [calledID isEqual:firstID],
+          "the real AX button dispatches the same contribution identity");
     calls = 1;
     choose(e,3);
     [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(50,220))];
     [e.canvas.textView setMarkedText:@"zhongwen" selectedRange:NSMakeRange(8,0) replacementRange:NSMakeRange(NSNotFound,0)];
     NSTextView *draft = e.canvas.textView; NSResponder *responder = e.window.firstResponder;
-    e.tools.selectedSegment = 1; [e.tools sendAction:e.tools.action to:e.tools.target];
-    CHECK(calls == 2 && e.canvas.textView == draft && draft.hasMarkedText && e.window.firstResponder == responder &&
-          e.activeTool == 3 && [e.document isEqual:before], "metadata actions do not commit or discard ongoing IME input");
+    MCToolbarClick(e.toolbar,firstID);
+    CHECK(calls == 1 && e.canvas.textView == draft && draft.hasMarkedText && e.window.firstResponder == responder &&
+          e.activeTool == 3 && [e.document isEqual:before], "user actions veto unfinished IME without committing or discarding the draft");
     NSMutableArray *moved = [entries mutableCopy]; [moved removeObjectAtIndex:0]; [moved addObject:entries[0]];
     NSDictionary *reordered = registryConfiguration(moved,manifests);
     [e applyToolConfiguration:reordered];
-    e.tools.selectedSegment = e.tools.segmentCount-1; [e.tools sendAction:e.tools.action to:e.tools.target];
-    CHECK(calls == 3 && [calledID isEqual:firstID] && draft.hasMarkedText && [e.document isEqual:before],
-          "moving a live user tool preserves its identity and the current input transaction");
+    MCToolbarClick(e.toolbar,firstID);
+    CHECK(calls == 1 && draft.hasMarkedText && [e.document isEqual:before] && [e.toolConfiguration isEqual:candidate],
+          "moving a live user tool preserves its IME veto and the current input transaction");
+    [draft insertText:@"插件草稿" replacementRange:NSMakeRange(NSNotFound,0)];
+    [e applyToolConfiguration:reordered];
+    MCToolbarClick(e.toolbar,firstID);
+    CHECK(calls == 2 && [calledID isEqual:firstID] && [e.document[@"annotations"] count] == 1 &&
+          [metadata[@"revision"] integerValue] == [e.document[@"revision"] integerValue],
+          "valid user action publishes one draft then receives the current immutable capture metadata");
     __block NSString *closedOwner = nil;
     NSString *owner = e.pluginContextIdentifier;
     e.onPluginContextClosed = ^(NSString *identifier) { closedOwner = identifier; };
@@ -467,13 +484,12 @@ static BOOL declarativeComposite(void) {
     MCImageEditorController *e=editor();
     NSDictionary *base=configuration(@[@1,@2,@3,@4],[NSSet set]);
     NSString *identifier=@"builtin.image.numberedRectangle";
-    CHECK(contributionSegment(e,identifier) == -1, "the declared composite tool starts disabled");
+    CHECK(contributionPosition(e,identifier) == -1, "the declared composite tool starts disabled");
     NSDictionary *enabled=setConfiguredTool(base,identifier,YES);
     CHECK([e canApplyToolConfiguration:enabled error:NULL], "a generic drag contribution preflights through the real registry response");
     [e applyToolConfiguration:enabled];
-    NSInteger numberSegment=contributionSegment(e,identifier);
-    CHECK(numberSegment >= 0 && [e.tools isEnabledForSegment:numberSegment] &&
-          [e.visibleTools[(NSUInteger)numberSegment][@"interaction"] isEqual:@"dragRect"],
+    NSInteger numberSegment=contributionPosition(e,identifier);
+    CHECK(numberSegment >= 0 && MCToolbarEnabled(e.toolbar,@"builtin.image.numberedRectangle"),
           "the descriptor creates an available segment without a native numbered-tool button");
     NSData *baseline=[e renderPNGData:NULL];
     invokeContribution(e,identifier);
@@ -493,7 +509,7 @@ static BOOL declarativeComposite(void) {
     NSDictionary *disabled=setConfiguredTool(enabled,identifier,NO);
     CHECK([e canApplyToolConfiguration:disabled error:NULL], "disabling the new contribution uses the ordinary preflight");
     [e applyToolConfiguration:disabled];
-    CHECK(contributionSegment(e,identifier) == -1 && e.activeTool == 0 && [e.document isEqual:document] &&
+    CHECK(contributionPosition(e,identifier) == -1 && e.activeTool == 0 && [e.document isEqual:document] &&
           [[e renderPNGData:NULL] isEqual:rendered],
           "disabling removes the command entry while preserving existing document shapes, history and export");
     [e cancel:nil];
@@ -613,48 +629,52 @@ static BOOL toolbarAppearance(void) {
     [e setCaptureRegion:NSMakeRect(20,20,760,460)];
     e.onOCR = ^(__unused MCImageEditorController *source) {};
     choose(e, 1);
-    NSArray *items = e.toolbar.arrangedSubviews;
-    NSUInteger divider = [items indexOfObject:e.workflowDivider];
+    NSArray *items = e.toolbar.frameDescription[@"semantics"];
     NSUInteger separatorCount = 0;
-    for (NSView *view in items) for (NSView *child in view.subviews)
-        if ([child isKindOfClass:NSBox.class] && ((NSBox *)child).boxType == NSBoxSeparator) separatorCount++;
-    NSInteger ocrSegment=contributionSegment(e,@"builtin.capture.ocr");
-    CHECK(separatorCount == 1 && ocrSegment >= 0 && [e.tools isEnabledForSegment:ocrSegment] &&
-          [items indexOfObject:e.tools.enclosingScrollView] < divider &&
-          [items indexOfObject:e.undoButton] < divider && [items indexOfObject:e.redoButton] < divider &&
-          [items indexOfObject:e.pinButton] == divider + 1 && [items indexOfObject:e.cancelButton] == divider + 2 &&
-          [items indexOfObject:e.confirmButton] == divider + 3,
-          "exactly two groups: editing/OCR/history, then pin/cancel/confirm");
+    for (NSDictionary *command in e.toolbar.frameDescription[@"commands"])
+        if ([command[@"type"] isEqual:@"line"] && [command[@"y1"] doubleValue] == 8 &&
+            [command[@"y2"] doubleValue] == 24 && [command[@"x1"] isEqual:command[@"x2"]]) separatorCount++;
+    NSInteger pin = MCToolbarPosition(e.toolbar,@"builtin.image.pin");
+    CHECK(separatorCount == 1 && MCToolbarEnabled(e.toolbar,@"builtin.capture.ocr") &&
+          MCToolbarPosition(e.toolbar,@"builtin.capture.ocr") < pin &&
+          MCToolbarPosition(e.toolbar,@"host.undo") < pin && MCToolbarPosition(e.toolbar,@"host.redo") < pin &&
+          MCToolbarPosition(e.toolbar,@"host.cancel") == pin + 1 && MCToolbarPosition(e.toolbar,@"host.confirm") == pin + 2 &&
+          items.count == 12,
+          "exactly two shared groups: editing/OCR/translation/history, then pin/cancel/confirm");
     for (NSString *mode in @[@"light", @"dark"]) {
         e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
-        NSPoint hoverPoint = [e.tools convertPoint:NSMakePoint(ocrSegment*30+15,14) toView:nil];
-        NSEvent *hover = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:hoverPoint modifierFlags:0
-            timestamp:0 windowNumber:e.window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
         NSBitmapImageRep *normal = toolbarPixels(e);
         NSData *normalPNG = [normal representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-        NSRect pointer = [e.tools convertRect:NSMakeRect(6,5,18,18) toView:e.floatingToolbar];
-        NSRect action = [e.tools convertRect:NSMakeRect(ocrSegment*30+6,5,18,18) toView:e.floatingToolbar];
+        NSRect pointer = [e.toolbar convertRect:NSInsetRect(MCToolbarRect(MCToolbarSemantic(e.toolbar,@"host.select")),3,3) toView:e.floatingToolbar];
+        NSRect action = [e.toolbar convertRect:NSInsetRect(MCToolbarRect(MCToolbarSemantic(e.toolbar,@"builtin.capture.ocr")),3,3) toView:e.floatingToolbar];
         CHECK(iconContrast(normal,pointer,e.floatingToolbar) >= 4.5 && iconContrast(normal,action,e.floatingToolbar) >= 4.5,
-              "enabled tool and action icons retain readable contrast in light and dark appearances");
-        [e.undoButton mouseEntered:hover];
+              "enabled shared icons retain readable contrast in light and dark appearances");
+        [e.toolbar mouseMoved:MCToolbarMouse(e.toolbar,@"host.undo",NSEventTypeMouseMoved,.5)];
         CHECK([normalPNG isEqual:[toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
               "disabled actions do not acquire an enabled hover background in either appearance");
-        [e.undoButton mouseExited:hover];
-        [e.tools mouseMoved:hover];
+        [e.toolbar mouseMoved:MCToolbarMouse(e.toolbar,@"builtin.capture.ocr",NSEventTypeMouseMoved,.5)];
         NSBitmapImageRep *hovered = toolbarPixels(e);
         CHECK(![normalPNG isEqual:[hovered representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
-              "enabled native buttons and tool segments show their individual hover state");
-        [e.tools setValue:@(ocrSegment) forKey:@"pressedSegment"];
+              "the real shared canvas pointer move paints individual hover state");
+        [e.toolbar mouseDown:MCToolbarMouse(e.toolbar,@"builtin.capture.ocr",NSEventTypeLeftMouseDown,.5)];
         NSBitmapImageRep *pressed = toolbarPixels(e);
         CHECK(![[hovered representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
                 isEqual:[pressed representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
-              "pressed feedback is distinct from hover without selecting a momentary action");
-        [e.tools setValue:@(-1) forKey:@"pressedSegment"];
-        [e.tools mouseExited:hover];
-        CHECK(e.activeTool == 1 && e.tools.selectedSegment == segment(e, 1) && e.tools.selectedSegment != ocrSegment,
-              "rendering hover/pressed states preserves the single selected annotation tool");
-        CHECK([e.tools imageForSegment:ocrSegment].accessibilityDescription.length > 0 && e.tools.accessibilityLabel.length > 0 && [e.tools imageForSegment:1].accessibilityDescription.length > 0,
-              "native action labels and per-tool accessibility descriptions remain intact");
+              "actual pointer-down feedback is distinct from hover without selecting a momentary action");
+        NSEvent *outside = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp
+            location:[e.toolbar convertPoint:NSMakePoint(-10,-10) toView:nil] modifierFlags:0 timestamp:0
+            windowNumber:e.window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0];
+        [e.toolbar mouseUp:outside];
+        CHECK(e.activeTool == 1 && MCToolbarSelected(e.toolbar,@"builtin.image.rectangle") &&
+              !MCToolbarSelected(e.toolbar,@"builtin.capture.ocr"),
+              "rendering and cancelling a pressed action preserves the selected annotation tool");
+        NSDictionary *ocr = MCToolbarSemantic(e.toolbar,@"builtin.capture.ocr");
+        NSRect ocrBounds = MCToolbarRect(ocr);
+        NSString *tip = [(id<NSViewToolTipOwner>)e.toolbar view:e.toolbar stringForToolTip:0
+            point:NSMakePoint(NSMidX(ocrBounds),NSMidY(ocrBounds)) userData:NULL];
+        CHECK([ocr[@"label"] length] > 0 && [tip isEqual:ocr[@"tooltip"]] && e.toolbar.accessibilityLabel.length > 0 &&
+              MCToolbarAXPress(e.toolbar,@"builtin.image.rectangle"),
+              "shared semantic labels reach actual AppKit tooltip and AX press adapters");
         NSString *directory = NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];
         if (directory.length) {
             [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL];

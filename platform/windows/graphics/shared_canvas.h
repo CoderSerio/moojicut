@@ -17,6 +17,9 @@ typedef struct {
    * are device pixels. Do not pump messages, replace frames or destroy the
    * window while drawing. The adapter owns no media/pixel buffer. */
   void (*video)(void *context, HWND window, HDC target, const RECT *bounds);
+  /* Optional host focus fact: preserve an active native input during mouse
+   * interaction. Keyboard/AX focus remains explicit. May retire the window. */
+  BOOL (*preserve_focus_on_press)(void *context, HWND window);
 } MCWinCanvasCallbacks;
 
 HWND mc_win_canvas_create(HWND parent, HINSTANCE instance, int identifier,

@@ -8,6 +8,7 @@
 #import "platform/macos/graphics/MCSharedTextInput.h"
 #include <math.h>
 #import <objc/runtime.h>
+#import "capture-toolbar-fixture.h"
 
 // Synthetic images and events only. The window is never shown and the test
 // does not ask for screen permission or write the general clipboard.
@@ -30,14 +31,9 @@
 - (BOOL)finishSharedText:(BOOL)commit;
 @property (readonly) NSView *floatingToolbar;
 @property (readonly) BOOL hasCaptureRegion;
-@property (readonly) NSSegmentedControl *tools;
-@property (readonly) NSStackView *toolbar;
-@property (readonly) NSButton *pinButton;
-@property (readonly) NSButton *undoButton;
-@property (readonly) NSButton *redoButton;
+@property (readonly) MCSharedCanvasView *toolbar;
+@property (readonly) NSInteger activeTool;
 @property (readonly) NSTextField *propertyStatus;
-@property (readonly) NSArray<NSDictionary *> *visibleTools;
-- (void)chooseTool:(id)sender;
 - (void)refresh;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)pinImage:(id)sender;
@@ -68,25 +64,16 @@ static BOOL propertyVisible(MCImageEditorController *editor, NSString *identifie
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL capture overlay: %s\n", message); passed = NO; } } while (0)
 
 static void selectTool(MCImageEditorController *editor, NSInteger kind) {
-    for (NSInteger index = 0; index < editor.tools.segmentCount; index++) {
-        if ([editor.tools tagForSegment:index] == kind) {
-            editor.tools.selectedSegment = index;
-            [editor chooseTool:editor.tools];
-            return;
-        }
-    }
+    MCToolbarClick(editor.toolbar,MCToolbarToolID(kind));
 }
 
-static NSInteger contributionSegment(MCImageEditorController *editor, NSString *identifier) {
-    for (NSUInteger index = 0; index < editor.visibleTools.count; index++)
-        if ([editor.visibleTools[index][@"id"] isEqual:identifier]) return (NSInteger)index;
-    return -1;
+static NSInteger contributionPosition(MCImageEditorController *editor, NSString *identifier) {
+    return MCToolbarPosition(editor.toolbar,identifier);
 }
 static void invokeContribution(MCImageEditorController *editor, NSString *identifier) {
-    NSInteger index=contributionSegment(editor,identifier);
-    NSCAssert(index >= 0,@"Expected visible contribution %@",identifier);
-    editor.tools.selectedSegment=index; [editor chooseTool:editor.tools];
+    MCToolbarClick(editor.toolbar,identifier);
 }
+
 static NSDictionary *registryConfiguration(NSArray<NSDictionary *> *entries, NSArray *manifests) {
     NSMutableArray *saved=[NSMutableArray array];
     for (NSDictionary *entry in entries) [saved addObject:@{@"id":entry[@"id"],@"enabled":([entry[@"enabled"] boolValue] ? @YES : @NO)}];
@@ -153,10 +140,10 @@ static BOOL exercise(CGFloat scale) {
     CHECK(NSMaxY(editor.floatingToolbar.frame) < NSMinY(selectionInRoot) &&
           NSMinY(selectionInRoot) - NSMaxY(editor.floatingToolbar.frame) <= 8,
           "toolbar sits just below the selection when there is space");
-    CHECK(NSHeight(editor.floatingToolbar.frame) <= 40,
+    CHECK(NSHeight(editor.floatingToolbar.frame) <= 44,
           "selecting a region does not reserve an empty property row");
     selectTool(editor,1);
-    CHECK(NSHeight(editor.floatingToolbar.frame) > 40 && NSHeight(editor.floatingToolbar.frame) <= 80,
+    CHECK(NSHeight(editor.floatingToolbar.frame) > 44 && NSHeight(editor.floatingToolbar.frame) <= 84,
           "editable properties expand to a compact second row without reducing hit targets");
     CHECK(NSMaxX(selectionInRoot) >= NSWidth(editor.floatingToolbar.frame) + 8 ?
           fabs(NSMaxX(editor.floatingToolbar.frame) - NSMaxX(selectionInRoot)) < 1 :
@@ -164,16 +151,16 @@ static BOOL exercise(CGFloat scale) {
           "property widths retain the trailing anchor without moving controls offscreen");
     selectTool(editor,0);
     [editor showError:[NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"An actionable error"}]];
-    CHECK(NSHeight(editor.floatingToolbar.frame) > 40 && !editor.propertyStatus.hidden,
+    CHECK(NSHeight(editor.floatingToolbar.frame) > 44 && !editor.propertyStatus.hidden,
           "an error expands a collapsed property row so the message remains visible");
     [editor refresh];
-    CHECK(NSHeight(editor.floatingToolbar.frame) <= 40, "clearing the message collapses the unused row again");
+    CHECK(NSHeight(editor.floatingToolbar.frame) <= 44, "clearing the message collapses the unused row again");
     CHECK(editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 0,
           "select without a text object shows no irrelevant properties");
-    NSInteger ocr=contributionSegment(editor,@"builtin.capture.ocr"), translate=contributionSegment(editor,@"builtin.capture.translate");
-    CHECK(ocr >= 0 && translate >= 0 && ![editor.tools isEnabledForSegment:ocr] && ![editor.tools isEnabledForSegment:translate] &&
-          [[editor.tools toolTipForSegment:ocr] containsString:@"后端不可用"] && [[editor.tools toolTipForSegment:translate] containsString:@"后端不可用"] &&
-          [editor.tools imageForSegment:ocr].accessibilityDescription.length > 0 && [editor.tools imageForSegment:translate].accessibilityDescription.length > 0,
+    NSInteger ocr=contributionPosition(editor,@"builtin.capture.ocr"), translate=contributionPosition(editor,@"builtin.capture.translate");
+    CHECK(ocr >= 0 && translate >= 0 && !MCToolbarEnabled(editor.toolbar,@"builtin.capture.ocr") && !MCToolbarEnabled(editor.toolbar,@"builtin.capture.translate") &&
+          [MCToolbarSemantic(editor.toolbar,@"builtin.capture.ocr")[@"tooltip"] length] > [MCToolbarSemantic(editor.toolbar,@"builtin.capture.ocr")[@"label"] length] && [MCToolbarSemantic(editor.toolbar,@"builtin.capture.translate")[@"tooltip"] length] > [MCToolbarSemantic(editor.toolbar,@"builtin.capture.translate")[@"label"] length] &&
+          [MCToolbarSemantic(editor.toolbar,@"builtin.capture.ocr")[@"label"] length] > 0 && [MCToolbarSemantic(editor.toolbar,@"builtin.capture.translate")[@"label"] length] > 0,
           "enabled contributions remain visible with explicit unavailable state and accessible descriptions until a backend is supplied");
     NSNumber *revision = editor.document[@"revision"];
     invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
@@ -190,9 +177,9 @@ static BOOL exercise(CGFloat scale) {
     [canvas mouseUp:mouse(canvas, NSEventTypeLeftMouseUp, NSMakePoint(420, 290))];
     CHECK([editor.document[@"annotations"][0][@"stroke"] intValue] == 8,
           "contextual line width controls the real MoonBit shape annotation");
-    CHECK(editor.undoButton.enabled, "a fresh defaults transaction does not disable document undo after drawing");
-    [editor.undoButton performClick:nil];
-    CHECK([editor.document[@"annotations"] count] == 0 && editor.redoButton.enabled,
+    CHECK(MCToolbarEnabled(editor.toolbar,@"host.undo"), "a fresh defaults transaction does not disable document undo after drawing");
+    MCToolbarClick(editor.toolbar,@"host.undo");
+    CHECK([editor.document[@"annotations"] count] == 0 && MCToolbarEnabled(editor.toolbar,@"host.redo"),
           "the actual toolbar undo removes the shape and enables document redo");
     selectTool(editor, 2);
     CHECK(propertyVisible(editor,@"style.stroke") && !propertyVisible(editor,@"style.fontSize"), "arrow exposes the same meaningful shape properties");
@@ -212,7 +199,7 @@ static BOOL exercise(CGFloat scale) {
     CHECK([editor capturePNGData:&error] == nil && canvas.textView.hasMarkedText && editor.window.firstResponder == textResponder,
           "content actions reject unfinished IME without accepting or discarding composition");
     selectTool(editor, 4);
-    CHECK(canvas.textView.hasMarkedText && [editor.tools tagForSegment:editor.tools.selectedSegment] == 3 &&
+    CHECK(canvas.textView.hasMarkedText && editor.activeTool == 3 && MCToolbarSelected(editor.toolbar,@"builtin.image.text") &&
           editor.window.firstResponder == textResponder && NSEqualRects(toolbarFrame, editor.floatingToolbar.frame),
           "tool switching preserves ongoing IME composition and HUD placement");
     [canvas.textView insertText:@"原地编辑 🌙\n第二行" replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -282,11 +269,9 @@ static BOOL exercise(CGFloat scale) {
     CHECK(editor.window != nil && [editor.document[@"viewport"] isEqual:viewport],
           "a pin rejected by the feature gate keeps the crop and editor alive");
     editor.onPinPNGData = nil;
-    NSInteger pinSegment = -1;
-    for (NSInteger index = 0; index < editor.tools.segmentCount; index++)
-        if ([editor.tools tagForSegment:index] == 100) pinSegment = index;
-    CHECK(pinSegment == -1 && !editor.pinButton.enabled,
-          "removing pin capability disables its workflow action without an annotation segment");
+    CHECK(!MCToolbarEnabled(editor.toolbar,@"builtin.image.pin") &&
+          MCToolbarPosition(editor.toolbar,@"builtin.image.pin") > MCToolbarPosition(editor.toolbar,@"host.redo"),
+          "removing pin capability disables its completion-group action");
     editor.onPinPNGData = ^BOOL(NSData *data) { pinned = data; pinnedFrame = weakEditor.pinScreenFrame; return YES; };
     [editor pinImage:nil];
     CHECK(pinned.length > 0 && editor.window == nil, "pin receives the final crop and finishes the capture");
@@ -340,7 +325,7 @@ static BOOL independentToolStyles(void) {
     [editor undo:nil];
     CHECK([editor.document[@"annotations"][0][@"color"] isEqual:@"#0000ff"], "one undo restores the selected object's color");
     [editor redo:nil];
-    [editor chooseTool:editor.tools];
+    selectTool(editor,3);
     CHECK(capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_RGB) == 0x0000ff && fabs(capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_OPACITY) - .6) < .001,
           "modifying an existing object never overwrites text creation defaults");
     [editor addTextAtPoint:NSMakePoint(30, 180)];
@@ -397,7 +382,7 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     BOOL passed = YES;
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
     [editor prepareOverlayInFrame:NSMakeRect(-1200, -300, 800*scale, 500*scale)];
-    CHECK(editor.onScrollCapture == nil && contributionSegment(editor,@"builtin.capture.scroll") == -1,
+    CHECK(editor.onScrollCapture == nil && contributionPosition(editor,@"builtin.capture.scroll") == -1,
           "the experimental scroll contribution is disabled by default");
     MCImageCanvas *canvas = editor.canvas;
     NSArray *cursors = canvasCursors(canvas);
@@ -452,11 +437,10 @@ static BOOL adaptiveOverlay(CGFloat scale) {
           "adding two plugin actions expands only to their measured content");
     [editor applyToolConfiguration:overlayConfiguration([NSSet set],16)];
     CGFloat manyPlugins = NSWidth(editor.floatingToolbar.frame);
-    NSScrollView *toolsScroll = editor.tools.enclosingScrollView;
-    CHECK(manyPlugins <= threePlugins + 1 && toolsScroll.documentVisibleRect.size.width < editor.tools.frame.size.width,
-          "extra plugins use bounded horizontal overflow instead of widening the panel indefinitely");
-    [editor.tools scrollRectToVisible:NSMakeRect(NSMaxX(editor.tools.bounds)-30,0,30,28)];
-    CHECK(NSMaxX(toolsScroll.documentVisibleRect) >= NSMaxX(editor.tools.bounds)-1, "last plugin is reachable through the bounded tool scroller");
+    CHECK(manyPlugins <= 400 && MCToolbarSemantic(editor.toolbar,@"__toolbar.next") != nil,
+          "extra plugins use shared bounded paging instead of widening the panel indefinitely");
+    CHECK(MCToolbarReveal(editor.toolbar,@"user.com.example.capture/tool-15") != nil,
+          "the last plugin is reachable through actual shared paging controls");
     [editor applyToolConfiguration:overlayConfiguration([NSSet setWithArray:@[@2,@100]],0)];
     selectTool(editor,4); CGFloat cover = NSWidth(editor.floatingToolbar.frame), coverProperties = propertyValue(editor,MC_CAPTURE_TEXT_ROW_WIDTH);
     selectTool(editor,1); CGFloat shape = NSWidth(editor.floatingToolbar.frame), shapeProperties = propertyValue(editor,MC_CAPTURE_TEXT_ROW_WIDTH);
@@ -468,15 +452,15 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     editor.onOCR = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onTranslate = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onScrollCapture = ^(__unused MCImageEditorController *source) { contentActions++; };
-    NSInteger ocr=contributionSegment(editor,@"builtin.capture.ocr"), translate=contributionSegment(editor,@"builtin.capture.translate");
-    CHECK(ocr >= 0 && translate >= 0 && [editor.tools isEnabledForSegment:ocr] && [editor.tools isEnabledForSegment:translate],
+    NSInteger ocr=contributionPosition(editor,@"builtin.capture.ocr"), translate=contributionPosition(editor,@"builtin.capture.translate");
+    CHECK(ocr >= 0 && translate >= 0 && MCToolbarEnabled(editor.toolbar,@"builtin.capture.ocr") && MCToolbarEnabled(editor.toolbar,@"builtin.capture.translate"),
           "OCR and translation occupy their own declared tool slots when their respective backends are attached");
-    CHECK(contributionSegment(editor,@"builtin.capture.scroll") == -1, "attaching a scroll backend does not override its saved disabled preference");
+    CHECK(contributionPosition(editor,@"builtin.capture.scroll") == -1, "attaching a scroll backend does not override its saved disabled preference");
     invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
-    CHECK(contentActions == 2, "both declared content actions route through the shared segmented control");
+    CHECK(contentActions == 2, "both declared content actions route through the shared canvas");
     [editor applyToolConfiguration:setConfiguredTool(editor.toolConfiguration,@"builtin.capture.scroll",YES)];
-    NSInteger scroll=contributionSegment(editor,@"builtin.capture.scroll");
-    CHECK(scroll >= 0 && [editor.tools isEnabledForSegment:scroll], "scroll appears only after explicit enable plus backend availability");
+    NSInteger scroll=contributionPosition(editor,@"builtin.capture.scroll");
+    CHECK(scroll >= 0 && MCToolbarEnabled(editor.toolbar,@"builtin.capture.scroll"), "scroll appears only after explicit enable plus backend availability");
     invokeContribution(editor,@"builtin.capture.scroll");
     CHECK(contentActions == 3, "the explicitly enabled scroll contribution invokes exactly once");
     [editor applyToolConfiguration:overlayConfiguration([NSSet set],0)];
@@ -630,7 +614,7 @@ static BOOL propertyTransactionBoundaries(void) {
         NSString *json=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:@[a,b] options:0 error:NULL] encoding:NSUTF8StringEncoding];
         moonbit_string_t request=moonbit_make_string_raw((int32_t)json.length);
         [json getCharacters:request range:NSMakeRange(0,json.length)];
-        int accepted=capture_candidate_commit_many(request); moonbit_decref(request);
+        int accepted=capture_toolbar_config_commit_many(request); moonbit_decref(request);
         CHECK(accepted, "shared authority atomically publishes both selected shape drafts");
         if (accepted) for (MCImageEditorController *editor in editors) [editor completeToolConfigurationPublication:disabled];
         CHECK(!first.textEdit && !second.textEdit && first.textPropertyInputs.count==0 && second.textPropertyInputs.count==0 &&

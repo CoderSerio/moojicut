@@ -153,12 +153,29 @@ fn draw(value : Json) -> Draw raise InputError {
   let integers = [0, -1, -1, -1, 0, 0, 0]
   let mut text = ""
   match kind {
-    "rect" | "text" => {
+    "rect" | "text" | "asset" => {
       let rect = rectangle(fields)
       for i in 0..<4 {
         numbers[i] = rect[i]
       }
-      if kind == "rect" {
+      if kind == "asset" {
+        let id = string(fields, "assetId", 256, None)
+        if id == "" {
+          raise InputError("invalid_frame", "Asset ID is empty")
+        }
+        for c in id.iter() {
+          if !((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '_' ||
+            c == '-' ||
+            c == '.') {
+            raise InputError("invalid_frame", "Invalid asset ID")
+          }
+        }
+        integers[0] = 4
+        text = id
+      } else if kind == "rect" {
         integers[0] = 1
         integers[1] = color(fields, "fill", true)
         integers[2] = color(fields, "stroke", true)

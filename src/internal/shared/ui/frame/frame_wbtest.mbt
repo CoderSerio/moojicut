@@ -146,6 +146,34 @@ test "malformed commands and semantics reject the entire frame without affecting
 }
 
 ///|
+test "asset drawing takes a bounded resource ID with no path syntax" {
+  let asset = {
+    "type": Json("asset"),
+    "assetId": Json("plugin-icon_3"),
+    "x": Json(4.5),
+    "y": Json(2),
+    "width": Json(18),
+    "height": Json(20),
+  }
+  let frame = {
+    "ok": Json(true),
+    "commands": Json::array([Json::object(asset)]),
+  }
+  let handle = open(Json::object(frame).stringify())
+  assert_true(handle > 0)
+  assert_eq(command_value(handle, 0, 0, 0), 4)
+  assert_eq(command_number(handle, 0, 0, 0), 4.5)
+  assert_eq(command_number(handle, 0, 0, 3), 20)
+  for
+    id in ["", "user/icon", "file:icon", "bad\\name", "图标", "a".repeat(257)] {
+    asset["assetId"] = Json(id)
+    assert_eq(open(Json::object(frame).stringify()), 0)
+  }
+  assert_eq(command_text(handle, 0, 0), "plugin-icon_3")
+  assert_eq(close(handle), 1)
+}
+
+///|
 test "frame limits fail closed and handles remain independent and never reused" {
   let empty = "{\"ok\":true,\"commands\":[]}"
   let first = open(empty)

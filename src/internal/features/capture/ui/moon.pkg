@@ -1,5 +1,10 @@
 import {
   "moojicut/core/internal/features/capture/core" @image,
   "moojicut/core/internal/shared/protocol" @protocol,
+  "moojicut/core/internal/shared/ui/icons" @icons,
   "moonbitlang/core/json",
 }
+
+import {
+  "moojicut/core/internal/shared/ui/frame" @frame,
+} for "wbtest"

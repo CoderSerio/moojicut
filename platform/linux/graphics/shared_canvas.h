@@ -22,6 +22,8 @@ GtkWidget *mc_linux_canvas_new(const MCLinuxCanvasCallbacks *callbacks, void *co
  * Zero clears. Re-supplying the already-owned handle is a harmless no-op. */
 gboolean mc_linux_canvas_set_frame(GtkWidget *canvas, int32_t frame);
 void mc_linux_canvas_set_capture(GtkWidget *canvas, gboolean capture);
+void mc_linux_canvas_preserve_focus_on_press(GtkWidget *canvas,
+    gboolean (*preserve)(void *context));
 void mc_linux_canvas_cancel(GtkWidget *canvas);
 /* Logical coordinates; the caller's Cairo transform supplies device scale.
  * Saves/restores context, clips to width/height, and paints the same layers as

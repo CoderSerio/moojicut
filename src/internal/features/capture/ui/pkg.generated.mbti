@@ -26,11 +26,46 @@ pub fn text_property_event(@json.Json, @json.Json, Double, Double, String) -> (I
 
 pub fn text_row_size(@json.Json) -> FixedArray[Double]
 
+pub fn toolbar_cancel(ToolbarState) -> Unit
+
 pub fn toolbar_frame(Double, Double, Double, Double, Double, Double, Double, Double) -> FixedArray[Double]
+
+pub fn toolbar_frame_json(ToolbarState, Bool) -> String
+
+pub fn toolbar_input(ToolbarState, String) -> (Bool, String)
+
+pub fn toolbar_new() -> ToolbarState
+
+pub fn toolbar_size(ToolbarState) -> FixedArray[Double]
+
+pub fn toolbar_sync(ToolbarState, Array[ToolbarItem], Double, Int32) -> Bool
 
 // Errors
 
 // Types and methods
+#derive(Eq)
+pub(all) struct ToolbarItem {
+  id : String
+  title : String
+  tooltip : String
+  icon : String
+  asset_id : String
+  slot : Int32
+  enabled : Bool
+  selected : Bool
+}
+pub fn ToolbarItem::equal(Self, Self) -> Bool
+pub fn ToolbarItem::not_equal(Self, Self) -> Bool
+
+pub struct ToolbarState {
+  mut items : Array[ToolbarItem]
+  mut maximum : Double
+  mut generation : Int32
+  mut page : Int32
+  mut pressed : String
+  mut hovered : String
+  mut focused : String
+}
 
 // Type aliases
 

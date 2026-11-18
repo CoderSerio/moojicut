@@ -539,11 +539,9 @@ static gboolean scroll(GtkWidget *widget, GdkEventScroll *event, gpointer data) 
   if (requested <= 0) return FALSE;
   resize_pin(pin, requested); return TRUE;
 }
-void mc_linux_pin_image_at(GdkPixbuf *image, const GdkRectangle *bounds) {
-  if (!mc_linux_pins_enabled())
-    return;
-  if (!image)
-    return;
+gboolean mc_linux_pin_image_at(GdkPixbuf *image, const GdkRectangle *bounds) {
+  if (!application || !mc_linux_pins_enabled() || !image)
+    return FALSE;
   Pin *pin = g_new0(Pin, 1);
   pin->image = g_object_ref(image);
   pin->scale = pin->opacity = 1;
@@ -573,6 +571,10 @@ void mc_linux_pin_image_at(GdkPixbuf *image, const GdkRectangle *bounds) {
   g_signal_connect(pin->window, "delete-event", G_CALLBACK(delete_request), pin);
   pins = g_slist_prepend(pins, pin);
   gtk_widget_realize(pin->window);
+  if (!gtk_widget_get_window(pin->window)) {
+    gtk_widget_destroy(pin->window);
+    return FALSE;
+  }
   if (bounds) {
     pin->scale = (double)MAX(1, bounds->width) / gdk_pixbuf_get_width(image);
     gtk_widget_set_size_request(pin->canvas, MAX(1, bounds->width), MAX(1, bounds->height));
@@ -585,6 +587,7 @@ void mc_linux_pin_image_at(GdkPixbuf *image, const GdkRectangle *bounds) {
   if (bounds)
     gtk_window_move(GTK_WINDOW(pin->window), bounds->x, bounds->y);
   gtk_window_present(GTK_WINDOW(pin->window));
+  return TRUE;
 }
 void mc_linux_pin_image(GdkPixbuf *image) {
   mc_linux_pin_image_at(image, NULL);

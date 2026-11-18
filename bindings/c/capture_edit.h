@@ -71,6 +71,13 @@ int32_t capture_text_prepare(int32_t session, int32_t edit, int32_t version, int
 double capture_text_measured_height(int32_t session, int32_t edit, int32_t version, double measured_height);
 int32_t capture_text_cancel(int32_t session, int32_t edit, int32_t version);
 moonbit_string_t capture_candidate_document(int32_t candidate);
+/* Read-only candidate renderer for hosts without a JSON parser. Annotation
+ * fields and viewport keys match image_session_value/viewpoint_value exactly.
+ * Borrowed candidate stays valid only until close, commit or next preparation. */
+int32_t capture_candidate_count(int32_t candidate);
+double capture_candidate_value(int32_t candidate, int32_t index, int32_t field);
+moonbit_string_t capture_candidate_text(int32_t candidate, int32_t index);
+double capture_candidate_viewport_value(int32_t candidate, int32_t field);
 int32_t capture_candidate_ready(int32_t session, int32_t candidate);
 int32_t capture_candidate_commit(int32_t session, int32_t candidate);
 int32_t capture_candidate_close(int32_t candidate);

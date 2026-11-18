@@ -43,6 +43,13 @@ bool mc_canvas_draw_layer(int32_t frame, int32_t layer, const MCCanvasPainter *p
       };
       painter->text(painter->context, &text);
       moonbit_decref(value);
+    } else if (kind == MC_UI_COMMAND_ASSET) {
+      if (painter->asset) {
+        moonbit_string_t key = ui_frame_command_text(frame, layer, index);
+        painter->asset(painter->context, command_rect(frame, layer, index),
+                       (const uint16_t *)key, (size_t)Moonbit_array_length(key));
+        moonbit_decref(key);
+      }
     } else {
       // Only possible after illegal reentrant closure of the immutable frame.
       return false;

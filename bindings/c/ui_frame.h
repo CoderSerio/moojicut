@@ -22,7 +22,7 @@ extern "C" {
  * before reading. Optional absent fill/stroke=-1. Close returns 1 once, else 0. */
 enum { MC_UI_FRAME_ABI_VERSION = 1 };
 enum { MC_UI_LAYER_COMMANDS = 0, MC_UI_LAYER_OVERLAY = 1 };
-enum { MC_UI_COMMAND_RECT = 1, MC_UI_COMMAND_LINE = 2, MC_UI_COMMAND_TEXT = 3 };
+enum { MC_UI_COMMAND_RECT = 1, MC_UI_COMMAND_LINE = 2, MC_UI_COMMAND_TEXT = 3, MC_UI_COMMAND_ASSET = 4 };
 enum { MC_UI_CURSOR_DEFAULT = 0, MC_UI_CURSOR_RESIZE_HORIZONTAL = 1,
        MC_UI_CURSOR_POINTER = 2, MC_UI_CURSOR_CROSSHAIR = 3 };
 enum { MC_UI_FRAME_CURSOR = 0, MC_UI_FRAME_HAS_VIDEO = 1 };
@@ -52,6 +52,8 @@ double ui_frame_video_rect(int32_t handle, int32_t field);
 int32_t ui_frame_command_count(int32_t handle, int32_t layer);
 int32_t ui_frame_command_value(int32_t handle, int32_t layer, int32_t index, int32_t field);
 double ui_frame_command_number(int32_t handle, int32_t layer, int32_t index, int32_t field);
+/* For an asset command the text getter returns an opaque resource key,
+ * never a path. Only a caller-supplied resource table may resolve it. */
 moonbit_string_t ui_frame_command_text(int32_t handle, int32_t layer, int32_t index);
 int32_t ui_frame_semantic_count(int32_t handle);
 int32_t ui_frame_semantic_value(int32_t handle, int32_t index, int32_t field);

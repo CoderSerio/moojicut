@@ -8,9 +8,17 @@ pub fn candidate_commit(Int32, Int32) -> Int32
 
 pub fn candidate_commit_many(String) -> Int32
 
+pub fn candidate_count(Int32) -> Int32
+
 pub fn candidate_document(Int32) -> String
 
 pub fn candidate_ready(Int32, Int32) -> Int32
+
+pub fn candidate_text(Int32, Int32) -> String
+
+pub fn candidate_value(Int32, Int32, Int32) -> Double
+
+pub fn candidate_viewport_value(Int32, Int32) -> Double
 
 pub fn capture_ui_event(String) -> String
 
@@ -106,9 +114,51 @@ pub fn text_ui_event(Int32, Int32, Int32, String, Double, Double) -> Int32
 
 pub fn text_value(Int32, Int32, Int32) -> Double
 
+pub fn toolbar_ack(Int32, Int32, Int32, String) -> Int32
+
+pub fn toolbar_activate(Int32, Int32, String) -> Int32
+
+pub fn toolbar_close(Int32) -> Int32
+
+pub fn toolbar_config_close(Int32) -> Int32
+
+pub fn toolbar_config_commit_many(String) -> Int32
+
+pub fn toolbar_config_prepare(Int32, Array[CaptureToolbarContribution]) -> Int32
+
+pub fn toolbar_config_ready(Int32, Int32) -> Int32
+
+pub fn toolbar_context(Int32, String) -> Int32
+
+pub fn toolbar_event(Int32, Int32, String) -> Int32
+
+pub fn toolbar_frame(Int32, Double, Int32) -> String
+
+pub fn toolbar_open(Int32, Int32, Array[CaptureToolbarContribution]) -> Int32
+
+pub fn toolbar_text(Int32, Int32) -> String
+
+pub fn toolbar_tool_enabled(Int32, Int32) -> Int32
+
+pub fn toolbar_value(Int32, Int32) -> Double
+
 // Errors
 
 // Types and methods
+pub(all) struct CaptureToolbarContribution {
+  id : String
+  title : String
+  icon : String
+  command : String
+  payload : String
+  reason : String
+  slot : Int32
+  kind : Int32
+  interaction : Int32
+  capability : Int32
+  enabled : Bool
+  available : Bool
+}
 
 // Type aliases
 
