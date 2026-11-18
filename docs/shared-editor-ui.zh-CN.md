@@ -2,7 +2,7 @@
 
 2026-11-17 目录决策更新：本文继续维护共享 UI 与媒体接口细节；最终目录、插件生命周期和 CLI 优先策略统一见[架构与实施规划](architecture.md)。截图 MoonBit 模块与录屏核心现已完成第一批迁移；下文保留尚未迁移的原生路径，不能据此继续扩展 components 或 plugins/feature 根目录。
 
-状态：2026-11-18。三端正式视频编辑入口已经接入同一 MoonBit 根会话与 UI；macOS 本地回归，以及 Windows／Ubuntu 22 的媒体、实际编辑窗口和发行包检查通过，Ubuntu 24 的同一包运行检查通过。截图文字属性已接入下述共享字段协议，B2a 的 macOS 完整本地回归与 `37c4b8f` 的 [Windows／Linux CI](https://github.com/CoderSerio/moojicut/actions/runs/44232272111) 全部通过。B2b 将其扩展到全部内置标注属性并删除三端旧控件，`4de2741` 的[目标 CI](https://github.com/CoderSerio/moojicut/actions/runs/44237977671) 与 macOS 本地完整回归均已通过；不能因此将完整工具栏/选区 UI、真实输入法体验或插件 v2 记为完成。当前多片段、音轨与后续字幕/效果范围见[视频编辑器推进计划](video-editor-roadmap.zh-CN.md)。
+状态：2026-11-18。三端正式视频编辑入口已经接入同一 MoonBit 根会话与 UI；macOS 本地回归，以及 Windows／Ubuntu 22 的媒体、实际编辑窗口和发行包检查通过，Ubuntu 24 的同一包运行检查通过。截图文字属性已接入下述共享字段协议，B2a 的 macOS 完整本地回归与 `37c4b8f` 的 [Windows／Linux CI](https://github.com/CoderSerio/moojicut/actions/runs/44232272111) 全部通过。B2b 将其扩展到全部内置标注属性并删除三端旧控件，`4de2741` 的[目标 CI](https://github.com/CoderSerio/moojicut/actions/runs/44237977671) 与 macOS 本地完整回归均已通过；B2c 将截图主工具栏也接到同一共享画布。Windows 和 Ubuntu 22 的构建、运行及打包通过，Ubuntu 24 同包检查 8 项通过。[最终兼容 CI](https://github.com/CoderSerio/moojicut/actions/runs/44249239807)完整共享选区 UI、真实输入法体验和插件 v2 待验。当前多片段、音轨与后续字幕/效果范围见[视频编辑器推进计划](video-editor-roadmap.zh-CN.md)。
 
 ## 一套复杂组件实现
 
