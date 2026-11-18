@@ -9,6 +9,8 @@
 #include "platform/windows/graphics/text_input.h"
 #include <commctrl.h>
 #include <imm.h>
+/* Own the SDK's dynamic-annotation GUID definitions in this translation unit. */
+#include <initguid.h>
 #include <oleacc.h>
 #include <math.h>
 #include <stdlib.h>

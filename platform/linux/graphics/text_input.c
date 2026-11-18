@@ -426,7 +426,9 @@ gboolean mc_linux_text_inputs_history(MCLinuxTextInputs *g, GtkWidget *view, gbo
     Field *f = p->data; if (f->view != view) continue;
     field_ref(f); gboolean ok = !f->composing && flush_field(f);
     if (ok && !f->dead) ok = emit(f, redo ? MC_UI_TEXT_REDO : MC_UI_TEXT_UNDO, 0, 0, NULL, 0, 0, 0);
-    if (!f->dead) sync_native(f); field_unref(f); return ok;
+    if (!f->dead) sync_native(f);
+    field_unref(f);
+    return ok;
   }
   return FALSE;
 }
