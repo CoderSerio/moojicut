@@ -55,11 +55,17 @@ static void draw_rectangle(void *context, MCCanvasRect rect, double radius,
                            int32_t fill, int32_t stroke, double width) {
   Paint *paint = context;
   RECT r = pixel_rect(rect, paint);
+  int diameter = max(0, scaled(2 * radius, paint->scale));
+  // Rectangle with NULL_PEN drops a pixel on each axis, including 1px glyphs.
+  if (!diameter && fill >= 0 && stroke < 0) {
+    SetDCBrushColor(paint->dc, rgb(fill));
+    FillRect(paint->dc, &r, (HBRUSH)GetStockObject(DC_BRUSH));
+    return;
+  }
   HBRUSH brush = fill >= 0 ? CreateSolidBrush(rgb(fill)) : (HBRUSH)GetStockObject(NULL_BRUSH);
   HPEN pen = stroke >= 0 ? CreatePen(PS_SOLID, max(1, scaled(width, paint->scale)), rgb(stroke)) : (HPEN)GetStockObject(NULL_PEN);
   if (!brush || !pen) { if (fill >= 0 && brush) DeleteObject(brush); if (stroke >= 0 && pen) DeleteObject(pen); return; }
   HGDIOBJ old_brush = SelectObject(paint->dc, brush), old_pen = SelectObject(paint->dc, pen);
-  int diameter = max(0, scaled(2 * radius, paint->scale));
   if (diameter) RoundRect(paint->dc, r.left, r.top, r.right, r.bottom, diameter, diameter);
   else Rectangle(paint->dc, r.left, r.top, r.right, r.bottom);
   SelectObject(paint->dc, old_pen); SelectObject(paint->dc, old_brush);
@@ -415,7 +421,7 @@ HWND mc_win_canvas_create(HWND parent, HINSTANCE instance, int identifier,
   if (!RegisterClassExW(&klass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return NULL;
   Canvas *canvas = calloc(1, sizeof(*canvas)); if (!canvas) return NULL;
   canvas->references = 1; canvas->callbacks = *callbacks; canvas->context = context;
-  HWND window = CreateWindowExW(0, canvas_class, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+  HWND window = CreateWindowExW(0, canvas_class, L"", WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE | WS_TABSTOP,
       0, 0, 1, 1, parent, (HMENU)(INT_PTR)identifier, instance, canvas);
   /* The shared component defaults to dark. Deliver the actual system setting
    * after creation, keeping the creator lease through this reentrant callback. */

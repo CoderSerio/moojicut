@@ -79,6 +79,7 @@ fn editable_field(value : Json) -> Editable raise InputError {
       ["regular", "medium", "bold", "semibold"],
       "regular",
     ),
+    color(fields, "background", true),
   ]
   let selection = object(fields.get("selection").unwrap_or(Json::null()))
   let kind = string(selection, "kind", 16, None)

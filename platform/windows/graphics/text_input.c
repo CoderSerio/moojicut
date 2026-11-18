@@ -25,6 +25,8 @@ struct Field {
   HFONT font;
   wchar_t *id, *raw;
   int refs, token, version, anchor, focus, marked_start, marked_end, color;
+  int background;
+  RECT clip;
   int composing_start, suppress;
   BOOL composing, known, directed, multiline, seen, dead, focused, pending_surrogate, continuing_ime;
   double font_size, opacity; int font_weight, line_height;
@@ -211,6 +213,22 @@ static BOOL composition_snapshot(Field *f, const wchar_t *confirmed, const wchar
   if (!f->dead) action(f, MC_TEXT_INPUT_STATE);
   return accepted;
 }
+static COLORREF field_rgb(int color) {
+  return RGB((color >> 16) & 255, (color >> 8) & 255, color & 255);
+}
+static void paint_field_padding(HWND window, int background) {
+  RECT bounds, client;
+  if (!GetWindowRect(window, &bounds) || !GetClientRect(window, &client)) return;
+  MapWindowPoints(window, NULL, (POINT *)&client, 2);
+  OffsetRect(&client, -bounds.left, -bounds.top);
+  OffsetRect(&bounds, -bounds.left, -bounds.top);
+  HDC dc = GetDCEx(window, NULL, DCX_WINDOW | DCX_CACHE | DCX_CLIPSIBLINGS);
+  if (!dc) return;
+  ExcludeClipRect(dc, client.left, client.top, client.right, client.bottom);
+  SetDCBrushColor(dc, field_rgb(background));
+  FillRect(dc, &bounds, (HBRUSH)GetStockObject(DC_BRUSH));
+  ReleaseDC(window, dc);
+}
 static LRESULT CALLBACK field_proc(HWND window, UINT message, WPARAM wp, LPARAM lp,
                                     UINT_PTR identifier, DWORD_PTR data) {
   Field *f = (Field *)data; MCWinTextInputs *g = f->owner;
@@ -219,6 +237,9 @@ static LRESULT CALLBACK field_proc(HWND window, UINT message, WPARAM wp, LPARAM 
   LRESULT result = 0; BOOL handled = FALSE;
   if (message == WM_NCDESTROY) {
     f->window = NULL; f->dead = TRUE; RemoveWindowSubclass(window, field_proc, 1);
+  } else if (message == WM_NCPAINT && f->background >= 0) {
+    paint_field_padding(window, f->background);
+    handled = TRUE;
   } else if (!f->multiline && f->line_height > 0 && message == WM_NCCALCSIZE && lp) {
     /* EM_SETRECT applies only to multiline EDIT. Center a single-line native
      * client using the actual selected font, retaining the complete HWND hit
@@ -312,12 +333,21 @@ static LRESULT CALLBACK parent_proc(HWND window, UINT message, WPARAM wp, LPARAM
                                      UINT_PTR identifier, DWORD_PTR data) {
   MCWinTextInputs *g = (MCWinTextInputs *)data; (void)identifier;
   g->refs++; LRESULT result = 0; BOOL handled = FALSE;
-  Field *f = message == WM_COMMAND || message == WM_CTLCOLOREDIT ? find_window(g, (HWND)lp) : NULL;
+  Field *f = message == WM_COMMAND || message == WM_CTLCOLOREDIT || message == WM_CTLCOLORSTATIC
+      ? find_window(g, (HWND)lp) : NULL;
   if (f && message == WM_COMMAND && HIWORD(wp) == EN_CHANGE) { flush_field(f); handled = TRUE; }
-  if (f && message == WM_CTLCOLOREDIT) {
-    SetTextColor((HDC)wp, RGB((f->color >> 16) & 255, (f->color >> 8) & 255, f->color & 255));
-    SetBkMode((HDC)wp, TRANSPARENT);
-    HBRUSH brush = g->callbacks.background ? g->callbacks.background(g->context, f->window, (HDC)wp) : NULL;
+  if (f && (message == WM_CTLCOLOREDIT || (message == WM_CTLCOLORSTATIC && f->background >= 0))) {
+    HDC dc = (HDC)wp;
+    SetTextColor(dc, field_rgb(f->color));
+    SetBkMode(dc, TRANSPARENT);
+    HBRUSH brush = NULL;
+    if (f->background >= 0) {
+      SetBkColor(dc, field_rgb(f->background));
+      SetDCBrushColor(dc, field_rgb(f->background));
+      brush = (HBRUSH)GetStockObject(DC_BRUSH);
+    } else if (g->callbacks.background) {
+      brush = g->callbacks.background(g->context, f->window, dc);
+    }
     result = (LRESULT)(brush ? brush : GetStockObject(HOLLOW_BRUSH)); handled = TRUE;
   }
   if (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK) {
@@ -388,7 +418,9 @@ BOOL mc_win_text_inputs_set_frame(MCWinTextInputs *g, int32_t frame, int x, int 
       if (!f) { free(id); free(raw); ok = FALSE; break; }
       f->owner = g; f->id = id; id = NULL; f->refs = 1; f->token = token;
       f->multiline = ui_frame_field_value(frame, i, MC_UI_FIELD_MULTILINE) == 1;
-      DWORD style = WS_CHILD | WS_TABSTOP | (f->multiline ? ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL : ES_AUTOHSCROLL);
+      f->background = -1;
+      DWORD style = WS_CHILD | WS_CLIPSIBLINGS | WS_TABSTOP |
+          (f->multiline ? ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL : ES_AUTOHSCROLL);
       f->window = CreateWindowExW(0, L"EDIT", L"", style, 0, 0, 1, 1, g->parent, NULL, g->instance, NULL);
       if (!f->window || !SetWindowSubclass(f->window, field_proc, 1, (DWORD_PTR)f)) {
         if (f->window) DestroyWindow(f->window); field_release(f); free(id); free(raw); ok = FALSE; break;
@@ -422,7 +454,10 @@ BOOL mc_win_text_inputs_set_frame(MCWinTextInputs *g, int32_t frame, int x, int 
       if (f->known && (needs_text || created || native_anchor != min(f->anchor, f->focus) || native_focus != max(f->anchor, f->focus)))
         SendMessageW(f->window, EM_SETSEL, (WPARAM)native_offset(raw, f->anchor), (LPARAM)native_offset(raw, f->focus));
     }
-    f->color = ui_frame_field_value(frame, i, MC_UI_FIELD_COLOR);
+    int color = ui_frame_field_value(frame, i, MC_UI_FIELD_COLOR);
+    int background = ui_frame_field_value(frame, i, MC_UI_FIELD_BACKGROUND);
+    BOOL appearance_changed = color != f->color || background != f->background;
+    f->color = color; f->background = background;
     int px = x + (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_X) * scale);
     int py = y + (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_Y) * scale);
     int width = max(1, (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_WIDTH) * scale));
@@ -431,13 +466,14 @@ BOOL mc_win_text_inputs_set_frame(MCWinTextInputs *g, int32_t frame, int x, int 
     int shared_weight = ui_frame_field_value(frame, i, MC_UI_FIELD_WEIGHT);
     int weight = shared_weight == MC_UI_WEIGHT_SEMIBOLD ? FW_SEMIBOLD : shared_weight == MC_UI_WEIGHT_BOLD ? FW_BOLD :
       shared_weight == MC_UI_WEIGHT_MEDIUM ? FW_MEDIUM : FW_NORMAL;
-    if (!f->font || size != f->font_size || weight != f->font_weight) {
+    BOOL font_changed = !f->font || size != f->font_size || weight != f->font_weight;
+    if (font_changed) {
       HFONT font = CreateFontW(-(int)lround(size), 0, 0, 0, weight,
           FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
           ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
       if (font) { SendMessageW(f->window, WM_SETFONT, (WPARAM)font, TRUE); if (f->font) DeleteObject(f->font); f->font = font; f->font_size = size; f->font_weight = weight; }
     }
-    if (!f->multiline && f->font) {
+    if (!f->multiline && font_changed && f->font) {
       HDC dc = GetDC(f->window);
       if (dc) {
         HGDIOBJ previous = SelectObject(dc, f->font); TEXTMETRICW metrics = {0};
@@ -445,27 +481,42 @@ BOOL mc_win_text_inputs_set_frame(MCWinTextInputs *g, int32_t frame, int x, int 
         SelectObject(dc, previous); ReleaseDC(f->window, dc);
       }
     }
-    SetWindowPos(f->window, NULL, px, py, width, height, SWP_NOACTIVATE | SWP_NOZORDER |
-        (f->multiline ? 0 : SWP_FRAMECHANGED));
+    RECT desired = {px, py, px + width, py + height}, existing;
+    BOOL has_bounds = GetWindowRect(f->window, &existing);
+    if (has_bounds) MapWindowPoints(NULL, g->parent, (POINT *)&existing, 2);
+    BOOL recenter = !f->multiline && font_changed;
+    if (!has_bounds || !EqualRect(&desired, &existing) || recenter)
+      SetWindowPos(f->window, NULL, px, py, width, height, SWP_NOACTIVATE | SWP_NOZORDER |
+          (recenter ? SWP_FRAMECHANGED : 0));
     int clip_x = x + (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_X) * scale) - px;
     int clip_y = y + (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_Y) * scale) - py;
     int clip_w = (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_WIDTH) * scale);
     int clip_h = (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_HEIGHT) * scale);
-    HRGN clip = CreateRectRgn(max(0, clip_x), max(0, clip_y), min(width, clip_x + clip_w), min(height, clip_y + clip_h));
-    SetWindowRgn(f->window, clip, TRUE);
+    RECT clipped = {max(0, clip_x), max(0, clip_y), min(width, clip_x + clip_w), min(height, clip_y + clip_h)};
+    if (created || background < 0 || !EqualRect(&clipped, &f->clip)) {
+      HRGN clip = CreateRectRgnIndirect(&clipped);
+      if (clip) {
+        if (SetWindowRgn(f->window, clip, TRUE)) f->clip = clipped;
+        else DeleteObject(clip);
+      }
+    }
     f->opacity = ui_frame_field_number(frame, i, MC_UI_FIELD_OPACITY);
     LONG_PTR extended = GetWindowLongPtrW(f->window, GWL_EXSTYLE);
     if (f->opacity < 1) {
       if (!(extended & WS_EX_LAYERED)) SetWindowLongPtrW(f->window, GWL_EXSTYLE, extended | WS_EX_LAYERED);
       SetLayeredWindowAttributes(f->window, 0, (BYTE)lround(f->opacity * 255), LWA_ALPHA);
     } else if (extended & WS_EX_LAYERED) SetWindowLongPtrW(f->window, GWL_EXSTYLE, extended & ~WS_EX_LAYERED);
-    SendMessageW(f->window, EM_SETREADONLY, ui_frame_field_value(frame, i, MC_UI_FIELD_READ_ONLY) == 1, 0);
-    EnableWindow(f->window, ui_frame_field_value(frame, i, MC_UI_FIELD_ENABLED) == 1);
+    LONG_PTR style = GetWindowLongPtrW(f->window, GWL_STYLE);
+    BOOL read_only = ui_frame_field_value(frame, i, MC_UI_FIELD_READ_ONLY) == 1;
+    if (((style & ES_READONLY) != 0) != read_only) SendMessageW(f->window, EM_SETREADONLY, read_only, 0);
+    BOOL enabled = ui_frame_field_value(frame, i, MC_UI_FIELD_ENABLED) == 1;
+    if (IsWindowEnabled(f->window) != enabled) EnableWindow(f->window, enabled);
     if (g->accessibility) {
       wchar_t *label = copy_string(ui_frame_field_text(frame, i, MC_UI_FIELD_LABEL));
       if (label) { IAccPropServices_SetHwndPropStr(g->accessibility, f->window, (DWORD)OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_NAME, label); free(label); }
     }
-    ShowWindow(f->window, SW_SHOWNOACTIVATE);
+    if (!(style & WS_VISIBLE)) ShowWindow(f->window, SW_SHOWNOACTIVATE);
+    if (appearance_changed) RedrawWindow(f->window, NULL, NULL, RDW_INVALIDATE | RDW_FRAME);
     if (focus_changed && !f->dead && IsWindowEnabled(f->window) && GetFocus() != f->window && !f->composing && !f->continuing_ime) SetFocus(f->window);
     f->suppress--; field_release(f);
   }

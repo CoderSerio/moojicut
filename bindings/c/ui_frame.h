@@ -63,13 +63,15 @@ moonbit_string_t ui_frame_semantic_text(int32_t handle, int32_t index, int32_t f
  * for these IDs, which cannot also occur in semantics. Unknown selection has
  * placeholder offsets; never overwrite a real native caret with them. Marked
  * endpoints are -1 when not composing. All ranges are UTF-16 and end-exclusive.
- * clip defaults to the field rect. Getters follow the same invalid-value rules. */
+ * clip defaults to the field rect. Background is optional (-1 when absent).
+ * Getters follow the same invalid-value rules. */
 enum { MC_UI_FIELD_TOKEN = 0, MC_UI_FIELD_VERSION = 1, MC_UI_FIELD_ENABLED = 2,
        MC_UI_FIELD_READ_ONLY = 3, MC_UI_FIELD_FOCUSED = 4, MC_UI_FIELD_MULTILINE = 5,
        MC_UI_FIELD_SELECTION_KNOWN = 6, MC_UI_FIELD_DIRECTION_KNOWN = 7,
        MC_UI_FIELD_ANCHOR = 8, MC_UI_FIELD_FOCUS = 9, MC_UI_FIELD_MARKED_START = 10,
        MC_UI_FIELD_MARKED_END = 11, MC_UI_FIELD_COLOR = 12,
-       MC_UI_FIELD_CAN_UNDO = 13, MC_UI_FIELD_CAN_REDO = 14, MC_UI_FIELD_WEIGHT = 15 };
+       MC_UI_FIELD_CAN_UNDO = 13, MC_UI_FIELD_CAN_REDO = 14, MC_UI_FIELD_WEIGHT = 15,
+       MC_UI_FIELD_BACKGROUND = 16 };
 enum { MC_UI_FIELD_X = 0, MC_UI_FIELD_Y = 1, MC_UI_FIELD_WIDTH = 2, MC_UI_FIELD_HEIGHT = 3,
        MC_UI_FIELD_CLIP_X = 4, MC_UI_FIELD_CLIP_Y = 5, MC_UI_FIELD_CLIP_WIDTH = 6,
        MC_UI_FIELD_CLIP_HEIGHT = 7, MC_UI_FIELD_FONT_SIZE = 8, MC_UI_FIELD_OPACITY = 9 };

@@ -56,6 +56,7 @@ typedef struct {
   BOOL text_syncing, text_finishing, color_picker;
   int32_t toolbar_session, toolbar_frame, toolbar_generation, prepared_toolbar;
   BOOL toolbar_dispatching, toolbar_syncing, toolbar_dark;
+  int32_t toolbar_surface;
   MCCaptureHost host;
   HFONT font, text_font;
   HBRUSH text_background;
@@ -77,7 +78,7 @@ static void layout_editor(HWND window);
 static BOOL finish_text(BOOL cancel);
 static void style_text(void);
 static void sync_text_preview(void);
-static void refresh_text_frames(int x, int y, double scale);
+static BOOL refresh_text_frames(int x, int y, double scale);
 static BOOL ensure_property_edit(void);
 static int property_tool(void);
 static BOOL text_field_event(void *context, HWND field, moonbit_string_t event);
@@ -526,6 +527,12 @@ static void preserve_text(int index) {
   image_session_set_text(capture.session, value);
   moonbit_decref(value);
 }
+static BOOL move_canvas(HWND canvas, int x, int y, int width, int height) {
+  RECT previous, bounds = {x, y, x + width, y + height};
+  if (!GetWindowRect(canvas, &previous)) return FALSE;
+  MapWindowPoints(NULL, GetParent(canvas), (POINT *)&previous, 2);
+  return !EqualRect(&previous, &bounds) && MoveWindow(canvas, x, y, width, height, FALSE);
+}
 static void layout_editor(HWND window) {
   if (!window || capture.toolbar_syncing) return;
   capture.toolbar_syncing = TRUE;
@@ -534,6 +541,9 @@ static void layout_editor(HWND window) {
   sync_properties();
   double scale = (double)GetDpiForWindow(window) / 96;
   int32_t surface = capture_toolbar_surface_color(capture.toolbar_dark);
+  BOOL repaint_hud = surface != capture.toolbar_surface;
+  capture.toolbar_surface = surface;
+  RECT previous = capture.toolbar;
   mc_win_canvas_set_background(capture.toolbar_view, surface);
   mc_win_canvas_set_background(capture.text_properties, surface);
   if (capture.toolbar_session && toolbar_context()) {
@@ -550,18 +560,25 @@ static void layout_editor(HWND window) {
         fmax(width,properties)+8, height+8+(properties>0 ? property_height+2 : 0));
     int x = rounded(frame[0]*scale), y = rounded(frame[1]*scale);
     SetRect(&capture.toolbar,x,y,x+rounded(frame[2]*scale),y+rounded(frame[3]*scale)); moonbit_decref(frame);
-    MoveWindow(capture.toolbar_view,x+dpi_px(window,4),y+dpi_px(window,4),rounded(width*scale),rounded(height*scale),TRUE);
+    repaint_hud |= move_canvas(capture.toolbar_view, x + dpi_px(window, 4), y + dpi_px(window, 4),
+        rounded(width * scale), rounded(height * scale));
     if (frame_id) {
       if (mc_win_canvas_set_frame(capture.toolbar_view,frame_id)) {
         capture.toolbar_frame=frame_id;
         capture.toolbar_generation=(int32_t)capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_GENERATION);
       } else ui_frame_close(frame_id);
     }
-    refresh_text_frames(x+dpi_px(window,4),y+rounded((height+6)*scale),scale);
+    repaint_hud |= refresh_text_frames(x + dpi_px(window, 4), y + rounded((height + 6) * scale), scale);
   }
   capture.canvas=capture.viewport; capture.zoom=1;
+  if (repaint_hud || !EqualRect(&previous, &capture.toolbar)) {
+    // Publish the resized card, child frames and native fields in the same paint pass.
+    RECT damage;
+    UnionRect(&damage, &previous, &capture.toolbar);
+    InflateRect(&damage, dpi_px(window, 8), dpi_px(window, 8));
+    RedrawWindow(window, &damage, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+  }
   capture.toolbar_syncing=FALSE;
-  InvalidateRect(window,NULL,FALSE);
 }
 /* Use the export font and wrapping rules for all live/committed text geometry.
  * Grow height on style/reflow so increasing the font cannot silently hide a line. */
@@ -673,11 +690,13 @@ static int32_t open_text_frame(int surface, double width, double height, double 
   moonbit_string_t json = capture_text_frame(capture.session, capture.text_edit, surface, width, height, scale, capture.toolbar_dark);
   int32_t frame = ui_frame_open(json); moonbit_decref(json); return frame;
 }
-static void refresh_text_frames(int x, int y, double scale) {
-  if (capture.text_syncing) return;
+static BOOL refresh_text_frames(int x, int y, double scale) {
+  if (capture.text_syncing) return FALSE;
   capture.text_syncing = TRUE;
+  BOOL repaint = FALSE;
+  BOOL row_visible = (GetWindowLongPtrW(capture.text_properties, GWL_STYLE) & WS_VISIBLE) != 0;
   if (!capture.text_edit) {
-    if (capture.text_properties) ShowWindow(capture.text_properties, SW_HIDE);
+    if (row_visible) { ShowWindow(capture.text_properties, SW_HIDE); repaint = TRUE; }
     mc_win_text_inputs_set_frame(capture.property_inputs, 0, 0, 0, 1);
     mc_win_text_inputs_set_frame(capture.body_inputs, 0, 0, 0, 1); capture.text = NULL;
   } else {
@@ -685,10 +704,9 @@ static void refresh_text_frames(int x, int y, double scale) {
     double width = capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH);
     double height = capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_HEIGHT);
     int32_t row = open_text_frame(MC_CAPTURE_TEXT_PROPERTIES, width, height, 1);
-    if (row) {
-      MoveWindow(capture.text_properties, x, y, rounded(width * scale), rounded(height * scale), TRUE);
+    if (row && mc_win_canvas_set_frame(capture.text_properties, row)) {
+      repaint |= move_canvas(capture.text_properties, x, y, rounded(width * scale), rounded(height * scale));
       mc_win_text_inputs_set_frame(capture.property_inputs, row, x, y, scale);
-      ShowWindow(capture.text_properties, SW_SHOWNOACTIVATE);
       /* Native fields are siblings so their existing MSAA provider is visible
        * independently of the virtual canvas semantic children. */
       for (int i = 0; i < ui_frame_field_count(row); i++) {
@@ -697,12 +715,19 @@ static void refresh_text_frames(int x, int y, double scale) {
         if (length > 0 && length < (int)ARRAYSIZE(key)) {
           memcpy(key, id, (size_t)length * sizeof(wchar_t));
           HWND field = mc_win_text_inputs_field(capture.property_inputs, key);
-          if (field) BringWindowToTop(field);
+          if (field) {
+            for (HWND above = GetWindow(field, GW_HWNDPREV); above; above = GetWindow(above, GW_HWNDPREV)) {
+              if (above != capture.text_properties) continue;
+              SetWindowPos(field, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+              repaint = TRUE;
+              break;
+            }
+          }
         }
         moonbit_decref(id);
       }
-      if (!mc_win_canvas_set_frame(capture.text_properties, row)) ui_frame_close(row);
-    }
+      if (!row_visible) { ShowWindow(capture.text_properties, SW_SHOWNOACTIVATE); repaint = TRUE; }
+    } else if (row) ui_frame_close(row);
     if (property_tool() == TOOL_TEXT && capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) != MC_CAPTURE_TEXT_DEFAULTS) {
       double measured = measure_text();
       double height_px = capture_text_measured_height(capture.session, capture.text_edit, text_version(), measured);
@@ -714,6 +739,7 @@ static void refresh_text_frames(int x, int y, double scale) {
     } else { mc_win_text_inputs_set_frame(capture.body_inputs, 0, 0, 0, 1); capture.text = NULL; }
   }
   capture.text_syncing = FALSE;
+  return repaint;
 }
 static BOOL text_field_event(void *context, HWND field, moonbit_string_t event) {
   (void)context; (void)field;
@@ -779,7 +805,13 @@ static void text_property_event(void *context, HWND window, const MCCanvasInput 
       if (chosen) apply_color_result(session, edit, version, picker.rgbResult);
     }
   }
-  if (capture.editor == owner && capture.session == session) { changed(); if (capture.text) style_text(); }
+  if (capture.editor == owner && capture.session == session) {
+    // Pointer feedback changes only the HUD. Repainting the entire desktop here
+    // exposes the unfurnished card and makes the selection border flash.
+    if (event->type == MC_UI_INPUT_POINTER_MOVE || event->type == MC_UI_INPUT_POINTER_DOWN ||
+        event->type == MC_UI_INPUT_CANCEL) layout_editor(owner);
+    else { changed(); if (capture.text) style_text(); }
+  }
 }
 static int hit_text(POINT p) {
   // Pixel centers preserve Win32's right/bottom-exclusive integer rectangle.
@@ -1755,6 +1787,57 @@ done:
 #undef TOOLBAR_CHECK
   return ok;
 }
+static BOOL shown_property_pixels(Surface *pixels, int32_t frame, int32_t surface, BOOL dark) {
+  RECT row, field;
+  HWND stroke = mc_win_text_inputs_field(capture.property_inputs, L"style.stroke");
+  int swatch = smoke_semantic(frame, L"style.color");
+  int increase = smoke_semantic(frame, L"style.stroke.increase");
+  if (!stroke || swatch < 0 || increase < 0 || !IsWindowVisible(capture.text_properties) ||
+      !GetWindowRect(capture.text_properties, &row) || !GetClientRect(stroke, &field) ||
+      row.right - row.left > pixels->width || row.bottom - row.top > pixels->height) return FALSE;
+  MapWindowPoints(stroke, NULL, (POINT *)&field, 2);
+  double scale = GetDpiForWindow(capture.text_properties) / 96.0;
+  POINT color = {
+      rounded((ui_frame_semantic_number(frame, swatch, MC_UI_SEM_X) + ui_frame_semantic_number(frame, swatch, MC_UI_SEM_WIDTH) / 2) * scale),
+      rounded((ui_frame_semantic_number(frame, swatch, MC_UI_SEM_Y) + ui_frame_semantic_number(frame, swatch, MC_UI_SEM_HEIGHT) / 2) * scale)};
+  RECT arrow = {
+      rounded(ui_frame_semantic_number(frame, increase, MC_UI_SEM_X) * scale),
+      rounded(ui_frame_semantic_number(frame, increase, MC_UI_SEM_Y) * scale),
+      0, 0};
+  arrow.right = arrow.left + rounded(ui_frame_semantic_number(frame, increase, MC_UI_SEM_WIDTH) * scale);
+  arrow.bottom = arrow.top + rounded(ui_frame_semantic_number(frame, increase, MC_UI_SEM_HEIGHT) * scale);
+  POINT swatch_screen = {row.left + color.x, row.top + color.y};
+  POINT digit_screen = {field.left + 1, (field.top + field.bottom) / 2};
+  if (GetAncestor(WindowFromPoint(swatch_screen), GA_ROOT) != capture.editor ||
+      WindowFromPoint(digit_screen) != stroke) return FALSE;
+  OffsetRect(&field, -row.left, -row.top);
+  COLORREF arrow_ink = color_ref(dark ? 0xbfbfc9 : 0x5b5b64);
+  BOOL matched = FALSE;
+  HDC screen = GetDC(NULL);
+  if (!screen) return FALSE;
+  // Read only the known fixture row from the composed window after normal
+  // WM_PAINT dispatch. Offscreen WM_PRINTCLIENT cannot detect sibling damage.
+  for (int attempt = 0; attempt < 20 && !matched; attempt++) {
+    MSG message;
+    while (PeekMessageW(&message, capture.editor, WM_PAINT, WM_PAINT, PM_REMOVE))
+      DispatchMessageW(&message);
+    GdiFlush();
+    if (!BitBlt(pixels->dc, 0, 0, row.right - row.left, row.bottom - row.top,
+        screen, row.left, row.top, SRCCOPY)) break;
+    int arrows = 0, digits = 0;
+    for (int y = arrow.top; y < arrow.bottom; y++) for (int x = arrow.left; x < arrow.right; x++)
+      if (GetPixel(pixels->dc, x, y) == arrow_ink) arrows++;
+    for (int y = field.top; y < field.bottom; y++) for (int x = field.left; x < field.right; x++) {
+      COLORREF value = GetPixel(pixels->dc, x, y);
+      if (value != CLR_INVALID && (dark ? GetRValue(value) > 150 : GetRValue(value) < 110)) digits++;
+    }
+    matched = arrows > 0 && digits > 3 && GetPixel(pixels->dc, 1, 1) == color_ref(surface) &&
+        GetPixel(pixels->dc, color.x, color.y) == color_ref(capture.color);
+    if (!matched) Sleep(15);
+  }
+  ReleaseDC(NULL, screen);
+  return matched;
+}
 static BOOL hud_surface_smoke(void) {
   BOOL ok=TRUE, original_dark=capture.toolbar_dark;
   Surface pixels={0}; HWND neutral=NULL; int32_t property_frame=0;
@@ -1792,6 +1875,10 @@ static BOOL hud_surface_smoke(void) {
     HUD_CHECK(property_frame && ui_frame_field_count(property_frame)>0);
     field_ink[dark]=ui_frame_field_value(property_frame,0,MC_UI_FIELD_COLOR);
     HUD_CHECK(field_ink[dark]>=0);
+    HUD_CHECK(shown_property_pixels(&pixels, property_frame, surface, dark));
+    SendMessageW(capture.text_properties, WM_MOUSEMOVE, 0, MAKELPARAM(1, 1));
+    HUD_CHECK(!GetUpdateRect(capture.editor, NULL, FALSE));
+    HUD_CHECK(shown_property_pixels(&pixels, property_frame, surface, dark));
     ui_frame_close(property_frame); property_frame=0;
   }
   HUD_CHECK(field_ink[0]!=field_ink[1]);
@@ -1801,7 +1888,7 @@ done:
   surface_free(&pixels);
   capture.toolbar_dark=original_dark;
   if (capture.editor) { if (ok) smoke_select_tool(TOOL_SELECT); layout_editor(capture.editor); }
-  printf("Windows HUD surface %s: one themed card, matching child surfaces, no native divider, default video canvas remains black.\n",ok?"passed":"FAILED");
+  printf("Windows HUD surface %s: light/dark card, live property swatch, steppers and native digits before and after hover.\n",ok?"passed":"FAILED");
 #undef HUD_CHECK
   return ok;
 }

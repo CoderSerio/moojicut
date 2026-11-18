@@ -412,6 +412,7 @@ pub fn text_properties_frame(
       field["fontSize"] = Json(12)
       field["weight"] = Json("regular")
       field["color"] = Json(text_color)
+      field["background"] = Json(fill)
       field["opacity"] = Json(1)
       field["multiline"] = Json(false)
       field["enabled"] = Json(enabled)
