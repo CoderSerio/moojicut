@@ -26,6 +26,12 @@ pub fn editor_style_visible_mask(Int32, Int32) -> Int32
 
 pub fn numbered_rectangle_contribution() -> @contracts.ToolContribution
 
+pub fn property_context_valid(Int32, String) -> Bool
+
+pub fn property_descriptors(Int32, Int32, String) -> @json.Json
+
+pub fn property_visible_mask(Int32, Int32, String) -> Int32
+
 pub fn text_property_descriptors() -> @json.Json
 
 // Errors

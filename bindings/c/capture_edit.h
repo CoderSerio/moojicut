@@ -28,14 +28,33 @@ enum { MC_CAPTURE_TEXT_VERSION = 0, MC_CAPTURE_TEXT_MODE = 1, MC_CAPTURE_TEXT_RG
        MC_CAPTURE_TEXT_X = 5, MC_CAPTURE_TEXT_Y = 6, MC_CAPTURE_TEXT_WIDTH = 7,
        MC_CAPTURE_TEXT_HEIGHT = 8, MC_CAPTURE_TEXT_DOCUMENT_REVISION = 9,
        MC_CAPTURE_TEXT_CAN_UNDO = 10, MC_CAPTURE_TEXT_CAN_REDO = 11,
-       MC_CAPTURE_TEXT_VALID = 12, MC_CAPTURE_TEXT_ROW_WIDTH = 13, MC_CAPTURE_TEXT_ROW_HEIGHT = 14 };
-enum { MC_CAPTURE_TEXT_ANNOTATION_ID = 0, MC_CAPTURE_TEXT_RAW = 1, MC_CAPTURE_TEXT_ERROR = 2 };
+       MC_CAPTURE_TEXT_VALID = 12, MC_CAPTURE_TEXT_ROW_WIDTH = 13, MC_CAPTURE_TEXT_ROW_HEIGHT = 14,
+       MC_CAPTURE_TEXT_TOOL = 15, MC_CAPTURE_TEXT_STROKE = 16, MC_CAPTURE_TEXT_SHAPE = 17,
+       MC_CAPTURE_TEXT_BLOCK = 18, MC_CAPTURE_TEXT_VISIBLE_MASK = 19 };
+enum { MC_CAPTURE_TEXT_ANNOTATION_ID = 0, MC_CAPTURE_TEXT_RAW = 1, MC_CAPTURE_TEXT_ERROR = 2,
+       MC_CAPTURE_TEXT_PREVIEW_ANNOTATION = 3 };
 enum { MC_CAPTURE_TEXT_REJECTED = 0, MC_CAPTURE_TEXT_HANDLED = 1, MC_CAPTURE_TEXT_CHOOSE_COLOR = 2 };
 /* One edit per image session. Existing mode reads the stable annotation ID;
  * new mode allocates it in MoonBit. Defaults/new freeze the text style bank,
  * existing mode never changes tool defaults. The style handle must stay alive. */
 int32_t capture_text_begin(int32_t session, int32_t style, int32_t mode,
     moonbit_string_t annotation_id, double expected_revision, double x, double y, double width, double height);
+/* Remaining annotation properties share the SAME edit/field/candidate owner.
+ * tool=1 rectangle/ellipse, 2 arrow, 4 cover/mosaic. Empty annotation_id edits
+ * defaults, otherwise edits the stable existing ID (which must match tool).
+ * contribution_command is empty for ordinary annotations; nonempty commands
+ * are checked by the contribution owner (currently capture.numberedRectangle
+ * accepts tool=1 defaults and fixes the shape without changing rectangle defaults).
+ * Subsequent capture_text_* calls apply to this handle. Inline surface 1 is
+ * available only for text; measurement is ignored for non-text properties.
+ * Numeric fields: style.opacity, style.stroke, style.blockSize. Shape buttons
+ * come from shared frame semantics, not native enums. A shape change rejects
+ * visible invalid drafts or ANY composition; hidden fields retain raw/token
+ * but reject input until visible again. No edit touches history until commit.
+ * Snapshot adds tool/previewAnnotation; text_text(PREVIEW_ANNOTATION) returns
+ * the complete derived existing annotation JSON, or "null" for defaults. */
+int32_t capture_properties_begin(int32_t session, int32_t style, int32_t tool,
+    moonbit_string_t annotation_id, double expected_revision, moonbit_string_t contribution_command);
 int32_t capture_text_event_json(int32_t session, int32_t edit, int32_t expected_version, moonbit_string_t event);
 moonbit_string_t capture_text_snapshot(int32_t session, int32_t edit);
 double capture_text_value(int32_t session, int32_t edit, int32_t key); /* invalid: -1 */
@@ -59,8 +78,8 @@ int32_t capture_candidate_close(int32_t candidate);
  * before publishing any; publication makes no native callbacks. All native
  * focus/control teardown must happen after this atomic publication succeeds. */
 int32_t capture_candidate_commit_many(moonbit_string_t request);
-/* Non-text legacy host adapter: command JSON object/null, defaults JSON
- * null or {tool:int,values:{"0":number,...}}. Rejects an active text edit. */
+/* Host command adapter when no property edit is active: command JSON object/null, defaults JSON
+ * null or {tool:int,values:{"0":number,...}}. Rejects an active property/text edit. */
 int32_t image_session_prepare_command(int32_t session, int32_t style, double expected_revision,
     moonbit_string_t command, moonbit_string_t defaults);
 #ifdef __cplusplus

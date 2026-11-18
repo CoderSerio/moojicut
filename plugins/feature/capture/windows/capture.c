@@ -16,7 +16,7 @@
 #include "platform/shared/image/pixelate.h"
 #include "components/icons/shared/mc_icons.h"
 #include "components/hud/windows/hud.h"
-#include "components/style_controls/windows/style_controls.h"
+#include "bindings/c/editor_style.h"
 #include "moonbit.h"
 #include "plugins/feature/select/windows/selection.h"
 #include "plugins/feature/select/windows/surface.h"
@@ -59,14 +59,13 @@ typedef struct {
 } Surface;
 typedef struct {
   HINSTANCE instance;
-  HWND owner, overlay, editor, text, tooltip, text_properties, text_active_field;
+  HWND owner, overlay, editor, text, tooltip, text_properties;
   MCWinTextInputs *body_inputs, *property_inputs;
   int32_t text_edit;
   int text_index;
   BOOL text_syncing, text_finishing, color_picker;
   ToolButtons toolbar_buttons, prepared_buttons;
   int active_button;
-  MCStyleControls *style_controls;
   MCCaptureHost host;
   HFONT font, text_font;
   HBRUSH text_background;
@@ -75,11 +74,11 @@ typedef struct {
   Surface desktop, dimmed, image, rendered;
   RECT desktop_bounds, canvas, viewport, toolbar, drag_bounds, draft;
   POINT start, end;
-  double zoom, opacity, font_size;
+  double zoom, opacity, font_size, stroke;
   int32_t session, style_bank, tool_snapshot, owned_tools, prepared_text_candidate;
   moonbit_string_t drag_id;
   double drag_revision;
-  int tool, color, stroke, selected, editing, drag_mode, handle, shape, block;
+  int tool, color, selected, editing, drag_mode, handle, shape, block;
   BOOL dragging, dirty, smoke, closing, composing;
 } Capture;
 static Capture capture;
@@ -89,7 +88,8 @@ static BOOL finish_text(BOOL cancel);
 static void style_text(void);
 static void sync_text_preview(void);
 static void refresh_text_frames(int x, int y, double scale);
-static BOOL ensure_text_edit(void);
+static BOOL ensure_property_edit(void);
+static int property_tool(void);
 static BOOL text_field_event(void *context, HWND field, moonbit_string_t event);
 static void text_field_action(void *context, HWND field, int action);
 static void text_property_event(void *context, HWND window, const MCCanvasInput *event);
@@ -271,6 +271,15 @@ static BOOL render_image_mode(BOOL include_input) {
       moonbit_string_t text = NULL;
       if ((kind == TOOL_REDACT) != (pass == 1))
         continue;
+      if (capture.text_edit && i == capture.text_index && property_tool() != TOOL_TEXT) {
+        if (!blend_annotation(property_tool(),
+            capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_X),
+            capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_Y),
+            capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_WIDTH),
+            capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_HEIGHT),
+            capture.color, capture.stroke, NULL, 0, capture.font_size, capture.opacity, capture.shape, capture.block)) return FALSE;
+        continue;
+      }
       if (i == capture.editing || (capture.text_edit && i == capture.text_index))
         continue;
       if (kind == TOOL_TEXT)
@@ -296,7 +305,7 @@ static BOOL render_image_mode(BOOL include_input) {
       if (!painted)
         return FALSE;
     }
-    if (pass == 0 && capture.text_edit &&
+    if (pass == 0 && capture.text_edit && property_tool() == TOOL_TEXT &&
         capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) != MC_CAPTURE_TEXT_DEFAULTS &&
         (include_input || capture.editing == -2)) {
       moonbit_string_t raw = capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW);
@@ -408,14 +417,27 @@ static int find_annotation_id(moonbit_string_t id) {
   }
   return -1;
 }
-static BOOL ensure_text_edit(void) {
+static int property_tool(void) {
+  return capture.text_edit ? (int)capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_TOOL) : 0;
+}
+static BOOL ensure_property_edit(void) {
   if (capture.text_edit) return TRUE;
-  if (capture.text_finishing || capture.dragging || !capture.session || !capture.style_bank || style_context() != TOOL_TEXT) return FALSE;
+  int tool = style_context();
+  if (capture.text_finishing || capture.dragging || !capture.session || !capture.style_bank || tool == TOOL_SELECT) return FALSE;
   int index = capture.selected;
   moonbit_string_t id = index >= 0 ? image_session_annotation_id(capture.session, index) : moonbit_make_string_raw(0);
-  capture.text_edit = capture_text_begin(capture.session, capture.style_bank,
+  if (tool == TOOL_TEXT) capture.text_edit = capture_text_begin(capture.session, capture.style_bank,
       index >= 0 ? MC_CAPTURE_TEXT_EXISTING : MC_CAPTURE_TEXT_DEFAULTS,
       id, image_session_revision(capture.session), 0, 0, 1, 1);
+  else {
+    const wchar_t *handler = index < 0 && custom_drag() ? capture.toolbar_buttons.buttons[capture.active_button].handler : L"";
+    int length = (int)wcslen(handler);
+    moonbit_string_t command = moonbit_make_string_raw(length);
+    memcpy(command, handler, (size_t)length * sizeof(wchar_t));
+    capture.text_edit = capture_properties_begin(capture.session, capture.style_bank, tool,
+        id, image_session_revision(capture.session), command);
+    moonbit_decref(command);
+  }
   moonbit_decref(id); capture.text_index = index;
   if (capture.text_edit) sync_text_preview();
   return capture.text_edit > 0;
@@ -425,6 +447,9 @@ static void sync_text_preview(void) {
   capture.color = (int)capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RGB);
   capture.opacity = capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_OPACITY);
   capture.font_size = capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_FONT_SIZE);
+  capture.stroke = capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_STROKE);
+  capture.shape = (int)capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_SHAPE);
+  capture.block = (int)capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_BLOCK);
   if (capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) != MC_CAPTURE_TEXT_DEFAULTS) {
     capture.draft.left = rounded(capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_X));
     capture.draft.top = rounded(capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_Y));
@@ -433,39 +458,29 @@ static void sync_text_preview(void) {
   }
   capture.composing = mc_win_text_inputs_composing(capture.body_inputs) || mc_win_text_inputs_composing(capture.property_inputs);
 }
-static void sync_style_controls(void) {
-  MCStyleControlsModel model = {0};
-  model.tool = style_context();
-  model.mask = (unsigned)editor_style_visible_mask(model.tool, capture.shape);
-  if (model.tool == TOOL_TEXT) { ensure_text_edit(); model.mask = 0; }
-  if (custom_drag() && capture.selected < 0) model.mask &= ~(1u << MC_STYLE_SHAPE);
-  model.enabled = !capture.composing;
-  const double values[] = {capture.color, capture.opacity, capture.stroke, capture.font_size, capture.shape, capture.block};
-  for (int field = 0; field < MC_STYLE_PROPERTY_COUNT; field++)
-    model.property[field] = (MCStyleProperty){values[field], editor_style_min(field),
-        editor_style_max(field), editor_style_step(field)};
-  mc_style_controls_update(capture.style_controls, &model);
+static void sync_properties(void) {
+  ensure_property_edit();
 }
 static void load_tool_style(int tool) {
   capture.color = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_COLOR));
   capture.opacity = editor_style_get(capture.style_bank, tool, MC_STYLE_OPACITY);
-  capture.stroke = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_STROKE));
+  capture.stroke = editor_style_get(capture.style_bank, tool, MC_STYLE_STROKE);
   capture.font_size = editor_style_get(capture.style_bank, tool, MC_STYLE_FONT);
   capture.shape = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_SHAPE));
   capture.block = rounded(editor_style_get(capture.style_bank, tool, MC_STYLE_BLOCK));
-  sync_style_controls();
+  sync_properties();
 }
 static void load_annotation_style(int index) {
   capture.color = rounded(image_session_value(capture.session, index, 5));
   capture.opacity = image_session_value(capture.session, index, 8);
-  capture.stroke = rounded(image_session_value(capture.session, index, 6));
+  capture.stroke = image_session_value(capture.session, index, 6);
   capture.font_size = image_session_value(capture.session, index, 7);
   capture.shape = rounded(image_session_value(capture.session, index, 9));
   capture.block = rounded(image_session_value(capture.session, index, 10));
-  sync_style_controls();
+  sync_properties();
 }
 static void changed(void) {
-  sync_style_controls();
+  sync_properties();
   if (capture.editor) layout_editor(capture.editor);
   capture.dirty = TRUE;
   if (capture.editor)
@@ -499,14 +514,14 @@ static void preserve_text(int index) {
 static void layout_editor(HWND window) {
   RECT client;
   GetClientRect(window, &client);
-  sync_style_controls();
+  sync_properties();
   double scale = (double)GetDpiForWindow(window) / 96;
   double *frame = capture_ui_toolbar_frame(client.right / scale, client.bottom / scale,
     capture.viewport.left / scale, capture.viewport.top / scale,
     (capture.viewport.right - capture.viewport.left) / scale,
     (capture.viewport.bottom - capture.viewport.top) / scale,
     capture.toolbar_buttons.count * 30 + 6, capture.text_edit ?
-      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH) : mc_style_controls_width(capture.style_controls));
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH) : 0);
   int x = rounded(frame[0] * scale), y = rounded(frame[1] * scale);
   SetRect(&capture.toolbar, x, y, x + rounded(frame[2] * scale), y + rounded(frame[3] * scale));
   moonbit_decref(frame);
@@ -523,11 +538,10 @@ static void layout_editor(HWND window) {
     SetRect(&tip.rect, bx, by, bx + dpi_px(window, 28), by + dpi_px(window, 28));
     SendMessageW(capture.tooltip, TTM_NEWTOOLRECTW, 0, (LPARAM)&tip);
   }
-  mc_style_controls_layout(capture.style_controls, x + dpi_px(window, 6), y + dpi_px(window, 40));
   refresh_text_frames(x + dpi_px(window, 6), y + dpi_px(window, 40), scale);
   capture.canvas = capture.viewport;
   capture.zoom = 1;
-  sync_style_controls();
+  sync_properties();
   InvalidateRect(window, NULL, FALSE);
 }
 /* Use the export font and wrapping rules for all live/committed text geometry.
@@ -583,7 +597,7 @@ static void style_text(void) {
     InvalidateRect(capture.editor, NULL, FALSE);
 }
 static double measure_text(void) {
-  if (!capture.text_edit || capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS) return 0;
+  if (!capture.text_edit || property_tool() != TOOL_TEXT || capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS) return 0;
   moonbit_string_t raw = capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW);
   HDC dc = CreateCompatibleDC(NULL);
   HFONT font = CreateFontW(-rounded(capture.font_size), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
@@ -655,14 +669,22 @@ static void refresh_text_frames(int x, int y, double scale) {
     if (row) {
       MoveWindow(capture.text_properties, x, y, rounded(width * scale), rounded(height * scale), TRUE);
       mc_win_text_inputs_set_frame(capture.property_inputs, row, x, y, scale);
-      if (!mc_win_canvas_set_frame(capture.text_properties, row)) ui_frame_close(row);
       ShowWindow(capture.text_properties, SW_SHOWNOACTIVATE);
       /* Native fields are siblings so their existing MSAA provider is visible
        * independently of the virtual canvas semantic children. */
-      HWND field = mc_win_text_inputs_field(capture.property_inputs, L"style.opacity"); if (field) BringWindowToTop(field);
-      field = mc_win_text_inputs_field(capture.property_inputs, L"style.fontSize"); if (field) BringWindowToTop(field);
+      for (int i = 0; i < ui_frame_field_count(row); i++) {
+        moonbit_string_t id = ui_frame_field_text(row, i, MC_UI_FIELD_ID);
+        int length = Moonbit_array_length(id); wchar_t key[257] = {0};
+        if (length > 0 && length < (int)ARRAYSIZE(key)) {
+          memcpy(key, id, (size_t)length * sizeof(wchar_t));
+          HWND field = mc_win_text_inputs_field(capture.property_inputs, key);
+          if (field) BringWindowToTop(field);
+        }
+        moonbit_decref(id);
+      }
+      if (!mc_win_canvas_set_frame(capture.text_properties, row)) ui_frame_close(row);
     }
-    if (capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) != MC_CAPTURE_TEXT_DEFAULTS) {
+    if (property_tool() == TOOL_TEXT && capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) != MC_CAPTURE_TEXT_DEFAULTS) {
       double measured = measure_text();
       double height_px = capture_text_measured_height(capture.session, capture.text_edit, text_version(), measured);
       if (height_px > 0) capture.draft.bottom = capture.draft.top + rounded(height_px);
@@ -675,9 +697,8 @@ static void refresh_text_frames(int x, int y, double scale) {
   capture.text_syncing = FALSE;
 }
 static BOOL text_field_event(void *context, HWND field, moonbit_string_t event) {
-  (void)context;
+  (void)context; (void)field;
   if (!capture.text_edit || capture.text_finishing) return FALSE;
-  if (field) capture.text_active_field = field;
   BOOL ok = capture_text_event_json(capture.session, capture.text_edit, text_version(), event) == 1;
   sync_text_preview(); changed(); if (capture.text) style_text(); return ok;
 }
@@ -688,7 +709,7 @@ static void text_field_action(void *context, HWND field, int action) {
   PostMessageW(capture.editor, TEXT_FIELD_ACTION, (WPARAM)capture.text_edit, (LPARAM)action);
 }
 static BOOL text_field_key(void *context, HWND field, const MCCanvasInput *event) {
-  (void)context;
+  (void)context; (void)field;
   if (!capture.text_edit) return FALSE;
   moonbit_string_t json = mc_canvas_input_json(event);
   int result = capture_text_ui_event(capture.session, capture.text_edit, text_version(), json,
@@ -696,33 +717,44 @@ static BOOL text_field_key(void *context, HWND field, const MCCanvasInput *event
       capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_HEIGHT));
   moonbit_decref(json);
   if (result == MC_CAPTURE_TEXT_HANDLED) {
-    capture.text_active_field = field; sync_text_preview(); changed(); if (capture.text) style_text(); return TRUE;
+    sync_text_preview(); changed(); if (capture.text) style_text(); return TRUE;
   }
   return FALSE;
+}
+static BOOL apply_color_result(int32_t session, int32_t edit, int version, COLORREF rgb) {
+  if (!capture.editor || capture.session != session || capture.text_edit != edit || text_version() != version) return FALSE;
+  char buffer[64]; snprintf(buffer, sizeof(buffer), "{\"type\":\"color\",\"rgb\":%u}",
+      (unsigned)((GetRValue(rgb) << 16) | (GetGValue(rgb) << 8) | GetBValue(rgb)));
+  moonbit_string_t color = moonbit_make_string_raw((int)strlen(buffer));
+  for (int i = 0; buffer[i]; i++) color[i] = (uint16_t)buffer[i];
+  BOOL ok = text_field_event(NULL, NULL, color); moonbit_decref(color);
+  if (ok && capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS)
+    ok = finish_text(FALSE);
+  return ok;
 }
 static void text_property_event(void *context, HWND window, const MCCanvasInput *event) {
   (void)context; (void)window;
   if (!capture.text_edit) return;
+  int32_t session = capture.session;
+  HWND owner = capture.editor;
   moonbit_string_t json = mc_canvas_input_json(event);
   int result = capture_text_ui_event(capture.session, capture.text_edit, text_version(), json,
       capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH),
       capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_HEIGHT));
   moonbit_decref(json);
   if (result == MC_CAPTURE_TEXT_CHOOSE_COLOR) {
+    int32_t edit = capture.text_edit;
+    int version = text_version();
     static COLORREF custom[16]; CHOOSECOLORW picker = {0}; picker.lStructSize = sizeof(picker);
     picker.hwndOwner = capture.editor; picker.lpCustColors = custom; picker.rgbResult = color_ref(capture.color);
     picker.Flags = CC_FULLOPEN | CC_RGBINIT; capture.color_picker = TRUE;
-    BOOL chosen = ChooseColorW(&picker); capture.color_picker = FALSE;
-    if (chosen && capture.text_edit) {
-      char buffer[64]; snprintf(buffer, sizeof(buffer), "{\"type\":\"color\",\"rgb\":%u}",
-          (unsigned)((GetRValue(picker.rgbResult) << 16) | (GetGValue(picker.rgbResult) << 8) | GetBValue(picker.rgbResult)));
-      moonbit_string_t color = moonbit_make_string_raw((int)strlen(buffer));
-      for (int i = 0; buffer[i]; i++) color[i] = (uint16_t)buffer[i];
-      text_field_event(NULL, NULL, color); moonbit_decref(color);
-      if (capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS) finish_text(FALSE);
+    BOOL chosen = ChooseColorW(&picker);
+    if (capture.editor == owner && capture.session == session) {
+      capture.color_picker = FALSE;
+      if (chosen) apply_color_result(session, edit, version, picker.rgbResult);
     }
   }
-  changed(); if (capture.text) style_text();
+  if (capture.editor == owner && capture.session == session) { changed(); if (capture.text) style_text(); }
 }
 static int hit_text(POINT p) {
   // Pixel centers preserve Win32's right/bottom-exclusive integer rectangle.
@@ -898,7 +930,7 @@ void mc_capture_discard_tools(void) {
 BOOL mc_capture_prepare_tools(int32_t snapshot) {
   mc_capture_discard_tools();
   if (tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT) < 0) return FALSE;
-  if (capture.editor && (capture.composing || capture.editing != -2 || capture.dragging || GetCapture())) return FALSE;
+  if (capture.editor && (capture.color_picker || capture.composing || capture.editing != -2 || capture.dragging || GetCapture())) return FALSE;
   if (capture.text_edit) {
     capture.prepared_text_candidate = capture_text_prepare(capture.session, capture.text_edit,
         text_version(), MC_CAPTURE_CANDIDATE_PUBLISH, measure_text());
@@ -932,9 +964,10 @@ static void editor_command(int command) {
   if (pin && !pin_enabled()) return;
   if ((command == ID_UNDO || command == ID_REDO) && capture.text_edit &&
       capture_text_value(capture.session, capture.text_edit, command == ID_UNDO ? MC_CAPTURE_TEXT_CAN_UNDO : MC_CAPTURE_TEXT_CAN_REDO) == 1) {
-    MCWinTextInputs *inputs = mc_win_text_inputs_contains(capture.body_inputs, capture.text_active_field)
-      ? capture.body_inputs : capture.property_inputs;
-    mc_win_text_inputs_history(inputs, capture.text_active_field, command == ID_REDO); return;
+    const wchar_t *json = command == ID_REDO ? L"{\"type\":\"redo\"}" : L"{\"type\":\"undo\"}";
+    int length = (int)wcslen(json); moonbit_string_t event = moonbit_make_string_raw(length);
+    memcpy(event, json, (size_t)length * sizeof(wchar_t));
+    text_field_event(NULL, NULL, event); moonbit_decref(event); return;
   }
   if (!finish_text(FALSE)) return;
   if (command == ID_SELECT || (button && (button->interaction == MC_TOOL_INTERACTION_ANNOTATION ||
@@ -977,51 +1010,6 @@ static void editor_command(int command) {
         GlobalFree(dib);
     }
   }
-}
-static BOOL apply_style(void) {
-  if (capture.editing != -2) {
-    style_text();
-    return TRUE;
-  }
-  if (capture.selected >= 0) {
-    RECT r = fit_annotation_bounds(capture.selected, annotation_rect(capture.selected), capture.font_size);
-    preserve_text(capture.selected);
-    if (!image_session_update_rgba(capture.session, capture.selected, r.left, r.top, r.right - r.left,
-        r.bottom - r.top, capture.color, capture.stroke, rounded(capture.font_size), capture.opacity))
-      return FALSE;
-    changed();
-  }
-  return TRUE;
-}
-static BOOL style_changed(void *context, int field, double value) {
-  (void)context;
-  if (capture.composing || style_context() == TOOL_TEXT)
-    return FALSE;
-  BOOL defaults = capture.editing == -1 || (capture.editing == -2 && capture.selected < 0);
-  if (defaults && !editor_style_set(capture.style_bank, style_context(), field, value))
-    return FALSE;
-  int color = capture.color, stroke = capture.stroke;
-  double font = capture.font_size;
-  int shape = capture.shape, block = capture.block;
-  double opacity = capture.opacity;
-  if (field == MC_STYLE_COLOR) capture.color = rounded(value);
-  else if (field == MC_STYLE_OPACITY) capture.opacity = value;
-  else if (field == MC_STYLE_STROKE) capture.stroke = rounded(value);
-  else if (field == MC_STYLE_FONT) capture.font_size = value;
-  else if (field == MC_STYLE_SHAPE) capture.shape = rounded(value);
-  else if (field == MC_STYLE_BLOCK) capture.block = rounded(value);
-  else return FALSE;
-  BOOL ok = field >= MC_STYLE_SHAPE
-    ? (defaults || image_session_set_variant(capture.session, capture.selected, field, value)) : apply_style();
-  if (ok && !defaults && field >= MC_STYLE_SHAPE) load_annotation_style(capture.selected);
-  if (!ok) {
-    capture.color = color; capture.opacity = opacity;
-    capture.stroke = stroke; capture.font_size = font;
-    capture.shape = shape; capture.block = block;
-  }
-  layout_editor(capture.editor);
-  changed();
-  return ok;
 }
 static void paint_editor(HDC dc) {
   BitBlt(dc, 0, 0, capture.dimmed.width, capture.dimmed.height, capture.dimmed.dc, 0, 0, SRCCOPY);
@@ -1066,11 +1054,6 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
         CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT,
                         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, NULL, capture.instance, NULL);
     if (!capture.tooltip || !build_tool_buttons(capture.tool_snapshot, &capture.prepared_buttons)) return -1;
-    capture.style_controls = mc_style_controls_create(window, capture.instance, ID_STYLE_BASE,
-        style_changed, NULL);
-    if (!capture.style_controls)
-      return -1;
-    sync_style_controls();
     MCWinCanvasCallbacks row_callbacks = {text_property_event, NULL, NULL, NULL};
     capture.text_properties = mc_win_canvas_create(window, capture.instance, ID_STYLE_BASE + 50, &row_callbacks, NULL);
     if (!capture.text_properties) return -1;
@@ -1102,8 +1085,6 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     return 0;
   case WM_DRAWITEM: {
     DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lp;
-    if (mc_style_controls_draw(capture.style_controls, item))
-      return TRUE;
     int kind = -1, value = 0;
     BOOL selected = FALSE;
     for (int i = 0; i < capture.toolbar_buttons.count; i++)
@@ -1129,11 +1110,6 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     }
     break;
   case WM_COMMAND:
-    if (mc_style_controls_command(capture.style_controls, wp, lp)) {
-      if (capture.editing != -2)
-        SetFocus(capture.text);
-      return 0;
-    }
     if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) >= ID_CONTRIBUTION_BASE) {
       ToolButton *button = find_button(LOWORD(wp));
       /* Snapshot reordering may reuse a numeric child ID. A queued notification
@@ -1276,7 +1252,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
             r.left, r.top, r.right - r.left, r.bottom - r.top, corner && text ? size : -1);
         capture.font_size = size;
         if (capture.drag_id) { moonbit_decref(capture.drag_id); capture.drag_id = NULL; }
-        sync_style_controls();
+        sync_properties();
       } else if (capture.drag_mode == 2) {
         RECT r = capture.viewport;
         image_session_crop(capture.session, r.left, r.top, r.right - r.left, r.bottom - r.top);
@@ -1462,8 +1438,6 @@ void mc_capture_close(void) {
   mc_win_text_inputs_destroy(capture.property_inputs); capture.property_inputs = NULL;
   if (capture.text_properties) DestroyWindow(capture.text_properties);
   capture.text_properties = NULL; capture.text = NULL;
-  mc_style_controls_destroy(capture.style_controls);
-  capture.style_controls = NULL;
   if (editor)
     DestroyWindow(editor);
   if (capture.session > 0)
@@ -1615,29 +1589,63 @@ static BOOL save_capture_preview(void) {
   surface_free(&preview);
   return ok;
 }
-static BOOL style_visible(int control) {
-  if (capture.text_edit) {
-    if (control == MC_STYLE_CONTROL_COLOR) return capture.text_properties && (GetWindowLongPtrW(capture.text_properties, GWL_STYLE) & WS_VISIBLE) != 0;
-    if (control == MC_STYLE_CONTROL_OPACITY) return mc_win_text_inputs_field(capture.property_inputs, L"style.opacity") != NULL;
-    if (control == MC_STYLE_CONTROL_FONT) return mc_win_text_inputs_field(capture.property_inputs, L"style.fontSize") != NULL;
-    return FALSE;
+/* Fixture helpers query the actual shared frame and drive native input. */
+static const wchar_t *smoke_property_id(int property) {
+  static const wchar_t *ids[] = {L"style.color", L"style.opacity", L"style.stroke", L"style.fontSize", L"style.shape.0", L"style.blockSize"};
+  return property >= 0 && property < (int)ARRAYSIZE(ids) ? ids[property] : L"";
+}
+static int smoke_semantic(int32_t frame, const wchar_t *id) {
+  size_t length = wcslen(id);
+  for (int i = 0; i < ui_frame_semantic_count(frame); i++) {
+    moonbit_string_t value = ui_frame_semantic_text(frame, i, MC_UI_SEM_ID);
+    BOOL match = Moonbit_array_length(value) == (int)length && !memcmp(value, id, length * sizeof(wchar_t));
+    moonbit_decref(value); if (match) return i;
   }
-  HWND window = mc_style_controls_window(capture.style_controls, control);
-  return window && (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
+  return -1;
+}
+static int32_t smoke_property_frame(void) {
+  if (!capture.text_edit) return 0;
+  return open_text_frame(MC_CAPTURE_TEXT_PROPERTIES,
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH),
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_HEIGHT), 1);
+}
+static BOOL style_visible(int property) {
+  if (!capture.text_edit) return FALSE;
+  const wchar_t *id = smoke_property_id(property);
+  if (property != MC_STYLE_COLOR && property != MC_STYLE_SHAPE) {
+    HWND input = mc_win_text_inputs_field(capture.property_inputs, id);
+    return input && (GetWindowLongPtrW(input, GWL_STYLE) & WS_VISIBLE) != 0;
+  }
+  int32_t frame = smoke_property_frame();
+  BOOL visible = frame && smoke_semantic(frame, id) >= 0;
+  if (frame) ui_frame_close(frame);
+  return visible;
+}
+static BOOL smoke_property_click(const wchar_t *id) {
+  int32_t frame = smoke_property_frame();
+  int node = frame ? smoke_semantic(frame, id) : -1;
+  if (node < 0) { if (frame) ui_frame_close(frame); return FALSE; }
+  BOOL enabled = ui_frame_semantic_value(frame, node, MC_UI_SEM_ENABLED) == 1;
+  double scale = (double)GetDpiForWindow(capture.text_properties) / 96;
+  int x = rounded((ui_frame_semantic_number(frame, node, MC_UI_SEM_X) + ui_frame_semantic_number(frame, node, MC_UI_SEM_WIDTH) / 2) * scale);
+  int y = rounded((ui_frame_semantic_number(frame, node, MC_UI_SEM_Y) + ui_frame_semantic_number(frame, node, MC_UI_SEM_HEIGHT) / 2) * scale);
+  ui_frame_close(frame);
+  if (!enabled) return FALSE;
+  SendMessageW(capture.text_properties, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+  SendMessageW(capture.text_properties, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
+  return TRUE;
 }
 static BOOL choose_style(int field, double value) {
-  // A fixture can select an object and synchronize its model before layout.
-  // Materialize its real controls before sending the same input as the user.
-  if (style_context() == TOOL_TEXT) { ensure_text_edit(); layout_editor(capture.editor); }
-  if (!capture.text_edit) return mc_style_controls_choose(capture.style_controls, field, value);
+  ensure_property_edit(); layout_editor(capture.editor);
+  if (!capture.text_edit) return FALSE;
   BOOL inline_edit = capture.editing != -2, ok = FALSE;
   if (field == MC_STYLE_COLOR) {
-    char json[64]; snprintf(json, sizeof(json), "{\"type\":\"color\",\"rgb\":%d}", (int)value);
-    moonbit_string_t input = moonbit_make_string_raw((int)strlen(json));
-    for (int i = 0; json[i]; i++) input[i] = (uint16_t)json[i];
-    ok = text_field_event(NULL, NULL, input); moonbit_decref(input);
+    ok = style_visible(MC_STYLE_COLOR) && apply_color_result(capture.session, capture.text_edit, text_version(), color_ref((int)value));
+  } else if (field == MC_STYLE_SHAPE) {
+    wchar_t id[32]; swprintf_s(id, ARRAYSIZE(id), L"style.shape.%d", (int)value);
+    ok = smoke_property_click(id) && capture.shape == (int)value;
   } else {
-    HWND input = mc_win_text_inputs_field(capture.property_inputs, field == MC_STYLE_FONT ? L"style.fontSize" : L"style.opacity");
+    HWND input = mc_win_text_inputs_field(capture.property_inputs, smoke_property_id(field));
     wchar_t raw[64]; swprintf_s(raw, ARRAYSIZE(raw), L"%.10g", field == MC_STYLE_OPACITY ? value * 100 : value);
     ok = input && SetWindowTextW(input, raw) && capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_VALID) == 1;
   }
@@ -1645,17 +1653,13 @@ static BOOL choose_style(int field, double value) {
   return ok;
 }
 static void step_style(BOOL increase) {
-  if (style_context() == TOOL_TEXT) { ensure_text_edit(); layout_editor(capture.editor); }
-  if (capture.text_edit) {
-    BOOL inline_edit = capture.editing != -2;
-    HWND input = mc_win_text_inputs_field(capture.property_inputs, L"style.fontSize");
-    if (input) { SetFocus(input); SendMessageW(input, WM_KEYDOWN, increase ? VK_UP : VK_DOWN, 1); }
-    if (!inline_edit) { finish_text(FALSE); layout_editor(capture.editor); }
-    return;
-  }
-  HWND button = mc_style_controls_window(capture.style_controls,
-      increase ? MC_STYLE_CONTROL_INCREASE : MC_STYLE_CONTROL_DECREASE);
-  SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED), (LPARAM)button);
+  ensure_property_edit(); layout_editor(capture.editor);
+  if (!capture.text_edit) return;
+  BOOL inline_edit = capture.editing != -2;
+  HWND input = mc_win_text_inputs_field(capture.property_inputs,
+      property_tool() == TOOL_TEXT ? L"style.fontSize" : L"style.stroke");
+  if (input) { SetFocus(input); SendMessageW(input, WM_KEYDOWN, increase ? VK_UP : VK_DOWN, 1); }
+  if (!inline_edit) { finish_text(FALSE); layout_editor(capture.editor); }
 }
 static ToolButton *smoke_annotation_button(int kind) {
   for (int i = 0; i < capture.toolbar_buttons.count; i++) {
@@ -1682,19 +1686,19 @@ static void smoke_invoke_action(const wchar_t *action) {
 }
 static BOOL context_toolbar_smoke(void) {
   RECT initial = capture.toolbar;
-  if (style_visible(MC_STYLE_CONTROL_COLOR) || style_visible(MC_STYLE_CONTROL_FONT) ||
-      style_visible(MC_STYLE_CONTROL_STROKE))
+  if (style_visible(MC_STYLE_COLOR) || style_visible(MC_STYLE_FONT) ||
+      style_visible(MC_STYLE_STROKE))
     return FALSE;
   smoke_select_tool(TOOL_TEXT);
-  if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_FONT) ||
-      !style_visible(MC_STYLE_CONTROL_OPACITY) ||
-      style_visible(MC_STYLE_CONTROL_STROKE) || capture.font_size != 32)
+  if (!style_visible(MC_STYLE_COLOR) || !style_visible(MC_STYLE_FONT) ||
+      !style_visible(MC_STYLE_OPACITY) ||
+      style_visible(MC_STYLE_STROKE) || capture.font_size != 32)
     return FALSE;
   if (!choose_style(MC_STYLE_COLOR, 0x246BFD) || !choose_style(MC_STYLE_OPACITY, .5))
     return FALSE;
   smoke_select_tool(TOOL_RECT);
-  if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_STROKE) ||
-      style_visible(MC_STYLE_CONTROL_FONT) || !style_visible(MC_STYLE_CONTROL_INCREASE) ||
+  if (!style_visible(MC_STYLE_COLOR) || !style_visible(MC_STYLE_STROKE) ||
+      style_visible(MC_STYLE_FONT) ||
       capture.color != 0xF26769 || capture.opacity != 1)
     return FALSE;
   if (!choose_style(MC_STYLE_STROKE, 8) || !choose_style(MC_STYLE_COLOR, 0x25A56A) ||
@@ -1712,8 +1716,8 @@ static BOOL context_toolbar_smoke(void) {
   if (!choose_style(MC_STYLE_COLOR, 0xFFFFFF) || !choose_style(MC_STYLE_OPACITY, .8))
     return FALSE;
   smoke_select_tool(TOOL_REDACT);
-  if (!style_visible(MC_STYLE_CONTROL_COLOR) || !style_visible(MC_STYLE_CONTROL_OPACITY) ||
-      style_visible(MC_STYLE_CONTROL_FONT) || style_visible(MC_STYLE_CONTROL_STROKE) ||
+  if (!style_visible(MC_STYLE_COLOR) || !style_visible(MC_STYLE_OPACITY) ||
+      style_visible(MC_STYLE_FONT) || style_visible(MC_STYLE_STROKE) ||
       capture.color != 0x111111 || capture.opacity != 1)
     return FALSE;
   if (!choose_style(MC_STYLE_COLOR, 0x25A56A) || !choose_style(MC_STYLE_OPACITY, .2))
@@ -1768,8 +1772,8 @@ static BOOL context_toolbar_smoke(void) {
   }
   if (unavailable < 2) return FALSE;
   editor_command(ID_SELECT);
-  return EqualRect(&initial, &capture.toolbar) && !style_visible(MC_STYLE_CONTROL_COLOR) &&
-         !style_visible(MC_STYLE_CONTROL_FONT);
+  return EqualRect(&initial, &capture.toolbar) && !style_visible(MC_STYLE_COLOR) &&
+         !style_visible(MC_STYLE_FONT);
 }
 static BOOL independent_text_style_smoke(void) {
   smoke_select_tool(TOOL_TEXT);
@@ -2053,8 +2057,8 @@ static BOOL shared_text_fields_smoke(void) {
   SetFocus(body); editor_command(ID_UNDO);
   if (!text_equals(L"A\n🌙B") || capture.font_size != 32.25) {
     moonbit_string_t raw = capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW);
-    fprintf(stderr, "Windows field undo: focusBody=%d activeBody=%d font=%.17g rawUnits=%d:",
-            GetFocus() == body, capture.text_active_field == body, capture.font_size, Moonbit_array_length(raw));
+    fprintf(stderr, "Windows field undo: focusBody=%d font=%.17g rawUnits=%d:",
+            GetFocus() == body, capture.font_size, Moonbit_array_length(raw));
     for (int i = 0; i < Moonbit_array_length(raw) && i < 32; i++) fprintf(stderr, " %04x", (unsigned)raw[i]);
     fputc('\n', stderr); moonbit_decref(raw);
   }
@@ -2141,10 +2145,150 @@ static BOOL shape_variants_smoke(void) {
       ok = image_session_count(capture.session) == count && ok;
     }
   }
+  ok = finish_text(FALSE) && ok;
   image_session_dispose(capture.session); editor_style_dispose(capture.style_bank);
   capture.session = original_session; capture.style_bank = original_bank;
   editor_command(ID_SELECT); changed();
   printf("Windows shape variants smoke %s: native input, shared gesture commit, ellipse pixels, mosaic, undo.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
+typedef struct { BOOL seen, vetoed; int attempts; } ColorDialogProbe;
+static ColorDialogProbe color_dialog_probe;
+static BOOL CALLBACK cancel_fixture_color(HWND window, LPARAM parameter) {
+  (void)parameter;
+  wchar_t name[32] = {0}; GetClassNameW(window, name, ARRAYSIZE(name));
+  if (!IsWindowVisible(window) || GetWindow(window, GW_OWNER) != capture.editor || wcscmp(name, L"#32770")) return TRUE;
+  color_dialog_probe.seen = TRUE;
+  color_dialog_probe.vetoed = !mc_capture_prepare_tools(capture.tool_snapshot);
+  SendMessageW(window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), (LPARAM)GetDlgItem(window, IDCANCEL));
+  return FALSE;
+}
+static void CALLBACK cancel_fixture_color_tick(HWND window, UINT message, UINT_PTR timer, DWORD time) {
+  (void)window; (void)message; (void)time;
+  color_dialog_probe.attempts++;
+  EnumThreadWindows(GetCurrentThreadId(), cancel_fixture_color, 0);
+  if (color_dialog_probe.seen || color_dialog_probe.attempts >= 100) {
+    KillTimer(NULL, timer);
+    if (!color_dialog_probe.seen) { fprintf(stderr, "Windows color fixture did not find its owned dialog.\n"); PostQuitMessage(1); }
+  }
+}
+static BOOL fractional_property_pixels_smoke(int index) {
+  Surface expected = {0};
+  if (!finish_text(FALSE)) return FALSE;
+  moonbit_string_t id = image_session_annotation_id(capture.session, index);
+  BOOL ok = image_session_geometry(capture.session, image_session_revision(capture.session), id,
+      10.4, 10.4, 70.4, 50.4, -1);
+  moonbit_decref(id);
+  capture.dirty = TRUE;
+  ok = ok && render_image() && surface_new(&expected, capture.image.width, capture.image.height);
+  if (ok) {
+    SIZE_T bytes = (SIZE_T)expected.width * expected.height * 4;
+    memcpy(expected.pixels, capture.rendered.pixels, bytes);
+    capture.selected = index; sync_properties(); capture.dirty = TRUE;
+    ok = capture.text_edit && render_image() && !memcmp(expected.pixels, capture.rendered.pixels, bytes);
+    HWND stroke = mc_win_text_inputs_field(capture.property_inputs, L"style.stroke");
+    ok = ok && stroke && SetWindowTextW(stroke, L"7.25") && render_image();
+    if (ok) {
+      memcpy(expected.pixels, capture.rendered.pixels, bytes);
+      ok = finish_text(FALSE); capture.dirty = TRUE;
+      ok = ok && render_image() && !memcmp(expected.pixels, capture.rendered.pixels, bytes) &&
+          image_session_value(capture.session, index, 1) == 10.4 &&
+          image_session_value(capture.session, index, 3) == 70.4;
+    }
+  }
+  surface_free(&expected);
+  printf("Windows fractional property pixels %s: selection and draft commit preserve exact geometry.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
+static BOOL shared_properties_smoke(void) {
+  BOOL ok = TRUE;
+  int initial_count = image_session_count(capture.session);
+  int32_t baseline = capture.tool_snapshot;
+#define PROPERTY_CHECK(condition) do { if (!(condition)) { fprintf(stderr, "Windows shared properties FAILED line %d: %s\n", __LINE__, #condition); ok = FALSE; goto done; } } while (0)
+  smoke_select_tool(TOOL_RECT);
+  HWND stroke = mc_win_text_inputs_field(capture.property_inputs, L"style.stroke");
+  PROPERTY_CHECK(stroke && style_visible(MC_STYLE_SHAPE) && !style_visible(MC_STYLE_FONT));
+  double revision = image_session_revision(capture.session);
+  int32_t edit = capture.text_edit;
+  SetFocus(stroke); SetWindowTextW(stroke, L"-");
+  PROPERTY_CHECK(capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_VALID) == 0 && !mc_capture_prepare_tools(baseline));
+  smoke_select_tool(TOOL_ARROW);
+  PROPERTY_CHECK(capture.tool == TOOL_RECT && capture.text_edit == edit && image_session_revision(capture.session) == revision);
+  PROPERTY_CHECK(!smoke_property_click(L"style.shape.1") && capture.shape == 0);
+  SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(120, 80));
+  PROPERTY_CHECK(!capture.dragging && capture.text_edit == edit);
+  SetFocus(stroke); SetWindowTextW(stroke, L"4.25");
+  PROPERTY_CHECK(capture.stroke == 4.25 && editor_style_get(capture.style_bank, TOOL_RECT, MC_STYLE_STROKE) == 4);
+  editor_command(ID_UNDO);
+  PROPERTY_CHECK(capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_VALID) == 0 && image_session_revision(capture.session) == revision);
+  editor_command(ID_REDO); PROPERTY_CHECK(capture.stroke == 4.25);
+  SendMessageW(stroke, WM_KEYDOWN, VK_UP, 1); PROPERTY_CHECK(capture.stroke == 5.25);
+  SendMessageW(stroke, WM_KEYDOWN, VK_DOWN, 1); PROPERTY_CHECK(capture.stroke == 4.25);
+  PROPERTY_CHECK(smoke_property_click(L"style.shape.1") && capture.shape == 1 &&
+      editor_style_get(capture.style_bank, TOOL_RECT, MC_STYLE_SHAPE) == 0);
+  editor_command(ID_UNDO); PROPERTY_CHECK(capture.shape == 0 && capture.stroke == 4.25);
+  editor_command(ID_REDO); PROPERTY_CHECK(capture.shape == 1 && capture.stroke == 4.25);
+  PROPERTY_CHECK(mc_capture_prepare_tools(baseline) && capture.text_edit == edit &&
+      editor_style_get(capture.style_bank, TOOL_RECT, MC_STYLE_STROKE) == 4);
+  mc_capture_discard_tools(); PROPERTY_CHECK(capture.text_edit == edit && finish_text(FALSE));
+  SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(120, 80));
+  SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(220, 140));
+  SendMessageW(capture.editor, WM_LBUTTONUP, 0, MAKELPARAM(220, 140));
+  int index = image_session_count(capture.session) - 1;
+  PROPERTY_CHECK(index == initial_count && image_session_value(capture.session, index, 6) == 4.25 &&
+      image_session_value(capture.session, index, 9) == 1);
+  smoke_select_tool(TOOL_SELECT);
+  SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(120, 110));
+  SendMessageW(capture.editor, WM_LBUTTONUP, 0, MAKELPARAM(120, 110));
+  PROPERTY_CHECK(capture.selected == index && property_tool() == TOOL_RECT);
+  revision = image_session_revision(capture.session);
+  stroke = mc_win_text_inputs_field(capture.property_inputs, L"style.stroke");
+  PROPERTY_CHECK(stroke && SetWindowTextW(stroke, L"7.5"));
+  HWND opacity = mc_win_text_inputs_field(capture.property_inputs, L"style.opacity");
+  PROPERTY_CHECK(opacity && SetWindowTextW(opacity, L"45") && smoke_property_click(L"style.shape.0"));
+  PROPERTY_CHECK(image_session_revision(capture.session) == revision && capture.stroke == 7.5 && capture.opacity == .45 && capture.shape == 0);
+  PROPERTY_CHECK(finish_text(FALSE) && image_session_revision(capture.session) == revision + 1);
+  editor_command(ID_UNDO);
+  PROPERTY_CHECK(image_session_value(capture.session, index, 6) == 4.25 && image_session_value(capture.session, index, 9) == 1);
+  editor_command(ID_REDO);
+  PROPERTY_CHECK(image_session_value(capture.session, index, 6) == 7.5 && image_session_value(capture.session, index, 8) == .45 &&
+      image_session_value(capture.session, index, 9) == 0 && editor_style_get(capture.style_bank, TOOL_RECT, MC_STYLE_STROKE) == 4.25);
+  PROPERTY_CHECK(fractional_property_pixels_smoke(index));
+  PROPERTY_CHECK(image_session_remove(capture.session, index)); capture.selected = -1;
+
+  smoke_select_tool(TOOL_REDACT);
+  opacity = mc_win_text_inputs_field(capture.property_inputs, L"style.opacity");
+  PROPERTY_CHECK(opacity && SetWindowTextW(opacity, L"-") && !smoke_property_click(L"style.shape.2") && capture.shape == 0);
+  PROPERTY_CHECK(SetWindowTextW(opacity, L"25") && smoke_property_click(L"style.shape.2") && capture.shape == 2);
+  PROPERTY_CHECK(!IsWindow(opacity) && !style_visible(MC_STYLE_COLOR) && !style_visible(MC_STYLE_OPACITY) && style_visible(MC_STYLE_BLOCK));
+  HWND block = mc_win_text_inputs_field(capture.property_inputs, L"style.blockSize");
+  PROPERTY_CHECK(block && SetWindowTextW(block, L"12.5") && !smoke_property_click(L"style.shape.0") && capture.shape == 2 && !finish_text(FALSE));
+  PROPERTY_CHECK(SetWindowTextW(block, L"16") && smoke_property_click(L"style.shape.0") && capture.shape == 0);
+  opacity = mc_win_text_inputs_field(capture.property_inputs, L"style.opacity");
+  wchar_t raw[32] = {0}; GetWindowTextW(opacity, raw, ARRAYSIZE(raw));
+  PROPERTY_CHECK(!wcscmp(raw, L"25") && capture.opacity == .25 && smoke_property_click(L"style.shape.2"));
+  block = mc_win_text_inputs_field(capture.property_inputs, L"style.blockSize");
+  GetWindowTextW(block, raw, ARRAYSIZE(raw)); PROPERTY_CHECK(!wcscmp(raw, L"16"));
+  PROPERTY_CHECK(choose_style(MC_STYLE_BLOCK, 12) && choose_style(MC_STYLE_SHAPE, 0) && choose_style(MC_STYLE_OPACITY, 1));
+
+  int32_t picker_edit = capture.text_edit; int picker_version = text_version();
+  int old_color = capture.color;
+  ZeroMemory(&color_dialog_probe, sizeof(color_dialog_probe));
+  UINT_PTR timer = SetTimer(NULL, 0, 20, cancel_fixture_color_tick);
+  PROPERTY_CHECK(timer);
+  BOOL clicked = smoke_property_click(L"style.color"); KillTimer(NULL, timer);
+  PROPERTY_CHECK(clicked && color_dialog_probe.seen && color_dialog_probe.vetoed && !capture.color_picker && capture.color == old_color);
+  PROPERTY_CHECK(!apply_color_result(capture.session, picker_edit, picker_version - 1, RGB(1, 2, 3)) && capture.color == old_color);
+  PROPERTY_CHECK(finish_text(FALSE));
+  smoke_select_tool(TOOL_RECT);
+  PROPERTY_CHECK(choose_style(MC_STYLE_SHAPE, 0) && choose_style(MC_STYLE_STROKE, 4) && finish_text(FALSE));
+  smoke_select_tool(TOOL_SELECT);
+  PROPERTY_CHECK(image_session_count(capture.session) == initial_count && capture.tool_snapshot == baseline);
+done:
+  mc_capture_discard_tools();
+  if (!ok && capture.text_edit) finish_text(TRUE);
+  printf("Windows shared properties %s: native fractional inputs, invalid veto, draft history, shape visibility, one document undo, color modal lease.\n", ok ? "passed" : "FAILED");
+#undef PROPERTY_CHECK
   return ok;
 }
 static BOOL contribution_smoke(void) {
@@ -2176,7 +2320,7 @@ static BOOL contribution_smoke(void) {
   ToolButton *button = find_button(ID_CONTRIBUTION_BASE + index);
   if (!button) { ok = FALSE; goto cleanup; }
   SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(button->command, BN_CLICKED), (LPARAM)button->window);
-  ok = custom_drag() && !style_visible(MC_STYLE_CONTROL_SHAPE) && ok;
+  ok = custom_drag() && !style_visible(MC_STYLE_SHAPE) && ok;
   SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(90, 90));
   SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(200, 165));
   ok = capture.dragging && image_session_count(capture.session) == initial_count &&
@@ -2281,9 +2425,9 @@ int mc_capture_smoke(HINSTANCE instance) {
   /* Real child focus, IME and layered EDIT hit-testing require the generated
    * fixture window to be shown. Its pixels come only from the synthetic image. */
   ShowWindow(capture.editor, SW_SHOWNOACTIVATE); SetForegroundWindow(capture.editor); UpdateWindow(capture.editor);
-  if (!mc_style_controls_smoke(instance) || !context_toolbar_smoke() || !independent_text_style_smoke() ||
+  if (!context_toolbar_smoke() || !independent_text_style_smoke() ||
       !shared_text_fields_smoke() || !text_ime_rejection_smoke() || !text_cover_preview_smoke() ||
-      !text_document_boundaries_smoke() || !shape_variants_smoke() || !contribution_smoke())
+      !text_document_boundaries_smoke() || !shape_variants_smoke() || !shared_properties_smoke() || !contribution_smoke())
     CAPTURE_FAIL();
   if (image_session_add(capture.session, TOOL_REDACT, 40, 60, 80, 60, 0, 4) != 1)
     CAPTURE_FAIL();
@@ -2300,7 +2444,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   if (capture.font_size != initial_font + 1 || image_session_count(capture.session) != 1)
     CAPTURE_FAIL();
   step_style(FALSE);
-  if (capture.font_size != initial_font || !style_visible(MC_STYLE_CONTROL_FONT) || style_visible(MC_STYLE_CONTROL_STROKE))
+  if (capture.font_size != initial_font || !style_visible(MC_STYLE_FONT) || style_visible(MC_STYLE_STROKE))
     CAPTURE_FAIL();
 
   SetFocus(capture.text);
@@ -2386,7 +2530,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   if (blend[0] != 104 || blend[1] != 112 || blend[2] != 126)
     CAPTURE_FAIL();
   capture.selected = index;
-  sync_style_controls();
+  sync_properties();
   if (!choose_style(MC_STYLE_OPACITY, .4)) CAPTURE_FAIL();
   if (image_session_value(capture.session, index, 8) != .4)
     CAPTURE_FAIL();
@@ -2402,7 +2546,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   capture.selected = image_session_count(capture.session) - 1;
   capture.color = 0xF26769;
   capture.stroke = 4;
-  sync_style_controls();
+  sync_properties();
   if (!choose_style(MC_STYLE_FONT, 128))
     CAPTURE_FAIL();
   if (image_session_value(capture.session, capture.selected, 4) < 128 || !render_image())
@@ -2423,9 +2567,9 @@ int mc_capture_smoke(HINSTANCE instance) {
   capture.tool = TOOL_TEXT;
   capture.color = (int)image_session_value(capture.session, index, 5);
   capture.opacity = image_session_value(capture.session, index, 8);
-  capture.stroke = (int)image_session_value(capture.session, index, 6);
+  capture.stroke = image_session_value(capture.session, index, 6);
   capture.font_size = image_session_value(capture.session, index, 7);
-  sync_style_controls();
+  sync_properties();
   layout_editor(capture.editor);
   // Separate visual fixture after pixel assertions; no desktop content is used.
   for (int y = 0; y < capture.image.height; y++)

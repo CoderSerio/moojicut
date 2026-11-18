@@ -17,10 +17,9 @@ fn text_frame_field(e : TextEdit, token : Int32) -> Json {
     text_error(e)
   } else if s.marked is Some(_) {
     ""
-  } else if s.field_id == "style.opacity" && text_numeric(s, 1) is None {
-    "Opacity must be between 0 and 100"
-  } else if s.field_id == "style.fontSize" && text_numeric(s, 3) is None {
-    "Font size must be between 8 and 128"
+  } else if property_key(s.field_id) >= 1 &&
+    text_numeric(s, property_key(s.field_id)) is None {
+    property_numeric_error(property_key(s.field_id))
   } else {
     ""
   }
@@ -64,16 +63,14 @@ pub fn text_frame(
       scale >= 1.0 / 65536 &&
       scale <= 16) ||
       (dark != 0 && dark != 1) ||
-      (surface != 0 && surface != 1) {
+      (surface != 0 && surface != 1) ||
+      (surface == 1 && e.tool != 3) {
       raise InputError("invalid_input", "Invalid text surface")
     }
     let frame = if surface == 0 {
       @capture_ui.text_properties_frame(
-        @annotation_tools.text_property_descriptors(),
-        Json::array([
-          text_frame_field(e, e.opacity),
-          text_frame_field(e, e.font),
-        ]),
+        property_descriptors(e),
+        Json::array(property_tokens(e).map(token => text_frame_field(e, token))),
         native_image_color(e.color),
         e.active_field,
         text_fresh(e),
@@ -82,6 +79,7 @@ pub fn text_frame(
         dark == 1,
         e.color_pressed,
         e.color_hovered,
+        text_error(e) == "",
       )
     } else {
       @capture_ui.text_inline_frame(
@@ -123,7 +121,7 @@ pub fn text_ui_event(
     if (key != "ArrowUp" && key != "ArrowDown") ||
       input.get("mod") == Some(Json(true)) ||
       input.get("shift") == Some(Json(true)) ||
-      (e.active_field != "style.opacity" && e.active_field != "style.fontSize") {
+      ![1, 2, 3, 5].contains(property_key(e.active_field)) {
       return 0
     }
     return text_event_json(
@@ -138,12 +136,22 @@ pub fn text_ui_event(
     )
   }
   let (result, pressed, hovered) = @capture_ui.text_property_event(
-    @annotation_tools.text_property_descriptors(),
+    property_descriptors(e),
     event,
     width,
     height,
     e.color_pressed,
   )
+  if result >= 10 && result <= 12 {
+    e.color_pressed = ""
+    e.color_hovered = ""
+    return text_event_json(
+      session,
+      edit,
+      version,
+      Json::object({ "type": Json("shape"), "value": Json(result - 10) }).stringify(),
+    )
+  }
   if result != 0 {
     e.color_pressed = pressed
     e.color_hovered = hovered

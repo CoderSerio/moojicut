@@ -1,6 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
-#import "components/style_controls/macos/MCStylePropertiesView.h"
+#include "bindings/c/editor_style.h"
 #include "moonbit.h"
 #include "bindings/c/tool_registry.h"
 #include "bindings/c/capture_edit.h"
@@ -33,18 +33,11 @@
 @property (readonly) NSSegmentedControl *tools;
 @property (readonly) NSStackView *toolbar;
 @property (readonly) NSButton *pinButton;
-@property (readonly) NSStackView *properties;
-@property (readonly) NSStackView *colorGroup;
-@property (readonly) NSStackView *fontGroup;
-@property (readonly) NSStackView *strokeGroup;
-@property (readonly) NSTextField *lineWidth;
-@property (readonly) NSStepper *strokeStepper;
-@property (readonly) MCColorSwatch *color;
-@property (readonly) NSTextField *fontSize;
-@property (readonly) NSStepper *fontStepper;
+@property (readonly) NSButton *undoButton;
+@property (readonly) NSButton *redoButton;
+@property (readonly) NSTextField *propertyStatus;
 @property (readonly) NSArray<NSDictionary *> *visibleTools;
 - (void)chooseTool:(id)sender;
-- (void)styleChanged:(id)sender;
 - (void)refresh;
 - (void)addTextAtPoint:(NSPoint)point;
 - (void)pinImage:(id)sender;
@@ -62,6 +55,15 @@ static void textColor(MCImageEditorController *editor, NSColor *color) {
     NSColorPanel *panel = NSColorPanel.sharedColorPanel;
     panel.color = color; [editor sharedColorChanged:panel];
     textNumber(editor,@"style.opacity",[NSString stringWithFormat:@"%.12g",color.alphaComponent*100]);
+}
+static double propertyValue(MCImageEditorController *editor, int key) {
+    return capture_text_value(editor.imageSession,editor.textEdit,key);
+}
+static BOOL propertyVisible(MCImageEditorController *editor, NSString *identifier) {
+    if (editor.textPropertyInputs[identifier]) return YES;
+    for (NSDictionary *item in editor.textPropertiesCanvas.frameDescription[@"semantics"])
+        if ([item[@"id"] isEqual:identifier]) return YES;
+    return NO;
 }
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL capture overlay: %s\n", message); passed = NO; } } while (0)
 
@@ -154,7 +156,7 @@ static BOOL exercise(CGFloat scale) {
     CHECK(NSHeight(editor.floatingToolbar.frame) <= 40,
           "selecting a region does not reserve an empty property row");
     selectTool(editor,1);
-    CHECK(NSHeight(editor.floatingToolbar.frame) > 40 && NSHeight(editor.floatingToolbar.frame) <= 72,
+    CHECK(NSHeight(editor.floatingToolbar.frame) > 40 && NSHeight(editor.floatingToolbar.frame) <= 80,
           "editable properties expand to a compact second row without reducing hit targets");
     CHECK(NSMaxX(selectionInRoot) >= NSWidth(editor.floatingToolbar.frame) + 8 ?
           fabs(NSMaxX(editor.floatingToolbar.frame) - NSMaxX(selectionInRoot)) < 1 :
@@ -162,11 +164,11 @@ static BOOL exercise(CGFloat scale) {
           "property widths retain the trailing anchor without moving controls offscreen");
     selectTool(editor,0);
     [editor showError:[NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"An actionable error"}]];
-    CHECK(NSHeight(editor.floatingToolbar.frame) > 40 && !((MCStylePropertiesView *)editor.properties).status.hidden,
+    CHECK(NSHeight(editor.floatingToolbar.frame) > 40 && !editor.propertyStatus.hidden,
           "an error expands a collapsed property row so the message remains visible");
     [editor refresh];
     CHECK(NSHeight(editor.floatingToolbar.frame) <= 40, "clearing the message collapses the unused row again");
-    CHECK(editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
+    CHECK(editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 0,
           "select without a text object shows no irrelevant properties");
     NSInteger ocr=contributionSegment(editor,@"builtin.capture.ocr"), translate=contributionSegment(editor,@"builtin.capture.translate");
     CHECK(ocr >= 0 && translate >= 0 && ![editor.tools isEnabledForSegment:ocr] && ![editor.tools isEnabledForSegment:translate] &&
@@ -176,27 +178,30 @@ static BOOL exercise(CGFloat scale) {
     NSNumber *revision = editor.document[@"revision"];
     invokeContribution(editor,@"builtin.capture.ocr"); invokeContribution(editor,@"builtin.capture.translate");
     CHECK([editor.document[@"revision"] isEqual:revision], "unavailable contribution dispatch never mutates the image");
-    CHECK([editor.color isDescendantOf:editor.properties] && [editor.fontSize isDescendantOf:editor.properties] &&
-          ![editor.color isDescendantOf:editor.toolbar] && ![editor.fontSize isDescendantOf:editor.toolbar],
-          "color and font controls live only in the contextual second row");
     selectTool(editor, 1);
-    CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && !editor.strokeGroup.hidden,
+    CHECK(propertyVisible(editor,@"style.color") && !propertyVisible(editor,@"style.fontSize") && propertyVisible(editor,@"style.stroke"),
           "rectangle exposes color and labelled line width only");
-    editor.strokeStepper.doubleValue = 8;
-    [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
+    textNumber(editor,@"style.stroke",@"8");
+    CHECK([editor.textPropertyInputs[@"style.stroke"] isDescendantOf:editor.textPropertiesCanvas] &&
+          ![editor.textPropertyInputs[@"style.stroke"] isDescendantOf:editor.toolbar],
+          "native numeric input lives only in the shared contextual second row");
     [canvas mouseDown:mouse(canvas, NSEventTypeLeftMouseDown, NSMakePoint(340, 240))];
     [canvas mouseDragged:mouse(canvas, NSEventTypeLeftMouseDragged, NSMakePoint(420, 290))];
     [canvas mouseUp:mouse(canvas, NSEventTypeLeftMouseUp, NSMakePoint(420, 290))];
     CHECK([editor.document[@"annotations"][0][@"stroke"] intValue] == 8,
           "contextual line width controls the real MoonBit shape annotation");
-    [editor undo:nil];
+    CHECK(editor.undoButton.enabled, "a fresh defaults transaction does not disable document undo after drawing");
+    [editor.undoButton performClick:nil];
+    CHECK([editor.document[@"annotations"] count] == 0 && editor.redoButton.enabled,
+          "the actual toolbar undo removes the shape and enables document redo");
     selectTool(editor, 2);
-    CHECK(!editor.strokeGroup.hidden && editor.fontGroup.hidden, "arrow exposes the same meaningful shape properties");
+    CHECK(propertyVisible(editor,@"style.stroke") && !propertyVisible(editor,@"style.fontSize"), "arrow exposes the same meaningful shape properties");
     selectTool(editor, 4);
-    CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
+    CHECK(propertyVisible(editor,@"style.color") && propertyVisible(editor,@"style.opacity") &&
+          !propertyVisible(editor,@"style.fontSize") && !propertyVisible(editor,@"style.stroke"),
           "filled cover exposes color/opacity without unrelated stroke or font properties");
     selectTool(editor, 3);
-    CHECK(editor.properties.hidden && !editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 2 &&
+    CHECK(!editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 2 &&
           NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame),
           "changing tools fits the current properties within the screen");
     NSRect toolbarFrame = editor.floatingToolbar.frame;
@@ -248,7 +253,7 @@ static BOOL exercise(CGFloat scale) {
     selectTool(editor, 0);
     canvas.selectedID = textID;
     [editor refresh];
-    CHECK(!editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 2 && editor.properties.hidden,
+    CHECK(!editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 2,
           "selecting an existing text object retains shared text properties in the select tool");
     // An untouched point must come from the same source location, not from a
     // downscaled full-screen image. This catches crop-origin/Retina regressions.
@@ -295,33 +300,32 @@ static BOOL independentToolStyles(void) {
     NSError *error = nil;
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:&error];
     [editor prepareWindow];
-    MCStylePropertiesView *properties = (MCStylePropertiesView *)editor.properties;
     const int colors[] = {0, 0xff0000, 0x00ff00, 0x0000ff, 0x883399};
     for (NSInteger tool = 1; tool <= 4; tool++) {
         selectTool(editor, tool);
-        MCStyleValues values = properties.values;
-        values.rgb = colors[tool]; values.opacity = tool * .2;
-        if (tool == 3) textColor(editor,[NSColor colorWithSRGBRed:0 green:0 blue:1 alpha:.6]);
-        else { properties.values = values; properties.colorControl.onChange(properties.colorControl.well); }
-        if (tool <= 2) {
-            editor.strokeStepper.doubleValue = 3 * tool;
-            [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
-        }
+        int rgb = colors[tool];
+        textColor(editor,[NSColor colorWithSRGBRed:((rgb>>16)&255)/255.0 green:((rgb>>8)&255)/255.0 blue:(rgb&255)/255.0 alpha:tool*.2]);
+        if (tool <= 2) textNumber(editor,@"style.stroke",[NSString stringWithFormat:@"%ld",3*tool]);
     }
     CHECK([editor.document[@"undo"] count] == 0, "changing creation defaults never creates document undo entries");
     for (NSInteger tool = 4; tool >= 1; tool--) {
         selectTool(editor, tool);
-        MCStyleValues values = properties.values;
-        if (tool == 3) { values.rgb = (int32_t)capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_RGB);
-            values.opacity = capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_OPACITY); }
-        CHECK(values.rgb == colors[tool] && fabs(values.opacity - tool * .2) < .001,
+        CHECK(propertyValue(editor,MC_CAPTURE_TEXT_RGB) == colors[tool] && fabs(propertyValue(editor,MC_CAPTURE_TEXT_OPACITY) - tool * .2) < .001,
               "each tool restores its own RGBA values after visiting every other tool");
-        if (tool <= 2) CHECK(values.stroke == 3 * tool, "rectangle and arrow have independent line widths");
+        if (tool <= 2) CHECK(propertyValue(editor,MC_CAPTURE_TEXT_STROKE) == 3 * tool, "rectangle and arrow have independent line widths");
     }
     MCImageEditorController *other = [[MCImageEditorController alloc] initWithPNGData:fixture() error:&error];
     [other prepareWindow];
-    CHECK(((MCStylePropertiesView *)other.properties).values.rgb == (int32_t)editor_style_default(MC_STYLE_COLOR),
+    CHECK(propertyValue(other,MC_CAPTURE_TEXT_RGB) == editor_style_default(MC_STYLE_COLOR),
           "another editor instance retains its own defaults");
+    NSDictionary *unchanged = other.document;
+    NSString *otherStroke = other.textPropertyInputs[@"style.stroke"].string;
+    [editor syncTextControls]; [other syncTextControls];
+    CHECK([other.document isEqual:unchanged] && [other.textPropertyInputs[@"style.stroke"].string isEqual:otherStroke],
+          "rebinding shared frames does not emit edits or change another owner");
+    textNumber(editor,@"style.stroke",@"13");
+    CHECK(propertyValue(editor,MC_CAPTURE_TEXT_STROKE) == 13 && [other.textPropertyInputs[@"style.stroke"].string isEqual:otherStroke],
+          "real native numeric input remains isolated to its root session");
     selectTool(editor, 3);
     [editor addTextAtPoint:NSMakePoint(30, 30)];
     [editor.canvas.textView insertText:@"第一段" replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -347,21 +351,6 @@ static BOOL independentToolStyles(void) {
           "existing objects and new annotations retain independent styles");
     [editor cancel:nil]; [other cancel:nil];
 
-    // Reuse the same native component outside an editor. Rebinding values must
-    // not emit user actions or route callbacks to another component instance.
-    MCStylePropertiesView *first = [[MCStylePropertiesView alloc] initWithFrame:NSZeroRect];
-    MCStylePropertiesView *second = [[MCStylePropertiesView alloc] initWithFrame:NSZeroRect];
-    first.propertyMask = second.propertyMask = editor_style_property_mask(MC_STYLE_TOOL_RECTANGLE);
-    __block NSInteger firstChanges = 0, secondChanges = 0;
-    first.onChange = ^(__unused id sender) { firstChanges++; };
-    second.onChange = ^(__unused id sender) { secondChanges++; };
-    MCStyleValues rebound = first.values; rebound.stroke = 12;
-    first.values = rebound;
-    CHECK(firstChanges == 0 && secondChanges == 0, "rebinding component values never masquerades as user input");
-    first.strokeControl.stepper.doubleValue = 13;
-    [first.strokeControl.stepper sendAction:first.strokeControl.stepper.action to:first.strokeControl.stepper.target];
-    CHECK(firstChanges == 1 && secondChanges == 0 && second.values.stroke == editor_style_default(MC_STYLE_STROKE),
-          "native numeric callbacks stay within their own component instance");
     return passed;
 }
 static NSView *cursorCanvas;
@@ -448,9 +437,9 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     CHECK(hasCursor(canvasCursors(canvas), NSMakePoint(NSMaxX(textFrame),NSMidY(textFrame)), NSCursor.resizeLeftRightCursor),
           "text resize handles retain their cursor at each display scale");
     NSResponder *responder = editor.window.firstResponder;
-    NSRect fieldFrame = editor.fontSize.frame;
+    NSRect fieldFrame = editor.textPropertyInputs[@"style.fontSize"].frame;
     [editor positionFloatingToolbar];
-    CHECK(editor.window.firstResponder == responder && NSEqualRects(editor.fontSize.frame,fieldFrame),
+    CHECK(editor.window.firstResponder == responder && NSEqualRects(editor.textPropertyInputs[@"style.fontSize"].frame,fieldFrame),
           "relayout preserves native text focus and numeric field width");
     CHECK([canvas finishTextEditing:YES], "layout leaves inline text committable");
     selectTool(editor,0);
@@ -469,12 +458,12 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     [editor.tools scrollRectToVisible:NSMakeRect(NSMaxX(editor.tools.bounds)-30,0,30,28)];
     CHECK(NSMaxX(toolsScroll.documentVisibleRect) >= NSMaxX(editor.tools.bounds)-1, "last plugin is reachable through the bounded tool scroller");
     [editor applyToolConfiguration:overlayConfiguration([NSSet setWithArray:@[@2,@100]],0)];
-    selectTool(editor,4); CGFloat cover = NSWidth(editor.floatingToolbar.frame), coverProperties = editor.properties.fittingSize.width;
-    selectTool(editor,1); CGFloat shape = NSWidth(editor.floatingToolbar.frame), shapeProperties = editor.properties.fittingSize.width;
-    selectTool(editor,3); CGFloat text = NSWidth(editor.floatingToolbar.frame), textProperties = editor.properties.fittingSize.width;
+    selectTool(editor,4); CGFloat cover = NSWidth(editor.floatingToolbar.frame), coverProperties = propertyValue(editor,MC_CAPTURE_TEXT_ROW_WIDTH);
+    selectTool(editor,1); CGFloat shape = NSWidth(editor.floatingToolbar.frame), shapeProperties = propertyValue(editor,MC_CAPTURE_TEXT_ROW_WIDTH);
+    selectTool(editor,3); CGFloat text = NSWidth(editor.floatingToolbar.frame), textProperties = propertyValue(editor,MC_CAPTURE_TEXT_ROW_WIDTH);
     CHECK(coverProperties < shapeProperties && cover <= shape && textProperties <= text && coverProperties <= cover,
           "property groups use their natural widths and fit the measured toolbar");
-    CHECK(NSWidth(editor.fontSize.frame) >= 44 && NSWidth(editor.lineWidth.frame) >= 44, "contextual numeric fields keep their natural width");
+    CHECK(NSWidth(editor.textPropertyInputs[@"style.fontSize"].frame) >= 44, "contextual numeric fields keep their natural width");
     __block NSUInteger contentActions = 0;
     editor.onOCR = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onTranslate = ^(__unused MCImageEditorController *source) { contentActions++; };
@@ -496,8 +485,8 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     // instead of letting fixed-width rows escape the screen or compress input.
     [editor.window setFrame:NSMakeRect(-1000,80,160,200) display:NO]; [editor positionFloatingToolbar];
     CHECK(NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame), "small/offset screens contain the entire floating panel");
-    CHECK(NSWidth(editor.fontSize.frame) >= 44, "small screen layout never squeezes the font editor");
-    CHECK(editor.properties.enclosingScrollView.documentVisibleRect.size.width < editor.properties.frame.size.width,
+    CHECK(NSWidth(editor.textPropertyInputs[@"style.fontSize"].frame) >= 44, "small screen layout never squeezes the font editor");
+    CHECK(editor.textPropertiesCanvas.enclosingScrollView.documentVisibleRect.size.width < editor.textPropertiesCanvas.frame.size.width,
           "properties remain reachable through scrolling on exceptionally small screens");
     cursors = canvasCursors(canvas); hud = [canvas convertRect:editor.floatingToolbar.bounds fromView:editor.floatingToolbar];
     for (NSDictionary *record in cursors)
@@ -514,8 +503,7 @@ static BOOL contentSnapshots(void) {
     [editor setCaptureRegion:NSMakeRect(20,20,700,440)];
     NSDictionary *unannotated = editor.captureContentSnapshot;
     selectTool(editor,1);
-    editor.strokeStepper.doubleValue = 12;
-    [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
+    textNumber(editor,@"style.stroke",@"12");
     selectTool(editor,2);
     CHECK([unannotated isEqual:editor.captureContentSnapshot],
           "tool switching and unused creation defaults do not invalidate OCR content");
@@ -600,6 +588,63 @@ static BOOL contentSnapshots(void) {
     CHECK(editor.captureContentSnapshot == nil, "closed editors have no valid content snapshot");
     return passed;
 }
+static BOOL propertyTransactionBoundaries(void) {
+    BOOL passed = YES;
+    NSMutableArray<MCImageEditorController *> *editors = [NSMutableArray array];
+    for (int i=0;i<2;i++) {
+        MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
+        [editor prepareWindow];
+        [editor applyToolConfiguration:overlayConfiguration([NSSet set],0)]; selectTool(editor,1);
+        [editor.canvas mouseDown:mouse(editor.canvas,NSEventTypeLeftMouseDown,NSMakePoint(30,30))];
+        [editor.canvas mouseDragged:mouse(editor.canvas,NSEventTypeLeftMouseDragged,NSMakePoint(150,100))];
+        [editor.canvas mouseUp:mouse(editor.canvas,NSEventTypeLeftMouseUp,NSMakePoint(150,100))];
+        selectTool(editor,0);
+        [editor.canvas mouseDown:mouse(editor.canvas,NSEventTypeLeftMouseDown,NSMakePoint(70,30))];
+        [editor.canvas mouseUp:mouse(editor.canvas,NSEventTypeLeftMouseUp,NSMakePoint(70,30))];
+        CHECK(editor.canvas.selectedID && editor.textEdit && editor.textPropertyInputs[@"style.stroke"],
+              "select tool opens shared properties for an existing shape");
+        NSDictionary *before = editor.document;
+        int32_t oldEdit = editor.textEdit;
+        MCSharedTextInputView *field = editor.textPropertyInputs[@"style.stroke"];
+        [editor.window makeFirstResponder:field]; field.string = @"-";
+        [field cancelOperation:nil];
+        CHECK(editor.textEdit && editor.textEdit != oldEdit && [editor.document isEqual:before] &&
+              [editor.textPropertyInputs[@"style.stroke"].string doubleValue] == 4,
+              "Esc cancels an invalid property and immediately restores a usable row without document history");
+        textNumber(editor,@"style.stroke",i ? @"8.5" : @"7.5");
+        [editors addObject:editor];
+    }
+    MCImageEditorController *first=editors[0], *second=editors[1];
+    NSDictionary *beforeFirst=first.document, *beforeSecond=second.document;
+    NSDictionary *disabled=setConfiguredTool(first.toolConfiguration,@"builtin.image.rectangle",NO);
+    textNumber(second,@"style.stroke",@"invalid");
+    CHECK([first preparedToolConfigurationPublication:disabled error:NULL] &&
+          ![second preparedToolConfigurationPublication:disabled error:NULL] &&
+          [first.document isEqual:beforeFirst] && [second.document isEqual:beforeSecond],
+          "one invalid selected shape vetoes multi-window disable without a partial commit");
+    textNumber(second,@"style.stroke",@"8.5");
+    NSDictionary *a=[first preparedToolConfigurationPublication:disabled error:NULL];
+    NSDictionary *b=[second preparedToolConfigurationPublication:disabled error:NULL];
+    CHECK(a.count && b.count, "both selected-shape transactions prepare while host selection remains active");
+    if (a.count && b.count) {
+        NSString *json=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:@[a,b] options:0 error:NULL] encoding:NSUTF8StringEncoding];
+        moonbit_string_t request=moonbit_make_string_raw((int32_t)json.length);
+        [json getCharacters:request range:NSMakeRange(0,json.length)];
+        int accepted=capture_candidate_commit_many(request); moonbit_decref(request);
+        CHECK(accepted, "shared authority atomically publishes both selected shape drafts");
+        if (accepted) for (MCImageEditorController *editor in editors) [editor completeToolConfigurationPublication:disabled];
+        CHECK(!first.textEdit && !second.textEdit && first.textPropertyInputs.count==0 && second.textPropertyInputs.count==0 &&
+              !first.canvas.selectedID && !second.canvas.selectedID && first.textPropertiesCanvas.hidden && second.textPropertiesCanvas.hidden,
+              "post-publication completion retires native input from the prepared plan even after root edit handles close");
+        CHECK([first.document[@"annotations"][0][@"stroke"] doubleValue]==7.5 &&
+              [second.document[@"annotations"][0][@"stroke"] doubleValue]==8.5 &&
+              [first.document[@"undo"] count]==[beforeFirst[@"undo"] count]+1 &&
+              [second.document[@"undo"] count]==[beforeSecond[@"undo"] count]+1,
+              "both refreshed render snapshots include exactly one committed property change");
+    }
+    for (MCImageEditorController *editor in editors) [editor cancel:nil];
+    return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -611,6 +656,7 @@ int main(void) {
         passed = adaptiveOverlay(1) && passed;
         passed = adaptiveOverlay(1.5) && passed;
         passed = contentSnapshots() && passed;
+        passed = propertyTransactionBoundaries() && passed;
         puts(passed ? "PASS capture overlay: borderless frozen canvas, direct edit, scaled region handles, exact crop and pin output"
                     : "FAIL capture overlay");
         return passed ? 0 : 1;

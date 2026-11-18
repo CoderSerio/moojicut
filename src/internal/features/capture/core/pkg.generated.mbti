@@ -2,6 +2,7 @@
 package "moojicut/core/internal/features/capture/core"
 
 import {
+  "moojicut/core/internal/shared/protocol",
   "moonbitlang/core/json",
 }
 
@@ -25,6 +26,8 @@ pub fn image_finalize(String) -> String
 pub fn image_hit_index(Array[@json.Json], Double, Double, Double, Bool) -> Int32
 
 pub fn image_selection(String) -> String
+
+pub fn image_style_annotation(@json.Json, Int32?, @json.Json) -> @json.Json raise @protocol.InputError
 
 // Errors
 

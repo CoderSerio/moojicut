@@ -122,8 +122,9 @@ pub fn text_properties_frame(
   width : Double,
   height : Double,
   dark : Bool,
-  pressed : Bool,
-  hovered : Bool,
+  pressed : String,
+  hovered : String,
+  choices_enabled : Bool,
 ) -> String {
   let commands : Array[Json] = []
   let semantics : Array[Json] = []
@@ -164,13 +165,13 @@ pub fn text_properties_frame(
       circle["radius"] = Json(diameter / 2)
       circle["fill"] = Json(rgb)
       circle["stroke"] = Json(
-        if pressed || hovered {
+        if pressed == id || hovered == id {
           text_color
         } else {
           border
         },
       )
-      circle["lineWidth"] = Json(if pressed { 2 } else { 1 })
+      circle["lineWidth"] = Json(if pressed == id { 2 } else { 1 })
       commands.push(Json::object(circle))
       let node = property_rect(placement.x, cy, diameter, diameter)
       node["id"] = Json(id)
@@ -180,6 +181,72 @@ pub fn text_properties_frame(
       node["enabled"] = Json(enabled)
       node["focused"] = Json(enabled && active == id)
       semantics.push(Json::object(node))
+    } else if property_string(d, "kind", "") == "choice" {
+      let options = match d.get("options") {
+        Some(Array(a)) => a
+        _ => []
+      }
+      let selected = property_number(d, "value", 0)
+      for index, option in options {
+        if option is Object(o) {
+          let bx = placement.x + index.to_double() * 26
+          if bx + 26 > width {
+            continue
+          }
+          let oid = property_string(o, "id", "")
+          let chosen = property_number(o, "value", -1) == selected
+          let background = property_command("rect", bx, y, 26, control_height)
+          background["radius"] = Json(4)
+          background["fill"] = Json(
+            if chosen {
+              if dark {
+                "#535353"
+              } else {
+                "#dddddd"
+              }
+            } else {
+              fill
+            },
+          )
+          if pressed == oid || hovered == oid {
+            background["stroke"] = Json(text_color)
+          }
+          commands.push(Json::object(background))
+          property_icon(
+            commands,
+            property_string(o, "icon", "rectangle"),
+            bx + 5,
+            y + (control_height - 16) / 2,
+            if enabled && choices_enabled {
+              text_color
+            } else {
+              border
+            },
+          )
+          let node = property_rect(bx, y, 26, control_height)
+          node["id"] = Json(oid)
+          node["role"] = Json("button")
+          let name = property_string(o, "label", label)
+          node["label"] = Json(
+            if chosen {
+              name + "（已选）"
+            } else {
+              name
+            },
+          )
+          node["tooltip"] = Json(
+            if choices_enabled {
+              name
+            } else {
+              "请先完成输入并修正属性值"
+            },
+          )
+          node["value"] = Json(if chosen { 1 } else { 0 })
+          node["enabled"] = Json(enabled && choices_enabled)
+          node["focused"] = Json(enabled && active == id && chosen)
+          semantics.push(Json::object(node))
+        }
+      }
     } else if property_field_state(states, id) is Some(field) {
       let background = property_command(
         "rect",
@@ -221,67 +288,142 @@ pub fn text_properties_frame(
     "overlayCommands": Json::array([]),
     "semantics": Json::array(semantics),
     "editableFields": Json::array(fields),
-    "cursor": Json(if enabled && hovered { "pointer" } else { "default" }),
+    "cursor": Json(if enabled && hovered != "" { "pointer" } else { "default" }),
   }).stringify()
 }
 
 ///|
-/// Shared hit policy for a color action. Returns (handled/request-color, pressed,
-/// hovered). Native code only executes the requested system color picker.
+/// Shared hit policy. Codes 10..12 are descriptor choice values; the root
+/// validates and applies the request. Pointer release must match its press ID.
 pub fn text_property_event(
   descriptors : Json,
   event : Json,
   width : Double,
   height : Double,
-  pressed : Bool,
-) -> (Int32, Bool, Bool) {
+  pressed : String,
+) -> (Int32, String, String) {
   let event = match event {
     Object(m) => m
-    _ => return (0, pressed, false)
+    _ => return (0, pressed, "")
   }
   let kind = property_string(event, "type", "")
   if kind == "cancel" {
-    return (1, false, false)
+    return (1, "", "")
   }
   if kind == "pointerDown" || kind == "pointerMove" || kind == "pointerUp" {
     for key in ["x", "y"] {
       match event.get(key) {
         Some(Number(n, ..)) if n >= -1000000 && n <= 1000000 => ()
-        _ => return (0, pressed, false)
+        _ => return (0, pressed, "")
       }
     }
   }
   let x = match event.get("x") {
-    Some(Number(x, ..)) if x >= -1000000 && x <= 1000000 => x
+    Some(Number(n, ..)) => n
     _ => -1.0
   }
   let y = match event.get("y") {
-    Some(Number(y, ..)) if y >= -1000000 && y <= 1000000 => y
+    Some(Number(n, ..)) => n
     _ => -1.0
   }
-  let mut hit = false
-  let mut activate = false
+  let mut hit = ""
+  let mut code = 0
   for p in property_layout(descriptors) {
-    if property_string(p.descriptor, "kind", "") == "color" {
+    let d = p.descriptor
+    let id = property_string(d, "id", "")
+    if property_string(d, "kind", "") == "color" {
       let diameter = @protocol.smaller(
         @protocol.smaller(p.width, @protocol.larger(0, width - p.x)),
         @protocol.smaller(22, height),
       )
       let cy = (height - diameter) / 2
-      hit = x >= p.x &&
+      let dx = x - p.x - diameter / 2
+      let dy = y - cy - diameter / 2
+      let inside = diameter > 0 &&
+        x >= p.x &&
         x < p.x + diameter &&
-        x < width &&
         y >= cy &&
-        y < cy + diameter
-      activate = event.get("id") == p.descriptor.get("id")
+        y < cy + diameter &&
+        dx * dx + dy * dy <= diameter * diameter / 4
+      if (kind == "activate" && event.get("id") == Some(Json(id))) || inside {
+        hit = id
+        code = 2
+      }
+    } else if property_string(d, "kind", "") == "choice" {
+      let options = match d.get("options") {
+        Some(Array(a)) => a
+        _ => []
+      }
+      let h = @protocol.smaller(24, height)
+      let top = (height - h) / 2
+      for index, option in options {
+        if option is Object(o) {
+          let left = p.x + index.to_double() * 26
+          let oid = property_string(o, "id", "")
+          let value = property_number(o, "value", -1)
+          if left + 26 <= width &&
+            value >= 0 &&
+            value <= 2 &&
+            (
+              (kind == "activate" && event.get("id") == Some(Json(oid))) ||
+              (x >= left && x < left + 26 && y >= top && y < top + h)
+            ) {
+            hit = oid
+            code = 10 + value.to_int()
+          }
+        }
+      }
     }
   }
   match kind {
-    "activate" if activate => (2, false, false)
+    "activate" if code != 0 => (code, "", "")
     "pointerDown" => (1, hit, hit)
     "pointerMove" => (1, pressed, hit)
-    "pointerUp" => (if pressed && hit { 2 } else { 1 }, false, hit)
+    "pointerUp" => (if hit != "" && pressed == hit { code } else { 1 }, "", hit)
     _ => (0, pressed, hit)
+  }
+}
+
+///|
+fn property_icon(
+  commands : Array[Json],
+  kind : String,
+  x : Double,
+  y : Double,
+  color : String,
+) -> Unit {
+  if kind == "mosaic" {
+    for row in 0..<2 {
+      for col in 0..<2 {
+        let tile = property_command(
+          "rect",
+          x + col.to_double() * 8,
+          y + row.to_double() * 8,
+          7,
+          7,
+        )
+        tile["fill"] = Json(
+          ["#333333", "#999999", "#cccccc", "#666666"][row * 2 + col],
+        )
+        commands.push(Json::object(tile))
+      }
+    }
+  } else {
+    let r = property_command("rect", x, y, 16, 16)
+    r["radius"] = Json(
+      if kind == "ellipse" || kind == "filledEllipse" {
+        8
+      } else {
+        0
+      },
+    )
+    if kind == "filledRectangle" || kind == "filledEllipse" {
+      r["fill"] = Json(color)
+    } else {
+      r["stroke"] = Json(color)
+      r["lineWidth"] = Json(1.5)
+    }
+    commands.push(Json::object(r))
   }
 }
 

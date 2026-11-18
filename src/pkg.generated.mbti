@@ -12,6 +12,8 @@ pub fn capture_candidate_document(Int32) -> String
 
 pub fn capture_candidate_ready(Int32, Int32) -> Int32
 
+pub fn capture_properties_begin(Int32, Int32, Int32, String, Double, String) -> Int32
+
 pub fn capture_text_begin(Int32, Int32, Int32, String, Double, Double, Double, Double, Double) -> Int32
 
 pub fn capture_text_cancel(Int32, Int32, Int32) -> Int32

@@ -169,6 +169,53 @@ fn image_translate(raw : Json, dx : Double, dy : Double) -> Json raise InputErro
 }
 
 ///|
+/// Pure style transformation used by both document commands and draft previews.
+/// Identity, geometry and unrelated annotation metadata remain unchanged.
+pub fn image_style_annotation(
+  raw : Json,
+  shape : Int32?,
+  patch : Json,
+) -> Json raise InputError {
+  let original = match raw {
+    Object(m) => m
+    _ => raise InputError("invalid_annotation", "Expected annotation")
+  }
+  let copy = image_copy(original)
+  if shape is Some(shape) {
+    if shape < 0 || shape > 2 {
+      raise InputError("invalid_command", "Unknown shape")
+    }
+    let old = image_string(copy, "type", "")
+    if old == "rect" || old == "ellipse" {
+      if shape == 2 {
+        raise InputError("invalid_command", "Outline cannot become mosaic")
+      }
+      copy["type"] = Json(if shape == 0 { "rect" } else { "ellipse" })
+    } else if old == "redact" || old == "mosaic" {
+      copy["type"] = Json(if shape == 2 { "mosaic" } else { "redact" })
+      copy["shape"] = Json(if shape == 1 { "ellipse" } else { "rect" })
+    } else {
+      raise InputError(
+        "invalid_command", "This annotation has no shape variants",
+      )
+    }
+  }
+  let values = match patch {
+    Object(m) => m
+    _ => raise InputError("invalid_command", "Expected style patch")
+  }
+  for key, value in values {
+    if !["color", "opacity", "stroke", "fontSize", "blockSize"].contains(key) {
+      raise InputError(
+        "invalid_command", "Style cannot change annotation geometry or identity",
+      )
+    }
+    copy[key] = value
+  }
+  image_annotation(Json::object(copy))
+}
+
+///|
 pub fn image_apply(request : String) -> String {
   @protocol.response(() => {
     let req = image_request(request)
@@ -212,7 +259,7 @@ pub fn image_apply(request : String) -> String {
           }
           next.push(valid)
         }
-      } else if kind == "update" || kind == "resize" || kind == "move" || kind == "remove" || kind == "order" || kind == "setShape" {
+      } else if kind == "update" || kind == "resize" || kind == "move" || kind == "remove" || kind == "order" || kind == "setShape" || kind == "style" {
         let removals = if kind == "remove" { image_array(command, "ids") } else { [] }
         let mut ordered : Json = Json::null()
         for a in annotations {
@@ -226,18 +273,18 @@ pub fn image_apply(request : String) -> String {
               let dx = image_number(command, "dx", 0)
               let dy = image_number(command, "dy", 0)
               next.push(image_translate(a, dx, dy))
-            } else if kind == "setShape" {
-              let copy = image_copy(am)
-              let old = image_string(am, "type", "")
-              let shape = @protocol.integer_field(command, "shape", 0, 2).to_int()
-              if old == "rect" || old == "ellipse" {
-                if shape == 2 { raise InputError("invalid_command", "Outline cannot become mosaic") }
-                copy["type"] = Json(if shape == 0 { "rect" } else { "ellipse" })
-              } else if old == "redact" || old == "mosaic" {
-                copy["type"] = Json(if shape == 2 { "mosaic" } else { "redact" })
-                copy["shape"] = Json(if shape == 1 { "ellipse" } else { "rect" })
-              } else { raise InputError("invalid_command", "This annotation has no shape variants") }
-              next.push(image_annotation(Json::object(copy)))
+            } else if kind == "setShape" || kind == "style" {
+              let shape = if kind == "setShape" || command.contains("shape") {
+                Some(@protocol.integer_field(command, "shape", 0, 2).to_int())
+              } else {
+                None
+              }
+              let patch = if kind == "style" {
+                Json::object(@protocol.object_field(command, "patch"))
+              } else {
+                Json::object({})
+              }
+              next.push(image_style_annotation(a, shape, patch))
             } else if kind == "order" {
               let annotation_type = image_string(am, "type", "")
               if annotation_type == "redact" || annotation_type == "mosaic" { raise InputError("invalid_command", "Mask stacking is fixed") }

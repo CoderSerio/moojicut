@@ -1,10 +1,10 @@
 # Shared screenshot feature
 
 macOS, Windows and Linux use `features/capture/ui` for rectangle/ellipse, arrow and
-cover/mosaic gestures and floating toolbar placement. Text input, window hit
-testing and control painting still use native adapters. Tool/property rules,
-shape variants and undoable documents belong to MoonBit. This is not yet a
-single shared renderer for every screenshot control.
+cover/mosaic gestures, property rows and floating toolbar placement. Property
+descriptors, layout, drafts, validation, variants and history belong to MoonBit.
+Native adapters execute the same frame and provide system text input, color
+pickers and drawing. The full toolbar and selection surface are still migrating.
 
 `src/api_capture_ui.mbt` exports the C ABI in `bindings/c/capture_ui.h`.
 All calls run on the UI thread. Sessions are per editor, disposable, and never
@@ -60,8 +60,9 @@ only previews, `end` commits once, and `cancel` discards the draft. The feature 
 image session also releases its interaction session.
 
 Scalar annotation fields retain family IDs (ellipse=outline, mosaic=cover),
-with field 9 for the variant and 10 for mosaic cell size. Existing variants are
-changed using `image_session_set_variant`, backed by `setShape` / `update`.
+with field 9 for the variant and 10 for mosaic cell size. Existing property edits use `capture_properties_begin` and the same bounded
+fields/frame/candidate pipeline as text. A style plus shape change publishes
+one `style` command; preview is pure and does not add document history.
 Windows GDI and Linux Cairo retain pixel/font adapters. Their shared low-level
 `platform/shared/image/pixelate.h` samples the composited source grid; it owns no UI or
 document state. Both preview and flattened export render that same scene.
@@ -99,5 +100,6 @@ MoonBit tests and real host smoke fixtures (Linux uses Xvfb + D-Bus in CI).
 Fixtures exercise reverse drags, native property changes, ellipse corner/center
 pixels, mosaic cells, one-step undo, live text, crop and export. These automated
 checks do not replace real multi-monitor/DPI, Windows IME or Wayland portal
-regressions. OCR/translation, user ZIP plugins and shared video UI are separate
-platform gaps; disabled entries are not claimed as working features.
+regressions. OCR/translation and user ZIP plugin backends remain separate Windows/Linux
+gaps; disabled entries are not claimed as working features. Shared video UI
+and media integration have their own recorded checks in the architecture ledger.

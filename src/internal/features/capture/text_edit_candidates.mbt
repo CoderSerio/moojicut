@@ -107,6 +107,9 @@ pub fn text_measured_height(
   if e.mode == 0 {
     return 0
   }
+  if e.tool != 3 {
+    return e.height
+  }
   if e.mode == 2 &&
     text_raw(e.body) == e.initial_body &&
     e.preview_font == e.initial_font {
@@ -144,6 +147,9 @@ pub fn text_prepare(
     (purpose != 0 && purpose != 1) ||
     text_error(e) != "" {
     return 0
+  }
+  if e.tool != 3 {
+    return property_prepare(e, purpose)
   }
   let s = native_image_sessions[session]
   let raw = text_raw(e.body)

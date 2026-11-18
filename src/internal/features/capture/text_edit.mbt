@@ -8,6 +8,8 @@ priv struct TextEdit {
   style_revision : Int32
   base_revision : Double
   mode : Int32
+  tool : Int32
+  contribution_command : String
   annotation_id : String
   original : Json
   x : Double
@@ -17,16 +19,25 @@ priv struct TextEdit {
   body : Int32
   opacity : Int32
   font : Int32
+  stroke : Int32
+  shape : Int32
+  block : Int32
   initial_opacity : Double
   initial_font : Double
+  initial_stroke : Double
+  initial_shape : Double
+  initial_block : Double
   initial_body : String
   mut version : Int32
   mut color : Int32
   mut preview_opacity : Double
   mut preview_font : Double
+  mut preview_stroke : Double
+  mut preview_shape : Double
+  mut preview_block : Double
   mut active_field : String
-  mut color_pressed : Bool
-  mut color_hovered : Bool
+  mut color_pressed : String
+  mut color_hovered : String
 }
 
 ///|
@@ -65,6 +76,9 @@ fn text_field(e : TextEdit, id : String) -> Int32 {
     "annotation.text" => e.body
     "style.opacity" => e.opacity
     "style.fontSize" => e.font
+    "style.stroke" => e.stroke
+    "style.shape" => e.shape
+    "style.blockSize" => e.block
     _ => 0
   }
 }
@@ -81,7 +95,7 @@ fn text_raw(token : Int32) -> String {
 fn text_retire(edit : Int32) -> Unit {
   match text_edits.get(edit) {
     Some(e) => {
-      for field in [e.body, e.opacity, e.font] {
+      for field in property_tokens(e) {
         ignore(@fields.close(field))
       }
       text_active.remove(e.session)
@@ -115,6 +129,58 @@ pub fn text_begin(
   width : Double,
   height : Double,
 ) -> Int32 {
+  capture_edit_begin(
+    session, style, 3, mode, annotation_id, revision, x, y, width, height, "",
+  )
+}
+
+///|
+pub fn properties_begin(
+  session : Int32,
+  style : Int32,
+  tool : Int32,
+  annotation_id : String,
+  revision : Double,
+  contribution_command : String,
+) -> Int32 {
+  if ![1, 2, 4].contains(tool) ||
+    !@annotation_tools.property_context_valid(tool, contribution_command) ||
+    (annotation_id != "" && contribution_command != "") {
+    return 0
+  }
+  capture_edit_begin(
+    session,
+    style,
+    tool,
+    if annotation_id == "" {
+      0
+    } else {
+      2
+    },
+    annotation_id,
+    revision,
+    0,
+    0,
+    1,
+    1,
+    contribution_command,
+  )
+}
+
+///|
+fn capture_edit_begin(
+  session : Int32,
+  style : Int32,
+  tool : Int32,
+  mode : Int32,
+  annotation_id : String,
+  revision : Double,
+  x : Double,
+  y : Double,
+  width : Double,
+  height : Double,
+  contribution_command : String,
+) -> Int32 {
   let s = match native_image_sessions.get(session) {
     Some(s) => s
     None => return 0
@@ -135,7 +201,7 @@ pub fn text_begin(
     for item in native_image_annotations(session) {
       if item is Object(a) {
         if image_string(a, "id", "") == annotation_id &&
-          image_string(a, "type", "") == "text" {
+          native_annotation_value(a, 0).to_int() == tool {
           found = item
         }
       }
@@ -169,14 +235,14 @@ pub fn text_begin(
     y
   }
   let width = if mode == 2 {
-    image_number(original_fields, "width", 1)
+    native_annotation_value(original_fields, 3)
   } else if mode == 0 {
     1
   } else {
     width
   }
   let height = if mode == 2 {
-    image_number(original_fields, "height", 1)
+    native_annotation_value(original_fields, 4)
   } else if mode == 0 {
     1
   } else {
@@ -198,7 +264,7 @@ pub fn text_begin(
     height <= image_height - y) {
     return 0
   }
-  let values = bank.tools[3]
+  let values = bank.tools[tool]
   let color = if mode == 2 {
     native_annotation_value(original_fields, 5).to_int()
   } else {
@@ -221,7 +287,24 @@ pub fn text_begin(
   } else {
     ""
   }
-  let body = if mode == 0 {
+  let stroke_value = if mode == 2 {
+    image_number(original_fields, "stroke", 3)
+  } else {
+    values.stroke
+  }
+  let shape_value = if contribution_command != "" {
+    0.0
+  } else if mode == 2 {
+    native_annotation_value(original_fields, 9)
+  } else {
+    values.shape
+  }
+  let block_value = if mode == 2 {
+    image_number(original_fields, "blockSize", 12)
+  } else {
+    values.block
+  }
+  let body = if mode == 0 || tool != 3 {
     0
   } else {
     @fields.open(
@@ -231,15 +314,48 @@ pub fn text_begin(
       @fields.Directed(initial.length(), initial.length()),
     )
   }
-  if mode != 0 && body == 0 {
+  if mode != 0 && tool == 3 && body == 0 {
     return 0
   }
   let opacity_text = text_decimal(opacity_value * 100)
   let opacity = @fields.open("style.opacity", opacity_text, 64, @fields.Unknown)
   let font_text = text_decimal(font_value)
-  let font = @fields.open("style.fontSize", font_text, 64, @fields.Unknown)
-  if opacity == 0 || font == 0 {
-    for token in [body, opacity, font] {
+  let font = if tool == 3 {
+    @fields.open("style.fontSize", font_text, 64, @fields.Unknown)
+  } else {
+    0
+  }
+  let stroke = if tool == 1 || tool == 2 {
+    @fields.open(
+      "style.stroke",
+      text_decimal(stroke_value),
+      64,
+      @fields.Unknown,
+    )
+  } else {
+    0
+  }
+  let shape = if (tool == 1 || tool == 4) && contribution_command == "" {
+    @fields.open("style.shape", text_decimal(shape_value), 64, @fields.Unknown)
+  } else {
+    0
+  }
+  let block = if tool == 4 {
+    @fields.open(
+      "style.blockSize",
+      text_decimal(block_value),
+      64,
+      @fields.Unknown,
+    )
+  } else {
+    0
+  }
+  if opacity == 0 ||
+    (tool == 3 && font == 0) ||
+    ((tool == 1 || tool == 2) && stroke == 0) ||
+    ((tool == 1 || tool == 4) && contribution_command == "" && shape == 0) ||
+    (tool == 4 && block == 0) {
+    for token in [body, opacity, font, stroke, shape, block] {
       ignore(@fields.close(token))
     }
     return 0
@@ -257,7 +373,7 @@ pub fn text_begin(
   if mode == 1 {
     for item in native_image_annotations(session) {
       if item is Object(a) && image_string(a, "id", "") == annotation_id {
-        for token in [body, opacity, font] {
+        for token in [body, opacity, font, stroke, shape, block] {
           ignore(@fields.close(token))
         }
         return 0
@@ -270,6 +386,8 @@ pub fn text_begin(
     style_revision: bank.revision,
     base_revision: revision,
     mode,
+    tool,
+    contribution_command,
     annotation_id,
     original,
     x,
@@ -279,6 +397,12 @@ pub fn text_begin(
     body,
     opacity,
     font,
+    stroke,
+    shape,
+    block,
+    initial_stroke: stroke_value,
+    initial_shape: shape_value,
+    initial_block: block_value,
     initial_opacity: opacity_value,
     initial_font: font_value,
     initial_body: initial,
@@ -286,13 +410,16 @@ pub fn text_begin(
     color,
     preview_opacity: opacity_value,
     preview_font: font_value,
-    active_field: if mode == 0 {
+    preview_stroke: stroke_value,
+    preview_shape: shape_value,
+    preview_block: block_value,
+    active_field: if mode == 0 || tool != 3 {
       ""
     } else {
       "annotation.text"
     },
-    color_pressed: false,
-    color_hovered: false,
+    color_pressed: "",
+    color_hovered: "",
   }
   text_active[session] = edit
   candidate_retire_session(session)
@@ -334,7 +461,7 @@ pub fn text_event_json(
     "field" => {
       let id = image_string(event, "id", "")
       let token = text_field(e, id)
-      if token == 0 {
+      if token == 0 || !property_visible(e, id) || id == "style.shape" {
         return 0
       }
       let supplied = @protocol.integer_field(event, "token", 1, 2147483646) catch {
@@ -363,6 +490,9 @@ pub fn text_event_json(
       e.active_field = id
     }
     "color" => {
+      if !property_visible(e, "style.color") {
+        return 0
+      }
       let rgb = @protocol.integer_field(event, "rgb", 0, 16777215) catch {
         _ => return 0
       }
@@ -370,11 +500,8 @@ pub fn text_event_json(
     }
     "step" => {
       let id = image_string(event, "id", "")
-      let property = if id == "style.opacity" {
-        1
-      } else if id == "style.fontSize" {
-        3
-      } else {
+      let property = property_key(id)
+      if ![1, 2, 3, 5].contains(property) || !property_visible(e, id) {
         return 0
       }
       let delta = @protocol.integer_field(event, "delta", -1, 1) catch {
@@ -409,6 +536,55 @@ pub fn text_event_json(
         return 0
       }
       e.active_field = id
+    }
+    "shape" => {
+      if e.shape == 0 || text_error(e) != "" {
+        return 0
+      }
+      let value = (@protocol.integer_field(event, "value", 0, 2) catch {
+        _ => return 0
+      }).to_int()
+      if value >= @annotation_tools.editor_style_shape_count(e.tool) {
+        return 0
+      }
+      let s = @fields.snapshot(e.shape).unwrap()
+      if !@fields.apply(
+          e.shape,
+          "style.shape",
+          s.version,
+          @fields.Replace(
+            0,
+            s.raw.length(),
+            text_decimal(value.to_double()),
+            @fields.Unknown,
+          ),
+        ) {
+        return 0
+      }
+      e.active_field = "style.shape"
+    }
+    "undo" | "redo" as kind => {
+      let token = text_field(e, e.active_field)
+      if !property_visible(e, e.active_field) ||
+        (e.active_field == "style.shape" && text_error(e) != "") {
+        return 0
+      }
+      let s = match @fields.snapshot(token) {
+        Some(s) => s
+        None => return 0
+      }
+      if !@fields.apply(
+          token,
+          e.active_field,
+          s.version,
+          if kind == "undo" {
+            @fields.Undo
+          } else {
+            @fields.Redo
+          },
+        ) {
+        return 0
+      }
     }
     _ => return 0
   }
@@ -445,9 +621,12 @@ pub fn text_value(session : Int32, edit : Int32, key : Int32) -> Double {
         None => 0
       }
     12 => if text_error(e) == "" { 1 } else { 0 }
-    13 | 14 =>
-      @capture_ui.text_row_size(@annotation_tools.text_property_descriptors())[key -
-      13]
+    13 | 14 => @capture_ui.text_row_size(property_descriptors(e))[key - 13]
+    15 => e.tool.to_double()
+    16 => e.preview_stroke
+    17 => e.preview_shape
+    18 => e.preview_block
+    19 => property_mask(e).to_double()
     _ => -1
   }
 }
@@ -462,6 +641,7 @@ pub fn text_text(session : Int32, edit : Int32, key : Int32) -> String {
     0 => e.annotation_id
     1 => text_raw(e.body)
     2 => text_error(e)
+    3 => property_preview_annotation(e).stringify()
     _ => ""
   }
 }
@@ -475,7 +655,7 @@ pub fn text_snapshot(session : Int32, edit : Int32) -> String {
         raise InputError("closed_edit", "The text edit is no longer active")
     }
     let fields : Array[Json] = []
-    for token in [e.body, e.opacity, e.font] {
+    for token in property_tokens(e) {
       if @fields.snapshot(token) is Some(s) {
         fields.push(text_field_snapshot(s))
       }
@@ -487,6 +667,8 @@ pub fn text_snapshot(session : Int32, edit : Int32) -> String {
       "baseRevision": Json(e.base_revision),
       "annotationID": Json(e.annotation_id),
       "mode": Json(e.mode),
+      "tool": Json(e.tool),
+      "previewAnnotation": property_preview_annotation(e),
       "fields": Json::array(fields),
       "error": Json(text_error(e)),
       "activeField": Json(e.active_field),
@@ -494,6 +676,9 @@ pub fn text_snapshot(session : Int32, edit : Int32) -> String {
         "rgb": Json(e.color),
         "opacity": Json(e.preview_opacity),
         "fontSize": Json(e.preview_font),
+        "stroke": Json(e.preview_stroke),
+        "shape": Json(e.preview_shape),
+        "blockSize": Json(e.preview_block),
         "x": Json(e.x),
         "y": Json(e.y),
         "width": Json(e.width),

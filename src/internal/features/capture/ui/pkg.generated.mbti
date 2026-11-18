@@ -20,9 +20,9 @@ pub fn open(Double, Double) -> Int32
 
 pub fn text_inline_frame(@json.Json, Double, Double, Double, String, Double, Bool, Bool) -> String
 
-pub fn text_properties_frame(@json.Json, @json.Json, String, String, Bool, Double, Double, Bool, Bool, Bool) -> String
+pub fn text_properties_frame(@json.Json, @json.Json, String, String, Bool, Double, Double, Bool, String, String, Bool) -> String
 
-pub fn text_property_event(@json.Json, @json.Json, Double, Double, Bool) -> (Int32, Bool, Bool)
+pub fn text_property_event(@json.Json, @json.Json, Double, Double, String) -> (Int32, String, String)
 
 pub fn text_row_size(@json.Json) -> FixedArray[Double]
 

@@ -62,6 +62,21 @@ pub fn image_session_geometry(
 }
 
 ///|
+#export_name("capture_properties_begin")
+pub fn capture_properties_begin(
+  session : Int32,
+  style : Int32,
+  tool : Int32,
+  annotation_id : String,
+  expected_revision : Double,
+  contribution_command : String,
+) -> Int32 {
+  @capture.properties_begin(
+    session, style, tool, annotation_id, expected_revision, contribution_command,
+  )
+}
+
+///|
 #export_name("capture_text_event_json")
 pub fn capture_text_event_json(
   session : Int32,

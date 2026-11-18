@@ -59,3 +59,130 @@ pub fn text_property_descriptors() -> Json {
       "displayScale":Json(1),"width":Json(58),"labelWidth":Json(26)}),
   ])
 }
+
+///|
+pub fn property_context_valid(tool : Int32, command : String) -> Bool {
+  (tool >= 1 && tool <= 4 && command == "") ||
+  (tool == 1 && command == "capture.numberedRectangle")
+}
+
+///|
+pub fn property_visible_mask(
+  tool : Int32,
+  shape : Int32,
+  command : String,
+) -> Int32 {
+  if !property_context_valid(tool, command) {
+    return 0
+  }
+  let mask = editor_style_visible_mask(tool, shape)
+  if command == "capture.numberedRectangle" {
+    mask & 7
+  } else {
+    mask
+  }
+}
+
+///|
+fn numeric_descriptor(id : String, label : String, property : Int32) -> Json {
+  Json::object({
+    "id": Json(id),
+    "kind": Json("number"),
+    "label": Json(label),
+    "tooltip": Json(label),
+    "property": Json(property),
+    "min": Json(@image.editor_style_min(property)),
+    "max": Json(@image.editor_style_max(property)),
+    "step": Json(editor_style_step(property)),
+    "displayScale": Json(1),
+    "width": Json(58),
+    "labelWidth": Json(26),
+  })
+}
+
+///|
+pub fn property_descriptors(
+  tool : Int32,
+  shape : Int32,
+  command : String,
+) -> Json {
+  if tool == 3 && command == "" {
+    return text_property_descriptors()
+  }
+  let mask = property_visible_mask(tool, shape, command)
+  let result : Array[Json] = []
+  if (mask & 16) != 0 {
+    let options : Array[Json] = []
+    for value in 0..<editor_style_shape_count(tool) {
+      let (icon, label) = if value == 2 {
+        ("mosaic", "马赛克")
+      } else if tool == 4 {
+        if value == 0 {
+          ("filledRectangle", "实心方框")
+        } else {
+          ("filledEllipse", "实心圆框")
+        }
+      } else if value == 0 {
+        ("rectangle", "方框")
+      } else {
+        ("ellipse", "圆框")
+      }
+      options.push(
+        Json::object({
+          "id": Json("style.shape.\{value}"),
+          "value": Json(value),
+          "label": Json(label),
+          "icon": Json(icon),
+        }),
+      )
+    }
+    result.push(
+      Json::object({
+        "id": Json("style.shape"),
+        "kind": Json("choice"),
+        "label": Json("形状"),
+        "tooltip": Json("标注形状"),
+        "labelWidth": Json(26),
+        "width": Json(options.length() * 26),
+        "value": Json(shape),
+        "options": Json::array(options),
+      }),
+    )
+  }
+  if (mask & 1) != 0 {
+    result.push(
+      Json::object({
+        "id": Json("style.color"),
+        "kind": Json("color"),
+        "label": Json("颜色"),
+        "tooltip": Json("标注颜色"),
+        "width": Json(22),
+        "labelWidth": Json(26),
+      }),
+    )
+  }
+  if (mask & 2) != 0 {
+    result.push(
+      Json::object({
+        "id": Json("style.opacity"),
+        "kind": Json("number"),
+        "label": Json("透明度"),
+        "tooltip": Json("透明度（百分比）"),
+        "property": Json(1),
+        "min": Json(0),
+        "max": Json(100),
+        "step": Json(1),
+        "displayScale": Json(100),
+        "width": Json(58),
+        "labelWidth": Json(39),
+      }),
+    )
+  }
+  if (mask & 4) != 0 {
+    result.push(numeric_descriptor("style.stroke", "线宽", 2))
+  }
+  if (mask & 32) != 0 {
+    result.push(numeric_descriptor("style.blockSize", "颗粒", 5))
+  }
+  Json::array(result)
+}

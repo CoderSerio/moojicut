@@ -16,7 +16,7 @@
 | --- | --- | --- | --- |
 | 截图标注、贴图 | 已接；复制、滚轮/边界等比缩放 | 已接同类基础操作 | 已接；Wayland 位置/置顶受桌面后端约束 |
 | 工具贡献、启停和排序 | 共享 MoonBit 目录 | 共享 MoonBit 目录 | 共享 MoonBit 目录 |
-| 二级属性与圆色块 | 文字属性接共享 frame、草稿事务与系统输入桥，本地完整回归通过；其余形状仍为旧控件 | 同一文字 frame/事务与真实 Win32 输入自动回归通过；其余形状仍为旧控件 | 同一文字 frame/事务与真实 GTK 输入自动回归通过；其余形状仍为旧控件 |
+| 二级属性与圆色块 | 全部内置标注属性接共享 frame、草稿事务与系统输入桥；B2b 本地完整回归通过 | 同一属性 frame/事务已接，旧控件已移除；B2b 目标运行待验 | 同一属性 frame/事务已接，旧控件已移除；B2b 目标运行待验 |
 | 基础录屏 | 区域/窗口/整屏及系统音频 | 区域 MP4，静音 | X11 区域与 Wayland ScreenCast/PipeWire，静音 WebM |
 | v2 视频编辑 | 共享根会话/UI、正式预览/导出与波形，本地回归通过 | 媒体、实际窗口编辑、保存失败恢复、重开及模态退出通过；构建打包通过 | Ubuntu 22 全部通过；其同一包在无开发 SDK 的 Ubuntu 24 上八项检查全部通过 |
 | OCR、翻译、用户 ZIP 插件 | 已有后端；用户插件仍为元信息输入/文本输出 v1 | 未接对应后端 | 未接对应后端 |
@@ -81,7 +81,7 @@ Windows/Linux 的共享画布与生产录制后编辑流程均已接线；E1 批
 | `components/media_analysis` | 波形时间映射和 UI 在 video_editor；缓存身份/任务状态在会话 | `platform/<os>/media` 解码和采样，完成/取消回报给共享会话 |
 | `components/selection` | 三端共用几何、选区交互和语义 | `windowing` 输入/枚举/坐标；与 plugins/feature/select 一起迁移 |
 | `components/shared_canvas` | 描述协议、主题、语义在 shared/ui | `graphics` 绘制解释器、测量、视频表面；不能把时间线逻辑移回原生 |
-| `components/style_controls` | 文字属性布局/取值与事务本批已迁入 capture 根包/UI + 通用 fields；其余属性继续迁移 | 新系统文本输入桥在 platform/<os>/graphics，系统颜色面板按租约路由；三端自动回归通过，真实 IME 候选窗/设备效果待人工验收 |
+| `components/style_controls` | B2b 已删除三端旧组件；全部内置标注属性的描述/布局/取值/事务归入 annotations、capture 根包/UI 与通用 fields | 系统输入和颜色面板在 platform/<os>/graphics；Linux 纯 HUD 绘制提取到该桥。B2a 已验，B2b 目标运行待验；真实 IME/设备效果另验 |
 | `components/theme` | 主题 token 和控件配色到 shared/ui | 系统深浅色/高对比等外观信号由平台报告 |
 
 迁移不会为齐目录而建立空壳后端。尚未抽出的产品 UI 可暂留原路径，必须绑定上述工作包和删除条件；不能搬入 platform 后就宣布它已成为薄适配层。纯改路径与提取产品逻辑分开提交。
@@ -128,7 +128,7 @@ Windows/Linux 的共享画布与生产录制后编辑流程均已接线；E1 批
 
 | 当前包 | 目标与状态 |
 | --- | --- |
-| `features/capture`、core、ui、extensions/annotations | 结构已迁；annotations 已声明内置工具并处理通用拖框命令，其他扩展声明自身贡献；完整属性 Schema 和 ui→annotations 仍待泛化 |
+| `features/capture`、core、ui、extensions/annotations | 结构已迁；annotations 已声明内置工具并处理通用拖框命令，其他扩展声明自身贡献；UI 已不导入 annotations；内置标注属性已接共享描述，通用用户插件属性 Schema 仍待泛化 |
 | `features/recording/core`、ui | 已归位；live flow、静态能力/参数策略与倒计时面板已共享，完整资源会话及动态能力快照仍待做 |
 | `app/shortcuts`（原 desktop） | 规则已迁；平台全局注册/释放仍由宿主执行 |
 | `features/capture/extensions/pin`（原 pin） | 数值/缩放/可见性规则已迁；贡献接入与窗口资源提取另验 |
@@ -430,3 +430,14 @@ Windows 本轮仍仅卡在保存对话框退出，新增 trace 证实 fixture �
 - 原生历史 include 例外仍为 **12 对**，没有新增；新平台输入桥不导入截图功能。旧 `components`、`plugins/feature` 中的非文字控件、采集/宿主混合职责仍按前表继续迁移。真实候选窗、输入法、Wayland、DPI 和设备体验由用户另行组织实机验收。
 
 本批未发布或安装应用，公开发行包仍为 alpha.20。
+
+### B2b 全部内置标注属性（已接线，目标 CI 待验）
+
+- 矩形/椭圆、箭头、实心覆盖/椭圆覆盖/马赛克与文字共用同一字段、预览和候选发布链。扩展声明形状、颜色、透明度、线宽和颗粒；MoonBit 统一形状标签、22 单位圆色块、8 单位组距和四种深浅的马赛克图标。编号框的固定形状由贡献命令描述决定，不由三个平台各自隐藏控件。
+- 非文字编辑通过 `capture_properties_begin` 进入现有根事务；同一 `capture_text_*` 字段/frame 接口承载输入。原生只读派生预览，数值草稿、shape 切换和文档历史均由 MoonBit 决定。选中已有图元整组修改只发布一次文档撤销，保留稳定 ID、分数几何/线宽与无关元数据；默认样式不写文档历史，已有图元不覆盖默认样式。
+- 切形状前校验当前可见字段和全部组合输入。隐藏字段保留 token/raw，不能接受迟到输入；最终只发布当前形状的可见属性，切回原形状仍能恢复该事务内草稿。非法数字或未完成 IME 不能通过隐藏字段绕过提交校验。
+- 三端生产截图入口不再依赖旧原生属性控件，删除 `components/style_controls` 的 8 个源文件/头文件及构建模块；Linux 通用 HUD 绘制归入 `platform/linux/graphics/hud`。没有新增原生跨层 include 例外，仍为 12 对；完整工具栏、选区、宿主装配和插件资源策略继续单列迁移。
+- 交叉审查修复 Windows 分数几何预览取整、Linux 属性行内离焦提前提交/选色结果过期、macOS 空属性事务禁用文档撤销/数字 Esc 后界面失效/配置发布后读取已退休事务的问题。覆盖真实输入、真实工具栏按钮、shape 鼠标、像素与多窗口候选发布，不用仅直接调用模型的测试替代这些边界。
+- 当前共享核心 native/Wasm 各 **273/273**，capture 专项 **43/43**；Windows/Linux 严格目标头文件编译和两项边界检查通过。macOS 完整原生套件、真实控件/像素回归及隔离 App 构建通过，构建脚本 **104/104**。Windows/MSVC、Linux/GTK 与同包运行待合批 CI。
+
+本批仍不关闭整个 B2、用户插件 v2、OCR/翻译、CLI 或实机验收；公开发行包仍为 alpha.20。

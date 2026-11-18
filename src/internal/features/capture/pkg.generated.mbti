@@ -84,6 +84,8 @@ pub fn image_session_value(Int32, Int32, Int32) -> Double
 
 pub fn image_session_viewport_value(Int32, Int32) -> Double
 
+pub fn properties_begin(Int32, Int32, Int32, String, Double, String) -> Int32
+
 pub fn text_begin(Int32, Int32, Int32, String, Double, Double, Double, Double, Double) -> Int32
 
 pub fn text_cancel(Int32, Int32, Int32) -> Int32

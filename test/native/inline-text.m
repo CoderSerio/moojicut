@@ -1,6 +1,5 @@
 #import <AppKit/AppKit.h>
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
-#import "components/style_controls/macos/MCStyleControls.h"
 #import "platform/macos/graphics/MCSharedTextInput.h"
 #import "components/shared_canvas/macos/MCSharedCanvas.h"
 #import "platform/macos/graphics/MCSystemColorPanel.h"
@@ -23,16 +22,9 @@
 - (void)deleteSelection;
 @end
 
-@interface MCColorControl (MCPanelLeaseTest)
-@property (readonly) MCSystemColorPanelLease *colorPanelLease;
-- (void)showColorPanel:(id)sender;
-@end
-
 @interface MCImageEditorController (MCInlineTextTest)
 @property (readonly) MCImageCanvas *canvas;
 @property (readonly) NSSegmentedControl *tools;
-@property (readonly) MCColorSwatch *color;
-@property (readonly) MCColorControl *colorControl;
 @property (readonly) NSDictionary<NSString *, MCSharedTextInputView *> *textPropertyInputs;
 @property (readonly) MCSharedCanvasView *textPropertiesCanvas;
 @property (readonly) NSButton *confirmButton;
@@ -297,11 +289,9 @@ static BOOL rgbaStyles(void) {
     MCImageEditorController *editor = fixture(1, &error);
     MCImageCanvas *canvas = editor.canvas;
     selectTool(editor, 4);
-    editor.colorControl.color = [NSColor colorWithSRGBRed:0 green:1 blue:0 alpha:1];
-    editor.colorControl.onChange(editor.colorControl.well);
-    editor.colorControl.opacityControl.stepper.doubleValue = 25;
-    NSStepper *opacityStepper = editor.colorControl.opacityControl.stepper;
-    [opacityStepper sendAction:opacityStepper.action to:opacityStepper.target];
+    NSColorPanel *colorPanel = NSColorPanel.sharedColorPanel;
+    colorPanel.color = NSColor.greenColor; [editor sharedColorChanged:colorPanel];
+    CHECK(editProperty(editor,@"style.opacity",@"25"), "cover alpha uses the same real shared numeric input");
     [canvas mouseDown:mouse(canvas, NSEventTypeLeftMouseDown, NSMakePoint(20, 20), 1)];
     [canvas mouseDragged:mouse(canvas, NSEventTypeLeftMouseDragged, NSMakePoint(320, 120), 1)];
     [canvas mouseUp:mouse(canvas, NSEventTypeLeftMouseUp, NSMakePoint(320, 120), 1)];
@@ -411,48 +401,44 @@ static BOOL colorPanelOwnership(void) {
     @try {
         NSColorPanel *panel = NSColorPanel.sharedColorPanel;
         CHECK(!panel.visible, "panel ownership fixture starts with a hidden system panel");
-        __block NSUInteger legacyCalls = 0, textCalls = 0;
+        __block NSUInteger firstCalls = 0, textCalls = 0;
         NSObject *textOwner = [NSObject new];
         MCSystemColorPanelLease *lastLease = nil;
-        __weak MCColorControl *retiredLegacy = nil;
+        __weak NSObject *retiredOwner = nil;
         @autoreleasepool {
-        MCColorControl *legacy = [[MCColorControl alloc] initWithFrame:NSZeroRect];
-        legacy.onChange = ^(id sender) { (void)sender; legacyCalls++; };
-        [legacy showColorPanel:nil];
-        MCSystemColorPanelLease *oldLease = legacy.colorPanelLease;
-        CHECK(oldLease.active && hiddenPanelPresentations > 0, "legacy color control binds through the generic lease");
-        panel.color = NSColor.greenColor;
-        CHECK(legacyCalls == 1, "the real panel color action reaches the legacy receiver once");
-        MCSystemColorPanelLease *textLease = [MCSystemColorPanelLease beginWithOwner:textOwner color:NSColor.redColor showsAlpha:NO
-            onColor:^(id owner, NSColor *color) { (void)owner; (void)color; textCalls++; }];
-        CHECK(textLease.active && !oldLease.active && legacyCalls == 1 && textCalls == 0,
-              "text lease takes ownership without dispatching initial color to the old receiver");
-        [legacy closePopover]; [oldLease invalidate]; oldLease = nil;
-        panel.color = NSColor.blueColor;
-        CHECK(textLease.active && textCalls == 1 && legacyCalls == 1,
-              "closing and retiring the old legacy lease cannot disconnect the new text receiver");
-        [textLease updateColor:NSColor.orangeColor];
-        CHECK(textCalls == 1, "selection and undo can synchronize the system panel without producing edits");
-        [legacy showColorPanel:nil];
-        CHECK(legacy.colorPanelLease.active && !textLease.active, "legacy control can take ownership back from text input");
-        [textLease invalidate]; textLease = nil;
-        panel.color = NSColor.purpleColor;
-        CHECK(legacyCalls == 2 && textCalls == 1,
-              "retiring the superseded text lease leaves the current legacy receiver connected");
-        lastLease = [MCSystemColorPanelLease beginWithOwner:textOwner color:NSColor.yellowColor showsAlpha:NO
-            onColor:^(id owner, NSColor *color) { (void)owner; (void)color; textCalls++; }];
-        retiredLegacy = legacy;
-        legacy = nil;
-        } // Drain AppKit's temporary references before asserting actual dealloc.
+            NSObject *firstOwner = [NSObject new];
+            MCSystemColorPanelLease *first = [MCSystemColorPanelLease beginWithOwner:firstOwner color:NSColor.whiteColor showsAlpha:NO
+                onColor:^(id owner, NSColor *color) { (void)owner; (void)color; firstCalls++; }];
+            [panel orderFront:nil];
+            CHECK(first.active && hiddenPanelPresentations > 0, "a generic system color lease owns the panel");
+            panel.color = NSColor.greenColor;
+            CHECK(firstCalls == 1, "the real panel color action reaches the first owner once");
+            MCSystemColorPanelLease *textLease = [MCSystemColorPanelLease beginWithOwner:textOwner color:NSColor.redColor showsAlpha:NO
+                onColor:^(id owner, NSColor *color) { (void)owner; (void)color; textCalls++; }];
+            CHECK(textLease.active && !first.active && firstCalls == 1 && textCalls == 0,
+                  "another lease takes ownership without dispatching initial color to the old receiver");
+            [first invalidate]; first = nil;
+            panel.color = NSColor.blueColor;
+            CHECK(textLease.active && textCalls == 1 && firstCalls == 1,
+                  "retiring the old lease cannot disconnect the new receiver");
+            [textLease updateColor:NSColor.orangeColor];
+            CHECK(textCalls == 1, "selection and undo synchronize the panel without producing edits");
+            first = [MCSystemColorPanelLease beginWithOwner:firstOwner color:NSColor.whiteColor showsAlpha:NO
+                onColor:^(id owner, NSColor *color) { (void)owner; (void)color; firstCalls++; }];
+            CHECK(first.active && !textLease.active, "the first owner can acquire a new lease");
+            [textLease invalidate]; textLease = nil;
+            panel.color = NSColor.purpleColor;
+            CHECK(firstCalls == 2 && textCalls == 1, "a superseded lease cannot detach the current receiver");
+            lastLease = [MCSystemColorPanelLease beginWithOwner:textOwner color:NSColor.yellowColor showsAlpha:NO
+                onColor:^(id owner, NSColor *color) { (void)owner; (void)color; textCalls++; }];
+            retiredOwner = firstOwner; firstOwner = nil; [first invalidate]; first = nil;
+        }
         panel.color = NSColor.cyanColor;
-        if (retiredLegacy != nil || !lastLease.active || textCalls != 2)
-            fprintf(stderr,"panel lease diagnostic legacyAlive=%d active=%d calls=%lu\n",retiredLegacy != nil,lastLease.active,(unsigned long)textCalls);
-        CHECK(retiredLegacy == nil && lastLease.active && textCalls == 2,
-              "destroying the superseded legacy control cannot clear the new panel target");
+        CHECK(retiredOwner == nil && lastLease.active && textCalls == 2,
+              "destroying a superseded owner cannot clear the new panel target");
         textOwner = nil;
         panel.color = NSColor.magentaColor;
-        CHECK(!lastLease.active && textCalls == 2,
-              "a retained lease never calls an owner that has been released");
+        CHECK(!lastLease.active && textCalls == 2, "a retained lease never calls an owner that has been released");
         [lastLease invalidate];
         CHECK(!panel.visible, "all ownership transfers leave the system color panel hidden");
     } @finally {

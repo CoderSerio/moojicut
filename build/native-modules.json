@@ -75,23 +75,6 @@
           "shared.bindings"
         ]
       },
-      "component.style_controls": {
-        "sources": [
-          "components/style_controls/macos/MCStyleControls.m",
-          "components/style_controls/macos/MCStylePropertiesView.m"
-        ],
-        "requires": [
-          "platform.graphics"
-        ],
-        "files": [
-          "components/style_controls/macos/MCStyleControls.h",
-          "components/style_controls/macos/MCStylePropertiesView.h"
-        ],
-        "includes": [
-          "component.icons",
-          "shared.bindings"
-        ]
-      },
       "component.shared_canvas": {
         "sources": [
           "components/shared_canvas/macos/MCSharedCanvas.m"
@@ -139,7 +122,6 @@
           "plugins/feature/image_editor/macos/MCImageEditorController.m"
         ],
         "requires": [
-          "component.style_controls",
           "component.image_effects",
           "feature.select",
           "platform.graphics",
@@ -339,21 +321,6 @@
           "shared.editor_host"
         ]
       },
-      "component.style_controls": {
-        "sources": [
-          "components/style_controls/windows/style_controls.c"
-        ],
-        "requires": [
-          "component.hud"
-        ],
-        "files": [
-          "components/style_controls/windows/style_controls.h"
-        ],
-        "includes": [
-          "shared.bindings",
-          "shared.icons"
-        ]
-      },
       "component.hud": {
         "sources": [
           "components/hud/windows/hud.cpp"
@@ -386,7 +353,6 @@
           "plugins/feature/capture/windows/capture.c"
         ],
         "requires": [
-          "component.style_controls",
           "component.hud",
           "feature.select",
           "platform.graphics"
@@ -494,19 +460,6 @@
           "shared.bindings"
         ]
       },
-      "component.style_controls": {
-        "sources": [
-          "components/style_controls/linux/style_controls.c"
-        ],
-        "requires": [],
-        "files": [
-          "components/style_controls/linux/style_controls.h"
-        ],
-        "includes": [
-          "shared.bindings",
-          "shared.icons"
-        ]
-      },
       "feature.select": {
         "sources": [
           "plugins/feature/select/linux/selection.c"
@@ -524,7 +477,6 @@
           "plugins/feature/capture/linux/capture.c"
         ],
         "requires": [
-          "component.style_controls",
           "feature.select",
           "platform.graphics"
         ],
@@ -588,17 +540,20 @@
       "platform.graphics": {
         "sources": [
           "platform/linux/graphics/shared_canvas.c",
-          "platform/linux/graphics/text_input.c"
+          "platform/linux/graphics/text_input.c",
+          "platform/linux/graphics/hud.c"
         ],
         "files": [
           "platform/linux/graphics/shared_canvas.h",
-          "platform/linux/graphics/text_input.h"
+          "platform/linux/graphics/text_input.h",
+          "platform/linux/graphics/hud.h"
         ],
         "requires": [
           "shared.graphics"
         ],
         "includes": [
-          "shared.bindings"
+          "shared.bindings",
+          "shared.icons"
         ]
       },
       "platform.app": {

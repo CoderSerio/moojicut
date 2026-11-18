@@ -56,14 +56,19 @@ fn text_numeric(s : @fields.Snapshot, property : Int32) -> Double? {
 
 ///|
 fn text_refresh_preview(e : TextEdit) -> Unit {
-  if @fields.snapshot(e.opacity) is Some(s) {
-    if text_edit_numeric(e, s, 1) is Some(value) {
-      e.preview_opacity = value
-    }
-  }
-  if @fields.snapshot(e.font) is Some(s) {
-    if text_edit_numeric(e, s, 3) is Some(value) {
-      e.preview_font = value
+  for token in property_tokens(e) {
+    if @fields.snapshot(token) is Some(s) {
+      let key = property_key(s.field_id)
+      if key >= 1 && text_edit_numeric(e, s, key) is Some(value) {
+        match key {
+          1 => e.preview_opacity = value
+          2 => e.preview_stroke = value
+          3 => e.preview_font = value
+          4 => e.preview_shape = value
+          5 => e.preview_block = value
+          _ => ()
+        }
+      }
     }
   }
 }
@@ -78,7 +83,7 @@ fn text_edit_numeric(
     Some(n) => n
     None => return None
   }
-  let original = if property == 1 { e.initial_opacity } else { e.initial_font }
+  let original = property_initial(e, property)
   // Preserve the exact persisted Double on a no-op display round trip. Percent
   // multiplication/division can otherwise create an undo entry by one ULP.
   if s.raw == text_decimal(original * (if property == 1 { 100 } else { 1 })) {
@@ -93,16 +98,16 @@ fn text_error(e : TextEdit) -> String {
   if !text_fresh(e) {
     return "The screenshot or defaults changed; reopen this edit"
   }
-  for token in [e.body, e.opacity, e.font] {
+  for token in property_tokens(e) {
     if @fields.snapshot(token) is Some(s) {
       if s.marked is Some(_) {
         return "Finish the current input-method composition first"
       }
-      if token == e.opacity && text_numeric(s, 1) is None {
-        return "Opacity must be a number between 0 and 100"
-      }
-      if token == e.font && text_numeric(s, 3) is None {
-        return "Font size must be a number between 8 and 128"
+      let key = property_key(s.field_id)
+      if key >= 1 &&
+        property_visible(e, s.field_id) &&
+        text_numeric(s, key) is None {
+        return property_numeric_error(key)
       }
     } else if token != 0 {
       return "The text field is no longer active"

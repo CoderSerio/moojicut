@@ -2,7 +2,7 @@
 
 2026-11-17 目录决策更新：本文继续维护共享 UI 与媒体接口细节；最终目录、插件生命周期和 CLI 优先策略统一见[架构与实施规划](architecture.md)。截图 MoonBit 模块与录屏核心现已完成第一批迁移；下文保留尚未迁移的原生路径，不能据此继续扩展 components 或 plugins/feature 根目录。
 
-状态：2026-11-18。三端正式视频编辑入口已经接入同一 MoonBit 根会话与 UI；macOS 本地回归，以及 Windows／Ubuntu 22 的媒体、实际编辑窗口和发行包检查通过，Ubuntu 24 的同一包运行检查通过。截图文字属性已接入下述共享字段协议，macOS 完整本地回归与 `37c4b8f` 的 [Windows／Linux CI](https://github.com/CoderSerio/moojicut/actions/runs/44232272111) 全部通过；不能因此将全部截图 UI、真实输入法体验或插件 v2 记为完成。当前多片段、音轨与后续字幕/效果范围见[视频编辑器推进计划](video-editor-roadmap.zh-CN.md)。
+状态：2026-11-18。三端正式视频编辑入口已经接入同一 MoonBit 根会话与 UI；macOS 本地回归，以及 Windows／Ubuntu 22 的媒体、实际编辑窗口和发行包检查通过，Ubuntu 24 的同一包运行检查通过。截图文字属性已接入下述共享字段协议，B2a 的 macOS 完整本地回归与 `37c4b8f` 的 [Windows／Linux CI](https://github.com/CoderSerio/moojicut/actions/runs/44232272111) 全部通过。B2b 将其扩展到全部内置标注属性并删除三端旧控件，目标 CI 待验；不能因此将完整工具栏/选区 UI、真实输入法体验或插件 v2 记为完成。当前多片段、音轨与后续字幕/效果范围见[视频编辑器推进计划](video-editor-roadmap.zh-CN.md)。
 
 ## 一套复杂组件实现
 
@@ -46,8 +46,8 @@ flowchart TD
 | 层 | 截图现状依据 | 视频现状及目标职责 |
 | --- | --- | --- |
 | 共享业务核心 | `src/internal/features/capture/core` 管图片与样式值域，capture 根包协调会话；`shared/geometry` 管共用几何，经根 ABI 暴露 | `src/internal/features/video_editor/core/legacy_document` 保留已有视频文档/API与时间线几何，录屏在 `features/recording/core`；`src/internal/features/video_editor/core` 已实现 v2 片段、恒速、链接、版本事务和 RenderPlan |
-| 复杂 UI | `features/capture/ui` 的形状手势与定位已接入三端；文字属性新增同一 frame/fields 与根事务，原生桥保留系统输入；其余形状属性仍使用 `components/style_controls`，完整共享控件渲染未完成 | 已有 `src/internal/features/video_editor/ui` 负责布局、主题、交互和语义；播放条、时间线、属性面板按职责拆为包内模块，不能照搬三套原生 UI |
-| 通用组件/后端 | `components/icons`、`style_controls`、`hud` 等已有实际组件 | 已有 `components/shared_canvas/macos`；仅解释通用绘制和输入协议。Windows/Linux 对应画布已在 platform/<os>/graphics 接入并通过目标自动验证；通用输入字段是本批新增能力 |
+| 复杂 UI | `features/capture/ui` 的形状手势与定位已接入三端；全部内置标注属性使用同一 frame/fields 与根事务，原生桥保留系统输入；旧 `components/style_controls` 已删除，完整共享工具栏与选区仍未完成 | 已有 `src/internal/features/video_editor/ui` 负责布局、主题、交互和语义；播放条、时间线、属性面板按职责拆为包内模块，不能照搬三套原生 UI |
+| 通用组件/后端 | 图标与通用画布已有实际消费者；系统输入/颜色面板、Linux 纯 HUD 在 `platform/<os>/graphics` | 已有 `components/shared_canvas/macos`；仅解释通用绘制和输入协议。Windows/Linux 对应画布已在 platform/<os>/graphics 接入并通过目标自动验证；通用输入字段是本批新增能力 |
 | 功能接入 | `plugins/feature/capture` 组织采集与编辑，`select`、`pin` 等各有入口 | 已有 `plugins/feature/recording` 与 macOS `video_editor`；保留录屏、草稿、窗口生命周期和媒体端口接线，不决定组件布局或剪辑规则 |
 | 应用装配 | `native/*` 宿主、`build/native-modules.json` 的 sources/requires | macOS 正式构建已装配共享 UI、通用画布与媒体端口，录制完成和恢复草稿进入同一编辑窗；Windows/Linux 正式编辑窗口也已接入同一根会话 |
 
@@ -122,4 +122,6 @@ flowchart TD
 
 `image_session_geometry` 是几何专用薄入口：冻结文档 revision 和稳定图元 ID，移动不重写正文/样式，`font_size=-1` 保留原字号，文字缩放可传小数。活动文字事务必须先提交或取消；旧的 pending-text／整数样式接口不再参与这条文字移动路径。原片和图片导出仍复用既有渲染器。
 
-本切片不代表所有形状属性、通用用户插件属性 Schema、OCR 结果输入或 CLI 已完成；这些按各自工作包继续迁移。
+B2b 将同一事务/frame 扩展到所有现有内置形状属性；通用用户插件属性 Schema、OCR 结果输入和 CLI 仍按各自工作包继续迁移。
+
+B2b 非文字属性入口是 `capture_properties_begin(session, style, tool, annotationID, expectedRevision, contributionCommand)`。空 ID 编辑默认值，非空 ID 编辑已存在图元；编号框的 `capture.numberedRectangle` 描述由根包交给 annotations 校验。返回句柄继续使用同一字段、frame、prepare/cancel 和原子候选 API；`previewAnnotation` 是只读派生图元，不是第二份可修改文档。形状也是有版本与撤销的字段，但以共享 choice 语义呈现，不创建原生下拉/分段选择规则。

@@ -1,8 +1,8 @@
 #import <AppKit/AppKit.h>
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
 #import "plugins/feature/capture/macos/MCCaptureController.h"
-#import "components/style_controls/macos/MCStylePropertiesView.h"
-#import "components/icons/macos/MCIcon.h"
+#include "bindings/c/editor_style.h"
+#import "platform/macos/graphics/MCSystemColorPanel.h"
 #include "moonbit.h"
 #include "bindings/c/tool_registry.h"
 #include "bindings/c/capture_edit.h"
@@ -31,7 +31,8 @@
 - (BOOL)finishSharedText:(BOOL)commit;
 @property (readonly) NSSegmentedControl *tools;
 @property (readonly) NSInteger activeTool;
-@property (readonly) MCStylePropertiesView *properties;
+@property (readonly) MCSystemColorPanelLease *textColorLease;
+- (BOOL)handleSharedTextUIEvent:(NSDictionary *)event;
 @property (readonly) NSStackView *toolbar;
 @property (readonly) NSButton *pinButton;
 @property (readonly) NSArray<NSDictionary *> *visibleTools;
@@ -47,9 +48,6 @@
 @end
 @interface MCCaptureController (MCToolLayoutTest)
 - (MCImageEditorController *)editorForSnapshot:(NSDictionary *)snapshot error:(NSError **)error;
-@end
-@interface MCColorControl (MCColorPanelTest)
-- (void)showColorPanel:(id)sender;
 @end
 static void textNumber(MCImageEditorController *editor, NSString *id, NSString *raw) {
     MCSharedTextInputView *input = editor.textPropertyInputs[id];
@@ -146,10 +144,40 @@ static void draw(MCImageEditorController *editor, NSPoint from, NSPoint to) {
     [editor.canvas mouseUp:mouse(editor.canvas, NSEventTypeLeftMouseUp, to)];
 }
 static void color(MCImageEditorController *editor, NSColor *color) {
-    if (editor.textEdit) { textColor(editor,color); return; }
-    editor.properties.colorControl.color = color;
-    MCColorControl *control = editor.properties.colorControl;
-    if (control.onChange) control.onChange(control.well);
+    textColor(editor,color);
+}
+static double property(MCImageEditorController *editor, int key) {
+    return capture_text_value(editor.imageSession,editor.textEdit,key);
+}
+static NSRect propertyRect(NSDictionary *item) {
+    return NSMakeRect([item[@"x"] doubleValue],[item[@"y"] doubleValue],
+                      [item[@"width"] doubleValue],[item[@"height"] doubleValue]);
+}
+static NSDictionary *propertySemantic(MCImageEditorController *editor, NSString *id) {
+    for (NSDictionary *item in editor.textPropertiesCanvas.frameDescription[@"semantics"])
+        if ([item[@"id"] isEqual:id]) return item;
+    return nil;
+}
+static NSUInteger shapeCount(MCImageEditorController *editor) {
+    NSUInteger count = 0;
+    for (NSDictionary *item in editor.textPropertiesCanvas.frameDescription[@"semantics"])
+        if ([item[@"id"] hasPrefix:@"style.shape."]) count++;
+    return count;
+}
+static void propertyClick(MCImageEditorController *editor, NSPoint point) {
+    MCSharedCanvasView *canvas = editor.textPropertiesCanvas;
+    NSPoint windowPoint = [canvas convertPoint:point toView:nil];
+    for (NSNumber *type in @[@(NSEventTypeLeftMouseDown),@(NSEventTypeLeftMouseUp)]) {
+        NSEvent *event = [NSEvent mouseEventWithType:type.unsignedIntegerValue location:windowPoint modifierFlags:0
+            timestamp:0 windowNumber:canvas.window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+        if (type.unsignedIntegerValue == NSEventTypeLeftMouseDown) [canvas mouseDown:event]; else [canvas mouseUp:event];
+    }
+}
+static void propertyActivate(MCImageEditorController *editor, NSString *id) {
+    NSDictionary *item = propertySemantic(editor,id);
+    NSCAssert(item != nil,@"Shared property semantic must be present: %@",id);
+    NSRect rect = propertyRect(item);
+    propertyClick(editor,NSMakePoint(NSMidX(rect),NSMidY(rect)));
 }
 static BOOL interactions(void) {
     BOOL passed = YES;
@@ -162,8 +190,7 @@ static BOOL interactions(void) {
     choose(e, 2);
     CHECK(e.activeTool == 2 && e.tools.selectedSegment == 3, "arrow identity is independent of its reordered button index");
     color(e, [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.7]);
-    NSStepper *stroke = e.properties.strokeControl.stepper;
-    stroke.doubleValue = 7; [stroke sendAction:stroke.action to:stroke.target];
+    textNumber(e,@"style.stroke",@"7");
     draw(e, NSMakePoint(30, 30), NSMakePoint(250, 120));
     NSDictionary *arrow = [e.document[@"annotations"] lastObject];
     CHECK([arrow[@"type"] isEqual:@"arrow"] && [arrow[@"stroke"] intValue] == 7 && [arrow[@"color"] isEqual:@"#ff0000"], "reordered arrow draws the right kind and style");
@@ -187,10 +214,10 @@ static BOOL interactions(void) {
     [e applyToolConfiguration:noCover];
     CHECK(e.activeTool == 0 && [e.document isEqual:before] && [[e renderPNGData:NULL] isEqual:png], "disabling cover preserves all annotations, undo and rendered redaction");
     [e applyToolConfiguration:base]; choose(e, 4);
-    CHECK(segment(e, 4) == 2 && e.properties.values.rgb == 0x00ff00 && fabs(e.properties.values.opacity - .25) < .001,
+    CHECK(segment(e, 4) == 2 && property(e,MC_CAPTURE_TEXT_RGB) == 0x00ff00 && fabs(property(e,MC_CAPTURE_TEXT_OPACITY) - .25) < .001,
           "reenabling restores position and RGBA defaults");
     choose(e, 2);
-    CHECK(e.properties.values.stroke == 7 && e.properties.values.rgb == 0xff0000, "other tools retain independent defaults");
+    CHECK(property(e,MC_CAPTURE_TEXT_STROKE) == 7 && property(e,MC_CAPTURE_TEXT_RGB) == 0xff0000, "other tools retain independent defaults");
     [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(300, 300))];
     [e.canvas mouseDragged:mouse(e.canvas, NSEventTypeLeftMouseDragged, NSMakePoint(500, 400))];
     NSDictionary *noArrow = configuration(order, [NSSet setWithArray:@[@1,@2]]);
@@ -244,9 +271,8 @@ static BOOL validationAndFanout(void) {
           "shared field rejects oversized replacement before it can corrupt the live draft");
     second.canvas.textView.string = @"你好";
     choose(first, 2);
-    NSTextField *field = first.properties.strokeControl.field;
-    [first.window makeFirstResponder:field];
-    NSText *input = field.currentEditor;
+    MCSharedTextInputView *input = first.textPropertyInputs[@"style.stroke"];
+    [first.window makeFirstResponder:input];
     CHECK(input != nil, "numeric validation exercises a real native field editor");
     input.string = @"invalid";
     CHECK(![capture canApplyToolConfiguration:none error:NULL] && [input.string isEqual:@"invalid"], "invalid numeric input rejects disable without discarding input");
@@ -259,7 +285,7 @@ static BOOL validationAndFanout(void) {
     MCImageEditorController *late = [capture editorForSnapshot:@{@"png":pixels(), @"frame":[NSValue valueWithRect:NSMakeRect(0,0,800,500)]} error:NULL];
     CHECK(late.tools.segmentCount == 1 && [late.toolConfiguration isEqual:none], "late frozen-screen editors inherit the latest configuration");
     [capture applyToolConfiguration:base]; choose(first, 2);
-    CHECK(first.properties.values.stroke == 11 && [first.document isEqual:firstDocument], "committing numeric defaults before disable preserves the style bank without adding undo");
+    CHECK(property(first,MC_CAPTURE_TEXT_STROKE) == 11 && [first.document isEqual:firstDocument], "committing numeric defaults before disable preserves the style bank without adding undo");
     [capture setValue:nil forKey:@"overlayEditors"]; [capture setValue:nil forKey:@"editor"];
     for (MCImageEditorController *e in @[first, second, opened, late]) [e cancel:nil];
     return passed;
@@ -273,9 +299,9 @@ static BOOL pinAction(void) {
     e.onPinPNGData = pin;
     choose(e, 2);
     color(e, [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.4]);
-    NSStepper *stroke = e.properties.strokeControl.stepper;
-    stroke.doubleValue = 9; [stroke sendAction:stroke.action to:stroke.target];
-    MCStyleValues values = e.properties.values;
+    textNumber(e,@"style.stroke",@"9");
+    double savedRGB = property(e,MC_CAPTURE_TEXT_RGB), savedStroke = property(e,MC_CAPTURE_TEXT_STROKE),
+           savedOpacity = property(e,MC_CAPTURE_TEXT_OPACITY);
     NSDictionary *before = e.document;
     NSArray *orders = @[@[@100,@1,@2,@3,@4], @[@1,@2,@100,@3,@4], @[@1,@2,@3,@4,@100]];
     for (NSUInteger index = 0; index < orders.count; index++) {
@@ -287,8 +313,8 @@ static BOOL pinAction(void) {
         choose(e, 100);
         CHECK(e.activeTool == 2 && [e.tools tagForSegment:e.tools.selectedSegment] == 2 && calls == (NSInteger)index + 1 &&
               [e.document isEqual:before] && e.window != nil, "failed pin is momentary and retains the editor and current annotation tool");
-        CHECK(e.properties.values.rgb == values.rgb && e.properties.values.stroke == values.stroke &&
-              fabs(e.properties.values.opacity - values.opacity) < .001, "pin action never changes the tool style bank");
+        CHECK(property(e,MC_CAPTURE_TEXT_RGB) == savedRGB && property(e,MC_CAPTURE_TEXT_STROKE) == savedStroke &&
+              fabs(property(e,MC_CAPTURE_TEXT_OPACITY) - savedOpacity) < .001, "pin action never changes the tool style bank");
     }
     NSBitmapImageRep *rendered = [NSBitmapImageRep imageRepWithData:result];
     CHECK(rendered.pixelsWide == 800 && rendered.pixelsHigh == 500, "pin still uses the real PNG rendering transaction");
@@ -343,7 +369,7 @@ static BOOL pinAction(void) {
           "pin cannot discard a numeric draft rejected by the shared field validator");
     [e.canvas finishTextEditing:NO];
     choose(e,2);
-    CHECK(e.properties.values.stroke == 9 && e.properties.values.rgb == 0xff0000, "the prior arrow defaults survive pin attempts and text edits");
+    CHECK(property(e,MC_CAPTURE_TEXT_STROKE) == 9 && property(e,MC_CAPTURE_TEXT_RGB) == 0xff0000, "the prior arrow defaults survive pin attempts and text edits");
     [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(300,300))];
     [e.canvas mouseDragged:mouse(e.canvas, NSEventTypeLeftMouseDragged, NSMakePoint(500,400))];
     choose(e,100);
@@ -718,20 +744,10 @@ static BOOL sharedGestureCases(void) {
     return passed;
 }
 static void variant(MCImageEditorController *editor, NSInteger index) {
-    editor.properties.shapeControl.selectedSegment = index;
-    [editor.properties.shapeControl sendAction:editor.properties.shapeControl.action to:editor.properties.shapeControl.target];
+    propertyActivate(editor,[NSString stringWithFormat:@"style.shape.%ld",(long)index]);
 }
 static BOOL shapeVariants(void) {
     BOOL passed = YES;
-    NSBitmapImageRep *glyph=[NSBitmapImageRep imageRepWithData:MCIconImage(MC_ICON_MOSAIC,@"马赛克").TIFFRepresentation];
-    NSMutableArray<NSNumber *> *tones=[NSMutableArray array];
-    for (NSValue *point in @[[NSValue valueWithPoint:NSMakePoint(5,5)],[NSValue valueWithPoint:NSMakePoint(12,5)],
-        [NSValue valueWithPoint:NSMakePoint(5,12)],[NSValue valueWithPoint:NSMakePoint(12,12)]])
-        [tones addObject:@([glyph colorAtX:point.pointValue.x*glyph.pixelsWide/18 y:point.pointValue.y*glyph.pixelsHigh/18].alphaComponent)];
-    [tones sortUsingSelector:@selector(compare:)];
-    CHECK(tones.firstObject.doubleValue>.2 && tones.lastObject.doubleValue>.9 &&
-          tones[1].doubleValue-tones[0].doubleValue>.1 && tones[2].doubleValue-tones[1].doubleValue>.1 &&
-          tones[3].doubleValue-tones[2].doubleValue>.1, "mosaic icon has four visibly distinct foreground tones");
     NSBitmapImageRep *source = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:800 pixelsHigh:500
         bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:3200 bitsPerPixel:32];
     for (NSInteger y=0;y<500;y++) for (NSInteger x=0;x<800;x++) {
@@ -744,17 +760,33 @@ static BOOL shapeVariants(void) {
     [e setCaptureRegion:NSMakeRect(20,20,760,360)];
     NSBitmapImageRep *baseline=[NSBitmapImageRep imageRepWithData:[e renderPNGData:NULL]];
     choose(e,1); variant(e,1);
-    CHECK(e.properties.shapeControl.segmentCount==2 && [e.document[@"undo"] count]==0,
+    CHECK(shapeCount(e)==2 && [e.document[@"undo"] count]==0,
           "outline offers two variants; changing its creation default does not edit the document");
     draw(e,NSMakePoint(60,50),NSMakePoint(260,150));
     CHECK([e.document[@"annotations"][0][@"type"] isEqual:@"ellipse"], "round outline is a real ellipse annotation");
     choose(e,4); variant(e,1);
-    CHECK(e.properties.shapeControl.segmentCount==3 && !e.properties.colorControl.hidden,
+    CHECK(shapeCount(e)==3 && propertySemantic(e,@"style.color") != nil,
           "cover offers rectangle, ellipse and mosaic with normal fill controls");
     draw(e,NSMakePoint(320,50),NSMakePoint(520,150));
     CHECK([e.document[@"annotations"][1][@"shape"] isEqual:@"ellipse"], "round cover carries its own shape geometry");
     variant(e,2);
-    CHECK(e.properties.colorControl.hidden && !e.properties.blockControl.hidden,
+    NSDictionary *mosaic = propertySemantic(e,@"style.shape.2");
+    NSRect mosaicRect = propertyRect(mosaic);
+    NSBitmapImageRep *glyph = [e.textPropertiesCanvas bitmapImageRepForCachingDisplayInRect:e.textPropertiesCanvas.bounds];
+    [e.textPropertiesCanvas cacheDisplayInRect:e.textPropertiesCanvas.bounds toBitmapImageRep:glyph];
+    NSMutableArray<NSNumber *> *tones = [NSMutableArray array];
+    CGFloat sx = glyph.pixelsWide / NSWidth(e.textPropertiesCanvas.bounds);
+    CGFloat sy = glyph.pixelsHigh / NSHeight(e.textPropertiesCanvas.bounds);
+    for (NSUInteger row = 0; row < 2; row++) for (NSUInteger col = 0; col < 2; col++) {
+        NSColor *tile = [[glyph colorAtX:(NSMinX(mosaicRect)+8+8*col)*sx
+                                      y:(NSMidY(mosaicRect)-5+8*row)*sy] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        [tones addObject:@(tile.redComponent)];
+    }
+    [tones sortUsingSelector:@selector(compare:)];
+    CHECK(tones.count==4 && tones[1].doubleValue-tones[0].doubleValue>.1 &&
+          tones[2].doubleValue-tones[1].doubleValue>.1 && tones[3].doubleValue-tones[2].doubleValue>.1,
+          "shared mosaic button renders four visibly distinct foreground tones");
+    CHECK(propertySemantic(e,@"style.color") == nil && e.textPropertyInputs[@"style.blockSize"] != nil,
           "mosaic exposes pixel size and hides irrelevant color/alpha controls");
     draw(e,NSMakePoint(540,50),NSMakePoint(740,150));
     NSBitmapImageRep *rendered=[NSBitmapImageRep imageRepWithData:[e renderPNGData:NULL]];
@@ -774,18 +806,21 @@ static BOOL shapeVariants(void) {
     choose(e,0);
     [e.canvas mouseDown:mouse(e.canvas,NSEventTypeLeftMouseDown,NSMakePoint(160,50))];
     [e.canvas mouseUp:mouse(e.canvas,NSEventTypeLeftMouseUp,NSMakePoint(160,50))];
-    CHECK([e.canvas.selectedID isEqual:e.document[@"annotations"][0][@"id"]] && e.properties.shapeControl.selectedSegment==1,
+    CHECK([e.canvas.selectedID isEqual:e.document[@"annotations"][0][@"id"]] && property(e,MC_CAPTURE_TEXT_SHAPE)==1,
           "ellipse stroke can be selected and restores the correct secondary property");
     NSUInteger count=[e.document[@"undo"] count]; variant(e,0);
+    CHECK([e.document[@"annotations"][0][@"type"] isEqual:@"ellipse"] && [e.document[@"undo"] count]==count,
+          "existing shape stays a preview until the shared transaction commits");
+    CHECK([e finishSharedText:YES], "existing shape transaction publishes successfully");
     CHECK([e.document[@"annotations"][0][@"type"] isEqual:@"rect"] && [e.document[@"undo"] count]==count+1,
           "changing an existing shape is one undoable document command");
     [e undo:nil];
     CHECK([e.document[@"annotations"][0][@"type"] isEqual:@"ellipse"], "undo restores the former shape");
     choose(e,1);
-    CHECK(e.properties.shapeControl.selectedSegment==1, "editing an existing shape preserves the remembered creation default");
+    CHECK(property(e,MC_CAPTURE_TEXT_SHAPE)==1, "editing an existing shape preserves the remembered creation default");
     [e.window.contentView layoutSubtreeIfNeeded];
-    MCColorSwatch *well = e.properties.colorControl.well;
-    CHECK(NSWidth(well.frame) == editor_style_swatch_size() && NSHeight(well.frame) == editor_style_swatch_size(),
+    NSRect swatch = propertyRect(propertySemantic(e,@"style.color"));
+    CHECK(NSWidth(swatch) == editor_style_swatch_size() && NSHeight(swatch) == editor_style_swatch_size(),
           "color control uses the shared circular size instead of a compressed system well");
     NSString *directory=NSProcessInfo.processInfo.environment[@"MOOJICUT_TOOLBAR_PREVIEW_DIR"];
     if (directory.length) for (NSString *mode in @[@"light",@"dark"]) {
@@ -810,42 +845,54 @@ static BOOL propertySpacing(void) {
             choose(e, tools[i]);
             if (tools[i] == 1 || tools[i] == 4) variant(e, shapes[i]);
             [e.window.contentView layoutSubtreeIfNeeded];
-            NSView *previous = nil;
-            for (NSView *group in e.properties.arrangedSubviews) {
-                if (group.hidden) continue;
-                if (previous) {
-                    CGFloat gap = NSMinX(group.frame) - NSMaxX(previous.frame);
-                    CHECK(fabs(gap - editor_style_group_gap()) < .01,
-                          "visible property groups keep the reference spacing after hidden groups detach");
-                }
-                if ([group isKindOfClass:NSStackView.class]) {
-                    NSView *label = ((NSStackView *)group).arrangedSubviews.firstObject;
-                    CHECK(fabs(NSMinX([label alignmentRectForFrame:label.frame])) < .01,
-                          "property labels start at their group boundary without extra leading padding");
-                }
-                previous = group;
+            NSDictionary *frame = e.textPropertiesCanvas.frameDescription;
+            NSMutableArray<NSDictionary *> *labels = [NSMutableArray array];
+            NSMutableArray<NSDictionary *> *controls = [NSMutableArray arrayWithArray:frame[@"semantics"] ?: @[]];
+            [controls addObjectsFromArray:frame[@"editableFields"] ?: @[]];
+            for (NSDictionary *command in frame[@"commands"]) {
+                if ([command[@"type"] isEqual:@"text"]) [labels addObject:command];
+                else [controls addObject:command]; // Include the shared input border, not only its inset native text surface.
             }
-            if (e.textEdit) {
-                NSArray *children = e.textPropertiesCanvas.accessibilityChildren;
-                for (MCSharedTextInputView *field in e.textPropertyInputs.allValues) {
-                    CHECK(NSContainsRect(e.textPropertiesCanvas.bounds,field.frame), "shared numeric surface fits the actual property canvas");
-                    CHECK([children containsObject:field] && [field.accessibilityRole isEqual:NSAccessibilityTextFieldRole],
-                          "shared canvas exposes the real editable accessibility child once");
-                    CHECK([[children filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id item, NSDictionary *bindings) {
-                        (void)bindings; return item == field;
-                    }]] count] == 1, "field accessibility is not duplicated");
+            [labels sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                return [a[@"x"] compare:b[@"x"]];
+            }];
+            CGFloat lastRight = 0;
+            for (NSUInteger labelIndex = 0; labelIndex < labels.count; labelIndex++) {
+                CGFloat left = [labels[labelIndex][@"x"] doubleValue];
+                CGFloat next = labelIndex+1<labels.count ? [labels[labelIndex+1][@"x"] doubleValue] : CGFLOAT_MAX;
+                if (labelIndex) CHECK(fabs(left-lastRight-editor_style_group_gap()) < .01,
+                    "visible shared property groups preserve reference spacing after hidden groups detach");
+                CGFloat right = left;
+                for (NSDictionary *control in controls) {
+                    NSRect rect = propertyRect(control);
+                    if (NSMinX(rect) >= left && NSMinX(rect) < next) right = MAX(right,NSMaxX(rect));
                 }
+                CHECK(right > left, "each property label precedes a visible shared control without leading spacer");
+                lastRight = right;
             }
-            MCColorSwatch *well = e.properties.colorControl.well;
-            if (!e.textEdit && !e.properties.colorControl.hidden) {
-                CHECK(NSWidth(well.frame) == editor_style_swatch_size() && NSHeight(well.frame) == editor_style_swatch_size(),
-                      "light and dark swatches share a square drawing and input container");
-                CHECK([well hitTest:NSMakePoint(NSMidX(well.frame), NSMidY(well.frame))] == well &&
-                      [well hitTest:NSMakePoint(NSMinX(well.frame) + .5, NSMinY(well.frame) + .5)] == nil,
-                      "the round color swatch accepts its center without an invisible corner hit area");
+            CHECK(labels.count > 0 && lastRight <= NSWidth(e.textPropertiesCanvas.bounds) &&
+                  fabs([labels.firstObject[@"x"] doubleValue]-(property(e,MC_CAPTURE_TEXT_ROW_WIDTH)-lastRight)) < .01,
+                  "shared property row fits with balanced outer padding and no trailing group gap");
+            NSArray *children = e.textPropertiesCanvas.accessibilityChildren;
+            for (MCSharedTextInputView *field in e.textPropertyInputs.allValues) {
+                CHECK(NSContainsRect(e.textPropertiesCanvas.bounds,field.frame), "shared numeric surface fits the actual property canvas");
+                CHECK([children containsObject:field] && [field.accessibilityRole isEqual:NSAccessibilityTextFieldRole],
+                      "shared canvas exposes the real editable accessibility child once");
+                CHECK([[children filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id item, NSDictionary *bindings) {
+                    (void)bindings; return item == field;
+                }]] count] == 1, "field accessibility is not duplicated");
             }
-            CHECK(previous && NSMaxX(previous.frame) <= NSWidth(e.properties.bounds) + .01,
-                  "the last property fits the measured document width without a trailing gap");
+            NSDictionary *swatch = propertySemantic(e,@"style.color");
+            if (swatch) {
+                NSRect rect = propertyRect(swatch);
+                CHECK(NSWidth(rect) == editor_style_swatch_size() && NSHeight(rect) == editor_style_swatch_size(),
+                      "light and dark swatches share the MoonBit drawing and input size");
+                BOOL circle = NO;
+                for (NSDictionary *command in frame[@"commands"])
+                    if ([command[@"type"] isEqual:@"rect"] && NSEqualRects(propertyRect(command),rect) &&
+                        fabs([command[@"radius"] doubleValue]-NSWidth(rect)/2) < .01) circle = YES;
+                CHECK(circle, "the shared color control is rendered as a circle");
+            }
             if (directory.length) {
                 NSData *png = [toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
                 [png writeToFile:[directory stringByAppendingPathComponent:
@@ -875,49 +922,56 @@ static BOOL colorPanelLifetime(void) {
     IMP originalFront = method_getImplementation(frontMethod);
     const char *frontTypes = method_getTypeEncoding(frontMethod);
     class_replaceMethod(NSColorPanel.class, @selector(orderFront:), (IMP)keepColorPanelHidden, frontTypes);
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,500,100)
-        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
-    MCColorControl *first = [[MCColorControl alloc] initWithFrame:NSZeroRect];
-    MCColorControl *second = [[MCColorControl alloc] initWithFrame:NSZeroRect];
-    [window.contentView addSubview:first]; [window.contentView addSubview:second];
-    __block NSUInteger firstChanges = 0, secondChanges = 0;
-    first.onChange = ^(__unused id sender) { firstChanges++; };
-    second.onChange = ^(__unused id sender) { secondChanges++; };
-    [first showColorPanel:nil];
+    MCImageEditorController *first = editor(), *second = editor();
+    choose(first,2); choose(second,4);
+    NSDictionary *firstDocument = first.document, *secondDocument = second.document;
+    double firstRGB = property(first,MC_CAPTURE_TEXT_RGB), secondRGB = property(second,MC_CAPTURE_TEXT_RGB);
+    // A corner of the circular hit target must not open the system panel.
+    NSRect swatch = propertyRect(propertySemantic(first,@"style.color"));
+    propertyClick(first,NSMakePoint(NSMinX(swatch)+.5,NSMinY(swatch)+.5));
+    CHECK(!first.textColorLease.active && observedColorTarget == nil,
+          "round swatch rejects invisible corner hit area");
+    propertyActivate(first,@"style.color");
+    MCSystemColorPanelLease *firstLease = first.textColorLease;
     NSColorPanel *panel = NSColorPanel.sharedColorPanel;
-    CHECK(observedColorTarget != nil && firstChanges == 0, "opening the system panel binds without changing a style");
-    [second showColorPanel:nil];
+    CHECK(firstLease.active && observedColorTarget != nil && property(first,MC_CAPTURE_TEXT_RGB)==firstRGB &&
+          [first.document isEqual:firstDocument], "opening a real editor color panel does not create a style edit");
+    propertyActivate(second,@"style.color");
+    MCSystemColorPanelLease *secondLease = second.textColorLease;
     id router = observedColorTarget;
-    second.color = [NSColor colorWithSRGBRed:.1 green:.8 blue:.2 alpha:.6];
+    CHECK(!firstLease.active && secondLease.active && property(second,MC_CAPTURE_TEXT_RGB)==secondRGB,
+          "another editor takes the single panel lease without changing either document");
+    [secondLease updateColor:[NSColor colorWithSRGBRed:.1 green:.8 blue:.2 alpha:1]];
     NSColor *rebound = [panel.color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-    CHECK(secondChanges == 0 && observedColorTarget == router && fabs(rebound.greenComponent - .8) < .001 &&
-          fabs(rebound.alphaComponent - .6) < .001, "rebinding an open color panel stays synchronized without creating an edit");
-    panel.color = [NSColor colorWithSRGBRed:.2 green:.4 blue:.8 alpha:.35];
-    CHECK(firstChanges == 0 && observedColorTarget == router, "a former panel owner ignores a late color action");
-    // NSColorPanel's color setter dispatches its real target/action. Do not
-    // manually invoke the current owner and accidentally count the event twice.
-    CHECK(secondChanges == 1 && fabs(second.color.alphaComponent - .35) < .001,
-          "the current panel owner receives RGBA through its normal change callback");
-    [first closePopover];
-    CHECK(observedColorTarget == router, "closing a former owner does not detach the active panel owner");
-    [second removeFromSuperview];
-    CHECK(observedColorTarget == nil, "removing a property view detaches the system panel target");
-    panel.color = [NSColor colorWithSRGBRed:.7 green:.2 blue:.3 alpha:.8];
-    CHECK(secondChanges == 1, "a removed property view rejects a queued panel action");
-    __weak MCColorControl *released;
+    CHECK(observedColorTarget==router && fabs(rebound.greenComponent-.8)<.001 &&
+          property(second,MC_CAPTURE_TEXT_RGB)==secondRGB, "silent panel synchronization creates no edit");
+    [firstLease updateColor:NSColor.redColor];
+    CHECK(fabs([[panel.color colorUsingColorSpace:NSColorSpace.sRGBColorSpace] greenComponent]-.8)<.001,
+          "a retired lease cannot recolor the new owner's panel");
+    panel.color = [NSColor colorWithSRGBRed:.2 green:.4 blue:.8 alpha:1];
+    CHECK(property(first,MC_CAPTURE_TEXT_RGB)==firstRGB && property(second,MC_CAPTURE_TEXT_RGB)==0x3366cc &&
+          property(second,MC_CAPTURE_TEXT_OPACITY)==1 && [second.document isEqual:secondDocument],
+          "system color target/action updates only the current shared draft and preserves opacity");
+    [first cancel:nil];
+    CHECK(observedColorTarget==router && secondLease.active,
+          "closing a former editor does not detach the current panel owner");
+    [second cancel:nil];
+    CHECK(observedColorTarget==nil && !secondLease.active && second.textEdit==0,
+          "closing an editor retires its shared edit and system color target");
+    panel.color = NSColor.magentaColor;
+    CHECK([second.document isEqual:secondDocument], "queued color changes cannot mutate a closed editor");
+    __weak MCImageEditorController *released;
     @autoreleasepool {
-        MCColorControl *temporary = [[MCColorControl alloc] initWithFrame:NSZeroRect];
-        [temporary showColorPanel:nil]; released = temporary;
-        CHECK(observedColorTarget != nil, "a standalone color component can own the panel through its lease");
+        MCImageEditorController *temporary = editor(); choose(temporary,1);
+        propertyActivate(temporary,@"style.color"); released = temporary;
+        CHECK(temporary.textColorLease.active && observedColorTarget!=nil,
+              "a real editor owns the panel through a weak owner lease");
+        NSDictionary *semantic = propertySemantic(temporary,@"style.color");
+        CHECK([semantic[@"role"] isEqual:@"button"] && [semantic[@"label"] length]>0,
+              "shared round swatch preserves accessible button semantics and activation");
+        [temporary cancel:nil];
     }
-    CHECK(released == nil && observedColorTarget == nil, "component deallocation clears its panel target without retaining it");
-    NSStackView *content = (NSStackView *)first.popover.contentViewController.view;
-    NSStackView *presets = (NSStackView *)content.arrangedSubviews.firstObject;
-    MCColorSwatch *preset = (MCColorSwatch *)presets.arrangedSubviews.firstObject;
-    [preset performClick:nil];
-    CHECK(firstChanges == 1 && [preset.accessibilityRole isEqual:NSAccessibilityButtonRole] &&
-          preset.accessibilityLabel.length > 0, "round palette buttons retain activation, accessibility and the change callback");
-    [first closePopover]; [second closePopover];
+    CHECK(released==nil && observedColorTarget==nil, "editor teardown clears the color target without retaining its owner");
     method_setImplementation(targetMethod, (IMP)originalColorTarget);
     class_replaceMethod(NSColorPanel.class, @selector(orderFront:), originalFront, frontTypes);
     return passed;
