@@ -1,202 +1,129 @@
 #import "MCPluginWorker.h"
-#include <errno.h>
-#include <fcntl.h>
+#include "platform/shared/plugin_host/worker_process.h"
 #include <math.h>
-#include <signal.h>
-#include <unistd.h>
 
 NSString *const MCPluginWorkerErrorDomain = @"dev.moojicut.plugin-worker";
 MCPluginWorkerLimits MCPluginWorkerDefaultLimits(void) {
-    return (MCPluginWorkerLimits){4*1024*1024,64*1024,256*1024,16*1024,5,50000000,1000,1024};
+    return (MCPluginWorkerLimits){MC_WASM_MAX_MODULE_BYTES,MC_WASM_MAX_INPUT_BYTES,MC_WASM_MAX_OUTPUT_BYTES,
+        MC_PLUGIN_MAX_STDERR_BYTES,MC_PLUGIN_DEFAULT_WALL_SECONDS,MC_WASM_MAX_FUEL,MC_WASM_MAX_TIMEOUT_MS,MC_WASM_MAX_MEMORY_PAGES};
 }
 static NSError *MCWorkerError(NSInteger code, NSString *message) {
     return [NSError errorWithDomain:MCPluginWorkerErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey:message}];
 }
-static void MCAppend32(NSMutableData *data, uint32_t value) {
-    uint8_t bytes[] = {value>>24,value>>16,value>>8,value}; [data appendBytes:bytes length:4];
+static NSError *MCProcessError(MCPluginProcessStatus status, const MCPluginProcessResult *result) {
+    switch (status) {
+        case MC_PLUGIN_PROCESS_OK: return nil;
+        case MC_PLUGIN_PROCESS_CANCELLED:
+            return MCWorkerError(MCPluginWorkerCancelled,@"插件执行已取消。");
+        case MC_PLUGIN_PROCESS_TIMED_OUT:
+            return MCWorkerError(MCPluginWorkerTimedOut,@"插件执行超时，已停止工作进程。");
+        case MC_PLUGIN_PROCESS_LAUNCH_FAILED: {
+            NSString *detail = result->system_error ?
+                [NSError errorWithDomain:NSPOSIXErrorDomain code:result->system_error userInfo:nil].localizedDescription : nil;
+            return MCWorkerError(MCPluginWorkerLaunchFailed,detail ?: @"无法启动插件工作进程。");
+        }
+        case MC_PLUGIN_PROCESS_IO_FAILED:
+            return MCWorkerError(MCPluginWorkerCommunicationFailed,@"插件通信管道读取或写入失败。");
+        case MC_PLUGIN_PROCESS_LIMIT_EXCEEDED:
+            return MCWorkerError(MCPluginWorkerOutputLimitExceeded,@"插件输出或诊断输出超过上限。");
+        case MC_PLUGIN_PROCESS_EXECUTION_FAILED: {
+            NSString *diagnostic = [[NSString alloc] initWithBytes:result->diagnostics length:result->diagnostics_size encoding:NSUTF8StringEncoding];
+            if (diagnostic.length > 1024) diagnostic = [diagnostic substringToIndex:1024];
+            return MCWorkerError(MCPluginWorkerExecutionFailed,diagnostic.length ? diagnostic : @"插件工作进程执行失败。");
+        }
+        case MC_PLUGIN_PROCESS_RUNNING: break;
+    }
+    return MCWorkerError(MCPluginWorkerCommunicationFailed,@"插件工作进程返回了无效状态。");
 }
+
 @interface MCPluginWorker ()
 @property (atomic, readwrite, getter=isRunning) BOOL running;
 @property dispatch_queue_t queue;
-@property NSTask *task;
-@property NSPipe *inputPipe, *outputPipe, *errorPipe;
-@property dispatch_source_t outputSource, errorSource, inputSource, deadline;
-@property NSMutableData *output, *diagnostics;
-@property NSData *payload;
-@property NSUInteger written;
-@property MCPluginWorkerLimits limits;
+@property dispatch_source_t pollTimer;
+@property (nonatomic) MCPluginProcess *process;
+@property NSData *output;
 @property NSError *failure;
-@property BOOL launchPending, exited, outputEOF, errorEOF, inputClosed, inputClosing, finished;
+@property BOOL finished;
 @property (copy) void (^completion)(NSData *, NSError *);
 @property MCPluginWorker *lifetime;
 @end
+
 @implementation MCPluginWorker
 + (instancetype)startWithExecutableURL:(NSURL *)url wasmData:(NSData *)wasm inputData:(NSData *)input
                                limits:(MCPluginWorkerLimits)limits completion:(void (^)(NSData *, NSError *))completion {
     MCPluginWorker *worker = [self new];
     worker.queue = dispatch_queue_create("dev.moojicut.plugin-worker", DISPATCH_QUEUE_SERIAL);
-    worker.running = YES; worker.limits = limits; worker.completion = completion; worker.lifetime = worker;
+    worker.running = YES; worker.completion = completion; worker.lifetime = worker;
     MCPluginWorkerLimits hard = MCPluginWorkerDefaultLimits();
-    BOOL valid = url.isFileURL && limits.maxWasmBytes > 0 && limits.maxWasmBytes <= hard.maxWasmBytes &&
+    MCPluginWireRequest wire = {
+        .wasm_size = wasm.length, .input_size = input.length, .max_output_bytes = limits.maxOutputBytes,
+        .fuel = limits.fuel, .timeout_ms = limits.timeoutMilliseconds, .max_memory_pages = limits.maxMemoryPages
+    };
+    BOOL valid = url.isFileURL && url.path.isAbsolutePath && url.path.UTF8String &&
+        limits.maxWasmBytes > 0 && limits.maxWasmBytes <= hard.maxWasmBytes &&
         limits.maxInputBytes > 0 && limits.maxInputBytes <= hard.maxInputBytes &&
-        limits.maxOutputBytes > 0 && limits.maxOutputBytes <= hard.maxOutputBytes &&
         limits.maxStderrBytes > 0 && limits.maxStderrBytes <= hard.maxStderrBytes &&
-        isfinite(limits.wallTimeSeconds) && limits.wallTimeSeconds > 0 && limits.wallTimeSeconds <= 30 &&
-        limits.fuel > 0 && limits.fuel <= hard.fuel && limits.timeoutMilliseconds > 0 &&
-        limits.timeoutMilliseconds <= hard.timeoutMilliseconds && limits.maxMemoryPages > 0 &&
-        limits.maxMemoryPages <= hard.maxMemoryPages && wasm.length > 0 && wasm.length <= limits.maxWasmBytes &&
-        input.length > 0 && input.length <= limits.maxInputBytes;
+        isfinite(limits.wallTimeSeconds) && limits.wallTimeSeconds > 0 && limits.wallTimeSeconds <= MC_PLUGIN_MAX_WALL_SECONDS &&
+        wasm.length <= limits.maxWasmBytes && input.length <= limits.maxInputBytes &&
+        mc_plugin_wire_request_valid(&wire);
     if (!valid) {
-        dispatch_async(worker.queue, ^{ worker.failure = MCWorkerError(MCPluginWorkerInvalidRequest,@"插件请求或执行限额无效。"); [worker finish]; });
+        dispatch_async(worker.queue, ^{
+            worker.failure = MCWorkerError(MCPluginWorkerInvalidRequest,@"插件请求或执行限额无效。");
+            [worker finish];
+        });
         return worker;
     }
-    NSMutableData *payload = [NSMutableData dataWithBytes:"MOOJIW1\0" length:8];
-    MCAppend32(payload,(uint32_t)wasm.length); MCAppend32(payload,(uint32_t)input.length);
-    MCAppend32(payload,limits.timeoutMilliseconds); MCAppend32(payload,limits.maxMemoryPages);
-    MCAppend32(payload,(uint32_t)limits.maxOutputBytes);
-    MCAppend32(payload,(uint32_t)(limits.fuel>>32)); MCAppend32(payload,(uint32_t)limits.fuel);
-    [payload appendData:wasm]; [payload appendData:input]; worker.payload = payload;
-    dispatch_async(worker.queue, ^{ [worker launch:url]; });
+    // Freeze mutable caller data before returning, as the old payload builder
+    // did. All C handle operations then belong to this same serial queue.
+    NSData *wasmCopy = [wasm copy], *inputCopy = [input copy];
+    NSString *path = [url.path copy];
+    dispatch_async(worker.queue, ^{
+        MCPluginProcessRequest request = {
+            .executable = path.UTF8String, .wasm = wasmCopy.bytes, .input = inputCopy.bytes,
+            .wire = wire, .max_stderr_bytes = limits.maxStderrBytes,
+            .wall_ms = (uint32_t)ceil(limits.wallTimeSeconds * 1000.0)
+        };
+        worker.process = mc_plugin_process_start(&request);
+        if (!worker.process) {
+            worker.failure = MCWorkerError(MCPluginWorkerLaunchFailed,@"无法创建插件工作进程。");
+            [worker finish];
+            return;
+        }
+        __weak MCPluginWorker *weakWorker = worker;
+        worker.pollTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,worker.queue);
+        dispatch_source_set_timer(worker.pollTimer,DISPATCH_TIME_NOW,10 * NSEC_PER_MSEC,NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(worker.pollTimer, ^{ @autoreleasepool { [weakWorker poll]; } });
+        dispatch_resume(worker.pollTimer);
+    });
     return worker;
 }
-- (void)launch:(NSURL *)url {
-    if (self.failure || self.finished) { [self finish]; return; }
-    self.output = [NSMutableData data]; self.diagnostics = [NSMutableData data];
-    self.inputPipe = [NSPipe pipe]; self.outputPipe = [NSPipe pipe]; self.errorPipe = [NSPipe pipe];
-    self.task = [NSTask new]; self.task.executableURL = url; self.task.arguments = @[];
-    // Do not inherit DYLD_*, EXTISM_*, credentials or the user's environment.
-    self.task.environment = @{@"PATH":@"/usr/bin:/bin", @"LANG":@"en_US.UTF-8"};
-    self.task.currentDirectoryURL = [NSURL fileURLWithPath:@"/" isDirectory:YES];
-    self.task.standardInput = self.inputPipe; self.task.standardOutput = self.outputPipe; self.task.standardError = self.errorPipe;
-    __weak MCPluginWorker *weakSelf = self;
-    self.task.terminationHandler = ^(NSTask *task) {
-        MCPluginWorker *owner = weakSelf; if (!owner) return;
-        dispatch_async(owner.queue, ^{ (void)task; owner.exited = YES; [owner maybeFinish]; });
-    };
-    self.deadline = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,self.queue);
-    dispatch_source_set_timer(self.deadline,dispatch_time(DISPATCH_TIME_NOW,(int64_t)(self.limits.wallTimeSeconds*NSEC_PER_SEC)),DISPATCH_TIME_FOREVER,0);
-    dispatch_source_set_event_handler(self.deadline, ^{ [weakSelf stop:MCWorkerError(MCPluginWorkerTimedOut,@"插件执行超时，已停止工作进程。")]; });
-    dispatch_resume(self.deadline);
-    self.launchPending = YES;
-    NSTask *task = self.task;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
-        NSError *error = nil; BOOL launched = [task launchAndReturnError:&error];
-        dispatch_async(self.queue, ^{
-            self.launchPending = NO;
-            [self.inputPipe.fileHandleForReading closeAndReturnError:NULL];
-            [self.outputPipe.fileHandleForWriting closeAndReturnError:NULL];
-            [self.errorPipe.fileHandleForWriting closeAndReturnError:NULL];
-            if (!launched) {
-                self.failure = self.failure ?: MCWorkerError(MCPluginWorkerLaunchFailed,error.localizedDescription ?: @"无法启动插件工作进程。");
-                [self finish]; return;
-            }
-            [self startPipes];
-            if (self.failure) [self terminateProcess];
-            [self maybeFinish];
-        });
-    });
+- (void)poll {
+    if (self.finished || !self.process) return;
+    MCPluginProcessResult result = {0};
+    MCPluginProcessStatus status = mc_plugin_process_poll(self.process,&result);
+    if (status == MC_PLUGIN_PROCESS_RUNNING) return;
+    // Borrowed adapter bytes must be copied before close. A terminal result
+    // already guarantees child reaping and complete pipe teardown.
+    self.failure = MCProcessError(status,&result);
+    if (!self.failure) self.output = [NSData dataWithBytes:result.output length:result.output_size];
+    if (!mc_plugin_process_close(self.process)) return;
+    self.process = NULL;
+    [self finish];
 }
-- (void)startPipes {
-    int output = self.outputPipe.fileHandleForReading.fileDescriptor, diagnostic = self.errorPipe.fileHandleForReading.fileDescriptor;
-    int input = self.failure ? -1 : self.inputPipe.fileHandleForWriting.fileDescriptor;
-    BOOL configured = fcntl(output,F_SETFL,fcntl(output,F_GETFL)|O_NONBLOCK) == 0 &&
-        fcntl(diagnostic,F_SETFL,fcntl(diagnostic,F_GETFL)|O_NONBLOCK) == 0 &&
-        (input < 0 || (fcntl(input,F_SETFL,fcntl(input,F_GETFL)|O_NONBLOCK) == 0 && fcntl(input,F_SETNOSIGPIPE,1) == 0));
-    if (!configured) {
-        self.outputEOF = self.errorEOF = YES;
-        [self stop:MCWorkerError(MCPluginWorkerCommunicationFailed,@"无法配置插件通信管道。")]; return;
-    }
-    __weak MCPluginWorker *weakSelf = self;
-    self.outputSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,output,0,self.queue);
-    self.errorSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,diagnostic,0,self.queue);
-    if (input >= 0) self.inputSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE,input,0,self.queue);
-    NSFileHandle *outputHandle = self.outputPipe.fileHandleForReading, *errorHandle = self.errorPipe.fileHandleForReading;
-    dispatch_source_set_cancel_handler(self.outputSource, ^{ [outputHandle closeAndReturnError:NULL]; weakSelf.outputEOF = YES; [weakSelf maybeFinish]; });
-    dispatch_source_set_cancel_handler(self.errorSource, ^{ [errorHandle closeAndReturnError:NULL]; weakSelf.errorEOF = YES; [weakSelf maybeFinish]; });
-    dispatch_source_set_event_handler(self.outputSource, ^{ [weakSelf readPipe:NO]; });
-    dispatch_source_set_event_handler(self.errorSource, ^{ [weakSelf readPipe:YES]; });
-    if (self.inputSource) {
-        NSFileHandle *inputHandle = self.inputPipe.fileHandleForWriting;
-        dispatch_source_set_cancel_handler(self.inputSource, ^{ [inputHandle closeAndReturnError:NULL]; weakSelf.inputClosed = YES; weakSelf.inputClosing = NO; [weakSelf maybeFinish]; });
-        dispatch_source_set_event_handler(self.inputSource, ^{ [weakSelf writeInput]; });
-        dispatch_resume(self.inputSource);
-    }
-    dispatch_resume(self.outputSource); dispatch_resume(self.errorSource);
-}
-- (void)writeInput {
-    if (self.finished || !self.inputSource || !self.payload) return;
-    if (self.failure) { [self closeInput]; return; }
-    NSUInteger remaining = self.payload.length - self.written;
-    ssize_t n = write(self.inputPipe.fileHandleForWriting.fileDescriptor,(const uint8_t *)self.payload.bytes+self.written,MIN(remaining,65536));
-    if (n > 0) self.written += (NSUInteger)n;
-    else if (n < 0 && errno != EAGAIN && errno != EINTR) {
-        [self stop:MCWorkerError(MCPluginWorkerCommunicationFailed,@"插件工作进程未能读取请求。")]; return;
-    }
-    if (self.written == self.payload.length) [self closeInput];
-}
-- (void)closeInput {
-    if (self.inputSource) { self.inputClosing = YES; dispatch_source_cancel(self.inputSource); self.inputSource = nil; }
-    else if (!self.inputClosed && !self.inputClosing) { [self.inputPipe.fileHandleForWriting closeAndReturnError:NULL]; self.inputClosed = YES; }
-    self.payload = nil;
-}
-- (void)readPipe:(BOOL)diagnostic {
-    if (self.finished || (diagnostic ? !self.errorSource : !self.outputSource)) return;
-    NSFileHandle *handle = diagnostic ? self.errorPipe.fileHandleForReading : self.outputPipe.fileHandleForReading;
-    NSMutableData *buffer = diagnostic ? self.diagnostics : self.output;
-    NSUInteger limit = diagnostic ? self.limits.maxStderrBytes : self.limits.maxOutputBytes;
-    // Bound each readiness callback so an output flood cannot starve the timer.
-    for (NSUInteger chunk = 0; chunk < 16; chunk++) {
-        uint8_t bytes[4096]; ssize_t n = read(handle.fileDescriptor,bytes,sizeof(bytes));
-        if (n > 0) {
-            if ((NSUInteger)n > limit-buffer.length) {
-                [self stop:MCWorkerError(MCPluginWorkerOutputLimitExceeded,diagnostic ? @"插件诊断输出超过上限。" : @"插件输出超过上限。")];
-            } else if (!self.failure) [buffer appendBytes:bytes length:(NSUInteger)n];
-        } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-            if (n < 0) [self stop:MCWorkerError(MCPluginWorkerCommunicationFailed,@"插件通信管道读取失败。")];
-            if (diagnostic) { dispatch_source_cancel(self.errorSource); self.errorSource = nil; }
-            else { dispatch_source_cancel(self.outputSource); self.outputSource = nil; }
-            return;
-        } else if (errno == EAGAIN) return;
-    }
-}
-- (void)stop:(NSError *)error {
-    if (self.finished) return;
-    if (self.failure) return;
-    self.failure = error;
-    [self closeInput]; [self terminateProcess];
-    if (!self.task && !self.launchPending) [self finish];
-}
-- (void)terminateProcess {
-    if (self.task.running) [self.task terminate];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,250*NSEC_PER_MSEC),self.queue, ^{
-        if (!self.finished && self.task.running) kill(self.task.processIdentifier,SIGKILL);
-    });
-}
-- (void)cancel { dispatch_async(self.queue, ^{ [self stop:MCWorkerError(MCPluginWorkerCancelled,@"插件执行已取消。")]; }); }
-- (void)maybeFinish {
-    if (!self.launchPending && self.exited && self.outputEOF && self.errorEOF && self.inputClosed) {
-        if (!self.failure && (self.task.terminationReason != NSTaskTerminationReasonExit || self.task.terminationStatus != 0)) {
-            NSString *diagnostic = [[NSString alloc] initWithData:self.diagnostics encoding:NSUTF8StringEncoding];
-            if (diagnostic.length > 1024) diagnostic = [diagnostic substringToIndex:1024];
-            self.failure = MCWorkerError(MCPluginWorkerExecutionFailed,diagnostic.length ? diagnostic : @"插件工作进程执行失败。");
+- (void)cancel {
+    dispatch_async(self.queue, ^{
+        if (!self.finished && self.process) {
+            mc_plugin_process_cancel(self.process);
+            [self poll];
         }
-        [self finish];
-    }
+    });
 }
 - (void)finish {
     if (self.finished) return;
     self.finished = YES; self.running = NO;
-    if (self.deadline) { dispatch_source_cancel(self.deadline); self.deadline = nil; }
-    if (self.outputSource) { dispatch_source_cancel(self.outputSource); self.outputSource = nil; }
-    if (self.errorSource) { dispatch_source_cancel(self.errorSource); self.errorSource = nil; }
-    [self closeInput];
-    for (NSPipe *pipe in @[self.inputPipe ?: (id)NSNull.null,self.outputPipe ?: (id)NSNull.null,self.errorPipe ?: (id)NSNull.null]) {
-        if (![pipe isKindOfClass:NSPipe.class]) continue;
-        [pipe.fileHandleForReading closeAndReturnError:NULL]; [pipe.fileHandleForWriting closeAndReturnError:NULL];
-    }
-    self.task.terminationHandler = nil;
+    if (self.pollTimer) { dispatch_source_cancel(self.pollTimer); self.pollTimer = nil; }
     void (^completion)(NSData *,NSError *) = self.completion;
-    NSData *result = self.failure ? nil : [self.output copy]; NSError *error = self.failure;
+    NSData *result = self.failure ? nil : self.output; NSError *error = self.failure;
     self.completion = nil; self.lifetime = nil;
     dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(result,error); });
 }

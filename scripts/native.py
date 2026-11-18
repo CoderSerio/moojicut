@@ -207,8 +207,8 @@ class NativeBuild:
         helper = helpers / "MoojiPluginWorker"
         shutil.copy2(runtime / "libextism.dylib", library)
         self.run("/usr/bin/install_name_tool", "-id", "@rpath/libextism.dylib", library)
-        self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
-                 "-I", runtime, *native_sources("macos", "tool.plugin_worker"), library, "-framework", "Foundation",
+        self.run("xcrun", "clang", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                 "-I", runtime, "-I", ROOT, *native_sources("macos", "shared.plugin_host.worker"), library,
                  "-Wl,-rpath,@executable_path/../Frameworks", "-o", helper)
         self.binary_platform(helper)
         self.run("/usr/bin/codesign", "--force", "--sign", self.signing_identity, "--timestamp=none", library)
@@ -480,6 +480,7 @@ class NativeBuild:
         worker_test = plugin_directory / "plugin-worker"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
                  ROOT / "test/native/plugin-worker.m", ROOT / "native/macos/plugins/MCPluginWorker.m",
+                 *native_sources("macos", "shared.plugin_host.posix"),
                  "-framework", "Foundation", "-o", worker_test)
         self.run(worker_test, plugin_worker)
         package_test = plugin_directory / "plugin-package"

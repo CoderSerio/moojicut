@@ -26,6 +26,9 @@ on:
       - test/build/**
       - test/native/**
       - scripts/install_moon.py
+      - scripts/install_extism.py
+      - scripts/package_plugin.py
+      - scripts/plugin_worker_fixture.py
       - scripts/install_gstreamer.py
       - scripts/gstreamer_runtime.py
       - scripts/media_tests.py
@@ -43,8 +46,30 @@ permissions:
   contents: read
 
 jobs:
+  plugin-fixture:
+    name: Build shared MoonBit plugin fixture
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned MoonBit compiler and core
+        run: python scripts/install_moon.py "${{ runner.temp }}/moonbit"
+      - name: Build example ZIP
+        run: python scripts/package_plugin.py plugins/examples/capture-info --output .artifacts/plugin-fixture/capture-info.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moonbit-plugin-fixture
+          path: .artifacts/plugin-fixture/capture-info.zip
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     name: ${{ matrix.platform }} x64
+    needs: plugin-fixture
     strategy:
       fail-fast: false
       matrix:
@@ -62,11 +87,16 @@ jobs:
     env:
       PREVIEW_VERSION: ${{ inputs.version || '0.1.0-alpha.16' }}
       MOOJICUT_SMOKE_SCREENSHOT: ${{ github.workspace }}/.artifacts/${{ matrix.platform }}/smoke.${{ matrix.platform == 'windows' && 'bmp' || 'png' }}
+      MOOJICUT_PLUGIN_FIXTURE: .artifacts/plugin-fixture/capture-info.zip
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: moonbit-plugin-fixture
+          path: .artifacts/plugin-fixture
       - name: Set up MSVC x64
         if: runner.os == 'Windows'
         shell: pwsh
@@ -198,6 +228,8 @@ jobs:
           name: media-${{ matrix.platform }}-x64
           path: |
             .artifacts/${{ matrix.platform }}/runtime-checks.json
+            .artifacts/${{ matrix.platform }}/plugin-worker-*/*.log
+            .artifacts/${{ matrix.platform }}/plugin-worker-*/sample*/**/*-result.json
             .artifacts/${{ matrix.platform }}/media-tests/**/results.json
             .artifacts/${{ matrix.platform }}/media-tests/**/*.log
             .artifacts/${{ matrix.platform }}/media-tests/**/runtime/manifest.json

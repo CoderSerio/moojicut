@@ -362,7 +362,7 @@ Windows 混合 DPI、多屏和 IME，Linux X11/Wayland 与音频环境必须分�
 | native、components、plugins/feature | 按迁移台账逐项提取；Windows/Linux capture 内嵌图片编辑、macOS 分散选区与旧控制器均单列任务；Windows/Linux 编辑窗口已进入 platform/<os>/app |
 | 原 native/shared 头文件 | ABI 头已迁 bindings/c；pixelate.h 实现在 platform/shared/image；同仓调用者同步，无旧路径转发；新接口按同一归属登记 |
 | 原 plugins/system/builtins.json | 已迁 build/native-modules.json；构建前检查全量原生文件归属与实际 include 依赖 |
-| plugins/user-runtime | 当前仅作者 README，迁根 plugins/spec；真实执行器 native/tools/plugin-worker.m 与 native/macos/plugins 按台账拆分 |
+| plugins/user-runtime | 当前仅作者 README，迁根 plugins/spec；可移植执行器归 platform/shared/plugin_host，平台进程接入与产品插件管理按台账拆分 |
 
 已修复图片 core 反向导入 UI：协调已移到 capture 根包，样式值域也留在 core。录屏核心已脱离旧 video 包。剩余 MoonBit 包已归位，边界检查不再将旧路径映射为新归属，直接拒绝旧目录及旧导入（含测试导入）。Windows recording.cpp 已移除旧编辑器，采集与编码仍待归入平台能力；macOS 插件管理中的通用取消/排空策略仍需提取。提取时保留配置 preflight、原子索引和迟到结果校验，不能退化为简单通知式开关。
 

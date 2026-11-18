@@ -22,8 +22,14 @@ import sys
 import tarfile
 import tempfile
 import time
+import zipfile
 
-FIXTURES = ("gst-media", "mp4-mux", "media-worker", "media-waveform", "video-editor-host", "video-editor")
+import plugin_worker_fixture
+
+FIXTURES = ("gst-media", "mp4-mux", "media-worker", "media-waveform", "video-editor-host", "video-editor",
+            "plugin-worker-host")
+SAMPLE_PATH = "samples/capture-info.zip"
+CHECK_COUNT = 9
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MAX_UNPACKED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_BYTES = 256 * 1024 * 1024
@@ -92,11 +98,13 @@ def elf_x64(path):
     return path
 
 
-def write_fixture_kit(destination, package_path, commit, executables):
-    """Write a new tar.gz of six existing ELF binaries, bound to this release.
+def write_fixture_kit(destination, package_path, commit, executables, plugin_fixture_path):
+    """Bind existing ELF fixtures and the same MoonBit sample ZIP to a release.
 
     destination is the complete archive filename (no overwrite). executables
-    is the existing directory containing the six fixed names in FIXTURES.
+    is the existing directory containing the fixed names in FIXTURES.
+    plugin_fixture_path is the capture-info ZIP already used by the build's
+    worker checks. It is hashed as-is; no recompilation/repackaging is allowed.
     Runtime files are deliberately excluded; target tests use the release's
     exact runtime. Returns the absolute destination Path.
     """
@@ -106,6 +114,7 @@ def write_fixture_kit(destination, package_path, commit, executables):
         raise ValueError("Refusing to overwrite fixture kit: " + str(destination))
     executables = Path(executables).resolve()
     files = []
+    sources = {}
     for name in FIXTURES:
         binary = elf_x64(executables / name)
         if binary.stat().st_size > MAX_MEMBER_BYTES:
@@ -113,6 +122,11 @@ def write_fixture_kit(destination, package_path, commit, executables):
         if os.name == "posix" and not binary.stat().st_mode & 0o111:
             raise ValueError("Fixture is not executable: " + name)
         files.append({"path": "bin/" + name, "sha256": sha256(binary), "bytes": binary.stat().st_size})
+        sources["bin/" + name] = binary
+    sample = regular_file(plugin_fixture_path)
+    plugin_worker_fixture.sample_contents(sample)
+    files.append({"path": SAMPLE_PATH, "sha256": sha256(sample), "bytes": sample.stat().st_size})
+    sources[SAMPLE_PATH] = sample
     manifest = {"schemaVersion": 1, "platform": "linux", "arch": "x64", "commit": commit,
                 "packageSha256": metadata["sha256"], "files": files}
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -126,14 +140,14 @@ def write_fixture_kit(destination, package_path, commit, executables):
             info.mode, info.size = 0o644, len(payload)
             output.addfile(info, io.BytesIO(payload))
             for entry in files:
-                binary = executables / PurePosixPath(entry["path"]).name
+                binary = sources[entry["path"]]
                 # Read once to guarantee manifest bytes match this tar even if
                 # another build replaces a fixture during kit generation.
                 payload = binary.read_bytes()
                 if len(payload) != entry["bytes"] or hashlib.sha256(payload).hexdigest() != entry["sha256"]:
                     raise ValueError("Fixture changed while creating kit: " + entry["path"])
                 info = tarfile.TarInfo(entry["path"])
-                info.mode, info.size = 0o755, len(payload)
+                info.mode, info.size = (0o644 if entry["path"] == SAMPLE_PATH else 0o755), len(payload)
                 output.addfile(info, io.BytesIO(payload))
         if sha256(package_path) != metadata["sha256"]:
             raise ValueError("Release changed while creating fixture kit")
@@ -151,7 +165,7 @@ def safe_unpack(archive, destination, *, kit=False):
         raise ValueError("Archive exceeds compressed size limit")
     if destination.exists() or destination.is_symlink():
         raise ValueError("Extraction destination must be fresh")
-    allowed = {"manifest.json", "bin", *("bin/" + name for name in FIXTURES)}
+    allowed = {"manifest.json", "bin", "samples", SAMPLE_PATH, *("bin/" + name for name in FIXTURES)}
     with tarfile.open(archive, "r:gz") as source:
         members = source.getmembers()
         if len(members) > 20000:
@@ -197,19 +211,22 @@ def verify_kit(directory, metadata, commit):
             manifest.get("arch") != "x64" or manifest.get("commit") != commit or
             manifest.get("packageSha256") != metadata["sha256"]):
         raise ValueError("Fixture kit does not match the package/commit")
-    expected = {"bin/" + name for name in FIXTURES}
+    expected = {SAMPLE_PATH, *("bin/" + name for name in FIXTURES)}
     entries = manifest.get("files")
     if not isinstance(entries, list) or len(entries) != len(expected):
-        raise ValueError("Fixture kit must contain exactly six hashed binaries")
+        raise ValueError("Fixture kit must contain exactly the hashed binaries and sample ZIP")
     seen = set()
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("path") not in expected or entry["path"] in seen:
             raise ValueError("Invalid or duplicate fixture manifest path")
         seen.add(entry["path"])
-        path = elf_x64(directory / entry["path"])
+        sample = entry["path"] == SAMPLE_PATH
+        path = regular_file(directory / entry["path"]) if sample else elf_x64(directory / entry["path"])
         if (entry.get("sha256") != sha256(path) or entry.get("bytes") != path.stat().st_size or
-                (os.name == "posix" and not path.stat().st_mode & 0o111)):
-            raise ValueError("Fixture executable hash/size/mode mismatch: " + entry["path"])
+                (not sample and os.name == "posix" and not path.stat().st_mode & 0o111)):
+            raise ValueError("Fixture hash/size/mode mismatch: " + entry["path"])
+        if sample:
+            plugin_worker_fixture.sample_contents(path)
     actual = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_file()}
     if actual != expected | {"manifest.json"}:
         raise ValueError("Fixture kit contains unlisted files")
@@ -218,7 +235,7 @@ def verify_kit(directory, metadata, commit):
 
 def clean_environment(output, inherited=None):
     original = os.environ if inherited is None else inherited
-    blocked = ("GST_", "GSTREAMER_", "LD_", "GIO_", "MOOJICUT_", "PKG_CONFIG_", "MOON")
+    blocked = ("GST_", "GSTREAMER_", "LD_", "GIO_", "MOOJICUT_", "PKG_CONFIG_", "MOON", "PYTHON")
     environment = {key: value for key, value in original.items()
                    if not key.upper().startswith(blocked) and key not in
                    {"GI_TYPELIB_PATH", "GSETTINGS_SCHEMA_DIR", "LIBRARY_PATH", "G_DEBUG", "G_MESSAGES_DEBUG"}}
@@ -307,6 +324,7 @@ def check_package(package, fixtures, output, commit, *, execute=run_command, inh
             if internal.get(key) != metadata.get(key):
                 raise ValueError("Packaged build.json disagrees with release metadata: " + key)
         elf_x64(app / "moojicut")
+        elf_x64(app / "MoojiPluginWorker")
         elf_x64(app / "runtime/bin/gst-plugin-scanner")
         for relative in ("runtime/lib", "runtime/plugins"):
             if not (app / relative).is_dir() or not any((app / relative).iterdir()):
@@ -329,13 +347,23 @@ def check_package(package, fixtures, output, commit, *, execute=run_command, inh
             ("media-waveform", [binary / "media-waveform", output / "waveform"], False, 300),
             ("video-editor-host", [binary / "video-editor-host", output / "host"], False, 600),
             ("video-editor", [binary / "video-editor", media / "generated-source.mkv", output / "editor"], True, 600),
+            ("plugin-worker-host", [Path(sys.executable).resolve(), Path(plugin_worker_fixture.__file__).resolve(),
+                                    "--fixture", binary / "plugin-worker-host", "--worker", app / "MoojiPluginWorker",
+                                    "--package", output / "fixtures" / SAMPLE_PATH,
+                                    "--output", output / "plugin-worker"], False, 90),
         ]
         for name, command, bootstrap, timeout in checks:
-            environment = (bootstrap_environment(output, name, inherited) if bootstrap else
+            # The worker must locate Extism from its own packaged RUNPATH, not
+            # an SDK or the media fixtures' LD_LIBRARY_PATH.
+            environment = (clean_environment(output, inherited) if name == "plugin-worker-host" else
+                           bootstrap_environment(output, name, inherited) if bootstrap else
                            fixture_environment(binary, output, name, inherited))
             try:
                 result = execute(command, env=environment, cwd=output, log=logs / (name + ".log"), timeout=timeout)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+                if (name == "plugin-worker-host" and result.get("returncode") == 0 and
+                        not result.get("timedOut") and not result.get("error")):
+                    plugin_worker_fixture.verify_results(output / "plugin-worker")
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
                 result = {"returncode": None, "error": str(error)}
                 with (logs / (name + ".log")).open("a", encoding="utf-8") as log:
                     log.write("\nCHECK ERROR: " + str(error) + "\n")
@@ -344,7 +372,7 @@ def check_package(package, fixtures, output, commit, *, execute=run_command, inh
             if not passed:
                 report["failures"][name] = result
             print(name + ": " + ("passed" if passed else "FAILED"), flush=True)
-    except (OSError, ValueError, tarfile.TarError) as error:
+    except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as error:
         report["failures"]["validation"] = str(error)
         (logs / "validation.log").write_text(str(error) + "\n", encoding="utf-8")
     finally:
@@ -354,7 +382,7 @@ def check_package(package, fixtures, output, commit, *, execute=run_command, inh
                     report["failures"]["package-unchanged"] = "Input package bytes changed during validation"
             except OSError as error:
                 report["failures"]["package-unchanged"] = str(error)
-        if len(report["checks"]) == 8 and not report["failures"]:
+        if len(report["checks"]) == CHECK_COUNT and not report["failures"]:
             report["result"] = "passed"
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report

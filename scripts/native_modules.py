@@ -22,6 +22,10 @@ SHARED_PREFIXES = {
     "shared.image": "platform/shared/image/",
     "shared.graphics": "platform/shared/graphics/",
     "shared.storage": "platform/shared/storage/",
+    "shared.plugin_host.worker": "platform/shared/plugin_host/",
+    "shared.plugin_host.protocol": "platform/shared/plugin_host/",
+    "shared.plugin_host.process": "platform/shared/plugin_host/",
+    "shared.plugin_host.posix": "platform/shared/plugin_host/",
 }
 
 

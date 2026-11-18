@@ -149,12 +149,14 @@ def validate_wasm(data: bytes) -> None:
 def moon_toolchain() -> tuple[Path, dict[str, str]]:
     environment = os.environ.copy()
     configured = environment.get("MOON_HOME")
+    executable_name = "moon.exe" if sys.platform == "win32" else "moon"
+    bundled_home = ROOT / ".tools" / "moon"
     if configured:
         home = Path(configured).expanduser()
-        executable = home / "bin" / "moon"
-    elif (ROOT / ".tools" / "moon" / "bin" / "moon").is_file():
-        home = ROOT / ".tools" / "moon"
-        executable = home / "bin" / "moon"
+        executable = home / "bin" / executable_name
+    elif (bundled_home / "bin" / executable_name).is_file():
+        home = bundled_home
+        executable = home / "bin" / executable_name
     else:
         found = shutil.which("moon")
         if not found:

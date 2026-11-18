@@ -8,6 +8,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -36,6 +37,7 @@ class LinuxPackageCheckTest(unittest.TestCase):
                     "workingTreeDirty": False}
         self.archive(package, [
             ("MoojiCut/moojicut", ELF + b"application", 0o755),
+            ("MoojiCut/MoojiPluginWorker", ELF + b"worker", 0o755),
             ("MoojiCut/build.json", json.dumps(metadata).encode(), 0o644),
             ("MoojiCut/runtime/bin/gst-plugin-scanner", ELF + b"scanner", 0o755),
             ("MoojiCut/runtime/lib/libtest.so.1", ELF + b"library", 0o644),
@@ -56,7 +58,24 @@ class LinuxPackageCheckTest(unittest.TestCase):
         # never sneak into the target-machine fixture artifact.
         (directory / "runtime").mkdir(exist_ok=True)
         (directory / "runtime/not-for-kit").write_text("not a release library", encoding="utf-8")
-        return check.write_fixture_kit(self.root / name, package, COMMIT, directory)
+        sample = self.sample()
+        return check.write_fixture_kit(self.root / name, package, COMMIT, directory, sample)
+
+    def sample(self):
+        sample = self.root / "capture-info.zip"
+        with zipfile.ZipFile(sample, "w") as archive:
+            archive.writestr("manifest.json", (ROOT / "plugins/examples/capture-info/manifest.json").read_bytes())
+            # These unit tests never execute a fabricated Wasm or ELF. They
+            # check package binding and orchestration; real sample execution
+            # is the native fixture/target-machine gate.
+            archive.writestr("plugin.wasm", b"\0asm\1\0\0\0")
+        return sample
+
+    def successful_plugin_response(self, command):
+        output = Path(command[command.index("--output") + 1])
+        output.mkdir()
+        for filename, response in check.plugin_worker_fixture.EXPECTED.items():
+            (output / filename).write_text(json.dumps(response, ensure_ascii=False), encoding="utf-8")
 
     def test_release_checksum_commit_and_platform_reject_before_execution(self):
         package, metadata = self.release()
@@ -78,7 +97,8 @@ class LinuxPackageCheckTest(unittest.TestCase):
         package, metadata = self.release()
         kit = self.kit(package)
         with tarfile.open(kit) as archive:
-            self.assertEqual(set(archive.getnames()), {"manifest.json", *("bin/" + x for x in check.FIXTURES)})
+            self.assertEqual(set(archive.getnames()), {"manifest.json", check.SAMPLE_PATH,
+                                                       *("bin/" + x for x in check.FIXTURES)})
         directory = check.safe_unpack(kit, self.root / "unpacked", kit=True)
         manifest = check.verify_kit(directory, metadata, COMMIT)
         self.assertEqual(manifest["packageSha256"], check.sha256(package))
@@ -89,9 +109,13 @@ class LinuxPackageCheckTest(unittest.TestCase):
             check.verify_kit(directory, metadata, "b" * 40)
         original = kit.read_bytes()
         with self.assertRaisesRegex(ValueError, "overwrite"):
-            check.write_fixture_kit(kit, package, COMMIT, self.root / "compiled")
+            check.write_fixture_kit(kit, package, COMMIT, self.root / "compiled", self.root / "capture-info.zip")
         self.assertEqual(kit.read_bytes(), original)
         (directory / "bin/gst-media").write_bytes(ELF + b"tampered fixture")
+        with self.assertRaisesRegex(ValueError, "hash/size"):
+            check.verify_kit(directory, metadata, COMMIT)
+        (directory / "bin/gst-media").write_bytes(ELF + b"gst-media")
+        (directory / check.SAMPLE_PATH).write_bytes(b"different ZIP")
         with self.assertRaisesRegex(ValueError, "hash/size"):
             check.verify_kit(directory, metadata, COMMIT)
 
@@ -127,7 +151,18 @@ class LinuxPackageCheckTest(unittest.TestCase):
             self.assertEqual(environment["PATH"], "/usr/bin:/bin")
             self.assertNotIn("MOOJICUT_LINUX_MEDIA_SDK", environment)
             self.assertNotIn("LD_PRELOAD", environment)
-            if name in ("app-self-test", "app-smoke", "video-editor"):
+            self.assertNotIn("PYTHONPATH", environment)
+            self.assertNotIn("PYTHONHOME", environment)
+            if name == "plugin-worker-host":
+                self.assertEqual(Path(command[0]), Path(sys.executable).resolve())
+                self.assertEqual(Path(command[command.index("--worker") + 1]),
+                                 self.root / "validation/package/MoojiCut/MoojiPluginWorker")
+                self.assertEqual(Path(command[command.index("--package") + 1]),
+                                 self.root / "validation/fixtures" / check.SAMPLE_PATH)
+                self.assertFalse(any(key.startswith(("LD_", "GST_", "MOOJICUT_")) for key in environment))
+                self.assertNotIn("G_DEBUG", environment)
+                self.successful_plugin_response(command)
+            elif name in ("app-self-test", "app-smoke", "video-editor"):
                 self.assertNotIn("LD_LIBRARY_PATH", environment)
                 self.assertNotIn("G_DEBUG", environment)
                 self.assertIn("deliberately-unavailable", environment["GST_PLUGIN_SYSTEM_PATH_1_0"])
@@ -143,8 +178,9 @@ class LinuxPackageCheckTest(unittest.TestCase):
             return {"returncode": 0}
         result = check.check_package(package, kit, self.root / "validation", COMMIT, execute=execute,
                                      inherited={"PATH": "/private/sdk/bin", "LD_PRELOAD": "bad",
+                                                "PYTHONHOME": "/private/sdk/python", "PYTHONPATH": "/private/sdk/modules",
                                                 "MOOJICUT_LINUX_MEDIA_SDK": "/sdk", "G_DEBUG": "fatal-warnings"})
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 9)
         self.assertEqual(result["result"], "failed")
         self.assertEqual(set(result["failures"]), {"gst-media", "app-smoke"})
         self.assertEqual(package.read_bytes(), original)
@@ -170,11 +206,58 @@ class LinuxPackageCheckTest(unittest.TestCase):
         def execute(command, **kwargs):
             if Path(kwargs["log"]).stem == "video-editor":
                 package.write_bytes(package.read_bytes() + b"unexpected write")
+            if Path(kwargs["log"]).stem == "plugin-worker-host":
+                self.successful_plugin_response(command)
             return {"returncode": 0}
         result = check.check_package(package, kit, self.root / "validation", COMMIT, execute=execute)
-        self.assertEqual(len(result["checks"]), 8)
+        self.assertEqual(len(result["checks"]), 9)
         self.assertEqual(result["result"], "failed")
         self.assertIn("package-unchanged", result["failures"])
+
+    def test_zero_exit_with_wrong_plugin_response_cannot_pass_same_package_gate(self):
+        package, metadata = self.release()
+        kit = self.kit(package)
+        stale = True
+        def execute(command, **kwargs):
+            if Path(kwargs["log"]).stem == "plugin-worker-host":
+                self.successful_plugin_response(command)
+                if stale:
+                    output = Path(command[command.index("--output") + 1])
+                    response = json.loads((output / "describe-result.json").read_text(encoding="utf-8"))
+                    response["invocationId"] = "stale-invocation"
+                    (output / "describe-result.json").write_text(json.dumps(response), encoding="utf-8")
+            return {"returncode": 0}
+        result = check.check_package(package, kit, self.root / "validation", COMMIT, execute=execute)
+        self.assertEqual(len(result["checks"]), 9)
+        self.assertEqual(result["result"], "failed")
+        self.assertEqual(set(result["failures"]), {"plugin-worker-host"})
+        self.assertIn("semantics", result["failures"]["plugin-worker-host"]["error"])
+        stale = False
+        good = check.check_package(package, kit, self.root / "valid-results", COMMIT, execute=execute)
+        self.assertEqual(good["result"], "passed")
+        self.assertEqual(len(good["checks"]), 9)
+
+    def test_sample_archive_rejection_precedes_writes_and_json_is_strict(self):
+        sample = self.sample()
+        with zipfile.ZipFile(sample, "a") as archive:
+            archive.writestr("../outside", b"not allowed")
+        output = self.root / "plugin output"
+        with self.assertRaisesRegex(ValueError, "ZIP members"):
+            check.plugin_worker_fixture.prepare_sample(sample, output)
+        self.assertFalse(output.exists())
+        self.assertFalse((self.root / "outside").exists())
+        sample = self.sample()
+        original = sample.read_bytes()
+        wasm = check.plugin_worker_fixture.prepare_sample(sample, output)
+        self.assertEqual(wasm.read_bytes(), b"\0asm\1\0\0\0")
+        self.assertEqual(sample.read_bytes(), original)
+        with self.assertRaisesRegex(ValueError, "fresh"):
+            check.plugin_worker_fixture.prepare_sample(sample, output)
+        with self.assertRaisesRegex(ValueError, "regular file"):
+            check.plugin_worker_fixture.verify_results(output)
+        (output / "describe-result.json").write_text('{"apiVersion":1,"apiVersion":1}', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Duplicate JSON"):
+            check.plugin_worker_fixture.verify_results(output)
 
     @unittest.skipUnless(os.name == "posix", "Linux process-group timeout handling")
     def test_real_timeout_retains_stdout_and_failed_status(self):

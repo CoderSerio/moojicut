@@ -63,7 +63,9 @@
           "native/macos/plugins/MCUserPluginManager.m",
           "native/macos/plugins/MCPluginResultController.m"
         ],
-        "requires": [],
+        "requires": [
+          "shared.plugin_host.posix"
+        ],
         "files": [
           "native/macos/plugins/MCPluginPackageStore.h",
           "native/macos/plugins/MCPluginResultController.h",
@@ -269,13 +271,6 @@
           "native/macos/runtime/MCRuntimeProfile.h"
         ]
       },
-      "tool.plugin_worker": {
-        "sources": [
-          "native/tools/plugin-worker.m"
-        ],
-        "files": [],
-        "requires": []
-      },
       "tool.app_icon": {
         "sources": [
           "native/tools/generate-app-icon.m"
@@ -434,6 +429,15 @@
           "platform/windows/media/runtime.h"
         ],
         "requires": []
+      },
+      "platform.plugin_host": {
+        "sources": [
+          "platform/windows/plugin_host/worker_process.c"
+        ],
+        "files": [],
+        "requires": [
+          "shared.plugin_host.process"
+        ]
       }
     },
     "linux": {
@@ -679,6 +683,48 @@
       "requires": [],
       "includes": [
         "shared.bindings"
+      ]
+    },
+    "shared.plugin_host.worker": {
+      "sources": [
+        "platform/shared/plugin_host/plugin_worker_main.c",
+        "platform/shared/plugin_host/wasm_runner.c"
+      ],
+      "files": [
+        "platform/shared/plugin_host/wasm_runner.h"
+      ],
+      "requires": [
+        "shared.plugin_host.protocol"
+      ]
+    },
+    "shared.plugin_host.protocol": {
+      "sources": [
+        "platform/shared/plugin_host/worker_protocol.c"
+      ],
+      "files": [
+        "platform/shared/plugin_host/worker_protocol.h"
+      ],
+      "requires": []
+    },
+    "shared.plugin_host.process": {
+      "sources": [
+        "platform/shared/plugin_host/worker_process_payload.c"
+      ],
+      "files": [
+        "platform/shared/plugin_host/worker_process.h",
+        "platform/shared/plugin_host/worker_process_internal.h"
+      ],
+      "requires": [
+        "shared.plugin_host.protocol"
+      ]
+    },
+    "shared.plugin_host.posix": {
+      "sources": [
+        "platform/shared/plugin_host/worker_process_posix.c"
+      ],
+      "files": [],
+      "requires": [
+        "shared.plugin_host.process"
       ]
     }
   },

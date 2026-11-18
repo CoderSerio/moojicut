@@ -77,7 +77,10 @@ int main(int argc,const char **argv) {
         if ([[[NSString stringWithUTF8String:argv[0]] lastPathComponent] isEqual:@"plugin-manager-stall"]) {
             // Only cancellation uses this controlled real subprocess. It is not
             // an Extism success fixture; every installation/probe below is real.
-            signal(SIGTERM,SIG_IGN); for (;;) pause();
+            signal(SIGTERM,SIG_IGN);
+            NSString *ready = [[NSString stringWithUTF8String:argv[0]] stringByAppendingString:@".ready"];
+            Check([[@"ready" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:ready atomically:YES],@"publish controlled child readiness");
+            for (;;) pause();
         }
         Check(argc==3,@"usage: plugin-manager-test /absolute/MoojiPluginWorker /absolute/capture-info.zip");
         moonbit_init(); [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
@@ -172,7 +175,8 @@ int main(int argc,const char **argv) {
         [manager invokeTool:describe owner:@"active-cancel" capture:@{@"width":@1,@"height":@1,@"format":@"png",@"revision":@0}
             isCurrent:^BOOL {return YES;} completion:^(NSDictionary *result,NSError *failure) {cancelResult=result; cancelError=failure; cancelled=YES;}];
         id call=[[manager valueForKey:@"calls"] firstObject]; MCPluginWorker *worker=[call valueForKey:@"worker"];
-        Wait(^BOOL {return [[worker valueForKey:@"task"] isRunning];},@"controlled subprocess did not launch");
+        NSString *ready = [stall.path stringByAppendingString:@".ready"];
+        Wait(^BOOL {return [files fileExistsAtPath:ready];},@"controlled subprocess did not launch");
         Check([registry setTool:describe enabled:NO error:&error],@"disable tool while subprocess is running");
         Check([registry setTool:describe enabled:YES error:&error],@"re-enable request can be saved while old subprocess drains");
         Wait(^BOOL {return cancelled;},@"cancelled subprocess did not drain");

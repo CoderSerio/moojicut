@@ -95,7 +95,7 @@ Windows/Linux 的共享画布与生产录制后编辑流程均已接线；E1 批
 | `native/macos/shortcuts/*` | 全局注册/释放到 platform/input；默认值、冲突和行为选择复用 app/shortcuts |
 | `native/macos/runtime/*` | 独立测试身份、profile 和路径选择到 platform/app/storage；不混入插件版本语义 |
 | `native/macos/plugins/*` | 包结构/策略/贡献/调用与迟到结果校验到 plugins/contracts/runtime，结果 UI 到 shared/ui；文件事务到 storage，worker/引擎桥到 plugin_host |
-| `native/tools/plugin-worker.m` | worker 独立可执行入口归平台 plugin_host，进程协议/限制尽量共用；Windows/Linux 执行宿主仍需补齐，不复制三套策略 |
+| 原 `native/tools/plugin-worker.m` | 可移植 worker、内部进程消息与 POSIX 进程适配归 `platform/shared/plugin_host`。Win32 进程适配归 `platform/windows/plugin_host`。Windows/Linux 已接执行层打包，产品导入与工具管理仍待接入 |
 | `native/macos/updates/*`、`native/windows/updates.*`、`native/linux/updates.*` | 版本/资产选择到 app/updates；下载、验签与替换到 platform/updates；旧 feed、GitHub 发现、正式身份均单独验收 |
 | 原 `native/shared/*.h` | 已迁：15 个 ABI 声明在 bindings/c；pixelate.h 实现在 platform/shared/image。全部同仓 include 已更新，函数符号与所有权不变 |
 | `native/tools/generate-app-icon.m` | 构建工具留 scripts 的平台辅助目录，不成为运行时插件 |
@@ -459,3 +459,11 @@ MoonBit native/Wasm 各 **287 项**，构建脚本 **104 项** 通过。macOS �
 Windows 回归改按实际注册的控件查工具提示。贴图测试在托管 CI 中先确认测试窗口位于真实前台，再检查鼠标捕获、等比缩放、取消和剪贴板字节。最终 CI 覆盖了完整截图和贴图路径。
 
 余下的共享选区、用户插件新协议与三端宿主、独立 CLI/IPC、录屏音源和 Windows/Linux OCR 与翻译仍分开推进。实机输入法、设备与权限由后续实机回归覆盖。
+
+### 三端共享用户插件执行层
+
+公共 worker、Wasm 运行限额与私有进程消息位于 `platform/shared/plugin_host`。macOS 产品入口仍使用既有插件管理器，进程执行改用共享 POSIX 适配。真实 MoonBit 示例已通过安装、执行、取消、超时、输出限额与回收验证。macOS 的隔离 App 已构建，只有 worker 链接 Wasm 引擎。
+
+Windows/Linux 的打包脚本都从构建清单编译同一个 worker，并随包附带固定版本的 Extism 和对应许可证。两端的 helper 和进程适配测试均已交叉编译、链接。目标 CI 从一次构建取得同一份 MoonBit ZIP，在两端分别运行打包前后的 worker，Ubuntu 24 用同一份 Ubuntu 22 包再运行一次。目标加载和运行仍以本批 CI 结果为准。
+
+本批两项依赖检查通过，原生历史 include 例外仍为 12 对。Windows/Linux 的用户 ZIP 导入与启停、插件 v2、通用属性和录屏扩展仍待实施。此处使用 v1 示例验证进程（启动、传输、回收），新产品协议按 D11 直接替换 v1。

@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from install_extism import VERSION as EXTISM_VERSION, digest, install as install_extism, notice_names
 from native_modules import native_sources, object_path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +32,7 @@ class DesktopBuild:
         if platform.machine().lower() not in ("amd64", "x86_64"):
             raise RuntimeError("These preview packages currently target x86-64 only.")
         self.exe_name = "MoojiCut.exe" if self.system == "windows" else "moojicut"
+        self.plugin_worker_name = "MoojiPluginWorker.exe" if self.system == "windows" else "MoojiPluginWorker"
         self.directory = ROOT / ".artifacts" / self.system
         self.bundle = ROOT / "dist" / (self.system + "-app") / "MoojiCut"
         self.executable = self.bundle / self.exe_name
@@ -110,6 +112,56 @@ class DesktopBuild:
             # files must resolve through the same private SDK used by fixtures.
             self.env["PKG_CONFIG_PATH"] = self.media.env["PKG_CONFIG_PATH"]
 
+    def link_plugin_program(self, sources, executable, *, cwd, link_flags=(), includes=()):
+        if self.system == "windows":
+            self.run("cl", "/nologo", "/utf-8", "/MT", "/O2", "/std:c11", "/W4", "/WX",
+                     "/I" + str(ROOT), *("/I" + str(path) for path in includes), *sources,
+                     "/Fe" + str(executable), "/link", "/SUBSYSTEM:CONSOLE", *link_flags, cwd=cwd)
+        else:
+            include_flags = [flag for path in includes for flag in ("-I", path)]
+            self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                     *include_flags, *sources, *link_flags, "-o", executable, cwd=cwd)
+
+    def build_plugin_worker(self, bundle, directory):
+        windows = self.system == "windows"
+        target = "x86_64-pc-windows-msvc" if windows else "x86_64-unknown-linux-gnu"
+        sdk = install_extism(target)
+        # Keep libextism.so out of runtime/plugins, which GStreamer scans.
+        library_path = "extism.dll" if windows else "runtime/extism/libextism.so"
+        library = bundle / library_path
+        relative_files = {library_path, self.plugin_worker_name}
+        notices = {"runtime/licenses/extism/" + name: sdk / name for name in notice_names(target)}
+        relative_files.update(notices)
+        if any((bundle / path).exists() for path in relative_files):
+            raise RuntimeError("Plugin runtime collides with a desktop bundle file.")
+        library.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(sdk / library.name, library)
+        for path, source in notices.items():
+            destination = bundle / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        worker = bundle / self.plugin_worker_name
+        flags = [sdk / "extism.dll.lib"] if windows else [
+            "-L", library.parent, "-lextism", "-Wl,-rpath,$ORIGIN/runtime/extism"]
+        self.link_plugin_program(native_sources(self.system, "shared.plugin_host.worker"), worker, cwd=directory,
+                                 link_flags=flags, includes=[sdk])
+        if windows:
+            from gstreamer_runtime import CRT_DLLS, pe_dependencies
+
+            if "extism.dll" not in pe_dependencies(worker):
+                raise RuntimeError("Plugin worker did not link the private Extism DLL.")
+            for name in pe_dependencies(library) & CRT_DLLS:
+                # The media payload already supplies signed VS Redist files
+                # with provenance and checksum. Require the same local CRT.
+                if not (self.media.runtime_payload / name).is_file():
+                    raise RuntimeError("Plugin runtime requires an unbundled Microsoft CRT file: " + name)
+        else:
+            dependencies = self.run("ldd", worker, env=self.app_test_environment())
+            selected = re.search(r"^\s*libextism\.so\s+=>\s+(.+?)\s+\(0x[\da-f]+\)\s*$", dependencies, re.M)
+            if not selected or Path(selected[1]).resolve() != library.resolve() or "not found" in dependencies:
+                raise RuntimeError("Plugin worker did not resolve its private Extism library.")
+        self.plugin_payload = {path: digest(bundle / path) for path in sorted(relative_files)}
+
     def build(self):
         self.run(sys.executable, ROOT / "scripts/check_module_boundaries.py")
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check")
@@ -178,6 +230,9 @@ class DesktopBuild:
                 (staging / "launch.sh").chmod(0o755)
             if re.search(r"Electron|Chromium|WebKit|libnode", dependencies, re.I):
                 raise RuntimeError("Unexpected browser runtime in desktop binary.")
+            if re.search(r"extism", dependencies, re.I):
+                raise RuntimeError("The GUI executable must not link the plugin engine.")
+            self.build_plugin_worker(staging, Path(name))
             shutil.copy2(ROOT / "assets/brand/mooji-cut/app-icon-rounded-preview.png", staging / "moojicut.png")
             revision = self.run("git", "rev-parse", "HEAD").strip()
             dirty = bool(self.run("git", "status", "--porcelain").strip())
@@ -186,6 +241,7 @@ class DesktopBuild:
                              "compilerVersion": self.compiler, "signing": "unsigned",
                              "minimumOS": "Windows 10" if self.system == "windows" else "Ubuntu 22.04 (glibc 2.35)",
                              "scope": self.scope(),
+                             "pluginWorker": {"extismVersion": EXTISM_VERSION, "files": self.plugin_payload},
                              "dependencies": dependencies}
             (staging / "build.json").write_text(json.dumps(self.metadata, indent=2) + "\n", encoding="utf-8")
             (staging / "README.txt").write_text(self.instructions(), encoding="utf-8")
@@ -233,6 +289,13 @@ class DesktopBuild:
                 copied = directory / relative
                 if not copied.is_file() or hashlib.sha256(copied.read_bytes()).digest() != hashlib.sha256(item.read_bytes()).digest():
                     raise RuntimeError("Packaged media runtime differs from verified payload: " + relative)
+        for relative, checksum in self.plugin_payload.items():
+            expected.add(relative)
+            parent = Path(relative).parent
+            directories.update(path.as_posix() for path in (parent, *parent.parents) if path != Path("."))
+            copied = directory / relative
+            if not copied.is_file() or digest(copied) != checksum:
+                raise RuntimeError("Packaged plugin worker or runtime differs from the tested build: " + relative)
         actual = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_file()}
         if actual != expected:
             raise RuntimeError("Unexpected package contents: extra={}, missing={}.".format(
@@ -331,6 +394,34 @@ class DesktopBuild:
         self.run(self.executable, "--smoke", env=self.app_test_environment())
         self.canvas_smoke()
         self.video_smoke()
+        self.plugin_worker_smoke(self.bundle)
+
+    def plugin_worker_smoke(self, bundle):
+        from plugin_worker_fixture import prepare_sample, verify_results
+
+        directory = Path(tempfile.mkdtemp(prefix="plugin-worker-", dir=self.directory))
+        if not hasattr(self, "plugin_fixture_executable"):
+            windows = self.system == "windows"
+            adapter = "platform.plugin_host" if windows else "shared.plugin_host.posix"
+            executable = self.media.executables / ("plugin-worker-host.exe" if windows else "plugin-worker-host")
+            self.link_plugin_program(
+                [*native_sources(self.system, adapter), ROOT / "test/native/plugin-worker-host.c"],
+                executable, cwd=directory, link_flags=[] if windows else ["-pthread"])
+            fixture_path = self.env.get("MOOJICUT_PLUGIN_FIXTURE")
+            if fixture_path:
+                sample = (ROOT / fixture_path).resolve()
+            else:
+                sample = directory / "capture-info.zip"
+                project = ROOT / "plugins/examples/capture-info"
+                self.run(sys.executable, ROOT / "scripts/package_plugin.py", project, "--output", sample)
+            self.plugin_sample = sample
+            self.plugin_fixture_executable = executable
+        output = directory / "sample with spaces"
+        wasm = prepare_sample(self.plugin_sample, output)
+        print("Packaged MoonBit plugin fixture SHA-256:", digest(self.plugin_sample), flush=True)
+        self.run(self.plugin_fixture_executable, bundle / self.plugin_worker_name, wasm, output,
+                 cwd=directory, env=self.app_test_environment(), timeout=45, log=directory / "run.log")
+        verify_results(output)
 
     def video_smoke(self, prepared=False):
         if not hasattr(self.media, "fixtures"):
@@ -408,7 +499,8 @@ class DesktopBuild:
         if app_smoke:
             checks.append(("native-ui-smoke", lambda: self.run(self.executable, "--smoke", env=self.app_test_environment())))
         checks.extend((("shared-canvas", self.canvas_smoke),
-                       ("video-editor", lambda: self.video_smoke(prepared=True))))
+                       ("video-editor", lambda: self.video_smoke(prepared=True)),
+                       ("plugin-worker", lambda: self.plugin_worker_smoke(self.bundle))))
         results, failures = {}, []
         for name, action in checks:
             try:
@@ -455,12 +547,14 @@ class DesktopBuild:
                     package.extractall(extracted, filter="data")
             self.verify_bundle(extracted / "MoojiCut")
             self.verify_binary(extracted / "MoojiCut" / self.exe_name)
+            self.plugin_worker_smoke(extracted / "MoojiCut")
             if (extracted / "MoojiCut" / self.exe_name).read_bytes() != self.executable.read_bytes():
                 raise RuntimeError("Packaged executable differs from the tested binary.")
             checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
             metadata = dict(self.metadata, archive=archive.name, sha256=checksum,
                             checks=["moon-check", "moon-tests", "gst-media", "mp4-mux", "media-worker", "media-waveform", "video-editor-host",
-                                    "native-core", "native-ui-smoke", "shared-canvas", "video-editor", "unpacked-native-core"])
+                                    "native-core", "native-ui-smoke", "shared-canvas", "video-editor", "plugin-worker",
+                                    "unpacked-native-core", "unpacked-plugin-worker"])
             shutil.copy2(archive, releases / archive.name)
             (releases / (archive.name + ".sha256")).write_text(checksum + "  " + archive.name + "\n", encoding="utf-8")
             (releases / (stem + ".build.json")).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -472,7 +566,8 @@ class DesktopBuild:
             kit = self.directory / "compatibility/fixture-kit.tar.gz"
             if kit.exists():
                 kit.unlink()
-            write_fixture_kit(kit, releases / archive.name, self.metadata["commit"], self.media.executables)
+            write_fixture_kit(kit, releases / archive.name, self.metadata["commit"], self.media.executables,
+                              self.plugin_sample)
 
 
 def main():
@@ -498,5 +593,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         sys.exit("Error: {}".format(error))
