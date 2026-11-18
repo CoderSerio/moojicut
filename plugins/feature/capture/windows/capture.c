@@ -1211,8 +1211,13 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
       } else
         capture.selected = -1;
     }
-    if (capture.selected < 0 && capture.editing == -2)
+    if (capture.selected < 0 && capture.editing == -2) {
+      // Refresh defaults without reopening a property transaction before the
+      // gesture owns the document. Mouse-up will open it on the new revision.
+      capture.text_finishing = TRUE;
       load_tool_style(capture.tool);
+      capture.text_finishing = FALSE;
+    }
     if (capture.drag_mode == 0) {
       image_session_shape_event(capture.session, 2, 0, 0);
       BOOL began;
@@ -1547,7 +1552,8 @@ bool mc_capture_handle_message(MSG *message) {
       }
     }
     if (!text && message->wParam == VK_DELETE && capture.selected >= 0) {
-      image_session_remove(capture.session, capture.selected);
+      if (!finish_text(FALSE)) return true;
+      if (capture.selected >= 0) image_session_remove(capture.session, capture.selected);
       capture.selected = -1;
       load_tool_style(capture.tool);
       changed();
@@ -1933,6 +1939,51 @@ done:
   printf("Windows covered input pixels %s: transparent/half-opacity cover matches export; uncovered input painted once.\n", ok ? "passed" : "FAILED");
   return ok && image_session_count(capture.session) == initial_count;
 }
+static BOOL text_document_boundaries_smoke(void) {
+  BOOL ok = TRUE;
+  int initial_count = image_session_count(capture.session);
+  RECT original_viewport = capture.viewport;
+  double original_font = editor_style_get(capture.style_bank, TOOL_TEXT, MC_STYLE_FONT);
+#define BOUNDARY_CHECK(condition) do { if (!(condition)) { fprintf(stderr, "Windows text boundary FAILED line %d: %s\n", __LINE__, #condition); ok = FALSE; goto done; } } while (0)
+  smoke_select_tool(TOOL_TEXT);
+  begin_text((POINT){30, 40}, -1);
+  BOUNDARY_CHECK(capture.text && SetWindowTextW(capture.text, L"Delete boundary") && finish_text(FALSE));
+  layout_editor(capture.editor);
+  HWND font = mc_win_text_inputs_field(capture.property_inputs, L"style.fontSize");
+  BOUNDARY_CHECK(font && SetWindowTextW(font, L"-"));
+  SetFocus(capture.editor);
+  MSG remove = {0}; remove.hwnd = capture.editor; remove.message = WM_KEYDOWN; remove.wParam = VK_DELETE;
+  BOUNDARY_CHECK(mc_capture_handle_message(&remove) && image_session_count(capture.session) == initial_count + 1 &&
+      capture.text_edit && capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_VALID) == 0);
+  wchar_t raw_font[64]; swprintf_s(raw_font, ARRAYSIZE(raw_font), L"%.10g", original_font);
+  BOUNDARY_CHECK(SetWindowTextW(font, raw_font)); SetFocus(capture.editor);
+  BOUNDARY_CHECK(mc_capture_handle_message(&remove) && image_session_count(capture.session) == initial_count);
+  editor_command(ID_SELECT);
+  BOUNDARY_CHECK(!capture.text_edit && capture.tool == TOOL_SELECT);
+
+  // Resize the screenshot while Text is the current tool. Default properties
+  // must reopen only after crop publication, against that exact new revision.
+  smoke_select_tool(TOOL_TEXT); SetFocus(capture.editor);
+  int x = original_viewport.right, y = original_viewport.bottom;
+  SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+  BOUNDARY_CHECK(capture.dragging && capture.drag_mode == 2 && !capture.text_edit);
+  SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x + 10, y + 10));
+  BOUNDARY_CHECK(image_session_viewport_value(capture.session, 2) == original_viewport.right - original_viewport.left);
+  SendMessageW(capture.editor, WM_LBUTTONUP, 0, MAKELPARAM(x + 10, y + 10));
+  BOUNDARY_CHECK(!capture.dragging && capture.text_edit &&
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_VALID) == 1 &&
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS &&
+      image_session_viewport_value(capture.session, 2) == original_viewport.right - original_viewport.left + 10);
+  BOUNDARY_CHECK(choose_style(MC_STYLE_FONT, original_font));
+  editor_command(ID_UNDO);
+  BOUNDARY_CHECK(EqualRect(&capture.viewport, &original_viewport));
+  editor_command(ID_SELECT);
+  BOUNDARY_CHECK(!capture.text_edit && image_session_count(capture.session) == initial_count);
+done:
+  printf("Windows text document boundaries %s: invalid draft vetoes Delete; valid Delete and text-tool crop settle before changing the document.\n", ok ? "passed" : "FAILED");
+  return ok;
+#undef BOUNDARY_CHECK
+}
 static BOOL shared_text_fields_smoke(void) {
   BOOL ok = TRUE; int initial_count = image_session_count(capture.session);
   BOOL was_visible = IsWindowVisible(capture.editor);
@@ -2194,6 +2245,7 @@ static void smoke_pins_hidden(void *context, BOOL hidden) {
     host->restored++;
 }
 int mc_capture_smoke(HINSTANCE instance) {
+#define CAPTURE_FAIL() do { fprintf(stderr, "Windows screenshot smoke FAILED line %d\n", __LINE__); goto cleanup; } while (0)
   int result = 1;
   HGLOBAL dib = NULL;
   CaptureHostSmoke host = {0};
@@ -2206,7 +2258,7 @@ int mc_capture_smoke(HINSTANCE instance) {
   SetRect(&capture.desktop_bounds, 0, 0, 640, 480);
   if (!mc_selection_smoke() || !register_windows(instance) || !surface_new(&capture.desktop, 640, 480) ||
       !surface_new(&capture.dimmed, 640, 480))
-    goto cleanup;
+    CAPTURE_FAIL();
   for (int y = 0; y < 480; y++)
     for (int x = 0; x < 640; x++) {
       BYTE *pixel = capture.desktop.pixels + ((SIZE_T)y * 640 + x) * 4;
@@ -2217,22 +2269,22 @@ int mc_capture_smoke(HINSTANCE instance) {
     }
   dim_desktop();
   if (!show_selection())
-    goto cleanup;
+    CAPTURE_FAIL();
   SendMessageW(capture.overlay, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(330, 220));
   SendMessageW(capture.overlay, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(10, 20));
   SendMessageW(capture.overlay, WM_LBUTTONUP, 0, MAKELPARAM(10, 20));
   if (!capture.editor || capture.viewport.left != 10 || capture.viewport.top != 20 ||
       (GetWindowLongPtrW(capture.editor, GWL_STYLE) & WS_CAPTION))
-    goto cleanup;
+    CAPTURE_FAIL();
   /* Real child focus, IME and layered EDIT hit-testing require the generated
    * fixture window to be shown. Its pixels come only from the synthetic image. */
   ShowWindow(capture.editor, SW_SHOWNOACTIVATE); SetForegroundWindow(capture.editor); UpdateWindow(capture.editor);
   if (!mc_style_controls_smoke(instance) || !context_toolbar_smoke() || !independent_text_style_smoke() ||
       !shared_text_fields_smoke() || !text_ime_rejection_smoke() || !text_cover_preview_smoke() ||
-      !shape_variants_smoke() || !contribution_smoke())
-    goto cleanup;
+      !text_document_boundaries_smoke() || !shape_variants_smoke() || !contribution_smoke())
+    CAPTURE_FAIL();
   if (image_session_add(capture.session, TOOL_REDACT, 40, 60, 80, 60, 0, 4) != 1)
-    goto cleanup;
+    CAPTURE_FAIL();
   begin_text((POINT){50, 70}, -1);
   SetWindowTextW(capture.text, L"截图测试 MoonBit\r\n第二行");
   double initial_font = capture.font_size;
@@ -2241,14 +2293,15 @@ int mc_capture_smoke(HINSTANCE instance) {
       SendMessageW(capture.editor, WM_COMMAND, MAKEWPARAM(capture.toolbar_buttons.buttons[i].command, BN_CLICKED),
         (LPARAM)capture.toolbar_buttons.buttons[i].window);
   if (!capture.editor || capture.editing != -1 || image_session_count(capture.session) != 1)
-    goto cleanup;
+    CAPTURE_FAIL();
   step_style(TRUE);
   if (capture.font_size != initial_font + 1 || image_session_count(capture.session) != 1)
-    goto cleanup;
+    CAPTURE_FAIL();
   step_style(FALSE);
   if (capture.font_size != initial_font || !style_visible(MC_STYLE_CONTROL_FONT) || style_visible(MC_STYLE_CONTROL_STROKE))
-    goto cleanup;
+    CAPTURE_FAIL();
 
+  SetFocus(capture.text);
   SendMessageW(capture.text, WM_IME_STARTCOMPOSITION, 0, 0);
   MSG ime_key = {0};
   ime_key.hwnd = capture.text;
@@ -2256,49 +2309,57 @@ int mc_capture_smoke(HINSTANCE instance) {
   ime_key.wParam = VK_ESCAPE;
   if (mc_capture_handle_message(&ime_key) || finish_text(FALSE) || finish_text(TRUE) ||
       image_session_count(capture.session) != 1)
-    goto cleanup;
+    CAPTURE_FAIL();
   SendMessageW(capture.text, WM_IME_ENDCOMPOSITION, 0, 0);
 
   if (!finish_text(FALSE) || image_session_count(capture.session) != 2)
-    goto cleanup;
+    CAPTURE_FAIL();
   int index = capture.selected;
   begin_text((POINT){50, 70}, index);
   SetWindowTextW(capture.text, L"修改后");
   if (!finish_text(FALSE) || image_session_count(capture.session) != 2)
-    goto cleanup;
+    CAPTURE_FAIL();
   preserve_text(index);
   if (image_session_update(capture.session, index, 150, 100, 150, 70, 0xF26769, 4, 32) != 1 ||
       image_session_value(capture.session, index, 7) != 32)
-    goto cleanup;
+    CAPTURE_FAIL();
   if (hit_text((POINT){150, 100}) != index || hit_text((POINT){299, 169}) != index ||
       hit_text((POINT){300, 170}) != -1)
-    goto cleanup;
+    CAPTURE_FAIL();
   if (image_session_undo(capture.session) != 1 || image_session_value(capture.session, index, 1) != 50 ||
       image_session_redo(capture.session) != 1)
-    goto cleanup;
+    CAPTURE_FAIL();
   // Drive the actual mouse gesture handlers; the MoonBit document commits only at mouse-up.
   capture.tool = TOOL_SELECT;
   SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(180, 125));
   SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(190, 135));
   if (image_session_value(capture.session, index, 1) != 150)
-    goto cleanup;
+    CAPTURE_FAIL();
   SendMessageW(capture.editor, WM_LBUTTONUP, 0, MAKELPARAM(190, 135));
-  if (image_session_value(capture.session, index, 1) != 160 || image_session_undo(capture.session) != 1)
-    goto cleanup;
+  if (image_session_value(capture.session, index, 1) != 160)
+    CAPTURE_FAIL();
+  // Follow the real undo entry: it closes the selected text's property draft
+  // before changing the document revision, just like a toolbar/keyboard undo.
+  editor_command(ID_UNDO);
+  if (image_session_value(capture.session, index, 1) != 150)
+    CAPTURE_FAIL();
   capture.selected = -1;
   SendMessageW(capture.editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(330, 220));
   SendMessageW(capture.editor, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(350, 240));
   SendMessageW(capture.editor, WM_LBUTTONUP, 0, MAKELPARAM(350, 240));
-  if (image_session_viewport_value(capture.session, 2) != 340 || image_session_undo(capture.session) != 1)
-    goto cleanup;
+  if (image_session_viewport_value(capture.session, 2) != 340)
+    CAPTURE_FAIL();
+  editor_command(ID_UNDO);
+  if (image_session_viewport_value(capture.session, 2) != 320)
+    CAPTURE_FAIL();
   sync_viewport();
   changed();
   dib = image_dib();
   if (!dib)
-    goto cleanup;
+    CAPTURE_FAIL();
   BITMAPINFOHEADER *header = GlobalLock(dib);
   if (!header)
-    goto cleanup;
+    CAPTURE_FAIL();
   SIZE_T stride = ((SIZE_T)320 * 3 + 3) & ~(SIZE_T)3;
   const BYTE *mask = (const BYTE *)(header + 1) + 149 * stride + 50 * 3,
              *source = (const BYTE *)(header + 1) + 194 * stride + 5 * 3;
@@ -2306,44 +2367,44 @@ int mc_capture_smoke(HINSTANCE instance) {
                source[0] == 80 && source[1] == 160 && source[2] == 220;
   GlobalUnlock(dib);
   if (!valid)
-    goto cleanup;
+    CAPTURE_FAIL();
   // Covers blend once, including blank areas of an active native text box.
   if (!image_session_add_rgba(capture.session, TOOL_REDACT, 230, 130, 80, 50, 0x204080, 4, 24, .5))
-    goto cleanup;
+    CAPTURE_FAIL();
   begin_text((POINT){150, 100}, index);
   changed();
   if (!render_image())
-    goto cleanup;
+    CAPTURE_FAIL();
   BYTE *blend = capture.rendered.pixels + ((SIZE_T)150 * capture.image.width + 280) * 4;
   if (blend[0] != 104 || blend[1] != 112 || blend[2] != 126)
-    goto cleanup;
+    CAPTURE_FAIL();
   if (!finish_text(FALSE) || !render_image())
-    goto cleanup;
+    CAPTURE_FAIL();
   blend = capture.rendered.pixels + ((SIZE_T)150 * capture.image.width + 280) * 4;
   if (blend[0] != 104 || blend[1] != 112 || blend[2] != 126)
-    goto cleanup;
+    CAPTURE_FAIL();
   capture.selected = index;
   sync_style_controls();
-  if (!choose_style(MC_STYLE_OPACITY, .4)) goto cleanup;
+  if (!choose_style(MC_STYLE_OPACITY, .4)) CAPTURE_FAIL();
   if (image_session_value(capture.session, index, 8) != .4)
-    goto cleanup;
+    CAPTURE_FAIL();
   begin_text((POINT){150, 100}, index);
   if (capture.opacity != .4 || !finish_text(FALSE) || image_session_value(capture.session, index, 8) != .4)
-    goto cleanup;
-  if (!choose_style(MC_STYLE_OPACITY, 1) || !finish_text(FALSE)) goto cleanup;
+    CAPTURE_FAIL();
+  if (!choose_style(MC_STYLE_OPACITY, 1) || !finish_text(FALSE)) CAPTURE_FAIL();
   image_session_remove(capture.session, image_session_count(capture.session) - 1);
   // Font changes must resize the box and leave visible pixels in the exported image.
   set_session_text(L"A", 1);
   if (!image_session_add_rgba(capture.session, TOOL_TEXT, 170, 30, 140, 72, 0xF26769, 4, 24, 1))
-    goto cleanup;
+    CAPTURE_FAIL();
   capture.selected = image_session_count(capture.session) - 1;
   capture.color = 0xF26769;
   capture.stroke = 4;
   sync_style_controls();
   if (!choose_style(MC_STYLE_FONT, 128))
-    goto cleanup;
+    CAPTURE_FAIL();
   if (image_session_value(capture.session, capture.selected, 4) < 128 || !render_image())
-    goto cleanup;
+    CAPTURE_FAIL();
   int colored = 0;
   for (int y = 35; y < 180; y++)
     for (int x = 175; x < 300; x++) {
@@ -2352,9 +2413,9 @@ int mc_capture_smoke(HINSTANCE instance) {
         colored++;
     }
   if (colored < 100)
-    goto cleanup;
+    CAPTURE_FAIL();
   // Keep the optional visual fixture readable after the large-font regression.
-  if (!finish_text(FALSE)) goto cleanup;
+  if (!finish_text(FALSE)) CAPTURE_FAIL();
   image_session_remove(capture.session, capture.selected);
   capture.selected = index;
   capture.tool = TOOL_TEXT;
@@ -2376,27 +2437,30 @@ int mc_capture_smoke(HINSTANCE instance) {
       for (int c = 0; c < 3; c++)
         capture.dimmed.pixels[((SIZE_T)y * capture.image.width + x) * 4 + c] = (BYTE)(pixel[c] * .55);
     }
+  // This is synthetic setup, so settle the live property transaction before
+  // issuing a direct core crop instead of going through the pointer handler.
+  if (!finish_text(FALSE)) CAPTURE_FAIL();
   image_session_crop(capture.session, 70, 50, 500, 270);
   sync_viewport();
   layout_editor(capture.editor);
   changed();
   if (!save_capture_preview())
-    goto cleanup;
+    CAPTURE_FAIL();
   host.enabled = FALSE;
   mc_capture_refresh_capabilities();
   smoke_invoke_action(L"pin");
   if ((!smoke_action_button(L"pin") || IsWindowEnabled(smoke_action_button(L"pin")->window)) || host.attempts || !mc_capture_busy())
-    goto cleanup;
+    CAPTURE_FAIL();
   host.enabled = TRUE;
   mc_capture_refresh_capabilities();
   smoke_invoke_action(L"pin");
   if (host.attempts != 1 || host.accepted || host.restored || !mc_capture_busy() || !host.valid_image)
-    goto cleanup;
+    CAPTURE_FAIL();
   host.accept = TRUE;
   smoke_invoke_action(L"pin");
   if (host.attempts != 2 || host.accepted != 1 || host.hidden != 1 || host.restored != 1 ||
       host.x != 70 || host.y != 50 || host.width != 500 || host.height != 270 || mc_capture_busy())
-    goto cleanup;
+    CAPTURE_FAIL();
   result = 0;
 cleanup:
   if (dib)
@@ -2407,4 +2471,5 @@ cleanup:
          "host image ownership and visibility callbacks; clipboard untouched).\n",
          result ? "FAILED" : "passed");
   return result;
+#undef CAPTURE_FAIL
 }
