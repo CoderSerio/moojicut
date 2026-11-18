@@ -24,7 +24,7 @@ pub fn text_inline_frame(@json.Json, Double, Double, Double, String, Double, Boo
 
 pub fn text_properties_frame(@json.Json, @json.Json, String, String, Bool, Double, Double, Bool, String, String, Bool) -> String
 
-pub fn text_property_event(@json.Json, @json.Json, Double, Double, String) -> (Int32, String, String)
+pub fn text_property_event(@json.Json, @json.Json, Double, Double, String) -> (PropertyAction, String, String)
 
 pub fn text_row_size(@json.Json) -> FixedArray[Double]
 
@@ -40,11 +40,22 @@ pub fn toolbar_new() -> ToolbarState
 
 pub fn toolbar_size(ToolbarState) -> FixedArray[Double]
 
+pub fn toolbar_surface_color(Bool) -> Int32
+
 pub fn toolbar_sync(ToolbarState, Array[ToolbarItem], Double, Int32) -> Bool
 
 // Errors
 
 // Types and methods
+pub(all) enum PropertyAction {
+  Ignore
+  Feedback
+  OpenColor
+  SetShape(Int32)
+  Nudge(String, Int32)
+  Wheel(String, Double)
+}
+
 #derive(Eq)
 pub(all) struct ToolbarItem {
   id : String
@@ -67,6 +78,7 @@ pub struct ToolbarState {
   mut pressed : String
   mut hovered : String
   mut focused : String
+  mut focus_visible : Bool
 }
 
 // Type aliases

@@ -49,14 +49,14 @@ pub fn editor_style_step(property : Int) -> Double {
 pub fn text_property_descriptors() -> Json {
   Json::array([
     Json::object({"id":Json("style.color"),"kind":Json("color"),"label":Json("颜色"),
-      "tooltip":Json("文字颜色"),"width":Json(22),"labelWidth":Json(26)}),
+      "tooltip":Json("文字颜色"),"width":Json(22),"labelWidth":Json(24)}),
     Json::object({"id":Json("style.opacity"),"kind":Json("number"),"label":Json("透明度"),
       "tooltip":Json("文字透明度（百分比）"),"property":Json(1),"min":Json(0),"max":Json(100),
-      "step":Json(1),"displayScale":Json(100),"width":Json(58),"labelWidth":Json(39)}),
+      "step":Json(1),"displayScale":Json(100),"width":Json(54),"labelWidth":Json(35)}),
     Json::object({"id":Json("style.fontSize"),"kind":Json("number"),"label":Json("字号"),
       "tooltip":Json("文字字号"),"property":Json(3),"min":Json(@image.editor_style_min(3)),
       "max":Json(@image.editor_style_max(3)),"step":Json(editor_style_step(3)),
-      "displayScale":Json(1),"width":Json(58),"labelWidth":Json(26)}),
+      "displayScale":Json(1),"width":Json(54),"labelWidth":Json(24)}),
   ])
 }
 
@@ -95,8 +95,8 @@ fn numeric_descriptor(id : String, label : String, property : Int32) -> Json {
     "max": Json(@image.editor_style_max(property)),
     "step": Json(editor_style_step(property)),
     "displayScale": Json(1),
-    "width": Json(58),
-    "labelWidth": Json(26),
+    "width": Json(54),
+    "labelWidth": Json(24),
   })
 }
 
@@ -142,7 +142,7 @@ pub fn property_descriptors(
         "kind": Json("choice"),
         "label": Json("形状"),
         "tooltip": Json("标注形状"),
-        "labelWidth": Json(26),
+        "labelWidth": Json(24),
         "width": Json(options.length() * 26),
         "value": Json(shape),
         "options": Json::array(options),
@@ -157,7 +157,7 @@ pub fn property_descriptors(
         "label": Json("颜色"),
         "tooltip": Json("标注颜色"),
         "width": Json(22),
-        "labelWidth": Json(26),
+        "labelWidth": Json(24),
       }),
     )
   }
@@ -173,8 +173,8 @@ pub fn property_descriptors(
         "max": Json(100),
         "step": Json(1),
         "displayScale": Json(100),
-        "width": Json(58),
-        "labelWidth": Json(39),
+        "width": Json(54),
+        "labelWidth": Json(35),
       }),
     )
   }

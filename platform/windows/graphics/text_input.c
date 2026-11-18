@@ -27,7 +27,7 @@ struct Field {
   int refs, token, version, anchor, focus, marked_start, marked_end, color;
   int composing_start, suppress;
   BOOL composing, known, directed, multiline, seen, dead, focused, pending_surrogate, continuing_ime;
-  double font_size, opacity; int font_weight;
+  double font_size, opacity; int font_weight, line_height;
 };
 struct MCWinTextInputs {
   HWND parent;
@@ -219,6 +219,23 @@ static LRESULT CALLBACK field_proc(HWND window, UINT message, WPARAM wp, LPARAM 
   LRESULT result = 0; BOOL handled = FALSE;
   if (message == WM_NCDESTROY) {
     f->window = NULL; f->dead = TRUE; RemoveWindowSubclass(window, field_proc, 1);
+  } else if (!f->multiline && f->line_height > 0 && message == WM_NCCALCSIZE && lp) {
+    /* EM_SETRECT applies only to multiline EDIT. Center a single-line native
+     * client using the actual selected font, retaining the complete HWND hit
+     * rectangle and the system's caret, selection and IME implementation. */
+    DefSubclassProc(window, message, wp, lp);
+    RECT *client = wp ? &((NCCALCSIZE_PARAMS *)lp)->rgrc[0] : (RECT *)lp;
+    int available = client->bottom - client->top;
+    if (available > f->line_height) {
+      client->top += (available - f->line_height) / 2;
+      client->bottom = client->top + f->line_height;
+    }
+    handled = TRUE;
+  } else if (!f->multiline && message == WM_NCHITTEST) {
+    RECT bounds; POINT point={(short)LOWORD(lp),(short)HIWORD(lp)};
+    if (GetWindowRect(window,&bounds) && PtInRect(&bounds,point)) { result = HTCLIENT; handled = TRUE; }
+  } else if (!f->suppress && !f->multiline && message == WM_MOUSEWHEEL && g->callbacks.wheel) {
+    handled = g->callbacks.wheel(g->context, window, wp, lp);
   } else if (!f->suppress && message == WM_IME_STARTCOMPOSITION) {
     flush_field(f);
     if (!f->dead) {
@@ -420,7 +437,16 @@ BOOL mc_win_text_inputs_set_frame(MCWinTextInputs *g, int32_t frame, int x, int 
           ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
       if (font) { SendMessageW(f->window, WM_SETFONT, (WPARAM)font, TRUE); if (f->font) DeleteObject(f->font); f->font = font; f->font_size = size; f->font_weight = weight; }
     }
-    MoveWindow(f->window, px, py, width, height, TRUE);
+    if (!f->multiline && f->font) {
+      HDC dc = GetDC(f->window);
+      if (dc) {
+        HGDIOBJ previous = SelectObject(dc, f->font); TEXTMETRICW metrics = {0};
+        if (GetTextMetricsW(dc, &metrics)) f->line_height = (int)metrics.tmHeight;
+        SelectObject(dc, previous); ReleaseDC(f->window, dc);
+      }
+    }
+    SetWindowPos(f->window, NULL, px, py, width, height, SWP_NOACTIVATE | SWP_NOZORDER |
+        (f->multiline ? 0 : SWP_FRAMECHANGED));
     int clip_x = x + (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_X) * scale) - px;
     int clip_y = y + (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_Y) * scale) - py;
     int clip_w = (int)lround(ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_WIDTH) * scale);

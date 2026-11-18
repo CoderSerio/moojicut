@@ -36,8 +36,10 @@ priv struct TextEdit {
   mut preview_shape : Double
   mut preview_block : Double
   mut active_field : String
-  mut color_pressed : String
-  mut color_hovered : String
+  mut property_pressed : String
+  mut property_hovered : String
+  mut wheel_field : String
+  mut wheel_remainder : Double
 }
 
 ///|
@@ -418,8 +420,10 @@ fn capture_edit_begin(
     } else {
       "annotation.text"
     },
-    color_pressed: "",
-    color_hovered: "",
+    property_pressed: "",
+    property_hovered: "",
+    wheel_field: "",
+    wheel_remainder: 0,
   }
   text_active[session] = edit
   candidate_retire_session(session)
@@ -443,6 +447,56 @@ pub fn text_cancel(session : Int32, edit : Int32, version : Int32) -> Int32 {
 }
 
 ///|
+fn text_step_property(
+  e : TextEdit,
+  id : String,
+  delta : Int32,
+  keep_focus : Bool,
+) -> Int32 {
+  let property = property_key(id)
+  if delta == 0 ||
+    e.version >= 2147483647 ||
+    ![1, 2, 3, 5].contains(property) ||
+    !property_visible(e, id) {
+    return 0
+  }
+  let token = text_field(e, id)
+  let snapshot = match @fields.snapshot(token) {
+    Some(s) => s
+    None => return 0
+  }
+  let current = match text_edit_numeric(e, snapshot, property) {
+    Some(n) => n
+    None => return 0
+  }
+  let value = @protocol.smaller(
+    @image.editor_style_max(property),
+    @protocol.larger(
+      @image.editor_style_min(property),
+      current + delta.to_double() * editor_style_step(property),
+    ),
+  )
+  let raw = text_decimal(value * (if property == 1 { 100 } else { 1 }))
+  if value == current || raw == snapshot.raw {
+    return 1
+  }
+  if !@fields.apply(
+      token,
+      id,
+      snapshot.version,
+      @fields.Replace(0, snapshot.raw.length(), raw, @fields.Unknown),
+    ) {
+    return 0
+  }
+  if !keep_focus {
+    e.active_field = id
+  }
+  e.version += 1
+  text_refresh_preview(e)
+  1
+}
+
+///|
 pub fn text_event_json(
   session : Int32,
   edit : Int32,
@@ -457,6 +511,8 @@ pub fn text_event_json(
     return 0
   }
   let event = @protocol.request_object(event) catch { _ => return 0 }
+  e.wheel_field = ""
+  e.wheel_remainder = 0
   match image_string(event, "type", "") {
     "field" => {
       let id = image_string(event, "id", "")
@@ -500,42 +556,10 @@ pub fn text_event_json(
     }
     "step" => {
       let id = image_string(event, "id", "")
-      let property = property_key(id)
-      if ![1, 2, 3, 5].contains(property) || !property_visible(e, id) {
-        return 0
-      }
       let delta = @protocol.integer_field(event, "delta", -1, 1) catch {
         _ => return 0
       }
-      if delta == 0 {
-        return 0
-      }
-      let token = text_field(e, id)
-      let snapshot = match @fields.snapshot(token) {
-        Some(s) => s
-        None => return 0
-      }
-      let current = match text_edit_numeric(e, snapshot, property) {
-        Some(n) => n
-        None => return 0
-      }
-      let value = @protocol.smaller(
-        @image.editor_style_max(property),
-        @protocol.larger(
-          @image.editor_style_min(property),
-          current + delta * editor_style_step(property),
-        ),
-      )
-      let raw = text_decimal(value * (if property == 1 { 100 } else { 1 }))
-      if !@fields.apply(
-          token,
-          id,
-          snapshot.version,
-          @fields.Replace(0, snapshot.raw.length(), raw, @fields.Unknown),
-        ) {
-        return 0
-      }
-      e.active_field = id
+      return text_step_property(e, id, delta.to_int(), false)
     }
     "shape" => {
       if e.shape == 0 || text_error(e) != "" {

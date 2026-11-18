@@ -688,7 +688,7 @@ static void sync_text(void) {
   if (height > 0) capture.preview[3] = height;
   double rw = capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_ROW_WIDTH);
   double rh = capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_ROW_HEIGHT);
-  gboolean dark = FALSE; g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &dark, NULL);
+  gboolean dark = capture.toolbar_dark;
   moonbit_string_t json = capture_text_frame(capture.session, edit, MC_CAPTURE_TEXT_PROPERTIES, rw, rh, 1, dark);
   int frame = ui_frame_open(json); moonbit_decref(json);
   if (frame) {
@@ -1094,6 +1094,9 @@ static void toolbar_event(void *context, GtkWidget *widget, const MCCanvasInput 
   if (event->type == MC_UI_INPUT_APPEARANCE) {
     capture.toolbar_dark = event->text_length == 4 && event->text[0] == 'd';
     mc_linux_hud_set_dark(capture.toolbar, capture.toolbar_dark);
+    int32_t surface = capture_toolbar_surface_color(capture.toolbar_dark);
+    mc_linux_canvas_set_background(capture.toolbar_canvas, surface);
+    mc_linux_canvas_set_background(capture.property_canvas, surface);
     layout_controls();
     return;
   }
@@ -1337,7 +1340,7 @@ static gboolean open_editor(GdkPixbuf *image) {
   capture.canvas = gtk_drawing_area_new();
   gtk_widget_set_can_focus(capture.canvas, TRUE);
   gtk_container_add(GTK_CONTAINER(overlay), capture.canvas);
-  MCLinuxTextCallbacks input_callbacks = {input_event, input_action, input_key};
+  MCLinuxTextCallbacks input_callbacks = {input_event, input_action, input_key, input_key};
   capture.body_inputs = mc_linux_text_inputs_new(&input_callbacks, NULL);
   capture.property_inputs = mc_linux_text_inputs_new(&input_callbacks, NULL);
   capture.body_fixed = mc_linux_text_inputs_widget(capture.body_inputs);
@@ -1350,24 +1353,27 @@ static gboolean open_editor(GdkPixbuf *image) {
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), masks);
   gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), masks, TRUE);
   g_signal_connect(masks, "draw", G_CALLBACK(masks_draw), NULL);
-  capture.toolbar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  capture.toolbar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
   gtk_widget_set_size_request(capture.toolbar, -1, -1);
   gtk_container_set_border_width(GTK_CONTAINER(capture.toolbar), 0);
   gtk_widget_set_no_show_all(capture.toolbar, TRUE);
   gtk_style_context_add_class(gtk_widget_get_style_context(capture.toolbar), "mc-hud");
   MCLinuxCanvasCallbacks toolbar_callbacks = {toolbar_event, NULL, NULL, NULL};
   capture.toolbar_canvas = mc_linux_canvas_new(&toolbar_callbacks, NULL);
+  mc_linux_canvas_set_background(capture.toolbar_canvas, capture_toolbar_surface_color(capture.toolbar_dark));
   mc_linux_canvas_preserve_focus_on_press(capture.toolbar_canvas, toolbar_field_focused);
   gtk_box_pack_start(GTK_BOX(capture.toolbar), capture.toolbar_canvas, FALSE, FALSE, 0);
   capture.property_overlay = gtk_overlay_new();
   gtk_widget_set_no_show_all(capture.property_overlay, TRUE);
   MCLinuxCanvasCallbacks property_callbacks = {property_event, NULL, NULL, NULL};
   capture.property_canvas = mc_linux_canvas_new(&property_callbacks, NULL);
+  mc_linux_canvas_set_background(capture.property_canvas, capture_toolbar_surface_color(capture.toolbar_dark));
   gtk_container_add(GTK_CONTAINER(capture.property_overlay), capture.property_canvas);
   gtk_overlay_add_overlay(GTK_OVERLAY(capture.property_overlay), mc_linux_text_inputs_widget(capture.property_inputs));
   gtk_box_pack_start(GTK_BOX(capture.toolbar), capture.property_overlay, FALSE, FALSE, 0);
   sync_control_values();
-  mc_linux_hud_apply(capture.toolbar);
+  mc_linux_hud_apply(capture.toolbar, capture_toolbar_surface_color(0), capture_toolbar_surface_color(1));
+  mc_linux_hud_set_dark(capture.toolbar, capture.toolbar_dark);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.toolbar);
   gtk_widget_add_events(capture.canvas,
                         GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
@@ -2217,7 +2223,7 @@ static gboolean smoke_bridge_retirement(void) {
   moonbit_string_t empty = core_string("");
   probe.edit = capture_text_begin(probe.session, probe.style, MC_CAPTURE_TEXT_NEW, empty,
       image_session_revision(probe.session), 10, 10, 200, 80); moonbit_decref(empty);
-  MCLinuxTextCallbacks callbacks = {bridge_probe_event, NULL, NULL};
+  MCLinuxTextCallbacks callbacks = {bridge_probe_event, NULL, NULL, NULL};
   probe.inputs = mc_linux_text_inputs_new(&callbacks, &probe);
   moonbit_string_t json = capture_text_frame(probe.session, probe.edit, MC_CAPTURE_TEXT_INLINE, 200, 80, 1, 0);
   int frame = ui_frame_open(json); moonbit_decref(json);
@@ -2294,6 +2300,34 @@ static gboolean smoke_bridge_retirement(void) {
   g_print("Linux text bridge lifetime fixture %s: rejected IME result, cancelled idle, event and field-destroy reentrancy.\n", ok ? "passed" : "FAILED");
   return ok;
 }
+static gboolean smoke_field_scroll(GtkWidget *view, GdkScrollDirection direction, double delta_y) {
+  GdkEvent *event = gdk_event_new(GDK_SCROLL);
+  GdkWindow *window = gtk_text_view_get_window(GTK_TEXT_VIEW(view), GTK_TEXT_WINDOW_WIDGET);
+  if (window) event->scroll.window = g_object_ref(window);
+  event->scroll.direction = direction; event->scroll.delta_y = delta_y;
+  event->scroll.x = gtk_widget_get_allocated_width(view) / 2.0;
+  event->scroll.y = gtk_widget_get_allocated_height(view) / 2.0;
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(view, "scroll-event", &event->scroll, &handled);
+  gdk_event_free(event); return handled;
+}
+static gboolean smoke_numeric_ink_centered(GtkWidget *view) {
+  int width = gtk_widget_get_allocated_width(view), height = gtk_widget_get_allocated_height(view);
+  if (width <= 1 || height <= 1 || gtk_widget_has_focus(view)) return FALSE;
+  cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+  cairo_t *cr = cairo_create(surface); gtk_widget_draw(view, cr); cairo_destroy(cr);
+  cairo_surface_flush(surface);
+  unsigned char *pixels = cairo_image_surface_get_data(surface);
+  int stride = cairo_image_surface_get_stride(surface), first = height, last = -1;
+  for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+    uint32_t pixel; memcpy(&pixel, pixels + y * stride + x * 4, sizeof(pixel));
+    if ((pixel >> 24) > 32) { first = MIN(first, y); last = MAX(last, y); }
+  }
+  gboolean ok = last >= first && abs(first - (height - 1 - last)) <= 2;
+  if (!ok) g_printerr("Linux numeric ink: field=%dx%d ink-y=%d..%d top-margin=%d\n",
+      width, height, first, last, gtk_text_view_get_top_margin(GTK_TEXT_VIEW(view)));
+  cairo_surface_destroy(surface); return ok;
+}
 static gboolean smoke_shared_text(void) {
   gboolean ok = TRUE;
 #define TEXT_CHECK(condition, description) do { if (!(condition)) { ok = FALSE; g_printerr("Linux shared text: %s\n", description); } } while (0)
@@ -2340,6 +2374,10 @@ static gboolean smoke_shared_text(void) {
   GtkTextIter first, last; GtkTextBuffer *numbers = gtk_text_view_get_buffer(GTK_TEXT_VIEW(font));
   gtk_text_buffer_get_bounds(numbers, &first, &last); raw = gtk_text_buffer_get_text(numbers, &first, &last, FALSE);
   TEXT_CHECK(!strcmp(raw, "-"), "redraw must preserve invalid numeric raw"); g_free(raw);
+  int invalid_version = text_version();
+  smoke_field_scroll(font, GDK_SCROLL_UP, 0);
+  TEXT_CHECK(text_version() == invalid_version && capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_VALID) == 0,
+      "wheel cannot replace an invalid raw draft");
   smoke_style_number(MC_STYLE_FONT, "31.25");
   GdkEventKey step_key = {0}; step_key.keyval = GDK_KEY_Up; gboolean stepped = FALSE;
   g_signal_emit_by_name(font, "key-press-event", &step_key, &stepped);
@@ -2347,6 +2385,31 @@ static gboolean smoke_shared_text(void) {
   step_key.keyval = GDK_KEY_Down; stepped = FALSE;
   g_signal_emit_by_name(font, "key-press-event", &step_key, &stepped);
   TEXT_CHECK(stepped && capture.font_size == 31.25, "native ArrowDown delegates step to shared UI");
+  double wheel_revision = image_session_revision(capture.session);
+  TEXT_CHECK(smoke_field_scroll(font, GDK_SCROLL_UP, 0) && capture.font_size == 32.25,
+      "native wheel up uses field coordinates and shared increase");
+  TEXT_CHECK(smoke_field_scroll(font, GDK_SCROLL_DOWN, 0) && capture.font_size == 31.25,
+      "native wheel down uses shared decrease");
+  smoke_field_scroll(font, GDK_SCROLL_SMOOTH, -.4);
+  TEXT_CHECK(capture.font_size == 31.25, "smooth wheel fraction is retained by shared UI without an early step");
+  smoke_field_scroll(font, GDK_SCROLL_SMOOTH, -.6);
+  TEXT_CHECK(capture.font_size == 32.25, "smooth wheel fractions accumulate to one shared step");
+  smoke_field_scroll(font, GDK_SCROLL_DOWN, 0);
+  g_signal_emit_by_name(font, "preedit-changed", "3");
+  int composing_version = text_version();
+  smoke_field_scroll(font, GDK_SCROLL_UP, 0);
+  TEXT_CHECK(text_version() == composing_version && mc_linux_text_inputs_composing(capture.property_inputs),
+      "wheel does not end numeric composition or change its value");
+  g_signal_emit_by_name(font, "preedit-changed", ""); smoke_pump();
+  int body_version = text_version();
+  smoke_field_scroll(capture.entry, GDK_SCROLL_UP, 0);
+  TEXT_CHECK(text_version() == body_version && capture.font_size == 31.25 &&
+      image_session_revision(capture.session) == wheel_revision,
+      "multiline wheel keeps native behavior and numeric wheel never commits a document");
+  smoke_pump();
+  TEXT_CHECK(smoke_numeric_ink_centered(opacity), "unfocused numeric ink is centered in its actual GTK allocation");
+  TEXT_CHECK(gtk_text_view_get_top_margin(GTK_TEXT_VIEW(capture.entry)) == 0,
+      "multiline annotation retains top-aligned native text");
   smoke_style_rgba(0x225577, .35);
   TEXT_CHECK(capture.font_size == 31.25 && fabs(capture.opacity - .35) < 1e-12 && image_session_count(capture.session) == 0, "fractional font and opacity preview");
   int version = text_version(); double revision = image_session_revision(capture.session);

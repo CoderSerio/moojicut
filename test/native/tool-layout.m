@@ -798,8 +798,8 @@ static BOOL shapeVariants(void) {
     CGFloat sx = glyph.pixelsWide / NSWidth(e.textPropertiesCanvas.bounds);
     CGFloat sy = glyph.pixelsHigh / NSHeight(e.textPropertiesCanvas.bounds);
     for (NSUInteger row = 0; row < 2; row++) for (NSUInteger col = 0; col < 2; col++) {
-        NSColor *tile = [[glyph colorAtX:(NSMinX(mosaicRect)+8+8*col)*sx
-                                      y:(NSMidY(mosaicRect)-5+8*row)*sy] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        NSColor *tile = [[glyph colorAtX:(NSMinX(mosaicRect)+9+7*col)*sx
+                                      y:(NSMidY(mosaicRect)-4+7*row)*sy] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
         [tones addObject:@(tile.redComponent)];
     }
     [tones sortUsingSelector:@selector(compare:)];
@@ -906,12 +906,13 @@ static BOOL propertySpacing(void) {
             if (swatch) {
                 NSRect rect = propertyRect(swatch);
                 CHECK(NSWidth(rect) == editor_style_swatch_size() && NSHeight(rect) == editor_style_swatch_size(),
-                      "light and dark swatches share the MoonBit drawing and input size");
+                      "light and dark swatches retain the shared input size");
+                NSRect visible = NSInsetRect(rect, 2, 2);
                 BOOL circle = NO;
                 for (NSDictionary *command in frame[@"commands"])
-                    if ([command[@"type"] isEqual:@"rect"] && NSEqualRects(propertyRect(command),rect) &&
-                        fabs([command[@"radius"] doubleValue]-NSWidth(rect)/2) < .01) circle = YES;
-                CHECK(circle, "the shared color control is rendered as a circle");
+                    if ([command[@"type"] isEqual:@"rect"] && NSEqualRects(propertyRect(command),visible) &&
+                        fabs([command[@"radius"] doubleValue]-NSWidth(visible)/2) < .01) circle = YES;
+                CHECK(circle, "the compact color swatch is centered in its larger hit target");
             }
             if (directory.length) {
                 NSData *png = [toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
@@ -996,6 +997,93 @@ static BOOL colorPanelLifetime(void) {
     class_replaceMethod(NSColorPanel.class, @selector(orderFront:), originalFront, frontTypes);
     return passed;
 }
+static NSEvent *propertyWheel(NSView *view, int dy, int dx, BOOL precise) {
+    NSPoint point = [view convertPoint:NSMakePoint(NSMidX(view.bounds),NSMidY(view.bounds)) toView:nil];
+    CGEventRef raw = CGEventCreateScrollWheelEvent(NULL, precise ? kCGScrollEventUnitPixel : kCGScrollEventUnitLine, 2, dy, dx);
+    // An unposted CGEvent has no target window. Encode the intended window-local
+    // location in its NSEvent location for direct delivery to the real view;
+    // never move the cursor or post a system event from this fixture.
+    CGEventSetLocation(raw, CGPointMake(point.x, NSHeight(NSScreen.screens.firstObject.frame)-point.y));
+    NSEvent *event = [NSEvent eventWithCGEvent:raw]; CFRelease(raw);
+    NSCAssert(fabs(event.locationInWindow.x-point.x)<.01 && fabs(event.locationInWindow.y-point.y)<.01,
+              @"Synthetic wheel must carry the real field location");
+    return event;
+}
+static BOOL propertyWheelAndAlignment(void) {
+    BOOL passed = YES;
+    MCImageEditorController *e = editor();
+    e.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+    choose(e,3); textNumber(e,@"style.fontSize",@"31.25");
+    MCSharedTextInputView *number = e.textPropertyInputs[@"style.fontSize"];
+    [e.window makeFirstResponder:e.textPropertyInputs[@"style.opacity"]];
+    NSResponder *focus = e.window.firstResponder;
+    NSDictionary *before = e.document;
+    [number scrollWheel:propertyWheel(number,1,0,NO)];
+    CHECK(fabs(property(e,MC_CAPTURE_TEXT_FONT_SIZE)-32.25)<.001 && [e.document isEqual:before],
+          "wheel over the real numeric field reaches shared step without publishing the document");
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.02]];
+    CHECK(e.window.firstResponder==focus, "numeric wheel does not steal keyboard focus from another field");
+    [number scrollWheel:propertyWheel(number,-12,0,YES)];
+    CHECK(fabs(property(e,MC_CAPTURE_TEXT_FONT_SIZE)-31.25)<.001, "precise wheel uses the same shared numeric scale");
+    propertyActivate(e,@"style.fontSize.increase");
+    CHECK(fabs(property(e,MC_CAPTURE_TEXT_FONT_SIZE)-32.25)<.001 && e.window.firstResponder==focus,
+          "inside-box increase hit preserves native input focus");
+    propertyActivate(e,@"style.fontSize.decrease");
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.02]];
+    CHECK(fabs(property(e,MC_CAPTURE_TEXT_FONT_SIZE)-31.25)<.001 && e.window.firstResponder==focus,
+          "inside-box decrease uses the shared step in the opposite direction");
+    [number setSelectedRange:NSMakeRange(0,number.string.length)];
+    [number setMarkedText:@"3" selectedRange:NSMakeRange(1,0) replacementRange:NSMakeRange(NSNotFound,0)];
+    NSRange marked = number.markedRange, selection = number.selectedRange;
+    double version = property(e,MC_CAPTURE_TEXT_VERSION);
+    [number scrollWheel:propertyWheel(number,1,0,NO)];
+    [e syncTextControls];
+    CHECK(number.hasMarkedText && NSEqualRanges(number.markedRange,marked) &&
+          NSEqualRanges(number.selectedRange,selection) && property(e,MC_CAPTURE_TEXT_VERSION)==version,
+          "wheel and frame refresh preserve marked text, selection and version");
+    [number cancelOperation:nil];
+    [e.window makeFirstResponder:e.canvas];
+    [number.layoutManager ensureLayoutForTextContainer:number.textContainer];
+    NSBitmapImageRep *bitmap = [number bitmapImageRepForCachingDisplayInRect:number.bounds];
+    [number cacheDisplayInRect:number.bounds toBitmapImageRep:bitmap];
+    NSInteger top=bitmap.pixelsHigh, bottom=-1;
+    for (NSInteger y=0;y<bitmap.pixelsHigh;y++) for (NSInteger x=0;x<bitmap.pixelsWide;x++) {
+        NSColor *pixel=[[bitmap colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        if (pixel.alphaComponent>.5 && pixel.redComponent<.4 && pixel.greenComponent<.4 && pixel.blueComponent<.4) {
+            top=MIN(top,y); bottom=MAX(bottom,y);
+        }
+    }
+    double scale=bitmap.pixelsHigh/MAX(1,NSHeight(number.bounds));
+    CHECK(bottom>=top && fabs((top+bottom+1)/2.0-bitmap.pixelsHigh/2.0)<=2*scale,
+          "single-line numeric ink is vertically centered in the actual shared input bounds");
+    NSScrollView *narrow=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,100,30)];
+    narrow.hasHorizontalScroller=YES;
+    NSView *document=[[NSView alloc] initWithFrame:NSMakeRect(0,0,300,30)];
+    narrow.documentView=document; [e.window.contentView addSubview:narrow];
+    MCSharedTextInputView *fallback=[[MCSharedTextInputView alloc] initWithFrame:NSZeroRect];
+    NSMutableDictionary *description=[number.fieldDescription mutableCopy]; description[@"focused"]=@NO;
+    description[@"x"]=@4; description[@"y"]=@4; description[@"width"]=@36; description[@"height"]=@18;
+    [fallback applyFieldDescription:description]; [document addSubview:fallback];
+    __block NSUInteger offered=0;
+    fallback.onScroll=^BOOL(__unused NSEvent *event){ offered++; return NO; };
+    [narrow tile]; [narrow layoutSubtreeIfNeeded];
+    [fallback scrollWheel:propertyWheel(fallback,0,-4,NO)];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+    CHECK(offered==1 && narrow.contentView.bounds.origin.x>0,
+          "unhandled numeric wheel retains native horizontal scrolling in a narrow property panel");
+    [fallback invalidate]; [narrow removeFromSuperview];
+    [e.canvas mouseDown:mouse(e.canvas,NSEventTypeLeftMouseDown,NSMakePoint(50,80))];
+    MCSharedTextInputView *body=(MCSharedTextInputView *)e.canvas.textView;
+    [body insertText:@"中文🌙\nsecond line" replacementRange:NSMakeRange(NSNotFound,0)];
+    __block NSUInteger forwarded=0;
+    body.onScroll=^BOOL(__unused NSEvent *event){ forwarded++; return YES; };
+    NSPoint origin=body.textContainerOrigin; NSString *raw=body.string;
+    [body scrollWheel:propertyWheel(body,1,0,NO)];
+    CHECK(forwarded==0 && NSEqualPoints(body.textContainerOrigin,origin) && origin.y==0 && [body.string isEqual:raw],
+          "multiline annotation keeps native origin and scrolling without numeric dispatch");
+    [e cancel:nil];
+    return passed;
+}
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
@@ -1010,6 +1098,7 @@ int main(void) {
         passed = shapeVariants() && passed;
         passed = propertySpacing() && passed;
         passed = colorPanelLifetime() && passed;
+        passed = propertyWheelAndAlignment() && passed;
         puts(passed ? "PASS tool layout: stable bindings, styles, transactions, IME, pin/user actions, overflow and capture fanout" : "FAIL tool layout");
         return passed ? 0 : 1;
     }

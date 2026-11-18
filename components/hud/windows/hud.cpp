@@ -94,7 +94,7 @@ void text(Graphics &graphics, const wchar_t *value, RectF rect, float size, Colo
   graphics.DrawString(value, -1, &font, rect, &format, &brush);
 }
 } // namespace
-extern "C" void mc_hud_card(HDC dc, const RECT *bounds, float scale, const wchar_t *hint) {
+extern "C" void mc_hud_card(HDC dc, const RECT *bounds, float scale, int32_t surface_rgb) {
   /* Initialize GDI+ before constructing its drawing objects. */
   ensure_runtime();
   Graphics graphics(dc);
@@ -107,19 +107,14 @@ extern "C" void mc_hud_card(HDC dc, const RECT *bounds, float scale, const wchar
     shadow.Y += 2 * scale;
     fill_round(graphics, shadow, (12 + i) * scale, Color(8, 0, 0, 0));
   }
-  fill_round(graphics, rect, 12 * scale, Color(255, 41, 39, 48));
+  fill_round(graphics, rect, 12 * scale,
+             Color(255, (BYTE)(surface_rgb >> 16), (BYTE)(surface_rgb >> 8), (BYTE)surface_rgb));
   GraphicsPath outline;
   RectF edge = rect;
   edge.Inflate(-.5f * scale, -.5f * scale);
   rounded(outline, edge, 11.5f * scale);
-  Pen border(Color(255, 65, 61, 73), scale);
+  Pen border(Color(36, 0, 0, 0), scale);
   graphics.DrawPath(&border, &outline);
-  Pen divider(Color(255, 76, 71, 83), scale);
-  const int separators[1] = {280};
-  for (int offset : separators)
-    graphics.DrawLine(&divider, rect.X + offset * scale, rect.Y + 17 * scale, rect.X + offset * scale,
-                      rect.Y + 31 * scale);
-  (void)hint;
 }
 extern "C" void mc_hud_button(HDC dc, const RECT *bounds, int kind, int value, BOOL selected, BOOL hovered,
                               BOOL pressed, BOOL focused, BOOL disabled, float scale) {

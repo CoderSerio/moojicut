@@ -533,8 +533,11 @@ static void layout_editor(HWND window) {
   if (client.right<=0 || client.bottom<=0) { capture.toolbar_syncing=FALSE; return; }
   sync_properties();
   double scale = (double)GetDpiForWindow(window) / 96;
+  int32_t surface = capture_toolbar_surface_color(capture.toolbar_dark);
+  mc_win_canvas_set_background(capture.toolbar_view, surface);
+  mc_win_canvas_set_background(capture.text_properties, surface);
   if (capture.toolbar_session && toolbar_context()) {
-    double max_width = fmax(32, client.right / scale - 28);
+    double max_width = fmax(32, client.right / scale - 24);
     moonbit_string_t json = capture_toolbar_frame(capture.toolbar_session, max_width, capture.toolbar_dark);
     int32_t frame_id = ui_frame_open(json); moonbit_decref(json);
     double width = capture_toolbar_value(capture.toolbar_session, MC_CAPTURE_TOOLBAR_WIDTH);
@@ -544,17 +547,17 @@ static void layout_editor(HWND window) {
     double *frame = capture_ui_measured_toolbar_frame(client.right / scale, client.bottom / scale,
         capture.viewport.left / scale, capture.viewport.top / scale,
         (capture.viewport.right-capture.viewport.left)/scale, (capture.viewport.bottom-capture.viewport.top)/scale,
-        fmax(width,properties)+12, height+12+(properties>0 ? property_height+4 : 0));
+        fmax(width,properties)+8, height+8+(properties>0 ? property_height+2 : 0));
     int x = rounded(frame[0]*scale), y = rounded(frame[1]*scale);
     SetRect(&capture.toolbar,x,y,x+rounded(frame[2]*scale),y+rounded(frame[3]*scale)); moonbit_decref(frame);
-    MoveWindow(capture.toolbar_view,x+dpi_px(window,6),y+dpi_px(window,6),rounded(width*scale),rounded(height*scale),TRUE);
+    MoveWindow(capture.toolbar_view,x+dpi_px(window,4),y+dpi_px(window,4),rounded(width*scale),rounded(height*scale),TRUE);
     if (frame_id) {
       if (mc_win_canvas_set_frame(capture.toolbar_view,frame_id)) {
         capture.toolbar_frame=frame_id;
         capture.toolbar_generation=(int32_t)capture_toolbar_value(capture.toolbar_session,MC_CAPTURE_TOOLBAR_GENERATION);
       } else ui_frame_close(frame_id);
     }
-    refresh_text_frames(x+dpi_px(window,6),y+rounded((height+10)*scale),scale);
+    refresh_text_frames(x+dpi_px(window,4),y+rounded((height+6)*scale),scale);
   }
   capture.canvas=capture.viewport; capture.zoom=1;
   capture.toolbar_syncing=FALSE;
@@ -667,7 +670,7 @@ static void begin_text(POINT point, int index) {
   if (capture.text) { SetFocus(capture.text); SendMessageW(capture.text, EM_SETSEL, 0, -1); }
 }
 static int32_t open_text_frame(int surface, double width, double height, double scale) {
-  moonbit_string_t json = capture_text_frame(capture.session, capture.text_edit, surface, width, height, scale, 1);
+  moonbit_string_t json = capture_text_frame(capture.session, capture.text_edit, surface, width, height, scale, capture.toolbar_dark);
   int32_t frame = ui_frame_open(json); moonbit_decref(json); return frame;
 }
 static void refresh_text_frames(int x, int y, double scale) {
@@ -736,6 +739,12 @@ static BOOL text_field_key(void *context, HWND field, const MCCanvasInput *event
     sync_text_preview(); changed(); if (capture.text) style_text(); return TRUE;
   }
   return FALSE;
+}
+static BOOL text_field_wheel(void *context, HWND field, WPARAM keys_delta, LPARAM screen_point) {
+  (void)context;
+  if (!capture.text_properties || !mc_win_text_inputs_contains(capture.property_inputs,field)) return FALSE;
+  SendMessageW(capture.text_properties,WM_MOUSEWHEEL,keys_delta,screen_point);
+  return TRUE;
 }
 static BOOL apply_color_result(int32_t session, int32_t edit, int version, COLORREF rgb) {
   if (!capture.editor || capture.session != session || capture.text_edit != edit || text_version() != version) return FALSE;
@@ -992,7 +1001,8 @@ static void paint_editor(HDC dc) {
     frame(dc, v, TRUE);
     region_label(dc, v);
   }
-  mc_hud_card(dc, &capture.toolbar, (float)GetDpiForWindow(capture.editor) / 96, L"");
+  mc_hud_card(dc, &capture.toolbar, (float)GetDpiForWindow(capture.editor) / 96,
+      capture_toolbar_surface_color(capture.toolbar_dark));
 }
 static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
   switch (message) {
@@ -1009,7 +1019,7 @@ static LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM wp, LPARAM
     capture.text_properties = mc_win_canvas_create(window, capture.instance, ID_STYLE_BASE + 50, &row_callbacks, NULL);
     if (!capture.text_properties) return -1;
     ShowWindow(capture.text_properties, SW_HIDE);
-    MCWinTextCallbacks text_callbacks = {text_field_event, text_field_action, text_background, text_field_key};
+    MCWinTextCallbacks text_callbacks = {text_field_event, text_field_action, text_background, text_field_key, text_field_wheel};
     capture.body_inputs = mc_win_text_inputs_create(window, capture.instance, &text_callbacks, NULL);
     capture.property_inputs = mc_win_text_inputs_create(window, capture.instance, &text_callbacks, NULL);
     if (!capture.body_inputs || !capture.property_inputs) return -1;
@@ -1745,6 +1755,118 @@ done:
 #undef TOOLBAR_CHECK
   return ok;
 }
+static BOOL hud_surface_smoke(void) {
+  BOOL ok=TRUE, original_dark=capture.toolbar_dark;
+  Surface pixels={0}; HWND neutral=NULL; int32_t property_frame=0;
+  int32_t field_ink[2]={0};
+  RECT bounds={0,0,400,120}, card={10,10,390,110};
+  MCWinCanvasCallbacks callbacks={0};
+#define HUD_CHECK(condition) do { if (!(condition)) { fprintf(stderr,"Windows HUD surface FAILED line %d: %s\n",__LINE__,#condition); ok=FALSE; goto done; } } while (0)
+  HUD_CHECK(surface_new(&pixels,1024,200));
+  neutral=mc_win_canvas_create(capture.editor,capture.instance,ID_STYLE_BASE+51,&callbacks,NULL);
+  HUD_CHECK(neutral && mc_win_canvas_paint(neutral,pixels.dc,&bounds,96));
+  HUD_CHECK(GetPixel(pixels.dc,1,1)==RGB(0,0,0));
+  HUD_CHECK(!mc_win_canvas_set_background(neutral,-1) && !mc_win_canvas_set_background(neutral,0x1000000));
+  HUD_CHECK(mc_win_canvas_paint(neutral,pixels.dc,&bounds,96) && GetPixel(pixels.dc,1,1)==RGB(0,0,0));
+  smoke_select_tool(TOOL_RECT);
+  for (int dark=0;dark<2;dark++) {
+    const wchar_t *mode=dark ? L"dark":L"light";
+    MCCanvasInput appearance={0}; appearance.type=MC_UI_INPUT_APPEARANCE;
+    appearance.text=(const uint16_t *)mode; appearance.text_length=wcslen(mode);
+    toolbar_input(NULL,capture.toolbar_view,&appearance);
+    HUD_CHECK(capture.toolbar_dark==dark && capture.text_edit);
+    int32_t surface=capture_toolbar_surface_color(dark);
+    COLORREF expected=color_ref(surface);
+    /* Exercise the actual parent paint path, then each child renderer. Empty
+     * child padding must match the card instead of exposing a black rectangle. */
+    mc_hud_card(pixels.dc,&card,1,surface);
+    HUD_CHECK(GetPixel(pixels.dc,20,30)==expected);
+    for (int y=27;y<=41;y++) HUD_CHECK(GetPixel(pixels.dc,290,y)==expected);
+    GetClientRect(capture.toolbar_view,&bounds);
+    HUD_CHECK(mc_win_canvas_paint(capture.toolbar_view,pixels.dc,&bounds,GetDpiForWindow(capture.editor)));
+    HUD_CHECK(GetPixel(pixels.dc,1,1)==expected);
+    GetClientRect(capture.text_properties,&bounds);
+    HUD_CHECK(mc_win_canvas_paint(capture.text_properties,pixels.dc,&bounds,GetDpiForWindow(capture.editor)));
+    HUD_CHECK(GetPixel(pixels.dc,1,1)==expected);
+    property_frame=smoke_property_frame();
+    HUD_CHECK(property_frame && ui_frame_field_count(property_frame)>0);
+    field_ink[dark]=ui_frame_field_value(property_frame,0,MC_UI_FIELD_COLOR);
+    HUD_CHECK(field_ink[dark]>=0);
+    ui_frame_close(property_frame); property_frame=0;
+  }
+  HUD_CHECK(field_ink[0]!=field_ink[1]);
+done:
+  if (property_frame) ui_frame_close(property_frame);
+  if (neutral) DestroyWindow(neutral);
+  surface_free(&pixels);
+  capture.toolbar_dark=original_dark;
+  if (capture.editor) { if (ok) smoke_select_tool(TOOL_SELECT); layout_editor(capture.editor); }
+  printf("Windows HUD surface %s: one themed card, matching child surfaces, no native divider, default video canvas remains black.\n",ok?"passed":"FAILED");
+#undef HUD_CHECK
+  return ok;
+}
+static BOOL centered_field(HWND field) {
+  RECT window, client; POINT origin={0,0}; TEXTMETRICW metrics={0};
+  if (!GetWindowRect(field,&window) || !GetClientRect(field,&client) || !ClientToScreen(field,&origin)) return FALSE;
+  HDC dc=GetDC(field); if (!dc) return FALSE;
+  HFONT font=(HFONT)SendMessageW(field,WM_GETFONT,0,0);
+  HGDIOBJ previous=SelectObject(dc,font);
+  BOOL measured=GetTextMetricsW(dc,&metrics);
+  SelectObject(dc,previous); ReleaseDC(field,dc);
+  int top=origin.y-window.top, bottom=window.bottom-origin.y-client.bottom;
+  LRESULT first=SendMessageW(field,EM_POSFROMCHAR,0,0);
+  return measured && top>=0 && bottom>=0 && abs(top-bottom)<=1 &&
+      client.bottom==minimum((int)metrics.tmHeight,window.bottom-window.top) && first!=-1 &&
+      (short)HIWORD(first)>=0 && (short)HIWORD(first)<client.bottom;
+}
+static void wheel_field(HWND field,int delta) {
+  RECT bounds; GetWindowRect(field,&bounds);
+  SendMessageW(field,WM_MOUSEWHEEL,MAKEWPARAM(0,(WORD)(short)delta),
+      MAKELPARAM((bounds.left+bounds.right)/2,(bounds.top+bounds.bottom)/2));
+}
+static BOOL numeric_input_smoke(void) {
+  BOOL ok=TRUE;
+  double revision=image_session_revision(capture.session);
+#define NUMBER_CHECK(condition) do { if (!(condition)) { fprintf(stderr,"Windows numeric input FAILED line %d: %s\n",__LINE__,#condition); ok=FALSE; goto done; } } while (0)
+  smoke_select_tool(TOOL_RECT);
+  HWND field=mc_win_text_inputs_field(capture.property_inputs,L"style.stroke");
+  NUMBER_CHECK(field && centered_field(field));
+  SetFocus(field); NUMBER_CHECK(SetWindowTextW(field,L"4"));
+  int32_t edit=capture.text_edit;
+  wheel_field(field,WHEEL_DELTA);
+  NUMBER_CHECK(capture.text_edit==edit && capture.stroke==5 && GetFocus()==field &&
+      image_session_revision(capture.session)==revision);
+  wheel_field(field,-WHEEL_DELTA);
+  NUMBER_CHECK(capture.stroke==4 && GetFocus()==field && centered_field(field));
+  SetFocus(capture.editor);
+  for (int i=0;i<3;i++) wheel_field(field,WHEEL_DELTA/4);
+  NUMBER_CHECK(capture.stroke==4 && GetFocus()==capture.editor);
+  wheel_field(field,WHEEL_DELTA/4);
+  NUMBER_CHECK(capture.stroke==5 && GetFocus()==capture.editor);
+  NUMBER_CHECK(smoke_property_click(L"style.stroke.decrease") && capture.stroke==4);
+  NUMBER_CHECK(smoke_property_click(L"style.stroke.increase") && capture.stroke==5);
+  SetFocus(field); NUMBER_CHECK(SetWindowTextW(field,L"4"));
+  NUMBER_CHECK(SetWindowTextW(field,L"-"));
+  wheel_field(field,WHEEL_DELTA);
+  wchar_t raw[16]={0}; GetWindowTextW(field,raw,ARRAYSIZE(raw));
+  NUMBER_CHECK(!wcscmp(raw,L"-") && capture_text_value(capture.session,edit,MC_CAPTURE_TEXT_VALID)==0);
+  NUMBER_CHECK(SetWindowTextW(field,L"4"));
+  SendMessageW(field,EM_SETSEL,1,1);
+  SendMessageW(field,WM_IME_STARTCOMPOSITION,0,0);
+  NUMBER_CHECK(mc_win_text_inputs_composing(capture.property_inputs));
+  wheel_field(field,WHEEL_DELTA);
+  NUMBER_CHECK(capture.stroke==4 && mc_win_text_inputs_composing(capture.property_inputs));
+  SendMessageW(field,WM_IME_ENDCOMPOSITION,0,0);
+  NUMBER_CHECK(!mc_win_text_inputs_composing(capture.property_inputs) && GetFocus()==field);
+  wheel_field(field,WHEEL_DELTA);
+  NUMBER_CHECK(capture.stroke==5 && image_session_revision(capture.session)==revision);
+done:
+  if (capture.text_edit) finish_text(TRUE);
+  if (capture.editor) { if (ok) smoke_select_tool(TOOL_SELECT); layout_editor(capture.editor); }
+  printf("Windows numeric input %s: measured centering, native EDIT fractional wheel, shared step buttons, unchanged document, invalid/IME veto and retained focus.\n",ok?"passed":"FAILED");
+#undef NUMBER_CHECK
+  return ok;
+}
 static BOOL context_toolbar_smoke(void) {
 #define CONTEXT_CHECK(condition) do { if (!(condition)) { fprintf(stderr,"Windows toolbar context FAILED line %d: %s (tool=%d edit=%d version=%d generation=%d)\n",__LINE__,#condition,capture.tool,capture.text_edit,capture.text_edit ? text_version():0,capture.toolbar_generation); return FALSE; } } while (0)
   RECT initial = capture.toolbar;
@@ -1891,7 +2013,7 @@ static BOOL text_retirement_smoke(void) {
       capture.editor, NULL, capture.instance, NULL);
   if (!parent) return FALSE;
   TextRetireProbe probe = {0};
-  MCWinTextCallbacks callbacks = {retire_text_on_focus, NULL, NULL, NULL};
+  MCWinTextCallbacks callbacks = {retire_text_on_focus, NULL, NULL, NULL, NULL};
   probe.inputs = mc_win_text_inputs_create(parent, capture.instance, &callbacks, &probe);
   int32_t frame = open_text_frame(MC_CAPTURE_TEXT_INLINE, 100, 60, 1);
   BOOL ok = probe.inputs && frame && mc_win_text_inputs_set_frame(probe.inputs, frame, 0, 0, 1);
@@ -2597,6 +2719,8 @@ int mc_capture_smoke(HINSTANCE instance) {
 #define CAPTURE_SUITE(test) do { if (!(test())) { fprintf(stderr,"Windows screenshot smoke FAILED suite %s\n",#test); CAPTURE_FAIL(); } } while (0)
   CAPTURE_SUITE(context_toolbar_smoke);
   CAPTURE_SUITE(shared_toolbar_smoke);
+  CAPTURE_SUITE(hud_surface_smoke);
+  CAPTURE_SUITE(numeric_input_smoke);
   CAPTURE_SUITE(independent_text_style_smoke);
   CAPTURE_SUITE(shared_text_fields_smoke);
   CAPTURE_SUITE(text_ime_rejection_smoke);

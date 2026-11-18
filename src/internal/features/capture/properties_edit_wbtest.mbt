@@ -341,8 +341,8 @@ test "property frame validates on the shared ABI and renders shape label circle 
   let shape = prop_node(frame, "style.shape.2")
   assert_eq(
     image_number(color, "x", 0) - (image_number(shape, "x", 0) + 26),
-    40,
-  ) // group 8 + color label 26 + label gap 6
+    35,
+  ) // group 8 + color label 24 + label gap 3
   let commands = match frame.get("commands") {
     Some(Array(a)) => a
     _ => []
@@ -354,7 +354,7 @@ test "property frame validates on the shared ABI and renders shape label circle 
       if c.get("text") == Some(Json("形状")) {
         shape_label = true
       }
-      if image_number(c, "width", 0) == 7 && image_number(c, "height", 0) == 7 {
+      if image_number(c, "width", 0) == 6 && image_number(c, "height", 0) == 6 {
         shades[image_string(c, "fill", "")] = true
       }
     }
@@ -362,7 +362,7 @@ test "property frame validates on the shared ABI and renders shape label circle 
   assert_true(shape_label)
   assert_eq(shades.length(), 4)
   for dark in [0, 1] {
-    let json = text_frame(s, e, 0, text_value(s, e, 13), 34, 1, dark)
+    let json = text_frame(s, e, 0, text_value(s, e, 13), text_value(s, e, 14), 1, dark)
     let handle = @ui_frame.open(json)
     assert_true(handle > 0)
     assert_eq(@ui_frame.field_count(handle), 1)
@@ -371,11 +371,83 @@ test "property frame validates on the shared ABI and renders shape label circle 
   }
   assert_eq(prop_shape(s, e, 2), 1)
   let handle = @ui_frame.open(
-    text_frame(s, e, 0, text_value(s, e, 13), 34, 1, 0),
+    text_frame(s, e, 0, text_value(s, e, 13), text_value(s, e, 14), 1, 0),
   )
   assert_true(handle > 0)
   assert_eq(@ui_frame.field_count(handle), 1)
   assert_eq(@ui_frame.field_text(handle, 0, 0), "style.blockSize")
   assert_eq(@ui_frame.close(handle), 1)
+  tx_cleanup(s, bank)
+}
+
+///|
+test "embedded numeric steps and targeted wheel gestures share a draft without stealing focus" {
+  let s = image_session_create(640, 480)
+  let bank = editor_style_create()
+  let e = prop_begin(s, bank, 1, "")
+  let before = image_session_document(s)
+  assert_eq(tx_replace(s, e, "style.stroke", "4.25"), 1)
+  assert_eq(tx_replace(s, e, "style.opacity", "50"), 1)
+  let up = prop_node(prop_frame(s, e), "style.stroke.increase")
+  let down = prop_node(prop_frame(s, e), "style.stroke.decrease")
+  let x = image_number(up, "x", 0) + 6
+  let upper = image_number(up, "y", 0) + 5
+  let lower = image_number(down, "y", 0) + 5
+  let press = fn(kind, y) {
+    prop_ui(s, e, Json::object({ "type": Json(kind), "x": Json(x), "y": Json(y) }))
+  }
+  let wheel = fn(x, dy, dx, precise) {
+    prop_ui(
+      s,
+      e,
+      Json::object({
+        "type": Json("scroll"),
+        "x": Json(x),
+        "y": Json(upper),
+        "deltaX": Json(dx),
+        "deltaY": Json(dy),
+        "precise": Json(precise),
+      }),
+    )
+  }
+  assert_eq(press("pointerDown", upper), 1)
+  assert_eq(press("pointerUp", lower), 1)
+  assert_eq(text_value(s, e, 16), 4.25)
+  assert_eq(press("pointerDown", upper), 1)
+  assert_eq(press("pointerUp", upper), 1)
+  assert_eq(text_value(s, e, 16), 5.25)
+  assert_eq(
+    prop_ui(
+      s,
+      e,
+      Json::object({ "type": Json("activate"), "id": Json("style.stroke.decrease") }),
+    ),
+    1,
+  )
+  for _ in 0..<3 {
+    assert_eq(wheel(x - 20, 0.25, 0, false), 1)
+    assert_eq(text_value(s, e, 16), 4.25)
+  }
+  assert_eq(wheel(x - 20, 0.25, 0, false), 1)
+  assert_eq(text_value(s, e, 16), 5.25)
+  assert_eq(wheel(x - 20, -12, 0, true), 1)
+  assert_eq(wheel(x - 20, 1, 7, false), 0)
+  assert_eq(wheel(x - 61, 1, 0, false), 0)
+  assert_eq(text_value(s, e, 16), 4.25)
+  assert_eq(
+    prop_ui(s, e, Json::object({ "type": Json("key"), "key": Json("ArrowUp") })),
+    1,
+  )
+  assert_eq(text_value(s, e, 3), 0.51)
+  assert_eq(text_value(s, e, 16), 4.25)
+  assert_eq(tx_replace(s, e, "style.stroke", "-"), 1)
+  assert_eq(wheel(x - 20, 1, 0, false), 0)
+  assert_eq(tx_field(s, e, "style.stroke").get("raw"), Some(Json("-")))
+  assert_eq(tx_replace(s, e, "style.stroke", "1"), 1)
+  let bounded = text_value(s, e, 0)
+  assert_eq(wheel(x - 20, -12, 0, false), 1)
+  assert_eq(text_value(s, e, 16), 1)
+  assert_eq(text_value(s, e, 0), bounded)
+  assert_eq(image_session_document(s), before)
   tx_cleanup(s, bank)
 }

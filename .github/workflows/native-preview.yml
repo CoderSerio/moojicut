@@ -8,7 +8,7 @@ on:
       version:
         description: Preview release version
         required: true
-        default: 0.1.0-alpha.21
+        default: 0.1.0-alpha.22
   push:
     branches: [main]
     paths:
@@ -87,7 +87,7 @@ jobs:
       # Windows matrix output does not overwrite another job's nonempty value.
       linux_package_commit: ${{ steps.linux_compatibility_ready.outputs.commit }}
     env:
-      PREVIEW_VERSION: ${{ inputs.version || '0.1.0-alpha.21' }}
+      PREVIEW_VERSION: ${{ inputs.version || '0.1.0-alpha.22' }}
       MOOJICUT_SMOKE_SCREENSHOT: ${{ github.workspace }}/.artifacts/${{ matrix.platform }}/smoke.${{ matrix.platform == 'windows' && 'bmp' || 'png' }}
       MOOJICUT_PLUGIN_FIXTURE: .artifacts/plugin-fixture/capture-info.zip
       MOOJICUT_PLUGIN_SAMPLE: .artifacts/plugin-fixture/numbered-box.zip

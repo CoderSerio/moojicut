@@ -26,6 +26,7 @@ pub struct ToolbarState {
   mut pressed : String
   mut hovered : String
   mut focused : String
+  mut focus_visible : Bool
 }
 
 ///|
@@ -55,6 +56,7 @@ pub fn toolbar_new() -> ToolbarState {
     pressed: "",
     hovered: "",
     focused: "",
+    focus_visible: false,
   }
 }
 
@@ -288,6 +290,7 @@ pub fn toolbar_size(state : ToolbarState) -> FixedArray[Double] {
 pub fn toolbar_cancel(state : ToolbarState) -> Unit {
   state.pressed = ""
   state.hovered = ""
+  state.focus_visible = false
 }
 
 ///|
@@ -357,6 +360,7 @@ pub fn toolbar_input(
         return (true, "")
       }
       if kind == "pointerDown" {
+        state.focus_visible = false
         state.pressed = match hit {
           Some(item) if item.enabled => item.id
           _ => ""
@@ -388,6 +392,7 @@ pub fn toolbar_input(
         if state.focused == "" {
           return (false, "")
         }
+        state.focus_visible = true
         return (true, toolbar_activate(state, state.focused))
       }
       if key != "Tab" &&
@@ -424,6 +429,7 @@ pub fn toolbar_input(
         choices.length()
       }
       state.focused = choices[next].id
+      state.focus_visible = true
       state.pressed = ""
       toolbar_reveal_focus(state)
       (true, "")
@@ -470,32 +476,40 @@ pub fn toolbar_input(
 }
 
 ///|
+pub fn toolbar_surface_color(dark : Bool) -> Int32 {
+  if dark { 0x27272a } else { 0xf1f1f3 }
+}
+
+///|
 pub fn toolbar_frame_json(state : ToolbarState, dark : Bool) -> String {
   let layout = toolbar_layout(state)
   let commands : Array[Json] = []
   let semantics : Array[Json] = []
   let scale = layout.scale
-  let background = if dark { 0x262626 } else { 0xf5f5f5 }
-  let chrome = property_command("rect", 0, 0, layout.width * scale, 32 * scale)
-  chrome["fill"] = Json(@icons.color(background))
-  chrome["radius"] = Json(6.0 * scale)
-  commands.push(Json::object(chrome))
+  let background = toolbar_surface_color(dark)
   for p in layout.placements {
     let item = p.item
     let pressed = state.pressed == item.id && state.hovered == item.id
     let hovered = state.hovered == item.id && item.enabled
     let focused = state.focused == item.id && item.enabled
-    let fill = if item.selected || pressed {
+    let show_focus = focused && state.focus_visible
+    let fill = if pressed {
       if dark {
-        0x525252
+        0x48484e
       } else {
-        0xd6d6d6
+        0xd7d7dd
+      }
+    } else if item.selected {
+      if dark {
+        0x304562
+      } else {
+        0xdce8fa
       }
     } else if hovered {
       if dark {
-        0x3c3c3c
+        0x38383e
       } else {
-        0xe5e5e5
+        0xe6e6eb
       }
     } else {
       background
@@ -522,11 +536,11 @@ pub fn toolbar_frame_json(state : ToolbarState, dark : Bool) -> String {
     if fill != background {
       rect["fill"] = Json(@icons.color(fill))
     }
-    if focused {
-      rect["stroke"] = Json(@icons.color(ink))
+    if show_focus {
+      rect["stroke"] = Json(if dark { "#9abcf0" } else { "#4772ae" })
       rect["lineWidth"] = Json(scale)
     }
-    if fill != background || focused {
+    if fill != background || show_focus {
       commands.push(Json::object(rect))
     }
     if item.asset_id != "" {

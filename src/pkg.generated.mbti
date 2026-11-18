@@ -64,6 +64,8 @@ pub fn capture_toolbar_frame(Int32, Double, Int32) -> String
 
 pub fn capture_toolbar_open(Int32, Int32, Int32) -> Int32
 
+pub fn capture_toolbar_surface_color(Int32) -> Int32
+
 pub fn capture_toolbar_text(Int32, Int32) -> String
 
 pub fn capture_toolbar_tool_enabled(Int32, Int32) -> Int32

@@ -12,6 +12,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Optional shared keyboard policy for a single-line field. Only unmarked
 // Up/Down reach this callback; return YES when handled, NO for native navigation.
 @property (nonatomic, copy, nullable) BOOL (^onKey)(NSDictionary *event);
+// Optional owner routing for wheel events over an editable, unmarked single-line
+// field. The owner converts the event's window location into its shared surface.
+// Return NO to preserve native scrolling. May synchronously retire this input.
+@property (nonatomic, copy, nullable) BOOL (^onScroll)(NSEvent *event);
 // Pure preflight only: do not publish or destroy the input from this callback.
 @property (nonatomic, copy, nullable) BOOL (^shouldResign)(void);
 // Geometry is supplied in the containing surface's logical coordinate system.

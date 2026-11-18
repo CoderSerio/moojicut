@@ -27,6 +27,9 @@ HWND mc_win_canvas_create(HWND parent, HINSTANCE instance, int identifier,
 /* On success, transfers ownership of the immutable frame to this window.
  * Failure leaves ownership with the caller. Zero clears the displayed frame. */
 BOOL mc_win_canvas_set_frame(HWND window, int32_t frame);
+/* Opaque host surface in 0xRRGGBB. New canvases default to black (including
+ * video). Invalid values leave the current surface unchanged. */
+BOOL mc_win_canvas_set_background(HWND window, int32_t color);
 /* Apply the shared UI event result; capture is never inferred from geometry. */
 void mc_win_canvas_set_capture(HWND window, BOOL capture);
 /* Notify after a top-level activation loss if the application consumes that

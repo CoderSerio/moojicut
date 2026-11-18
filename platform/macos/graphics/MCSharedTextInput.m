@@ -81,6 +81,19 @@ static NSColor *MCInputColor(NSString *hex, double opacity) {
     return self;
 }
 - (NSUndoManager *)undoManager { return self.sharedUndo; }
+- (NSPoint)textContainerOrigin {
+    NSPoint origin = [super textContainerOrigin];
+    if (!self.fieldDescription || [self.fieldDescription[@"multiline"] boolValue] || !self.font) return origin;
+    // Align single-line ink using the typesetter's baseline, rather than a
+    // platform-specific hard-coded top inset. TextKit uses this same origin
+    // for drawing, caret/hit testing and IME candidate geometry. No text or
+    // selection changes are needed when a shared frame changes size.
+    CGFloat baseline = [self.layoutManager defaultBaselineOffsetForFont:self.font];
+    CGFloat capHeight = self.font.capHeight;
+    CGFloat centered = (NSHeight(self.bounds) + capHeight) / 2 - baseline;
+    if (isfinite(centered) && isfinite(capHeight) && capHeight > 0) origin.y = MAX(0, centered);
+    return origin;
+}
 - (BOOL)applyFieldDescription:(NSDictionary *)field {
     if (self.retired || ![field isKindOfClass:NSDictionary.class] ||
         ![field[@"id"] isKindOfClass:NSString.class] || ![field[@"raw"] isKindOfClass:NSString.class] ||
@@ -326,6 +339,18 @@ static NSColor *MCInputColor(NSString *hex, double opacity) {
     if (event.keyCode == 53 && !self.hasMarkedText) { if (self.onAction) self.onAction(@"cancel"); return; }
     [super keyDown:event];
 }
+- (void)scrollWheel:(NSEvent *)event {
+    MC_INPUT_HOLD;
+    if (!self.retired && self.editable && !self.hasMarkedText &&
+        ![self.fieldDescription[@"multiline"] boolValue] && self.onScroll) {
+        NSDictionary *identity = self.fieldDescription;
+        BOOL (^callback)(NSEvent *) = self.onScroll;
+        BOOL handled = callback(event);
+        if (handled || self.retired || ![identity[@"id"] isEqual:self.fieldDescription[@"id"]] ||
+            ![identity[@"token"] isEqual:self.fieldDescription[@"token"]]) return;
+    }
+    [super scrollWheel:event];
+}
 - (void)insertNewline:(id)sender {
     MC_INPUT_HOLD;
     if (!self.hasMarkedText && ![self.fieldDescription[@"multiline"] boolValue]) {
@@ -401,7 +426,7 @@ static NSColor *MCInputColor(NSString *hex, double opacity) {
     [NSGraphicsContext restoreGraphicsState];
 }
 - (void)invalidate {
-    self.retired = YES; self.onEdit = nil; self.onAction = nil; self.onKey = nil; self.shouldResign = nil; self.focusPending = NO;
+    self.retired = YES; self.onEdit = nil; self.onAction = nil; self.onKey = nil; self.onScroll = nil; self.shouldResign = nil; self.focusPending = NO;
     self.applying++;
     [super unmarkText];
     self.editable = NO; self.selectable = NO;

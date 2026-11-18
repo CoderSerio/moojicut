@@ -237,11 +237,30 @@ test "canonical icons distinguish mosaic shades light dark selection and real as
   let decoded = @json.parse(toolbar_frame_json(state, false)) catch {
     _ => abort("bad frame")
   }
-  assert_eq(at(decoded, "commands").array_length(), 2) // Chrome + asset, no puzzle under transparent PNG.
+  assert_eq(at(decoded, "commands").array_length(), 1) // The outer surface owns the background.
   if at(decoded, "commands") is Array(commands) {
-    assert_eq(at(commands[1], "assetId"), Json("plugin-icon-0"))
+    assert_eq(at(commands[0], "assetId"), Json("plugin-icon-0"))
   }
   let frame = @frame.open(toolbar_frame_json(state, false))
   assert_true(frame > 0)
   assert_eq(@frame.close(frame), 1)
+}
+
+///|
+test "mouse selection keeps a single highlight and keyboard navigation shows focus" {
+  let state = toolbar_new()
+  let selected : ToolbarItem = {
+    ..toolbar_fixture_item("rectangle", 0, true),
+    selected: true,
+  }
+  assert_true(toolbar_sync(state, [selected], 300, 1))
+  ignore(toolbar_fixture_event(state, "pointerDown", 16, 16))
+  let _ = toolbar_fixture_event(state, "pointerUp", 16, 16)
+  let mouse = toolbar_frame_json(state, false)
+  assert_true(mouse.contains("#dce8fa"))
+  assert_false(mouse.contains("#4772ae"))
+  ignore(toolbar_fixture_key(state, "Tab"))
+  assert_true(toolbar_frame_json(state, false).contains("#4772ae"))
+  toolbar_cancel(state)
+  assert_false(toolbar_frame_json(state, false).contains("#4772ae"))
 }

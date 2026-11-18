@@ -21,6 +21,8 @@ int32_t capture_toolbar_context(int32_t toolbar, moonbit_string_t facts);
 /* Frame consumes shared layout/input state. Width >= 32 logical pixels, <= 32768.
  * Returned JSON is a generic ui_frame description; strings are owned UTF-16. */
 moonbit_string_t capture_toolbar_frame(int32_t toolbar, double max_width, int32_t dark);
+/* Opaque surface RGB for hosts without a native popover material. */
+int32_t capture_toolbar_surface_color(int32_t dark);
 /* Pass GENERATION sampled from the displayed frame. Pointer, keyboard and AX
  * activation all use the same ui_input_event JSON protocol. 1=handled, 0=rejected.
  * Read effect/value after a handled event; at most one unacknowledged effect. */

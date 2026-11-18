@@ -23,7 +23,7 @@ typedef struct {
   HWND window, tooltip;
   MCWinCanvasCallbacks callbacks;
   void *context;
-  int32_t frame;
+  int32_t frame, background;
   unsigned references;
   BOOL dead, pointer_down, active, capture_owned, tracking;
   BOOL delivered_size;
@@ -119,7 +119,8 @@ static BOOL paint_canvas(Canvas *canvas, HDC target, const RECT *bounds, UINT dp
   int saved = SaveDC(target);
   if (!saved) return FALSE;
   IntersectClipRect(target, bounds->left, bounds->top, bounds->right, bounds->bottom);
-  FillRect(target, bounds, (HBRUSH)GetStockObject(BLACK_BRUSH));
+  SetDCBrushColor(target, rgb(canvas->background));
+  FillRect(target, bounds, (HBRUSH)GetStockObject(DC_BRUSH));
   Paint paint = {0}; paint.dc = target; paint.scale = dpi / 96.0; paint.left = bounds->left; paint.top = bounds->top;
   MCCanvasPainter painter = {&paint, draw_rectangle, draw_line, draw_text, NULL};
   BOOL ok = !canvas->frame || mc_canvas_draw_layer(canvas->frame, MC_UI_LAYER_COMMANDS, &painter);
@@ -141,6 +142,15 @@ static BOOL paint_canvas(Canvas *canvas, HDC target, const RECT *bounds, UINT dp
 BOOL mc_win_canvas_paint(HWND window, HDC target, const RECT *bounds, UINT dpi) {
   Canvas *canvas = canvas_for(window);
   return canvas && paint_canvas(canvas, target, bounds, dpi);
+}
+BOOL mc_win_canvas_set_background(HWND window, int32_t color) {
+  Canvas *canvas = canvas_for(window);
+  if (!canvas || canvas->dead || color < 0 || color > 0xffffff) return FALSE;
+  if (canvas->background != color) {
+    canvas->background = color;
+    InvalidateRect(window, NULL, FALSE);
+  }
+  return TRUE;
 }
 static void emit(Canvas *canvas, const MCCanvasInput *input) {
   if (!canvas->dead && canvas->callbacks.event) canvas->callbacks.event(canvas->context, canvas->window, input);

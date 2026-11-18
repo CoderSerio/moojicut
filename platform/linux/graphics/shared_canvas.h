@@ -18,6 +18,8 @@ typedef struct {
 } MCLinuxCanvasCallbacks;
 
 GtkWidget *mc_linux_canvas_new(const MCLinuxCanvasCallbacks *callbacks, void *context);
+/* Containing-surface color in 0xRRGGBB. The default remains black. */
+void mc_linux_canvas_set_background(GtkWidget *canvas, int32_t rgb);
 /* Success transfers the immutable frame. Failure leaves it caller-owned.
  * Zero clears. Re-supplying the already-owned handle is a harmless no-op. */
 gboolean mc_linux_canvas_set_frame(GtkWidget *canvas, int32_t frame);

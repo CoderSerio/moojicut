@@ -807,6 +807,16 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
                     __weak MCImageEditorController *weakSelf = self;
                     input.onEdit = ^BOOL(NSDictionary *event) { return [weakSelf sendTextEvent:event]; };
                     input.onKey = ^BOOL(NSDictionary *event) { return [weakSelf handleSharedTextUIEvent:event]; };
+                    input.onScroll = ^BOOL(NSEvent *event) {
+                        MCImageEditorController *editor = weakSelf;
+                        if (!editor.textPropertiesCanvas || !editor.textEdit) return NO;
+                        NSPoint point = [editor.textPropertiesCanvas convertPoint:event.locationInWindow fromView:nil];
+                        return [editor handleSharedTextUIEvent:@{@"type":@"scroll", @"x":@(point.x), @"y":@(point.y),
+                            @"deltaX":@(event.scrollingDeltaX), @"deltaY":@(event.scrollingDeltaY),
+                            @"precise":event.hasPreciseScrollingDeltas ? @YES : @NO,
+                            @"shift":(event.modifierFlags & NSEventModifierFlagShift) ? @YES : @NO,
+                            @"mod":(event.modifierFlags & NSEventModifierFlagCommand) ? @YES : @NO}];
+                    };
                     input.shouldResign = ^BOOL {
                         MCImageEditorController *editor = weakSelf;
                         return !editor || editor.endingText || !editor.textEdit ||
@@ -1210,6 +1220,7 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
         self.textPropertiesCanvas = [[MCSharedCanvasView alloc] initWithFrame:NSZeroRect];
         self.textPropertiesCanvas.hidden = YES;
         self.textPropertiesCanvas.onEvent = ^(NSDictionary *event) { [weakSelf handleSharedTextUIEvent:event]; };
+        self.textPropertiesCanvas.preserveFocusOnPress = ^BOOL { return [weakSelf nativeFieldFocused]; };
         self.propertyStatus.frame = NSMakeRect(24, height - 104, width - 48, 18);
         self.propertyStatus.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
         [root addSubview:self.propertyStatus];
@@ -1298,7 +1309,7 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     region = [self.canvas convertRect:region toView:root];
     CGFloat margin = MIN(8, NSWidth(root.bounds) / 8);
     CGFloat available = MAX(1, NSWidth(root.bounds) - 2 * margin);
-    CGFloat inset = MIN(6, available / 8);
+    CGFloat inset = MIN(4, available / 8);
     CGFloat contentAvailable = MAX(1, available - 2 * inset);
     [self updateToolbarFrame:contentAvailable];
     CGFloat rowWidth = capture_toolbar_value(self.toolbarHandle, MC_CAPTURE_TOOLBAR_WIDTH);
@@ -1306,14 +1317,14 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     BOOL hasProperties = self.textEdit != 0;
     CGFloat propertiesWidth = hasProperties ? capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_WIDTH) : 0;
     NSView *propertyRow = self.textPropertiesCanvas;
-    CGFloat rowHeight = capture_toolbar_value(self.toolbarHandle, MC_CAPTURE_TOOLBAR_HEIGHT), padding = 6;
+    CGFloat rowHeight = capture_toolbar_value(self.toolbarHandle, MC_CAPTURE_TOOLBAR_HEIGHT), padding = 4;
     CGFloat propertyHeight = hasProperties ? capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_HEIGHT) : 0;
     CGFloat statusHeight = self.propertyStatus.hidden ? 0 : 20;
     CGFloat statusWidth = self.propertyStatus.hidden ? 0 : MIN(contentAvailable, self.propertyStatus.fittingSize.width);
     double *frame = capture_ui_measured_toolbar_frame(NSWidth(root.bounds), NSHeight(root.bounds),
         NSMinX(region), NSHeight(root.bounds) - NSMaxY(region), NSWidth(region), NSHeight(region),
         MAX(MAX(rowWidth,propertiesWidth),statusWidth) + 2*inset,
-        2*padding + rowHeight + (hasProperties ? propertyHeight + 4 : 0) + statusHeight);
+        2*padding + rowHeight + (hasProperties ? propertyHeight + 2 : 0) + statusHeight);
     CGFloat x = frame[0], width = frame[2], height = frame[3];
     CGFloat y = NSHeight(root.bounds) - frame[1] - height;
     moonbit_decref(frame);

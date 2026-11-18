@@ -447,7 +447,8 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     selectTool(editor,3); CGFloat text = NSWidth(editor.floatingToolbar.frame), textProperties = propertyValue(editor,MC_CAPTURE_TEXT_ROW_WIDTH);
     CHECK(coverProperties < shapeProperties && cover <= shape && textProperties <= text && coverProperties <= cover,
           "property groups use their natural widths and fit the measured toolbar");
-    CHECK(NSWidth(editor.textPropertyInputs[@"style.fontSize"].frame) >= 44, "contextual numeric fields keep their natural width");
+    CGFloat naturalFieldWidth = NSWidth(editor.textPropertyInputs[@"style.fontSize"].frame);
+    CHECK(naturalFieldWidth == 36, "the numeric control keeps its 36-point text area beside the stepper");
     __block NSUInteger contentActions = 0;
     editor.onOCR = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onTranslate = ^(__unused MCImageEditorController *source) { contentActions++; };
@@ -469,7 +470,8 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     // instead of letting fixed-width rows escape the screen or compress input.
     [editor.window setFrame:NSMakeRect(-1000,80,160,200) display:NO]; [editor positionFloatingToolbar];
     CHECK(NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame), "small/offset screens contain the entire floating panel");
-    CHECK(NSWidth(editor.textPropertyInputs[@"style.fontSize"].frame) >= 44, "small screen layout never squeezes the font editor");
+    CHECK(NSWidth(editor.textPropertyInputs[@"style.fontSize"].frame) == naturalFieldWidth,
+          "small screen layout scrolls without squeezing the font editor");
     CHECK(editor.textPropertiesCanvas.enclosingScrollView.documentVisibleRect.size.width < editor.textPropertiesCanvas.frame.size.width,
           "properties remain reachable through scrolling on exceptionally small screens");
     cursors = canvasCursors(canvas); hud = [canvas convertRect:editor.floatingToolbar.bounds fromView:editor.floatingToolbar];

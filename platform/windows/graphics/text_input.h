@@ -19,6 +19,10 @@ typedef struct {
   /* Optional single-line navigation intent. TRUE means the shared owner
    * handled it; FALSE leaves normal EDIT navigation intact. */
   BOOL (*key)(void *context, HWND field, const MCCanvasInput *input);
+  /* Optional single-line wheel route. Preserve the original screen-space
+   * lParam and key/delta wParam for a host canvas; no numeric policy lives here.
+   * TRUE consumes the message. Multiline input keeps its native scrolling. */
+  BOOL (*wheel)(void *context, HWND field, WPARAM keys_delta, LPARAM screen_point);
 } MCWinTextCallbacks;
 MCWinTextInputs *mc_win_text_inputs_create(HWND parent, HINSTANCE instance,
     const MCWinTextCallbacks *callbacks, void *context);

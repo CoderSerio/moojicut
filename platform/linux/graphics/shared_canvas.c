@@ -22,7 +22,7 @@ struct _MCLinuxCanvas {
   MCLinuxCanvasCallbacks callbacks;
   void *context;
   gboolean (*preserve_focus_on_press)(void *context);
-  int32_t frame;
+  int32_t frame, background;
   GPtrArray *nodes;
   gboolean dead, destroying, captured, pointer_down, cancelling, painting;
   gboolean delivered_size;
@@ -133,7 +133,7 @@ gboolean mc_linux_canvas_paint(GtkWidget *widget, cairo_t *cr, double width, dou
       || width < 0 || height < 0 || width > 1e6 || height > 1e6) return FALSE;
   g_object_ref(canvas); canvas->painting = TRUE;
   cairo_save(cr); cairo_rectangle(cr, 0, 0, width, height); cairo_clip(cr);
-  cairo_set_source_rgb(cr, 0, 0, 0); cairo_paint(cr);
+  color(cr, canvas->background); cairo_paint(cr);
   MCCanvasPainter painter = {cr, draw_rect, draw_line, draw_text, NULL};
   gboolean ok = !canvas->frame || mc_canvas_draw_layer(canvas->frame, MC_UI_LAYER_COMMANDS, &painter);
   MCCanvasRect video;
@@ -630,6 +630,12 @@ GtkWidget *mc_linux_canvas_new(const MCLinuxCanvasCallbacks *callbacks, void *co
   if (callbacks) canvas->callbacks = *callbacks;
   canvas->context = context;
   return GTK_WIDGET(canvas);
+}
+void mc_linux_canvas_set_background(GtkWidget *widget, int32_t rgb) {
+  MCLinuxCanvas *canvas = canvas_for(widget);
+  if (!canvas || canvas->dead || rgb < 0 || rgb > 0xffffff || canvas->background == rgb) return;
+  canvas->background = rgb;
+  gtk_widget_queue_draw(widget);
 }
 void mc_linux_canvas_preserve_focus_on_press(GtkWidget *widget, gboolean (*preserve)(void *)) {
   MCLinuxCanvas *canvas = canvas_for(widget);

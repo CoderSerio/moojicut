@@ -25,6 +25,12 @@ pub fn capture_toolbar_frame(
 }
 
 ///|
+#export_name("capture_toolbar_surface_color")
+pub fn capture_toolbar_surface_color(dark : Int32) -> Int32 {
+  @capture_ui.toolbar_surface_color(dark == 1)
+}
+
+///|
 #export_name("capture_toolbar_event")
 pub fn capture_toolbar_event(
   handle : Int32,

@@ -15,6 +15,9 @@ typedef struct {
   /* Optional unconsumed single-line navigation key; shared UI decides whether
    * it means numeric stepping. Return FALSE to preserve GTK's default action. */
   gboolean (*key)(gpointer context, const MCCanvasInput *input);
+  /* Optional single-line wheel input, in the group's logical coordinates.
+   * Positive deltas mean up/left; smooth GDK deltas remain fractional steps. */
+  gboolean (*scroll)(gpointer context, const MCCanvasInput *input);
 } MCLinuxTextCallbacks;
 MCLinuxTextInputs *mc_linux_text_inputs_new(const MCLinuxTextCallbacks *callbacks, gpointer context);
 GtkWidget *mc_linux_text_inputs_widget(MCLinuxTextInputs *inputs);

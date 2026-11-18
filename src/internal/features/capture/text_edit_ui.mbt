@@ -77,8 +77,8 @@ pub fn text_frame(
         width,
         height,
         dark == 1,
-        e.color_pressed,
-        e.color_hovered,
+        e.property_pressed,
+        e.property_hovered,
         text_error(e) == "",
       )
     } else {
@@ -135,29 +135,63 @@ pub fn text_ui_event(
       }).stringify(),
     )
   }
-  let (result, pressed, hovered) = @capture_ui.text_property_event(
+  let (action, pressed, hovered) = @capture_ui.text_property_event(
     property_descriptors(e),
     event,
     width,
     height,
-    e.color_pressed,
+    e.property_pressed,
   )
-  if result >= 10 && result <= 12 {
-    e.color_pressed = ""
-    e.color_hovered = ""
-    return text_event_json(
-      session,
-      edit,
-      version,
-      Json::object({ "type": Json("shape"), "value": Json(result - 10) }).stringify(),
-    )
+  let kind = if event is Object(input) { image_string(input, "type", "") } else { "" }
+  if kind == "pointerDown" || kind == "cancel" || kind == "activate" {
+    e.wheel_field = ""
+    e.wheel_remainder = 0
   }
-  if result != 0 {
-    e.color_pressed = pressed
-    e.color_hovered = hovered
-    if result == 2 {
+  if action is @capture_ui.Ignore {
+    if kind == "scroll" {
+      e.wheel_field = ""
+      e.wheel_remainder = 0
+    }
+    return 0
+  }
+  e.property_pressed = pressed
+  e.property_hovered = hovered
+  match action {
+    @capture_ui.Ignore => 0
+    @capture_ui.Feedback => 1
+    @capture_ui.OpenColor => {
       e.active_field = "style.color"
+      2
+    }
+    @capture_ui.SetShape(value) =>
+      text_event_json(
+        session,
+        edit,
+        version,
+        Json::object({ "type": Json("shape"), "value": Json(value) }).stringify(),
+      )
+    @capture_ui.Nudge(id, delta) =>
+      if text_error(e) == "" {
+        text_step_property(e, id, delta, true)
+      } else {
+        0
+      }
+    @capture_ui.Wheel(id, delta) => {
+      if text_error(e) != "" || !property_visible(e, id) {
+        e.wheel_field = ""
+        e.wheel_remainder = 0
+        return 0
+      }
+      let previous = if e.wheel_field == id && e.wheel_remainder * delta > 0 {
+        e.wheel_remainder
+      } else {
+        0.0
+      }
+      let sum = @protocol.smaller(64, @protocol.larger(-64, previous + delta))
+      let steps = sum.to_int()
+      e.wheel_field = id
+      e.wheel_remainder = sum - steps.to_double()
+      if steps == 0 { 1 } else { text_step_property(e, id, steps, true) }
     }
   }
-  result
 }

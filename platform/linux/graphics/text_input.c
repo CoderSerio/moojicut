@@ -19,7 +19,7 @@ struct Field {
   char *id, *raw, *commit, *css_text;
   int refs, token, version, anchor, focus, marked, action_depth, mutation, suppress, emitting;
   gboolean dead, seen, known, multiline, composing, focused;
-  double clip_x, clip_y, clip_width, clip_height;
+  double clip_x, clip_y, clip_width, clip_height, height;
   guint empty_preedit;
 };
 static void sync_native(Field *f);
@@ -280,6 +280,61 @@ static gboolean key_press(GtkWidget *view, GdkEventKey *event, gpointer data) {
   }
   field_unref(f); return handled;
 }
+static gboolean scroll_event(GtkWidget *view, GdkEventScroll *event, gpointer data) {
+  Field *f = field_ref(data); gboolean handled = FALSE;
+  if (f->dead || f->owner->dead || f->multiline || f->suppress || f->composing ||
+      !gtk_text_view_get_editable(GTK_TEXT_VIEW(view)) || !f->owner->callbacks.scroll) {
+    field_unref(f); return FALSE;
+  }
+  /* Same normalization as the generic canvas: GDK's positive axes point
+   * down/right, and smooth units are wheel steps rather than logical pixels. */
+  if (event->direction != GDK_SCROLL_SMOOTH && gdk_event_get_pointer_emulated((GdkEvent *)event)) {
+    field_unref(f); return TRUE;
+  }
+  double dx = 0, dy = 0;
+  if (event->direction == GDK_SCROLL_SMOOTH) { dx = -event->delta_x; dy = -event->delta_y; }
+  else if (event->direction == GDK_SCROLL_UP) dy = 1;
+  else if (event->direction == GDK_SCROLL_DOWN) dy = -1;
+  else if (event->direction == GDK_SCROLL_LEFT) dx = 1;
+  else if (event->direction == GDK_SCROLL_RIGHT) dx = -1;
+  if ((dx || dy) && flush_field(f) && !f->dead && !f->owner->dead) {
+    int x = 0, y = 0;
+    GtkTextWindowType window = event->window ? gtk_text_view_get_window_type(GTK_TEXT_VIEW(view), event->window) : GTK_TEXT_WINDOW_WIDGET;
+    if (window != GTK_TEXT_WINDOW_PRIVATE && gtk_widget_translate_coordinates(view, f->owner->fixed, 0, 0, &x, &y)) {
+      int local_x = (int)floor(event->x), local_y = (int)floor(event->y), bx, by, wx, wy;
+      gtk_text_view_window_to_buffer_coords(GTK_TEXT_VIEW(view), window, local_x, local_y, &bx, &by);
+      gtk_text_view_buffer_to_window_coords(GTK_TEXT_VIEW(view), GTK_TEXT_WINDOW_WIDGET, bx, by, &wx, &wy);
+      int32_t flags = ((event->state & (GDK_CONTROL_MASK | GDK_META_MASK | GDK_SUPER_MASK)) ? MC_UI_INPUT_MOD : 0) |
+          ((event->state & GDK_SHIFT_MASK) ? MC_UI_INPUT_SHIFT : 0);
+      MCCanvasInput input = {MC_UI_INPUT_SCROLL, x + wx + event->x - local_x,
+          y + wy + event->y - local_y, dx, dy, flags, NULL, 0};
+      handled = f->owner->callbacks.scroll(f->owner->context, &input);
+      if (!f->dead) sync_native(f);
+    }
+  }
+  field_unref(f); return handled;
+}
+static void center_single_line(Field *f, int height) {
+  if (f->dead) return;
+  int top = 0;
+  if (!f->multiline && height > 0) {
+    /* Use GTK's resolved font and Pango's real digit ink, not a guessed ratio
+     * of font size. A stable numeric baseline does not jump for '-' or '.'. */
+    PangoLayout *layout = gtk_widget_create_pango_layout(f->view, "0123456789");
+    PangoRectangle ink;
+    pango_layout_get_pixel_extents(layout, &ink, NULL);
+    if (ink.height > 0) top = MAX(0, (int)floor((height - ink.height) / 2.0 - ink.y));
+    g_object_unref(layout);
+  }
+  if (gtk_text_view_get_top_margin(GTK_TEXT_VIEW(f->view)) != top)
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(f->view), top);
+}
+static void field_size_allocate(GtkWidget *view, GtkAllocation *allocation, gpointer data) {
+  (void)view; center_single_line(data, allocation->height);
+}
+static void field_style_updated(GtkWidget *view, gpointer data) {
+  (void)view; Field *f = data; center_single_line(f, MAX(1, (int)ceil(f->height)));
+}
 static void retire(Field *f) {
   if (f->dead) return;
   f->dead = TRUE;
@@ -316,6 +371,10 @@ static Field *new_field(MCLinuxTextInputs *g, const char *id) {
   g_signal_connect(f->view, "focus-in-event", G_CALLBACK(focus_in), f);
   g_signal_connect(f->view, "focus-out-event", G_CALLBACK(focus_out), f);
   g_signal_connect(f->view, "key-press-event", G_CALLBACK(key_press), f);
+  gtk_widget_add_events(f->view, GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK);
+  g_signal_connect(f->view, "scroll-event", G_CALLBACK(scroll_event), f);
+  g_signal_connect_after(f->view, "size-allocate", G_CALLBACK(field_size_allocate), f);
+  g_signal_connect_after(f->view, "style-updated", G_CALLBACK(field_style_updated), f);
   gtk_fixed_put(GTK_FIXED(g->fixed), f->view, 0, 0);
   g->fields = g_list_append(g->fields, f); return f;
 }
@@ -358,6 +417,7 @@ gboolean mc_linux_text_inputs_set_frame(MCLinuxTextInputs *g, int32_t frame) {
     f->anchor = ui_frame_field_value(frame, i, MC_UI_FIELD_ANCHOR); f->focus = ui_frame_field_value(frame, i, MC_UI_FIELD_FOCUS);
     f->marked = ui_frame_field_value(frame, i, MC_UI_FIELD_MARKED_START);
     f->multiline = ui_frame_field_value(frame, i, MC_UI_FIELD_MULTILINE) == 1;
+    f->height = ui_frame_field_number(frame, i, MC_UI_FIELD_HEIGHT);
     gboolean focused = ui_frame_field_value(frame, i, MC_UI_FIELD_FOCUSED) == 1;
     gboolean focus_transition = focused && !f->focused; f->focused = focused;
     f->clip_x = ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_X) - ui_frame_field_number(frame, i, MC_UI_FIELD_X);
@@ -365,6 +425,7 @@ gboolean mc_linux_text_inputs_set_frame(MCLinuxTextInputs *g, int32_t frame) {
     f->clip_width = ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_WIDTH);
     f->clip_height = ui_frame_field_number(frame, i, MC_UI_FIELD_CLIP_HEIGHT);
     f->suppress++;
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(f->view), f->multiline ? GTK_WRAP_WORD_CHAR : GTK_WRAP_NONE);
     gtk_text_view_set_editable(GTK_TEXT_VIEW(f->view), ui_frame_field_value(frame, i, MC_UI_FIELD_ENABLED) == 1 && ui_frame_field_value(frame, i, MC_UI_FIELD_READ_ONLY) == 0);
     gtk_widget_set_sensitive(f->view, ui_frame_field_value(frame, i, MC_UI_FIELD_ENABLED) == 1);
     char *label = owned_text(ui_frame_field_text(frame, i, MC_UI_FIELD_LABEL));
@@ -382,6 +443,7 @@ gboolean mc_linux_text_inputs_set_frame(MCLinuxTextInputs *g, int32_t frame) {
       gtk_css_provider_load_from_data(f->css, css, -1, NULL);
       g_free(f->css_text); f->css_text = css;
     } else g_free(css);
+    center_single_line(f, MAX(1, (int)ceil(f->height)));
     gtk_fixed_move(GTK_FIXED(g->fixed), f->view, (int)floor(ui_frame_field_number(frame, i, MC_UI_FIELD_X)), (int)floor(ui_frame_field_number(frame, i, MC_UI_FIELD_Y)));
     gtk_widget_set_size_request(f->view, MAX(1, (int)ceil(ui_frame_field_number(frame, i, MC_UI_FIELD_WIDTH))), MAX(1, (int)ceil(ui_frame_field_number(frame, i, MC_UI_FIELD_HEIGHT))));
     gtk_widget_show(f->view); f->suppress--;
