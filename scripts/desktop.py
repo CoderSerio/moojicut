@@ -19,6 +19,24 @@ from install_extism import VERSION as EXTISM_VERSION, digest, install as install
 from native_modules import native_sources, object_path
 
 ROOT = Path(__file__).resolve().parent.parent
+UNINSTALL_MANIFEST = "uninstall-manifest.txt"
+WINDOWS_UNINSTALLER = "MoojiCutUninstaller.exe"
+
+
+def portable_inventory(files, directories):
+    """The uninstallers accept the same exact inventory emitted by the builder."""
+    files = set(files) | {UNINSTALL_MANIFEST}
+    directories = set(directories)
+    if files & directories:
+        raise ValueError("Portable package path has conflicting types.")
+    for path in files | directories:
+        parts = path.split("/")
+        if not all(re.fullmatch(r"[A-Za-z0-9_.+-]+", part) and not part.endswith(".") for part in parts):
+            raise ValueError("Unsupported portable package path: " + path)
+        if len(parts) > 1 and "/".join(parts[:-1]) not in directories:
+            raise ValueError("Portable package path has no listed parent: " + path)
+    entries = sorted(files | {path + "/" for path in directories})
+    return ("MoojiCut portable 1\n" + "\n".join(entries) + "\n").encode("ascii")
 
 
 class DesktopBuild:
@@ -212,6 +230,11 @@ class DesktopBuild:
                          "winhttp.lib", "bcrypt.lib", "comdlg32.lib", "imm32.lib", "oleacc.lib", "oleaut32.lib",
                          *self.media.libraries)
                 shutil.copy2(linked_executable, executable)
+                self.run("cl", "/nologo", "/utf-8", "/MT", "/O2", "/W4", "/WX", "/std:c11",
+                         "/DUNICODE", "/D_UNICODE", "/Fo" + str(Path(name) / "uninstall.obj"),
+                         *native_sources("windows", "system.uninstaller"), "/Fe" + str(staging / WINDOWS_UNINSTALLER),
+                         "/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup",
+                         "ole32.lib", "shell32.lib", "uuid.lib", "user32.lib")
                 shutil.copytree(self.media.runtime_payload, staging, dirs_exist_ok=True)
                 dependencies = self.run("dumpbin", "/nologo", "/dependents", executable)
             else:
@@ -247,6 +270,10 @@ class DesktopBuild:
             (staging / "README.txt").write_text(self.instructions(), encoding="utf-8")
             shutil.copy2(ROOT / "LICENSE", staging / "LICENSE.txt")
             shutil.copy2(ROOT / "assets/icons/lucide/LICENSE", staging / "Lucide-LICENSE.txt")
+            layout = list(staging.rglob("*"))
+            (staging / UNINSTALL_MANIFEST).write_bytes(portable_inventory(
+                (path.relative_to(staging).as_posix() for path in layout if path.is_file()),
+                (path.relative_to(staging).as_posix() for path in layout if path.is_dir())))
             self.verify_bundle(staging)
             self.bundle.parent.mkdir(parents=True, exist_ok=True)
             previous = Path(name) / "previous"
@@ -276,9 +303,12 @@ class DesktopBuild:
                 "with embedded preview, non-destructive timeline/gaps/audio/speed/crop, waveform, saved drafts and MP4 export.")
 
     def verify_bundle(self, directory):
-        expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt"}
+        expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt",
+                    UNINSTALL_MANIFEST}
         if self.system == "linux":
             expected.add("launch.sh")
+        else:
+            expected.add(WINDOWS_UNINSTALLER)
         directories = set()
         for item in self.media.runtime_payload.rglob("*"):
             relative = item.relative_to(self.media.runtime_payload).as_posix()
@@ -304,6 +334,10 @@ class DesktopBuild:
         if actual_directories != directories or any(path.is_symlink() or not (path.is_file() or path.is_dir())
                                                    for path in directory.rglob("*")):
             raise RuntimeError("Package contains an unexpected directory, symlink or special file.")
+        if (directory / UNINSTALL_MANIFEST).read_bytes() != portable_inventory(expected, directories):
+            raise RuntimeError("Packaged uninstall inventory differs from the bundle contents.")
+        if self.system == "windows":
+            self.run(directory / WINDOWS_UNINSTALLER, "--check-bundle", directory)
 
     def instructions(self):
         shared = ("Mooji Cut " + self.version + "\n\n"
@@ -321,6 +355,7 @@ class DesktopBuild:
                   "设置中可停用贴图：关闭当前全部贴图并释放按键，重新启用会保留配置。\n"
                   "设置 → 更新可检查 GitHub Releases、下载并校验更新包。\n"
                   "下载完成后请退出旧版本，再手动解压并运行新版本。\n"
+                  "在设置 → 更新可卸载完整的便携应用目录，保留设置、插件和录屏文件。\n"
                   "关闭设置会保留托盘；从托盘菜单选择退出以结束应用。\n\n")
         if self.system == "windows":
             return shared + ("适用 Windows 10/11 x64（Intel/AMD）。解压全部文件，双击 MoojiCut.exe。\n"

@@ -12,6 +12,8 @@ FOUNDATION_EXPORT NSNotificationName const MCUpdateStateDidChangeNotification;
 @property (nonatomic, readonly) BOOL canCheckForUpdates;
 @property (nonatomic, readonly) BOOL installationPending;
 @property (nonatomic, readonly) BOOL checkingSource;
+@property (nonatomic, readonly, nullable) NSURL *uninstallTargetURL;
+@property (nonatomic, readonly) BOOL canUninstall;
 @property (nonatomic, readonly, nullable) NSURL *releasePageURL;
 @property (nonatomic, readonly) NSString *statusText;
 @property (nonatomic) BOOL automaticallyChecksForUpdates;
@@ -24,6 +26,8 @@ FOUNDATION_EXPORT NSNotificationName const MCUpdateStateDidChangeNotification;
 - (void)checkForUpdates:(nullable id)sender;
 - (void)cancelCheck;
 - (void)openReleasePage:(nullable id)sender;
+// Accepts the target shown in the user's confirmation. The host quits after success.
+- (BOOL)moveInstallationToTrash:(NSURL *)confirmedURL error:(NSError **)error;
 - (void)operationStateDidChange;
 @end
 

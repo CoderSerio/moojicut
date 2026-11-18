@@ -5,6 +5,7 @@
 
 @interface MCUpdateController (InstallationFixture)
 + (NSString *)installationErrorForBundleURL:(NSURL *)url profile:(id)profile identifier:(NSString *)identifier;
++ (NSURL *)uninstallTargetForBundleURL:(NSURL *)url profile:(id)profile identifier:(NSString *)identifier;
 @end
 
 static BOOL require(BOOL condition, NSString *message) {
@@ -94,6 +95,29 @@ static BOOL installationLocation(NSURL *directory) {
         @"create a temporary alias without touching the installed app")) return NO;
     return require([MCUpdateController installationErrorForBundleURL:alias profile:@"production" identifier:identifier] != nil,
         @"a symlink elsewhere pointing to the canonical installation cannot start updates");
+}
+
+static BOOL uninstallLocation(NSURL *directory) {
+    NSString *identifier = @"dev.moojicut.native";
+    for (NSString *root in @[@"/Applications", [NSHomeDirectory() stringByAppendingPathComponent:@"Applications"]]) {
+        NSURL *bundle = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"Mooji Cut.app"] isDirectory:YES];
+        BOOL isSymlink = ![bundle.path isEqualToString:bundle.URLByResolvingSymlinksInPath.path.stringByStandardizingPath];
+        if (!require(([MCUpdateController uninstallTargetForBundleURL:bundle profile:@"production" identifier:identifier] != nil) == !isSymlink,
+            @"uninstall must accept only real system or user Applications installations")) return NO;
+        if (!require(![MCUpdateController uninstallTargetForBundleURL:bundle profile:@"smoke" identifier:identifier] &&
+            ![MCUpdateController uninstallTargetForBundleURL:bundle profile:@"production" identifier:@"dev.moojicut.smoke"],
+            @"an isolated profile or bundle ID cannot uninstall the production app")) return NO;
+    }
+    NSURL *other = [directory URLByAppendingPathComponent:@"Mooji Cut.app" isDirectory:YES];
+    if (!require(![MCUpdateController uninstallTargetForBundleURL:other profile:@"production" identifier:identifier],
+        @"uninstall must refuse bundles outside Applications")) return NO;
+    NSBundle *fixture = bundleFixture(directory, @{@"CFBundleIdentifier":identifier, @"MoojiCutBuildProfile":@"production"});
+    if (!require(fixture != nil, @"create an independent bundle for the invalid uninstall test")) return NO;
+    MCUpdateController *controller = [[MCUpdateController alloc] initWithBundle:fixture];
+    NSError *error = nil;
+    return require(!controller.canUninstall && ![controller moveInstallationToTrash:fixture.bundleURL error:&error] &&
+        error != nil && [NSFileManager.defaultManager fileExistsAtPath:fixture.bundlePath],
+        @"refused uninstall must leave the independent bundle in place");
 }
 
 static BOOL configurationAndBusyState(NSURL *directory) {
@@ -220,10 +244,10 @@ int main(int argc, const char *argv[]) {
             [@"moojicut-updater-test-" stringByAppendingString:NSUUID.UUID.UUIDString]] isDirectory:YES];
         if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:NO
             attributes:@{NSFilePosixPermissions:@0700} error:NULL]) return 1;
-        BOOL passed = versionOrdering() && installationLocation(directory) && configurationAndBusyState(directory) &&
+        BOOL passed = versionOrdering() && installationLocation(directory) && uninstallLocation(directory) && configurationAndBusyState(directory) &&
             signedFixtures([NSURL fileURLWithPath:@(argv[1])], directory);
         [NSFileManager.defaultManager removeItemAtURL:directory error:NULL];
-        puts(passed ? "PASS updater: Sparkle versions, profile/location/configuration gates, busy/cancelled installation, signed archives/appcasts and tampering rejection" : "FAIL updater smoke");
+        puts(passed ? "PASS updater: Sparkle versions, profile/location/configuration gates, confirmed uninstall location guard, busy/cancelled installation, signed archives/appcasts and tampering rejection" : "FAIL updater smoke");
         return passed ? 0 : 1;
     }
 }

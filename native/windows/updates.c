@@ -563,16 +563,99 @@ BOOL mc_updates_downloaded(void) {
   return updates.completed[0] && GetFileAttributesW(updates.completed) != INVALID_FILE_ATTRIBUTES;
 }
 const wchar_t *mc_updates_status(void) { return updates.status; }
-void mc_updates_open_location(void) {
+static BOOL show_file_location(const wchar_t *path) {
   PIDLIST_ABSOLUTE item = NULL;
   HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-  if (mc_updates_downloaded() &&
-      SUCCEEDED(SHParseDisplayName(updates.completed, NULL, &item, 0, NULL))) {
-    SHOpenFolderAndSelectItems(item, 0, NULL, 0);
+  BOOL opened = FALSE;
+  if (SUCCEEDED(SHParseDisplayName(path, NULL, &item, 0, NULL))) {
+    opened = SUCCEEDED(SHOpenFolderAndSelectItems(item, 0, NULL, 0));
     CoTaskMemFree(item);
   }
   if (SUCCEEDED(initialized))
     CoUninitialize();
+  return opened;
+}
+void mc_updates_open_location(void) {
+  if (mc_updates_downloaded()) show_file_location(updates.completed);
+}
+
+static BOOL launch_uninstaller(const wchar_t *source, const wchar_t *root) {
+  wchar_t temp[MAX_PATH], directory[MAX_PATH], executable[MAX_PATH], command[MAX_PATH + 80];
+  const wchar_t helper_name[] = L"MoojiCutUninstaller.exe";
+  GUID id;
+  wchar_t guid[40];
+  DWORD length = GetTempPathW(ARRAYSIZE(temp), temp);
+  if (!length || length >= ARRAYSIZE(temp) - 80 || FAILED(CoCreateGuid(&id)) ||
+      !StringFromGUID2(&id, guid, ARRAYSIZE(guid))) return FALSE;
+  swprintf_s(directory, ARRAYSIZE(directory), L"%lsMoojiCut-Uninstall-%ls", temp, guid);
+  if (!CreateDirectoryW(directory, NULL)) return FALSE;
+  swprintf_s(executable, ARRAYSIZE(executable), L"%ls\\%ls", directory, helper_name);
+
+  BOOL launched = FALSE;
+  SECURITY_ATTRIBUTES inherited = {sizeof(inherited), NULL, TRUE};
+  HANDLE handles[] = {OpenProcess(SYNCHRONIZE, TRUE, GetCurrentProcessId()),
+    CreateFileW(root, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                &inherited, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL)};
+  BY_HANDLE_FILE_INFORMATION identity;
+  SIZE_T bytes = 0;
+  InitializeProcThreadAttributeList(NULL, 1, 0, &bytes);
+  LPPROC_THREAD_ATTRIBUTE_LIST attributes = bytes ? malloc(bytes) : NULL;
+  BOOL list_ready = attributes && InitializeProcThreadAttributeList(attributes, 1, 0, &bytes);
+  if (handles[0] && handles[1] != INVALID_HANDLE_VALUE && GetFileInformationByHandle(handles[1], &identity) &&
+      (identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(identity.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+      list_ready && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                              handles, sizeof(handles), NULL, NULL) &&
+      CopyFileW(source, executable, TRUE)) {
+    STARTUPINFOEXW startup = {0};
+    PROCESS_INFORMATION child = {0};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.lpAttributeList = attributes;
+    swprintf_s(command, ARRAYSIZE(command), L"\"%ls\" --after-exit %llu %llu", executable,
+        (unsigned long long)(uintptr_t)handles[0], (unsigned long long)(uintptr_t)handles[1]);
+    launched = CreateProcessW(executable, command, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT,
+                             NULL, directory, &startup.StartupInfo, &child);
+    if (launched) { CloseHandle(child.hThread); CloseHandle(child.hProcess); }
+  }
+  if (list_ready) DeleteProcThreadAttributeList(attributes);
+  free(attributes);
+  if (handles[0]) CloseHandle(handles[0]);
+  if (handles[1] != INVALID_HANDLE_VALUE) CloseHandle(handles[1]);
+  if (!launched) { DeleteFileW(executable); RemoveDirectoryW(directory); }
+  return launched;
+}
+BOOL mc_updates_uninstall(HWND owner, BOOL (*ready)(void)) {
+  wchar_t path[PATH_CAPACITY], root[MAX_PATH], helper[MAX_PATH], manifest[MAX_PATH];
+  DWORD length = GetModuleFileNameW(NULL, path, ARRAYSIZE(path));
+  if (!length || length >= ARRAYSIZE(path) || !ready || !ready()) return FALSE;
+  const wchar_t *name = wcsrchr(path, L'\\');
+  BOOL bundled = name && !_wcsicmp(name + 1, L"MoojiCut.exe") && (size_t)(name - path) < MAX_PATH - 30;
+  if (bundled) {
+    wcsncpy_s(root, ARRAYSIZE(root), path, (size_t)(name - path));
+    const wchar_t *folder = wcsrchr(root, L'\\');
+    swprintf_s(helper, ARRAYSIZE(helper), L"%ls\\MoojiCutUninstaller.exe", root);
+    swprintf_s(manifest, ARRAYSIZE(manifest), L"%ls\\uninstall-manifest.txt", root);
+    DWORD helper_attrs = GetFileAttributesW(helper), manifest_attrs = GetFileAttributesW(manifest);
+    wchar_t volume[] = {root[0], root[1], L'\\', L'\0'};
+    bundled = root[1] == L':' && root[2] == L'\\' && GetDriveTypeW(volume) == DRIVE_FIXED &&
+      folder && !_wcsicmp(folder + 1, L"MoojiCut") && helper_attrs != INVALID_FILE_ATTRIBUTES &&
+      manifest_attrs != INVALID_FILE_ATTRIBUTES &&
+      !((helper_attrs | manifest_attrs) & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY));
+  }
+  if (bundled) {
+    wchar_t confirmation[MAX_PATH + 160];
+    swprintf_s(confirmation, ARRAYSIZE(confirmation),
+        L"退出 Mooji Cut，并将以下便携包文件夹移到回收站？\n\n%ls\n\n"
+        L"会先核对文件清单。偏好设置、导入的插件和录屏草稿会保留。", root);
+    if (MessageBoxW(owner, confirmation, L"卸载 Mooji Cut",
+        MB_YESNO | MB_DEFBUTTON2 | MB_ICONWARNING) != IDYES || !ready()) return FALSE;
+    if (launch_uninstaller(helper, root)) return TRUE;
+  }
+  if (MessageBoxW(owner, L"此目录需要手动卸载。要打开程序位置并退出 Mooji Cut 吗？\n\n"
+      L"退出后，仅删除当前便携包的文件。", L"卸载 Mooji Cut",
+      MB_OKCANCEL | MB_DEFBUTTON2 | MB_ICONINFORMATION) != IDOK || !ready()) return FALSE;
+  if (show_file_location(path)) return TRUE;
+  MessageBoxW(owner, path, L"Mooji Cut 程序位置", MB_OK | MB_ICONINFORMATION);
+  return FALSE;
 }
 BOOL mc_updates_prepare_close(void) {
   updates.closing = TRUE;

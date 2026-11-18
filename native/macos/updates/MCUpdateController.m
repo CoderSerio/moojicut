@@ -1,11 +1,20 @@
 #import "MCUpdateController.h"
 #import <Sparkle/Sparkle.h>
 #include "bindings/c/update_release.h"
+#include <sys/stat.h>
 
 NSNotificationName const MCUpdateStateDidChangeNotification = @"MCUpdateStateDidChangeNotification";
 static void *MCUpdateObservationContext = &MCUpdateObservationContext;
 static NSString *const MCUpdateErrorDomain = @"MoojiCutUpdate";
 static NSInteger const MCUpdateAwaitingSource = 100;
+static BOOL MCProductionApplication(id profile, NSString *identifier) {
+    return (!profile || [profile isEqual:@"production"]) && [identifier isEqualToString:@"dev.moojicut.native"];
+}
+static NSArray<NSNumber *> *MCBundleFileIdentity(NSURL *url) {
+    struct stat metadata;
+    if (!url.isFileURL || lstat(url.fileSystemRepresentation, &metadata) != 0 || !S_ISDIR(metadata.st_mode)) return nil;
+    return @[@(metadata.st_dev), @(metadata.st_ino)];
+}
 static NSArray<NSString *> *MCUpdateObservedKeys(void) {
     return @[@"canCheckForUpdates", @"automaticallyChecksForUpdates", @"sessionInProgress"];
 }
@@ -23,6 +32,8 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
 
 @interface MCUpdateController () <SPUUpdaterDelegate>
 @property NSBundle *bundle;
+@property NSURL *originalUninstallURL;
+@property NSArray<NSNumber *> *originalUninstallIdentity;
 @property SPUStandardUpdaterController *controller;
 @property (nonatomic, readwrite) BOOL available;
 @property (nonatomic, readwrite) BOOL installationPending;
@@ -51,6 +62,11 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
         _bundle = bundle;
         _releaseSource = source;
         _message = [self.class configurationErrorForBundle:bundle] ?: @"尚未检查更新。";
+        if ([bundle.bundleURL isEqual:NSBundle.mainBundle.bundleURL]) {
+            _originalUninstallURL = [self.class uninstallTargetForBundleURL:bundle.bundleURL
+                profile:[bundle objectForInfoDictionaryKey:@"MoojiCutBuildProfile"] identifier:bundle.bundleIdentifier];
+            _originalUninstallIdentity = MCBundleFileIdentity(_originalUninstallURL);
+        }
     }
     return self;
 }
@@ -68,6 +84,34 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
     return nil;
 }
 - (BOOL)busy { return self.isOperationBusy && self.isOperationBusy(); }
++ (NSURL *)uninstallTargetForBundleURL:(NSURL *)url profile:(id)profile identifier:(NSString *)identifier {
+    if (!MCProductionApplication(profile, identifier) || !url.isFileURL) return nil;
+    NSString *path = url.path.stringByStandardizingPath;
+    NSString *userInstallation = [NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Mooji Cut.app"];
+    if (![path isEqualToString:@"/Applications/Mooji Cut.app"] && ![path isEqualToString:userInstallation]) return nil;
+    if (![path isEqualToString:url.URLByResolvingSymlinksInPath.path.stringByStandardizingPath]) return nil;
+    return [NSURL fileURLWithPath:path isDirectory:YES];
+}
+- (NSURL *)uninstallTargetURL {
+    // A confirmation can be open while Finder replaces or moves the bundle.
+    NSURL *target = self.originalUninstallURL;
+    if (![self.originalUninstallIdentity isEqual:MCBundleFileIdentity(target)] ||
+        ![target.path isEqualToString:target.URLByResolvingSymlinksInPath.path.stringByStandardizingPath]) return nil;
+    return target;
+}
+- (BOOL)canUninstall {
+    return self.uninstallTargetURL && !self.busy && !self.installationPending && !self.checkingSource &&
+        !self.pendingResolvedCheck && !self.updaterSessionInProgress;
+}
+- (BOOL)moveInstallationToTrash:(NSURL *)confirmedURL error:(NSError **)error {
+    NSURL *target = self.uninstallTargetURL;
+    if (target && [target isEqual:confirmedURL] && self.canUninstall)
+        return [NSFileManager.defaultManager trashItemAtURL:target resultingItemURL:NULL error:error];
+    NSString *message = target && [target isEqual:confirmedURL] ? @"请先完成当前截图、录屏编辑或更新，再卸载。" :
+        @"当前运行的应用位置已变化。请从「应用程序」打开 Mooji Cut 后重试。";
+    if (error) *error = [NSError errorWithDomain:MCUpdateErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
+    return NO;
+}
 - (void)notifyState {
     [NSNotificationCenter.defaultCenter postNotificationName:MCUpdateStateDidChangeNotification object:self];
 }
@@ -93,7 +137,7 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
 + (NSString *)installationErrorForBundleURL:(NSURL *)url profile:(id)profile identifier:(NSString *)identifier {
     // Legacy production builds have no profile key. Test/development apps must
     // never discover or install production releases, even if moved manually.
-    if ((profile && ![profile isEqual:@"production"]) || ![identifier isEqualToString:@"dev.moojicut.native"])
+    if (!MCProductionApplication(profile, identifier))
         return @"此测试版本不使用正式更新服务。请从「应用程序」打开 Mooji Cut 检查更新。";
     NSString *path = url.path.stringByStandardizingPath;
     NSString *resolved = url.URLByResolvingSymlinksInPath.path.stringByStandardizingPath;

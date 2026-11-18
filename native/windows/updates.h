@@ -11,6 +11,9 @@ BOOL mc_updates_available(void);
 BOOL mc_updates_downloaded(void);
 const wchar_t *mc_updates_status(void);
 void mc_updates_open_location(void);
+/* Returns TRUE when the confirmed uninstall can exit through the host's normal
+ * shutdown path. The host rechecks active work after the modal confirmation. */
+BOOL mc_updates_uninstall(HWND owner, BOOL (*ready)(void));
 /* Returns FALSE until the bounded background operation has drained. Owner
  * receives UPDATES_CHANGED when it can retry closing; never wait on the UI. */
 BOOL mc_updates_prepare_close(void);

@@ -9,10 +9,21 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from desktop import DesktopBuild
+from desktop import DesktopBuild, portable_inventory
 
 
 class DesktopEnvironmentTest(unittest.TestCase):
+    def test_portable_uninstall_inventory_matches_the_complete_layout(self):
+        files = {"moojicut", "runtime/worker.so"}
+        self.assertEqual(portable_inventory(files, {"runtime", "runtime/empty"}),
+                         b"MoojiCut portable 1\nmoojicut\nruntime/\nruntime/empty/\n"
+                         b"runtime/worker.so\nuninstall-manifest.txt\n")
+        for paths, directories in ((files, {"runtime/empty"}),
+                                   ({"../outside"}, {".."}),
+                                   ({"runtime\\worker.so"}, {"runtime"})):
+            with self.subTest(paths=paths, directories=directories), self.assertRaises(ValueError):
+                portable_inventory(paths, directories)
+
     def test_timed_out_process_keeps_its_last_stdout_stderr_and_fails(self):
         build = DesktopBuild.__new__(DesktopBuild)
         build.env = dict(os.environ)

@@ -294,6 +294,11 @@
       }
     },
     "windows": {
+      "system.uninstaller": {
+        "sources": ["native/windows/uninstall.c"],
+        "requires": [],
+        "files": []
+      },
       "host": {
         "sources": [
           "native/windows/main.c",

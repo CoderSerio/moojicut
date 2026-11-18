@@ -788,6 +788,19 @@ static void quit_app(GtkWidget *widget, gpointer data) {
   host.quit_poll = g_timeout_add(50, finish_quit, NULL);
 }
 
+static const char *uninstall_blocker(void) {
+  if (host.smoke || host.quitting) return "当前应用无法开始卸载。";
+  if (mc_linux_capture_busy() || host.recording >= 0 || mc_linux_recording_busy() || mc_linux_video_editors_busy())
+    return "请先完成截图、停止录屏并关闭视频编辑器。";
+  if (host.plugin_picker || host.plugin_result || (host.plugins && mc_desktop_plugins_busy(host.plugins)))
+    return "请先结束插件操作。";
+  return NULL;
+}
+
+static void quit_after_uninstall(void) {
+  quit_app(NULL, NULL);
+}
+
 static void show_preferences(void) {
   if (host.window) {
     gtk_window_present(GTK_WINDOW(host.window));
@@ -882,7 +895,8 @@ static void show_preferences(void) {
   gtk_box_pack_start(GTK_BOX(tools), tool_scroll, TRUE, TRUE, 0);
   refresh_tool_settings();
   gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), tools, gtk_label_new("截图工具"));
-  gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook), mc_linux_update_preferences(), gtk_label_new("更新"));
+  gtk_notebook_append_page(GTK_NOTEBOOK(host.notebook),
+      mc_linux_update_preferences(uninstall_blocker, quit_after_uninstall), gtk_label_new("更新"));
 
   GtkWidget *about = page();
   GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale(host.icon_path, 72, 72, TRUE, NULL);

@@ -35,7 +35,8 @@ BEGIN
     PUSHBUTTON "下载更新包…", IDC_UPDATE_DOWNLOAD, 89, 139, 86, 22
     PUSHBUTTON "取消", IDC_UPDATE_CANCEL, 182, 139, 49, 22
     PUSHBUTTON "打开位置", IDC_UPDATE_OPEN, 238, 139, 64, 22
-    LTEXT "下载会校验 SHA256 和文件大小。当前为便携包，请解压后运行新版本；不会自动替换正在运行的程序。", -1, 17, 176, 285, 27
+    LTEXT "下载会校验 SHA-256 和文件大小。解压后运行新版本。", -1, 17, 173, 191, 27
+    PUSHBUTTON "卸载 Mooji Cut…", IDC_UPDATE_UNINSTALL, 215, 176, 87, 22
 END
 
 IDD_TOOLS DIALOGEX 0, 0, 320, 207

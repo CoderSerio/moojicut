@@ -832,6 +832,12 @@ static void refresh_updates_page(HWND window) {
     EnableWindow(GetDlgItem(window, IDC_UPDATE_DOWNLOAD), !busy && mc_updates_available());
     EnableWindow(GetDlgItem(window, IDC_UPDATE_CANCEL), busy);
     EnableWindow(GetDlgItem(window, IDC_UPDATE_OPEN), mc_updates_downloaded());
+    EnableWindow(GetDlgItem(window, IDC_UPDATE_UNINSTALL), !busy && !update_exit_pending);
+}
+static BOOL ready_to_uninstall(void) {
+    return !smoke_mode && !update_exit_pending && !mc_updates_busy() && !mc_capture_busy() &&
+        !mc_recording_busy() && !mc_win_video_editor_busy() && !plugin_chooser_active &&
+        (!desktop_plugins || !mc_desktop_plugins_busy(desktop_plugins));
 }
 static INT_PTR CALLBACK updates_page(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     if (message == WM_INITDIALOG) { refresh_updates_page(window); return TRUE; }
@@ -844,6 +850,15 @@ static INT_PTR CALLBACK updates_page(HWND window, UINT message, WPARAM wp, LPARA
         else if (LOWORD(wp) == IDC_UPDATE_DOWNLOAD) mc_updates_download(window);
         else if (LOWORD(wp) == IDC_UPDATE_CANCEL) mc_updates_cancel();
         else if (LOWORD(wp) == IDC_UPDATE_OPEN) mc_updates_open_location();
+        else if (LOWORD(wp) == IDC_UPDATE_UNINSTALL) {
+            if (!ready_to_uninstall()) {
+                MessageBoxW(window, L"请先完成当前截图、录屏、剪辑或下载，再卸载 Mooji Cut。",
+                            L"卸载 Mooji Cut", MB_OK | MB_ICONINFORMATION);
+            } else if (mc_updates_uninstall(window, ready_to_uninstall)) {
+                update_exit_pending = TRUE;
+                PostMessageW(host, WM_CLOSE, 0, 0);
+            }
+        }
         else return FALSE;
         refresh_updates_page(window);
         return TRUE;

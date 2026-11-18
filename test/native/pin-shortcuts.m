@@ -21,6 +21,8 @@ NSNotificationName const MCUpdateStateDidChangeNotification = @"MCUpdateStateDid
 @property BOOL canCheckForUpdates;
 @property BOOL checkingSource;
 @property BOOL automaticallyChecksForUpdates;
+@property BOOL canUninstall;
+@property NSURL *uninstallTargetURL;
 @property NSURL *releasePageURL;
 @property NSString *statusText;
 @end
@@ -162,7 +164,8 @@ int main(void) {
             [recordButton performClick:nil];
             CHECK(recordButton.enabled && starts == 1, "the recording entry dispatches one host callback");
             MCPreferencesUpdateStub *updates = [MCPreferencesUpdateStub new];
-            updates.available = YES; updates.canCheckForUpdates = YES;
+            updates.available = YES; updates.canCheckForUpdates = YES; updates.canUninstall = YES;
+            updates.uninstallTargetURL = [NSURL fileURLWithPath:@"/Applications/Mooji Cut.app" isDirectory:YES];
             NSMutableString *longStatus = [NSMutableString string];
             for (NSUInteger line=0; line<25; line++) [longStatus appendString:@"暂时无法检查更新，当前版本仍可使用。请稍后重试。\n"];
             updates.statusText = longStatus; preferences.updateController = (id)updates;
@@ -170,14 +173,18 @@ int main(void) {
             NSTextView *updateStatus = [preferences valueForKey:@"updateStatus"];
             NSScrollView *statusScroll = updateStatus.enclosingScrollView;
             NSButton *checkUpdates = [preferences valueForKey:@"checkUpdatesButton"];
+            NSButton *uninstall = [preferences valueForKey:@"uninstallButton"];
             CHECK([updateStatus.string isEqual:longStatus] && NSHeight(statusScroll.frame) <= 140 &&
                   NSHeight(updateStatus.frame) > NSHeight(statusScroll.contentView.bounds) &&
                   NSContainsRect(preferences.window.contentView.bounds,[checkUpdates convertRect:checkUpdates.bounds toView:preferences.window.contentView]),
                   "long update failures remain complete and scrollable without pushing the primary action outside the page");
-            updates.checkingSource = YES; updates.canCheckForUpdates = NO;
+            CHECK(uninstall.enabled && !uninstall.hiddenOrHasHiddenAncestor &&
+                  NSContainsRect(preferences.window.contentView.bounds,[uninstall convertRect:uninstall.bounds toView:preferences.window.contentView]),
+                  "uninstall remains visible and enabled below the update controls");
+            updates.checkingSource = YES; updates.canCheckForUpdates = NO; updates.canUninstall = NO;
             [NSNotificationCenter.defaultCenter postNotificationName:MCUpdateStateDidChangeNotification object:updates];
-            CHECK(!checkUpdates.enabled && ![[preferences valueForKey:@"cancelUpdatesButton"] isHidden],
-                  "checking updates exposes cancellation and prevents a duplicate check");
+            CHECK(!checkUpdates.enabled && !uninstall.enabled && ![[preferences valueForKey:@"cancelUpdatesButton"] isHidden],
+                  "checking updates exposes cancellation and prevents duplicate checks and uninstallation");
             [preferences selectPage:@"shortcuts"];
             NSSegmentedControl *groupSelector = [NSSegmentedControl segmentedControlWithLabels:@[@"global", @"pin"]
                 trackingMode:NSSegmentSwitchTrackingSelectOne target:nil action:NULL];

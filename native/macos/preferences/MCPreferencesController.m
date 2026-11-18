@@ -62,6 +62,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 @property NSButton *checkUpdatesButton;
 @property NSButton *cancelUpdatesButton;
 @property NSButton *releasePageButton;
+@property NSButton *uninstallButton;
 @property NSButton *startRecordingButton;
 @property NSProgressIndicator *updateProgress;
 @property NSLayoutConstraint *updateStatusHeight;
@@ -465,6 +466,9 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.checkUpdatesButton.enabled = self.updateController.canCheckForUpdates;
     self.cancelUpdatesButton.hidden = !self.updateController.checkingSource;
     self.releasePageButton.hidden = self.updateController.releasePageURL == nil;
+    self.uninstallButton.enabled = self.updateController.canUninstall;
+    self.uninstallButton.toolTip = self.updateController.uninstallTargetURL ? @"完成当前截图、录屏编辑和更新后可卸载。" :
+        @"请从「应用程序」文件夹打开 Mooji Cut 后卸载。";
     NSString *status = self.updateController.statusText ?: @"正在准备更新服务。";
     self.updateStatus.string = status;
     self.checkUpdatesButton.title = self.updateController.checkingSource ? @"正在检查…" : @"检查更新";
@@ -483,6 +487,33 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
 - (void)checkUpdates:(id)sender { [self.updateController checkForUpdates:sender]; }
 - (void)cancelUpdates:(__unused id)sender { [self.updateController cancelCheck]; }
 - (void)openUpdateRelease:(id)sender { [self.updateController openReleasePage:sender]; }
+- (void)confirmUninstall:(__unused id)sender {
+    NSURL *target = self.updateController.uninstallTargetURL;
+    if (!target || !self.updateController.canUninstall || !self.window || self.window.attachedSheet) return;
+    NSAlert *alert = [NSAlert new];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"卸载 Mooji Cut？";
+    alert.informativeText = [NSString stringWithFormat:@"应用将移到废纸篓并退出。设置、插件和录屏草稿会保留。\n\n%@", target.path];
+    [alert addButtonWithTitle:@"取消"].keyEquivalent = @"\r";
+    NSButton *confirm = [alert addButtonWithTitle:@"移到废纸篓并退出"];
+    confirm.hasDestructiveAction = YES;
+    __weak MCPreferencesController *weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        MCPreferencesController *controller = weakSelf;
+        if (!controller.window || response != NSAlertSecondButtonReturn) return;
+        NSError *error = nil;
+        if ([controller.updateController moveInstallationToTrash:target error:&error]) {
+            [NSApp terminate:nil];
+            return;
+        }
+        NSAlert *failure = [NSAlert new];
+        failure.messageText = @"无法卸载 Mooji Cut";
+        failure.informativeText = error.localizedDescription ?: @"请在 Finder 中检查应用的位置与权限后重试。";
+        [failure addButtonWithTitle:@"好"];
+        [failure beginSheetModalForWindow:controller.window completionHandler:nil];
+        [controller refreshUpdatePage];
+    }];
+}
 - (NSView *)updatesPage {
     NSView *page = [NSView new];
     NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MoojiCutReleaseVersion"] ?: [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版本";
@@ -492,6 +523,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.checkUpdatesButton.controlSize = NSControlSizeLarge;
     self.cancelUpdatesButton = [NSButton buttonWithTitle:@"取消检查" target:self action:@selector(cancelUpdates:)];
     self.releasePageButton = [NSButton buttonWithTitle:@"打开发布页面" target:self action:@selector(openUpdateRelease:)];
+    self.uninstallButton = [NSButton buttonWithTitle:@"卸载 Mooji Cut…" target:self action:@selector(confirmUninstall:)];
     self.updateProgress = [NSProgressIndicator new]; self.updateProgress.style = NSProgressIndicatorStyleSpinning;
     self.updateProgress.controlSize = NSControlSizeSmall; self.updateProgress.displayedWhenStopped = NO;
     [self.updateProgress.widthAnchor constraintEqualToConstant:16].active = YES;
@@ -518,15 +550,17 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     statusScroll.documentView = self.updateStatus;
     self.updateStatusHeight = [statusScroll.heightAnchor constraintEqualToConstant:34]; self.updateStatusHeight.active = YES;
     NSBox *separator = [NSBox new]; separator.boxType = NSBoxSeparator;
+    NSBox *uninstallSeparator = [NSBox new]; uninstallSeparator.boxType = NSBoxSeparator;
     NSTextField *explanation = MCLabel(@"自动检查不会中断当前截图或录屏；安装前会由你确认。", 12, YES);
     NSStackView *state = MCStack(@[statusScroll, actions], NSUserInterfaceLayoutOrientationVertical, 8);
     [statusScroll.widthAnchor constraintEqualToAnchor:state.widthAnchor].active = YES;
-    NSStackView *stack = MCStack(@[identity, state, separator, self.automaticUpdatesCheckbox, explanation], NSUserInterfaceLayoutOrientationVertical, 14);
+    NSStackView *stack = MCStack(@[identity, state, separator, self.automaticUpdatesCheckbox, explanation,
+        uninstallSeparator, self.uninstallButton], NSUserInterfaceLayoutOrientationVertical, 14);
     [stack setCustomSpacing:18 afterView:identity];
     [stack setCustomSpacing:20 afterView:state];
     [stack setCustomSpacing:6 afterView:self.automaticUpdatesCheckbox];
     [state.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    for (NSView *view in @[separator, explanation]) [view.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    for (NSView *view in @[separator, explanation, uninstallSeparator]) [view.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     MCPin(stack, page); [self refreshUpdatePage]; return page;
 }
 - (void)setAppearanceChoice:(NSString *)choice {
@@ -575,7 +609,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     NSRect frame = self.window.frame;
     BOOL pin = [self.shortcutGroups.selectedTabViewItem.identifier isEqual:@"pin"];
     CGFloat height = [identifier isEqual:@"shortcuts"] ? (pin ? 500 : 420) :
-        [identifier isEqual:@"plugins"] ? 500 : [identifier isEqual:@"updates"] ? 258 + self.updateStatusHeight.constant : 340;
+        [identifier isEqual:@"plugins"] ? 500 : [identifier isEqual:@"updates"] ? 310 + self.updateStatusHeight.constant : 340;
     CGFloat difference = height - self.window.contentView.bounds.size.height;
     frame.size.height += difference; frame.origin.y -= difference;
     [self.window setFrame:frame display:YES];
@@ -612,7 +646,7 @@ static NSGridView *MCGrid(NSArray<NSArray<NSView *> *> *rows) {
     self.pinShortcutRecorders = nil; self.pinShortcutClearButtons = nil; self.pinShortcutFeedback = nil; self.shortcutGroups = nil;
     self.automaticUpdatesCheckbox = nil; self.checkUpdatesButton = nil; self.cancelUpdatesButton = nil;
     self.startRecordingButton = nil; self.updateProgress = nil; self.updateStatusHeight = nil;
-    self.releasePageButton = nil; self.pinningCheckbox = nil; self.pinningDescription = nil; self.updateStatus = nil;
+    self.releasePageButton = nil; self.uninstallButton = nil; self.pinningCheckbox = nil; self.pinningDescription = nil; self.updateStatus = nil;
     if (self.onClose) self.onClose();
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
