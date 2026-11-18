@@ -264,8 +264,11 @@ static LRESULT CALLBACK field_proc(HWND window, UINT message, WPARAM wp, LPARAM 
     result = emit(f, MC_UI_TEXT_UNDO, 0, 0, NULL, 0, 0, 0); handled = TRUE;
   }
   if (!handled && (!f->dead || message == WM_NCDESTROY)) result = DefSubclassProc(window, message, wp, lp);
+  /* Multiline EDIT does not send EN_CHANGE for WM_SETTEXT. Accessibility and
+   * native value setters still enter the shared draft after the real edit.
+   * Frame-driven writes remain suppressed; a prior EN_CHANGE is a no-op here. */
   if (!f->dead && !f->suppress && !f->composing &&
-      (message == WM_KEYUP || message == WM_LBUTTONUP || message == WM_MOUSEMOVE || message == EM_SETSEL)) flush_field(f);
+      (message == WM_SETTEXT || message == WM_KEYUP || message == WM_LBUTTONUP || message == WM_MOUSEMOVE || message == EM_SETSEL)) flush_field(f);
   if (!f->dead && !f->suppress && message == WM_SETFOCUS) {
     int a = 0, b = 0; wchar_t *raw = native_state(f, &a, &b); free(raw);
     emit(f, MC_UI_TEXT_SELECT, 0, 0, NULL, f->composing ? MC_UI_SELECTION_UNKNOWN : MC_UI_SELECTION_UNDIRECTED,
