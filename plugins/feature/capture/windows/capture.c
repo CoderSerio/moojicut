@@ -1626,7 +1626,9 @@ static BOOL style_visible(int control) {
   return window && (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
 }
 static BOOL choose_style(int field, double value) {
-  if (style_context() == TOOL_TEXT && !capture.text_edit) { ensure_text_edit(); layout_editor(capture.editor); }
+  // A fixture can select an object and synchronize its model before layout.
+  // Materialize its real controls before sending the same input as the user.
+  if (style_context() == TOOL_TEXT) { ensure_text_edit(); layout_editor(capture.editor); }
   if (!capture.text_edit) return mc_style_controls_choose(capture.style_controls, field, value);
   BOOL inline_edit = capture.editing != -2, ok = FALSE;
   if (field == MC_STYLE_COLOR) {
@@ -1643,7 +1645,7 @@ static BOOL choose_style(int field, double value) {
   return ok;
 }
 static void step_style(BOOL increase) {
-  if (style_context() == TOOL_TEXT && !capture.text_edit) { ensure_text_edit(); layout_editor(capture.editor); }
+  if (style_context() == TOOL_TEXT) { ensure_text_edit(); layout_editor(capture.editor); }
   if (capture.text_edit) {
     BOOL inline_edit = capture.editing != -2;
     HWND input = mc_win_text_inputs_field(capture.property_inputs, L"style.fontSize");
