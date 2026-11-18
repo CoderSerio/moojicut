@@ -122,14 +122,18 @@ static DWORD WINAPI race_replace(void *context) {
     }
     return 0;
 }
-int main(int argc, char **argv) {
-    if (argc == 2 && !strcmp(argv[1], "--lock-child")) return lock_child();
-    if (argc != 3) { fprintf(stderr, "Usage: plugin-package-store-windows real-plugin.zip lowercase-sha256\n"); return 2; }
-    DWORD initial_handles = 0; GetProcessHandleCount(GetCurrentProcess(), &initial_handles);
+static DWORD trace_handles(const char *phase) {
+    DWORD count = 0;
+    CHECK(GetProcessHandleCount(GetCurrentProcess(), &count), "read process handle count");
+    printf("Windows package store handles after %s: %lu\n", phase, (unsigned long)count);
+    return count;
+}
+
+static int exercise(char **argv, unsigned attempt) {
     wchar_t base[4096], temporary[4096], root_wide[4096], snapshot[4096], packages[4096], lock_path[4096], zip_name[69], zip_path[4096];
     DWORD base_size = GetTempPathW(4096, base);
-    if (!base_size || base_size >= 4096 || swprintf_s(temporary, 4096, L"%lsmoojicut store-%lu-%llu-\x622a\x56fe",
-        base, (unsigned long)GetCurrentProcessId(), (unsigned long long)GetTickCount64()) < 0 || !CreateDirectoryW(temporary, NULL)) return 2;
+    if (!base_size || base_size >= 4096 || swprintf_s(temporary, 4096, L"%lsmoojicut store-%lu-%llu-%u-\x622a\x56fe",
+        base, (unsigned long)GetCurrentProcessId(), (unsigned long long)GetTickCount64(), attempt) < 0 || !CreateDirectoryW(temporary, NULL)) return 2;
     path_join(root_wide, temporary, L"plugins-v2"); path_join(snapshot, root_wide, L"snapshot.bin");
     path_join(packages, root_wide, L"packages"); path_join(lock_path, root_wide, L".lock");
     if (strlen(argv[2]) != 64) { remove_fixture(temporary); return 2; }
@@ -152,12 +156,14 @@ int main(int argc, char **argv) {
     CHECK(mc_plugin_store_replace_snapshot(root, true, a, sizeof(a), b, sizeof(b), &error) == MC_PLUGIN_STORE_OK && equals_snapshot(root, b, sizeof(b)), "matching CAS replaces complete snapshot");
     CHECK(inspect(snapshot, &second) && !same_id(&first, &second), "replacement has new file ID");
     CHECK(mc_plugin_store_replace_snapshot(root, true, b, sizeof(b), b, sizeof(b), &error) == MC_PLUGIN_STORE_OK && inspect(snapshot, &first) && same_id(&first, &second), "same bytes confirm durability without rewrite");
+    trace_handles("snapshot CAS");
     HANDLE lock = CreateFileW(lock_path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     CHECK(lock != INVALID_HANDLE_VALUE, "fixture acquires actual exclusive lock");
     CHECK(mc_plugin_store_replace_snapshot(root, true, b, sizeof(b), c, sizeof(c), &error) == MC_PLUGIN_STORE_BUSY, "busy snapshot mutation does not block");
     CHECK(mc_plugin_store_stage_zip(root, argv[2], a, sizeof(a), &error) == MC_PLUGIN_STORE_BUSY, "ZIP stage uses same lock");
     CHECK(run_lock_child(root_wide), "second real process also returns BUSY");
     if (lock != INVALID_HANDLE_VALUE) CloseHandle(lock);
+    trace_handles("child and exclusive lock");
     CHECK(load_zip(argv[1], &original_zip), "load actual MoonBit package ZIP");
     CHECK(mc_plugin_store_stage_zip(root, argv[2], original_zip.bytes, original_zip.size, &error) == MC_PLUGIN_STORE_OK, "immutable ZIP publication");
     CHECK(inspect(zip_path, &first), "ZIP has file identity");
@@ -190,6 +196,7 @@ int main(int argc, char **argv) {
     if (left) CloseHandle(left);
     if (right) CloseHandle(right);
     if (start) CloseHandle(start);
+    trace_handles("competing writer threads");
     wchar_t alias[4096]; path_join(alias, temporary, L"owned-alias");
     CHECK(CreateHardLinkW(alias, snapshot, NULL) && mc_plugin_store_read_snapshot(root, &bytes, &error) == MC_PLUGIN_STORE_INVALID && !bytes.bytes, "hardlinked snapshot rejected without publishing output");
     DeleteFileW(alias);
@@ -202,13 +209,26 @@ int main(int argc, char **argv) {
     } else if (GetLastError() == ERROR_PRIVILEGE_NOT_HELD) {
         printf("SKIP directory symlink fixture: runner does not grant symlink creation\n");
     } else CHECK(false, "create private directory symlink fixture");
+    trace_handles("link rejection");
     CHECK(!staging_count(root_wide) && !staging_count(packages), "no owned staging files remain");
     MCPluginStoreBytes source_after = {0};
     CHECK(load_zip(argv[1], &source_after) && source_after.size == original_zip.size && !memcmp(source_after.bytes, original_zip.bytes, original_zip.size), "source package bytes unchanged");
     mc_plugin_store_bytes_free(&source_after); mc_plugin_store_bytes_free(&original_zip); mc_plugin_store_bytes_free(&bytes);
-    DWORD final_handles = 0;
-    CHECK(GetProcessHandleCount(GetCurrentProcess(), &final_handles) && final_handles == initial_handles, "all success and failure paths release handles");
     free(root); remove_fixture(temporary);
+    CHECK(GetFileAttributesW(temporary) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND,
+        "all file, directory and lock handles permit profile deletion");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--lock-child")) return lock_child();
+    if (argc != 3) { fprintf(stderr, "Usage: plugin-package-store-windows real-plugin.zip lowercase-sha256\n"); return 2; }
+    trace_handles("process entry");
+    if (exercise(argv, 1) != 0) return 2;
+    DWORD previous_handles = trace_handles("first complete profile");
+    if (exercise(argv, 2) != 0) return 2;
+    DWORD final_handles = trace_handles("second complete profile");
+    CHECK(previous_handles == final_handles, "repeating success and failure paths retains no additional handles");
     printf("Windows package store: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
