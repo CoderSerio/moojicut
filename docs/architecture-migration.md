@@ -18,11 +18,11 @@
 | 工具贡献、启停和排序 | 共享 MoonBit 目录 | 共享 MoonBit 目录 | 共享 MoonBit 目录 |
 | 二级属性与圆色块 | 共享尺寸/间距值，原生控件 | 共享尺寸/间距值，原生控件 | 共享尺寸/间距值，原生控件 |
 | 基础录屏 | 区域/窗口/整屏及系统音频 | 区域 MP4，静音 | X11 区域与 Wayland ScreenCast/PipeWire，静音 WebM |
-| v2 视频编辑 | 共享根会话/UI、正式预览/导出与波形，本地回归通过 | 媒体、编辑、空隙、保存失败恢复与重开已过；保存对话框打开时退出待收口 | Ubuntu 22 全部通过；其同一包在无开发 SDK 的 Ubuntu 24 上八项检查全部通过 |
+| v2 视频编辑 | 共享根会话/UI、正式预览/导出与波形，本地回归通过 | 媒体、实际窗口编辑、保存失败恢复、重开及模态退出通过；构建打包通过 | Ubuntu 22 全部通过；其同一包在无开发 SDK 的 Ubuntu 24 上八项检查全部通过 |
 | OCR、翻译、用户 ZIP 插件 | 已有后端；用户插件仍为元信息输入/文本输出 v1 | 未接对应后端 | 未接对应后端 |
 | 更新安装 | 内置安装链 | 下载校验后手动换装 | 下载校验后手动换装 |
 
-Windows/Linux 的共享画布已通过独立宿主调用真实 v2 MoonBit 工程；新生产录制后编辑流程已接线，Ubuntu 22 已通过本批正式媒体与编辑窗口验证，Windows 和 Ubuntu 24 状态分别记录，不能沿用上一批画布绿灯替代验收。画布不拥有第二份剪辑模型，切分、空隙、历史和视口规则仍由 MoonBit 决定。三端麦克风/暂停、完整属性 Schema、用户插件 v2、独立 CLI/IPC仍未完成。
+Windows/Linux 的共享画布与生产录制后编辑流程均已接线；本批 Windows、Ubuntu 22 的实际媒体/窗口/发行包验证，以及 Ubuntu 24 的同包运行全部通过，见末尾 `3042b1f` 记录。画布不拥有第二份剪辑模型，切分、空隙、历史和视口规则仍由 MoonBit 决定。三端麦克风/暂停、完整属性 Schema、用户插件 v2、独立 CLI/IPC仍未完成。
 
 结构约束仍在构建入口执行，新增画布没有增加原生跨层 include 例外。现有 12 对历史例外、旧 components/plugins/feature 和宿主混合职责仍按下表迁移；目录归位、生产接入、自动回归和实机效果分别验收。
 
@@ -66,7 +66,7 @@ Windows/Linux 的共享画布已通过独立宿主调用真实 v2 MoonBit 工程
 | `plugins/feature/capture_text` | macOS Vision OCR、Apple Translation、结果窗口与任务控制 | `capture/extensions/ocr`、`translation` 管工作流、输入输出、可编辑结果、取消；通用结果控件归 shared/ui | `platform/<os>/text_services` 执行 OCR/翻译；三端实现与模型资源待分别验证，不能在无后端时承诺同等可用 |
 | `plugins/feature/scroll_capture` | 仅 macOS 原型；默认关闭；采集、HUD、重叠拼接混合 | `capture/extensions/scroll_capture` 管会话/UI与拼接计划；重叠算法优先共享 MoonBit | 获取帧留 capture；实测若需底层像素计算，才提到 platform/shared/image；继续默认关闭，独立页面稳定性验收 |
 | `plugins/feature/recording` | macOS 采集/选区；Windows 已移除旧编辑器与剪辑导出，采集/编码仍待归位；Linux 宿主已接 platform/linux/recording | `recording/core` 与倒计时 UI 已共享；完整会话编排与音源仍需提取，Win/Linux 完成素材经 App 回调交接 | `recording`、`audio` 管采集和时间戳，媒体执行归 `media`；Windows 区域选区与 Linux 基础视频流已接，音频/暂停待补 |
-| `plugins/feature/video_editor` | macOS 旧文件路径仍在，但已消费共享根会话；Windows/Linux 已接 platform 下薄窗口及共用原生宿主 | `video_editor/core`、ui、根会话已实现，三端消费同一文档和会话规则 | `media` 管 probe/preview/seek/export/waveform；`graphics/windowing` 提供嵌入表面；Ubuntu 22 通过，Windows 窗口及 Ubuntu 24 同包检查待收口，不造平台专用简化编辑器 |
+| `plugins/feature/video_editor` | macOS 旧文件路径仍在，但已消费共享根会话；Windows/Linux 已接 platform 下薄窗口及共用原生宿主 | `video_editor/core`、ui、根会话已实现，三端消费同一文档和会话规则 | `media` 管 probe/preview/seek/export/waveform；`graphics/windowing` 提供嵌入表面；Windows/Ubuntu 22 自动验证通过，Ubuntu 24 同包检查通过，不造平台专用简化编辑器 |
 
 截图扩展清单必须覆盖矩形、箭头、文字、实心/马赛克覆盖、OCR、翻译、贴图、滚动截图及用户自定义贡献。选择、取消、确认是宿主会话控制；撤销重做消费文档历史。每个按钮可配置，不意味着每个按钮都要独立 Wasm 包或三份系统代码。
 
@@ -394,6 +394,16 @@ Ubuntu 24 两次均在 EC2 Ubuntu 镜像下载 `fonts-noto-cjk` 时停滞，第�
 [b6bf591 的目标运行](https://github.com/CoderSerio/moojicut/actions/runs/44212403589) 中 Ubuntu 22 构建、测试与打包通过；同一包在无开发 SDK 的 Ubuntu 24 上 **8/8** 全部通过，包括 App 自检/操作、五项媒体/共享宿主及正式编辑窗口。缺失 `libportal1` 已关闭；真实 Wayland、DPI、权限和硬件体验仍不由这组 Xvfb 检查代替。
 
 Windows 本轮仍仅卡在保存对话框退出，新增 trace 证实 fixture 正确识别窗口并发出一次正常应用关闭请求，持续计时器也正常；不能继续归因于 fixture 没有触发。原生取消继续保持挂起，新增从当前 `IFileSaveDialog` 的 `IOleWindow` 获取准确 HWND、校验当前线程与编辑器 owner 后异步请求 `WM_CLOSE`，避免只依靠未完成的 COM Close；不枚举或关闭无关窗口，不调用 `DestroyWindow`，仍等 `Show` 返回才回执和释放。保留首次挂起取消的 HRESULT 诊断，实际结果继续待 Windows CI。
+
+### E1 自动验证收口（3042b1f，尚未发布）
+
+[Native desktop previews #44214251239](https://github.com/CoderSerio/moojicut/actions/runs/44214251239) **整体成功**：Windows 2022/MSVC、Ubuntu 22 构建、实际媒体/编辑窗口、打包及生成接口一致性全部通过；同一 Linux 包在无开发 SDK 的 Ubuntu 24 上 **8/8** 通过，提交与包哈希均核对。
+
+- Windows 最后的系统保存对话框关闭用例已通过，随后确认全部编辑器资源释放、原片哈希不变；解包后的 EXE 自检通过。诊断记录 COM `Close` 返回 `S_OK` 时窗口仍可见，向该 COM 对象拥有的窗口发送异步关闭请求后，正常 `Show` 返回与宿主排空完成；未删断言或延长超时。
+- 两端窗口都通过切分、片段移开留空隙、联动音轨、撤销、时间轴缩放、保存失败保护/重试和重新打开。媒体回归验证实际变速、音画时间映射、空隙黑屏/静音、MP4 尾段音频、波形、取消和原片保护，不仅是构建通过。
+- macOS 同一根会话的本地回归结果沿用本节前记录；最新 Windows 专属取消修正没有改变 MoonBit、macOS 或共享媒体逻辑。当前 MoonBit/原生边界检查通过，原生历史 include 例外仍为 **12 对**，未增加。
+
+本次仅关闭 E1 这一批的自动构建与运行验证；完整截图属性/选区与 IME、用户插件 v2 及 Win/Linux worker、独立 CLI/IPC、Win/Linux OCR/翻译、录制音源/暂停及旧原生职责迁移仍未完成。真实 Wayland、设备、权限和用户操作效果由后续实机验收。未发布、安装或重置权限，公开发行包仍为 alpha.20。
 
 ### 下一切片：B2a 共享文字标注与属性输入（尚未实现）
 
