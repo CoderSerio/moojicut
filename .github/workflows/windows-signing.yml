@@ -1,0 +1,113 @@
+name: Signed Windows package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build and sign
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 50
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PREVIEW_VERSION: ${{ inputs.version }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+      SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+      SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+    steps:
+      - name: Check publisher configuration
+        shell: pwsh
+        run: |
+          $names = @('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID', 'SIGNING_ENDPOINT', 'SIGNING_ACCOUNT', 'SIGNING_PROFILE')
+          $missing = $names | Where-Object { -not [Environment]::GetEnvironmentVariable($_) }
+          if ($missing) { throw "Configure Windows publisher identity first. Missing: $($missing -join ', ')" }
+          if ($env:PREVIEW_VERSION -cnotmatch '^\d+\.\d+\.\d+(-(alpha|beta|rc)\.\d+)?$') { throw 'Invalid release version' }
+          if ($env:SIGNING_ENDPOINT -notmatch '^https://[a-z0-9-]+\.codesigning\.azure\.net/?$') {
+            throw 'Expected an HTTPS Azure Artifact Signing regional endpoint'
+          }
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Set up MSVC x64 and SignTool
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'MSVC x64 tools not found' }
+          & "$vs\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'VCToolsInstallDir', 'WindowsSdkDir')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) { "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append }
+          }
+          $tool = Join-Path $env:WindowsSdkDir "bin\$($env:WindowsSDKVersion.TrimEnd([char]92))\x64\signtool.exe"
+          if (!(Test-Path -LiteralPath $tool)) { throw 'Windows SDK SignTool not found' }
+          "MOOJICUT_SIGNTOOL=$tool" >> $env:GITHUB_ENV
+      - name: Install pinned MoonBit compiler and core
+        run: python scripts/install_moon.py "${{ runner.temp }}/moonbit"
+      - name: Install and validate private Windows media SDK
+        shell: pwsh
+        run: |
+          python scripts/install_gstreamer.py "$env:RUNNER_TEMP/gstreamer-sdk" --cache "$env:RUNNER_TEMP/gstreamer-archives"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "MOOJICUT_GSTREAMER_SDK=$env:RUNNER_TEMP/gstreamer-sdk" >> $env:GITHUB_ENV
+      - name: Prepare Artifact Signing client
+        shell: pwsh
+        run: |
+          $version = '1.0.151'
+          $package = Join-Path $env:RUNNER_TEMP 'artifact-signing-client.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'artifact-signing-client'
+          Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/$version/microsoft.artifactsigning.client.$version.nupkg" -OutFile $package
+          if ((Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash -ne '35375a4bc4e1102da729fc3d8d9925f774c3baae6b8b7ff6398d948ca9ab0d8a') {
+            throw 'Artifact Signing client SHA-256 mismatch'
+          }
+          Expand-Archive -LiteralPath $package -DestinationPath $directory
+          $dlib = @(Get-ChildItem $directory -Recurse -File -Filter 'Azure.CodeSigning.Dlib.dll' | Where-Object { $_.Directory.Name -eq 'x64' })
+          if ($dlib.Count -ne 1) { throw 'Expected one x64 Artifact Signing client' }
+          $metadata = Join-Path $env:RUNNER_TEMP 'artifact-signing-profile.json'
+          @{
+            Endpoint = $env:SIGNING_ENDPOINT
+            CodeSigningAccountName = $env:SIGNING_ACCOUNT
+            CertificateProfileName = $env:SIGNING_PROFILE
+            ExcludeCredentials = @(
+              'EnvironmentCredential', 'WorkloadIdentityCredential', 'ManagedIdentityCredential',
+              'SharedTokenCacheCredential', 'VisualStudioCredential', 'VisualStudioCodeCredential',
+              'AzurePowerShellCredential', 'AzureDeveloperCliCredential', 'InteractiveBrowserCredential'
+            )
+          } | ConvertTo-Json -Compress | Set-Content -LiteralPath $metadata -Encoding utf8
+          "MOOJICUT_WINDOWS_SIGN_DLIB=$($dlib[0].FullName)" >> $env:GITHUB_ENV
+          "MOOJICUT_WINDOWS_SIGN_METADATA=$metadata" >> $env:GITHUB_ENV
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign, test and package Windows
+        run: python scripts/desktop.py release --release-version "$env:PREVIEW_VERSION" --sign-windows
+      - name: Upload verified Windows candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-windows-x64
+          path: dist/releases/*
+          if-no-files-found: error
+          retention-days: 14

@@ -199,6 +199,27 @@ macOS 首次构建会下载并校验固定版本的 Sparkle 更新框架和 Exti
 
 根目录是 MoonBit 项目，编辑核心位于 `src/`，默认编译为 native。可以单独运行 `moon check`、`moon test` 和 `moon build`，检查、测试与构建核心。各平台的原生界面共用这一核心。业务逻辑按领域放在 `src/internal/`，根包保留稳定的原生接口；目录与依赖说明见[核心代码说明](../src/README.md)。
 
+### Windows 签名发布
+
+公开分发使用 Windows 信任的代码签名身份，打包时传入 `--sign-windows`。在 Windows x64 Native Tools 终端配置其中一种签名方式。[微软智能应用控制签名指南](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/code-signing-for-smart-app-control)
+
+| 方式 | 所需配置 |
+| --- | --- |
+| 已有代码签名证书 | 在 Windows 当前用户证书存储 `My` 安装证书，并让签名工具访问对应的令牌或硬件密钥。将证书指纹设为 `MOOJICUT_WINDOWS_SIGN_CERT_SHA1`。 |
+| Microsoft Artifact Signing | 使用已通过身份验证的 Public Trust 证书配置。将 x64 签名客户端 DLL 和配置 JSON 的路径分别设为 `MOOJICUT_WINDOWS_SIGN_DLIB` 和 `MOOJICUT_WINDOWS_SIGN_METADATA`，并以有签名权限的身份登录。 |
+
+找不到 Windows SDK 的 `signtool.exe` 时，将其完整路径设为 `MOOJICUT_SIGNTOOL`。运行时将下面的版本号替换为本次发布的版本号。
+
+```powershell
+python scripts/desktop.py release --release-version 0.1.0-alpha.24 --sign-windows
+```
+
+脚本先核对依赖原始内容，再为暂存目录中未签名的 Windows 二进制文件签名并加上 RFC 3161 时间戳。有效的供应商签名及其文件保留原样。打包前运行原生回归，解压 ZIP 后再次核对文件、签名和 SHA-256。候选包的 `build.json` 和外部 `.build.json` 记录 `signing: authenticode` 以及逐文件验签信息。缺少签名配置、文件或有效签名时，签名构建会报错。
+
+Azure 签名也可使用 [Signed Windows package](../.github/workflows/windows-signing.yml) 手动构建。需要先完成 [Public Trust 身份验证](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart)，然后在 GitHub 的 `windows-signing` 环境配置变量 `AZURE_CLIENT_ID`、`AZURE_TENANT_ID`、`AZURE_SUBSCRIPTION_ID`、`ARTIFACT_SIGNING_ENDPOINT`、`ARTIFACT_SIGNING_ACCOUNT` 和 `ARTIFACT_SIGNING_PROFILE`。用该环境作为 OIDC 联合身份的 subject，授权 `Artifact Signing Certificate Profile Signer`，并将环境的部署分支限制为 `main`。工作流产出候选包及校验信息。[微软 GitHub OIDC 配置](https://github.com/Azure/artifact-signing-action/blob/main/docs/OIDC.md)
+
+公开前在启用智能应用控制的 Windows 11 上，从解压后的 ZIP 实际打开应用，验证截图、录屏、插件和卸载。发布与镜像都使用这份通过验签的 ZIP 及校验文件。重新签名后使用新版本号。日常预览 CI 可以生成供开发测试的无签名构建。[微软实机签名测试](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/test-your-app-with-smart-app-control)
+
 ### 打包示例插件
 
 准备好 MoonBit 工具链和 Python 后，在仓库根目录运行：

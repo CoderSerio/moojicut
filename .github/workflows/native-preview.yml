@@ -20,6 +20,7 @@ on:
       - plugins/**
       - components/**
       - scripts/desktop.py
+      - scripts/windows_signing.py
       - scripts/native_modules.py
       - scripts/check_native_boundaries.py
       - scripts/check_module_boundaries.py

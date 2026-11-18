@@ -17,6 +17,7 @@ import tempfile
 import zipfile
 from install_extism import VERSION as EXTISM_VERSION, digest, install as install_extism, notice_names
 from native_modules import native_sources, object_path
+from windows_signing import WindowsSigner
 
 ROOT = Path(__file__).resolve().parent.parent
 UNINSTALL_MANIFEST = "uninstall-manifest.txt"
@@ -40,13 +41,17 @@ def portable_inventory(files, directories):
 
 
 class DesktopBuild:
-    def __init__(self, version):
+    def __init__(self, version, *, sign_windows=False):
         if sys.platform not in ("win32", "linux"):
             raise RuntimeError("This host supports Windows or Linux; macOS uses the AppKit builder.")
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?", version):
             raise RuntimeError("Invalid release version.")
         self.version = version
         self.system = "windows" if sys.platform == "win32" else "linux"
+        if sign_windows and self.system != "windows":
+            raise ValueError("Windows code signing requires a Windows build host.")
+        self.windows_signer = WindowsSigner.from_env(os.environ) if sign_windows else None
+        self.windows_signatures = {}
         if platform.machine().lower() not in ("amd64", "x86_64"):
             raise RuntimeError("These preview packages currently target x86-64 only.")
         self.exe_name = "MoojiCut.exe" if self.system == "windows" else "moojicut"
@@ -181,6 +186,7 @@ class DesktopBuild:
         self.plugin_payload = {path: digest(bundle / path) for path in sorted(relative_files)}
 
     def build(self):
+        self.windows_signatures = {}
         self.run(sys.executable, ROOT / "scripts/check_module_boundaries.py")
         self.run(sys.executable, ROOT / "scripts/generate_icons.py", "--check")
         sources = native_sources(self.system)
@@ -274,7 +280,22 @@ class DesktopBuild:
             (staging / UNINSTALL_MANIFEST).write_bytes(portable_inventory(
                 (path.relative_to(staging).as_posix() for path in layout if path.is_file()),
                 (path.relative_to(staging).as_posix() for path in layout if path.is_dir())))
-            self.verify_bundle(staging)
+            # Verify that the staged inputs match the pinned vendor payloads
+            # before Authenticode intentionally changes their bytes.
+            self.verify_bundle(staging, check_helper=self.windows_signer is None)
+            if self.windows_signer:
+                self.windows_signatures = self.windows_signer.sign_bundle(staging)
+                application_binaries = (self.exe_name, self.plugin_worker_name, WINDOWS_UNINSTALLER)
+                if any(self.windows_signatures.get(name, {}).get("source") != "publisher"
+                       for name in application_binaries):
+                    raise RuntimeError("Missing publisher signatures for the Windows application, worker, or uninstaller.")
+                self.plugin_payload = {name: digest(staging / name) for name in self.plugin_payload}
+                self.metadata["signing"] = "authenticode"
+                self.metadata["windowsSignatures"] = self.windows_signatures
+                self.metadata["pluginWorker"]["files"] = self.plugin_payload
+                (staging / "build.json").write_text(json.dumps(self.metadata, indent=2) + "\n", encoding="utf-8")
+                (staging / "README.txt").write_text(self.instructions(), encoding="utf-8")
+                self.verify_bundle(staging)
             self.bundle.parent.mkdir(parents=True, exist_ok=True)
             previous = Path(name) / "previous"
             if self.bundle.exists():
@@ -302,7 +323,7 @@ class DesktopBuild:
                 "or the Wayland GlobalShortcuts portal when provided by the compositor. Shared MoonBit v2 editor "
                 "with embedded preview, non-destructive timeline/gaps/audio/speed/crop, waveform, saved drafts and MP4 export.")
 
-    def verify_bundle(self, directory):
+    def verify_bundle(self, directory, *, check_helper=True):
         expected = {self.exe_name, "moojicut.png", "build.json", "README.txt", "LICENSE.txt", "Lucide-LICENSE.txt",
                     UNINSTALL_MANIFEST}
         if self.system == "linux":
@@ -317,7 +338,9 @@ class DesktopBuild:
             else:
                 expected.add(relative)
                 copied = directory / relative
-                if not copied.is_file() or hashlib.sha256(copied.read_bytes()).digest() != hashlib.sha256(item.read_bytes()).digest():
+                signature = self.windows_signatures.get(relative)
+                expected_digest = signature["sha256"] if signature else digest(item)
+                if not copied.is_file() or digest(copied) != expected_digest:
                     raise RuntimeError("Packaged media runtime differs from verified payload: " + relative)
         for relative, checksum in self.plugin_payload.items():
             expected.add(relative)
@@ -336,7 +359,9 @@ class DesktopBuild:
             raise RuntimeError("Package contains an unexpected directory, symlink or special file.")
         if (directory / UNINSTALL_MANIFEST).read_bytes() != portable_inventory(expected, directories):
             raise RuntimeError("Packaged uninstall inventory differs from the bundle contents.")
-        if self.system == "windows":
+        if self.windows_signatures:
+            self.windows_signer.verify_bundle(directory, self.windows_signatures)
+        if self.system == "windows" and check_helper:
             self.run(directory / WINDOWS_UNINSTALLER, "--check-bundle", directory)
 
     def instructions(self):
@@ -358,6 +383,9 @@ class DesktopBuild:
                   "在设置 → 更新可卸载完整的便携应用目录，保留设置、插件和录屏文件。\n"
                   "关闭设置会保留托盘；从托盘菜单选择退出以结束应用。\n\n")
         if self.system == "windows":
+            signing_notice = ("包内 Windows 可执行文件与 DLL 已通过 Authenticode 验签。\n"
+                              if self.metadata["signing"] == "authenticode" else
+                              "程序未进行代码签名，Windows 可能阻止运行。\n")
             return shared + ("适用 Windows 10/11 x64（Intel/AMD）。解压全部文件，双击 MoojiCut.exe。\n"
                              "在任务栏隐藏图标区找到 Mooji Cut，双击或右键打开设置。\n"
                              "从托盘菜单或可配置的全局快捷键启动截图、开始录屏和停止录屏。\n"
@@ -368,8 +396,8 @@ class DesktopBuild:
                              "已有音轨支持波形、分离与独立移动；本版新录制仍不含声音。\n"
                              "草稿保存在 %LOCALAPPDATA%\\MoojiCut\\Drafts，可从托盘继续编辑上次录屏。\n"
                              "Windows N 版录屏需要系统媒体功能包。\n\n"
-                             "免安装，无需 Node、Python 或 MoonBit 工具链。程序未进行代码签名，\n"
-                             "Windows 可能显示未知发布者提示。仅从项目 Release 下载并核对 SHA256。\n"
+                             "免安装，无需 Node、Python 或 MoonBit 工具链。\n"
+                             + signing_notice + "仅从项目 Release 下载并核对 SHA256。\n"
                              "命令行 MoojiCut.exe --preferences 可直接打开设置。\n")
         return shared + ("本包针对 Ubuntu 22.04 x86_64 构建，随包提供固定版本的媒体运行库。\n"
                          "请完整解压，保留 runtime 文件夹。其它发行版的实际运行按发布说明验收。\n"
@@ -626,6 +654,8 @@ class DesktopBuild:
                             checks=["moon-check", "moon-tests", "gst-media", "mp4-mux", "media-worker", "media-waveform", "video-editor-host",
                                     "native-core", "native-ui-smoke", "shared-canvas", "video-editor", "plugin-worker", "plugin-store",
                                     "unpacked-native-core", "unpacked-plugin-worker"])
+            if self.windows_signatures:
+                metadata["checks"].extend(("authenticode-bundle", "authenticode-unpacked"))
             shutil.copy2(archive, releases / archive.name)
             (releases / (archive.name + ".sha256")).write_text(checksum + "  " + archive.name + "\n", encoding="utf-8")
             (releases / (stem + ".build.json")).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -643,14 +673,17 @@ class DesktopBuild:
 
 def main():
     if sys.platform == "darwin":
+        if "--sign-windows" in sys.argv:
+            raise ValueError("Windows code signing requires a Windows build host.")
         from native import main as native_main
         native_main()
         return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("build", "dev", "test", "smoke", "release"))
     parser.add_argument("--release-version", default="0.1.0-alpha.16")
+    parser.add_argument("--sign-windows", action="store_true", help="Require Windows Authenticode signing and verification.")
     args = parser.parse_args()
-    native = DesktopBuild(args.release_version)
+    native = DesktopBuild(args.release_version, sign_windows=args.sign_windows)
     if args.command == "dev":
         native.build()
         subprocess.Popen([str(native.executable), "--preferences"], cwd=native.bundle, env=native.env)
