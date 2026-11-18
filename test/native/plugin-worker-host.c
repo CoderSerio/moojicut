@@ -186,11 +186,8 @@ static int child_mode(const char *name) {
     }
     if (strstr(name,"exit")) return 17;
     uint8_t buffer[4096];
-    if (strstr(name,"stdout") || strstr(name,"stderr")) {
-        memset(buffer,'x',1024);
-        return io_write(strstr(name,"stderr") ? 2 : 1,buffer,1024) ? 0 : 73;
-    }
-    if (!strstr(name,"drain")) return 74;
+    const int burst = strstr(name,"stderr") ? 2 : strstr(name,"stdout") ? 1 : 0;
+    if (!burst && !strstr(name,"drain")) return 74;
     size_t total=0;
     for (;;) {
         long count=io_read(buffer,sizeof(buffer));
@@ -198,6 +195,12 @@ static int child_mode(const char *name) {
         if (count<0 || total>MC_WASM_MAX_MODULE_BYTES+MC_WASM_MAX_INPUT_BYTES+MC_PLUGIN_WIRE_HEADER_BYTES) return 75;
         if (!count) break;
         total+=(size_t)count;
+    }
+    if (burst) {
+        /* Isolate the output cap from the separate broken-stdin case: the
+         * parent must finish writing before the child can emit and exit. */
+        memset(buffer,'x',1024);
+        return io_write(burst,buffer,1024) ? 0 : 73;
     }
     length=snprintf(marker,sizeof(marker),"INPUT=%zu\n",total);
     if (length<0 || (size_t)length>=sizeof(marker) || !io_write(2,(const uint8_t *)marker,(size_t)length)) return 76;
@@ -351,6 +354,9 @@ static int run_fixture(int argc, char **argv) {
         request=request_for(children[i],wasm,wasm_size,json);
         request.wire.max_output_bytes=64; request.max_stderr_bytes=64;
         process=mc_plugin_process_start(&request); status=await_process(process,&result,-1);
+        if (status!=MC_PLUGIN_PROCESS_LIMIT_EXCEEDED)
+            fprintf(stderr,"child burst case %zu: status=%d exit=%" PRIu32 " os=%" PRIu32 "\n",
+                i,(int)status,result.exit_code,result.system_error);
         check(status==MC_PLUGIN_PROCESS_LIMIT_EXCEEDED && !result.output && !result.output_size,"bounded benign stdout/stderr bursts enforce independent parent output caps");
         assert_reaped(&result,0); check(mc_plugin_process_close(process)==1,"dispose capped-output child");
     }
