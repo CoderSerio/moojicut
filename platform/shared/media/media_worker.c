@@ -397,9 +397,9 @@ static gboolean service_timer(gpointer unused) {
     (void)unused; return G_SOURCE_CONTINUE;
 }
 
-// Process-lifetime executor: declare this explicitly for GCC and MSVC rather
-// than adding an unreachable return to the GThread entry point.
-static G_NORETURN gpointer service_main(gpointer context) {
+// The process-lifetime loop is void for MSVC's noreturn contract. Keep the
+// separate GThread entry point's required gpointer signature below.
+static G_NORETURN void service_run(gpointer context) {
     Service *executor = context;
     g_main_context_push_thread_default(executor->context);
     char initialization_error[1024] = {0};
@@ -446,6 +446,10 @@ static G_NORETURN gpointer service_main(gpointer context) {
         // registration wakes the context or GES finishes its own cache cleanup.
         if (!pending) g_main_context_iteration(executor->context, TRUE);
     }
+}
+
+static gpointer service_main(gpointer context) {
+    service_run(context);
 }
 
 static bool ensure_service(char *error, size_t capacity) {

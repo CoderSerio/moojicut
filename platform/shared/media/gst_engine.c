@@ -4,6 +4,7 @@
 #include <gst/pbutils/pbutils.h>
 #include <gst/video/video.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 struct MCGstEngine {
@@ -16,7 +17,7 @@ struct MCGstEngine {
 };
 
 static bool fail(char *out, size_t capacity, const char *message, GError *error) {
-    if (out && capacity) g_snprintf(out, capacity, "%s%s%s", message,
+    if (out && capacity) snprintf(out, capacity, "%s%s%s", message,
         error ? ": " : "", error ? error->message : "");
     g_clear_error(&error);
     return false;
@@ -186,13 +187,17 @@ static void asset_ready(GObject *source, GAsyncResult *result, gpointer context)
     request->completed = TRUE;
 }
 
+static void release_fallback_context(gpointer context) {
+    g_main_context_unref(context);
+}
+
 static GESUriClipAsset *request_asset(const char *uri, GError **error) {
     /* GES request_sync pumps the process-default context, while its GTask is
      * delivered to the caller's thread-default context. That deadlocks a media
      * worker. Use the async API (available in GES 1.20) and dispatch only this
      * worker's context. Standalone callers also get a private, thread-stable
      * context: GES caches each thread's discoverer and its original context. */
-    static GPrivate fallback_context = G_PRIVATE_INIT((GDestroyNotify)g_main_context_unref);
+    static GPrivate fallback_context = G_PRIVATE_INIT(release_fallback_context);
     GMainContext *context = g_main_context_get_thread_default();
     gboolean pushed = !context || context == g_main_context_default();
     if (pushed) {

@@ -55,6 +55,10 @@ jobs:
             runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
+    outputs:
+      # Only Linux sets this after both verified artifacts upload. An empty
+      # Windows matrix output does not overwrite another job's nonempty value.
+      linux_package_commit: ${{ steps.linux_compatibility_ready.outputs.commit }}
     env:
       PREVIEW_VERSION: ${{ inputs.version || '0.1.0-alpha.16' }}
       MOOJICUT_SMOKE_SCREENSHOT: ${{ github.workspace }}/.artifacts/${{ matrix.platform }}/smoke.${{ matrix.platform == 'windows' && 'bmp' || 'png' }}
@@ -183,6 +187,10 @@ jobs:
           path: .artifacts/linux/compatibility/fixture-kit.tar.gz
           if-no-files-found: error
           retention-days: 7
+      - name: Mark verified Linux artifacts ready
+        if: runner.os == 'Linux'
+        id: linux_compatibility_ready
+        run: echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Upload media diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -214,6 +222,9 @@ jobs:
   linux-package-compatibility:
     name: Ubuntu 24 same-package checks
     needs: build
+    # A Windows failure must not suppress independent Linux package evidence.
+    # Missing/failed Linux build or upload leaves the output empty and skips us.
+    if: ${{ always() && !cancelled() && needs.build.outputs.linux_package_commit == github.sha }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
