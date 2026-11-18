@@ -25,6 +25,7 @@ static int failures;
 static HWND closing_window;
 static BOOL saw_dialog, close_was_async;
 static ULONGLONG chooser_started;
+static unsigned long long chooser_timer_calls, chooser_enumerations, chooser_fallback_calls;
 static BOOL expected_storage_error;
 static unsigned error_dialogs;
 static BOOL quit_pending;
@@ -88,6 +89,8 @@ static void diagnose(void) {
         number(state, "revision"), flag(state, "mediaReady"), flag(state, "dirty"),
         state && field(state, "error") ? field(state, "error") : "none");
     mc_win_video_editor_text_free(state);
+    if (closing_window) printf("INFO chooser watch window=%p timerCalls=%llu enumerations=%llu found=%d asyncClose=%d fallbackCalls=%llu\n",
+        (void *)closing_window, chooser_timer_calls, chooser_enumerations, saw_dialog, close_was_async, chooser_fallback_calls);
     EnumThreadWindows(GetCurrentThreadId(), diagnostic_window, 0);
     fflush(stdout); diagnostic_last = GetTickCount64();
 }
@@ -211,15 +214,25 @@ static BOOL CALLBACK find_dialog(HWND window, LPARAM data) {
     HWND owner = GetWindow(window, GW_OWNER);
     while (owner && owner != closing_window) owner = GetWindow(owner, GW_OWNER);
     if (!wcscmp(name, L"#32770") && IsWindowVisible(window) && owner == closing_window) {
-        saw_dialog = TRUE; close_was_async = !mc_win_video_editor_request_close_all(TRUE); return FALSE;
+        printf("INFO chooser found hwnd=%p editor=%p; requesting normal app closure\n", (void *)window, (void *)owner);
+        fflush(stdout);
+        saw_dialog = TRUE; close_was_async = !mc_win_video_editor_request_close_all(TRUE);
+        printf("INFO chooser close request returned async=%d dialogVisible=%d\n", close_was_async, IsWindowVisible(window));
+        fflush(stdout); return FALSE;
     }
     return TRUE;
 }
 static void CALLBACK cancel_chooser(HWND window, UINT message, UINT_PTR id, DWORD time) {
     (void)window; (void)message; (void)id; (void)time;
-    if (closing_window && !saw_dialog) EnumThreadWindows(GetCurrentThreadId(), find_dialog, 0);
-    if (closing_window && !saw_dialog && GetTickCount64() - chooser_started > 10000)
+    chooser_timer_calls++;
+    if (chooser_timer_calls == 1) { printf("INFO chooser cancellation timer dispatched\n"); fflush(stdout); }
+    if (closing_window && !saw_dialog) {
+        chooser_enumerations++; EnumThreadWindows(GetCurrentThreadId(), find_dialog, 0);
+    }
+    if (closing_window && !saw_dialog && GetTickCount64() - chooser_started > 10000) {
+        if (chooser_fallback_calls++ == 0) { printf("INFO no owned chooser found by deadline; requesting app closure\n"); fflush(stdout); }
         mc_win_video_editor_request_close_all(TRUE);
+    }
 }
 static BOOL wait_closed(void) {
     ULONGLONG until = GetTickCount64() + 45000;
@@ -378,6 +391,8 @@ int wmain(int argc, wchar_t **argv) {
         stage("close during system export chooser", editor);
         closing_window = editor; chooser_started = GetTickCount64();
         UINT_PTR cancellation = SetTimer(NULL, 0, 10, cancel_chooser);
+        printf("INFO chooser timer=%llu errorTimer=%llu editor=%p\n",
+            (unsigned long long)cancellation, (unsigned long long)errors, (void *)editor); fflush(stdout);
         check(cancellation && click(editor, L"export"), "shared export opens the actual system chooser");
         check(wait_closed() && saw_dialog && close_was_async, "close during modal chooser cancels ticket then drains without reentrant free");
         if (cancellation) KillTimer(NULL, cancellation); closing_window = NULL;

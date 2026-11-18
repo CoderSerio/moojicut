@@ -30,6 +30,7 @@ struct Editor {
     double width, height;
     int phase, modal_depth;
     BOOL close_requested, close_submitted, cancel_export, chooser_posted, error_posted;
+    BOOL cancelling_modal;
     BOOL theme_delivered;
     uint64_t presentation_serial, video_generation, video_seek;
     int64_t video_pts;
@@ -120,11 +121,20 @@ static void video(void *context, HWND window, HDC target, const RECT *bounds) {
         frame->image.pixels, &info, DIB_RGB_COLORS, SRCCOPY);
     RestoreDC(target, saved);
 }
+static void cancel_modal(Editor *e) {
+    /* COM can pump messages while creating/closing its native window. Keep
+     * cancellation pending until Show actually returns, and avoid a nested
+     * timer issuing Close recursively from inside this Close call. */
+    if (e->cancelling_modal) return;
+    e->cancelling_modal = TRUE;
+    if (e->chooser) IFileSaveDialog_Close(e->chooser, HRESULT_FROM_WIN32(ERROR_CANCELLED));
+    if (e->error_dialog) PostMessageW(e->error_dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
+    e->cancelling_modal = FALSE;
+}
 static void request_close(Editor *e, BOOL cancel_export) {
     e->close_requested = TRUE; e->cancel_export = cancel_export;
     if (e->canvas) mc_win_canvas_cancel(e->canvas);
-    if (e->chooser) IFileSaveDialog_Close(e->chooser, HRESULT_FROM_WIN32(ERROR_CANCELLED));
-    if (e->error_dialog) SendMessageW(e->error_dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
+    cancel_modal(e);
 }
 static BOOL retry(Editor *e) {
     if (!e->host || e->close_submitted || e->modal_depth) return FALSE;
@@ -187,7 +197,8 @@ static void show_chooser(Editor *e) {
             (unsigned)time.wYear, (unsigned)time.wMonth, (unsigned)time.wDay,
             (unsigned)time.wHour, (unsigned)time.wMinute, (unsigned)time.wSecond);
         if (SUCCEEDED(result)) result = IFileSaveDialog_SetFileName(dialog, name);
-        if (SUCCEEDED(result)) result = IFileSaveDialog_Show(dialog, e->window);
+        if (SUCCEEDED(result)) result = e->close_requested ? HRESULT_FROM_WIN32(ERROR_CANCELLED) :
+            IFileSaveDialog_Show(dialog, e->window);
         if (SUCCEEDED(result) && !e->close_requested) {
             IShellItem *item = NULL;
             result = IFileSaveDialog_GetResult(dialog, &item);
@@ -210,6 +221,7 @@ static void show_chooser(Editor *e) {
 }
 static void update(Editor *e) {
     if (!e->host) return;
+    if (e->close_requested) cancel_modal(e);
     if (e->close_requested && !e->close_submitted && !e->modal_depth) {
         int32_t ticket = mc_video_editor_host_chooser(e->host);
         if (ticket) mc_video_editor_host_choose(e->host, ticket, NULL);

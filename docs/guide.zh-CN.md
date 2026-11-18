@@ -22,7 +22,7 @@ Linux 需要 GTK 3、Ayatana AppIndicator、libcurl、GStreamer 和 libportal。
 
 ```sh
 sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 \
-  libportal-gtk3-1 libgstreamer-plugins-base1.0-0 \
+  libportal1 libportal-gtk3-1 libgstreamer-plugins-base1.0-0 \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire
 ```
 
@@ -184,7 +184,7 @@ Windows 与 Linux 可在更新页下载对应平台的安装包，校验大小�
 
 - macOS：Xcode Command Line Tools 及支持 macOS 26 的 SDK。
 - Windows：MSVC C++ Build Tools 与 Windows SDK，在 x64 Native Tools 开发终端中运行。
-- Linux：C 编译器、`pkg-config`、GTK 3、Ayatana AppIndicator、libcurl、GStreamer、libportal GTK 3、GIO Unix 和 X11 开发包；运行录屏还需上文的 GStreamer 插件及对应桌面服务。Ubuntu 开发包包括 `libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libportal-dev libportal-gtk3-dev libx11-dev`。
+- Linux：C 编译器、`pkg-config`、GTK 3、Ayatana AppIndicator、libcurl、GStreamer、libportal GTK 3、GIO Unix 和 X11 开发包；运行录屏还需上文的 GStreamer 插件及对应桌面服务。Ubuntu 开发包包括 `libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libportal1 libportal-dev libportal-gtk3-dev libx11-dev`。
 
 在仓库根目录运行：
 

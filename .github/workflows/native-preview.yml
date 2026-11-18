@@ -83,7 +83,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config gdb bison flex nasm patchelf libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev xvfb dbus-x11 fonts-noto-cjk libxtst-dev libportal-dev libportal-gtk3-dev libvpx-dev libsoundtouch-dev libopenh264-dev libpulse-dev libx11-dev libxext-dev libxfixes-dev libxdamage-dev libpipewire-0.3-dev libspa-0.2-dev
+          sudo apt-get install -y build-essential pkg-config gdb bison flex nasm patchelf libgtk-3-dev libayatana-appindicator3-dev libcurl4-openssl-dev xvfb dbus-x11 fonts-noto-cjk libxtst-dev libportal1 libportal-dev libportal-gtk3-dev libvpx-dev libsoundtouch-dev libopenh264-dev libpulse-dev libx11-dev libxext-dev libxfixes-dev libxdamage-dev libpipewire-0.3-dev libspa-0.2-dev
       - name: Set up pinned Linux media build tools
         if: runner.os == 'Linux'
         run: |
@@ -255,7 +255,7 @@ jobs:
           PY
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=45 -o Acquire::https::Timeout=45)
           sudo apt-get "${apt_options[@]}" update
-          sudo apt-get "${apt_options[@]}" install -y libgtk-3-0t64 libayatana-appindicator3-1 libcurl4t64 libportal-gtk3-1 libpulse0 libpipewire-0.3-0t64 xvfb dbus-x11 fonts-noto-cjk libxtst6
+          sudo apt-get "${apt_options[@]}" install -y libgtk-3-0t64 libayatana-appindicator3-1 libcurl4t64 libportal1 libportal-gtk3-1 libpulse0 libpipewire-0.3-0t64 xvfb dbus-x11 fonts-noto-cjk libxtst6
       - uses: actions/download-artifact@v4
         with:
           name: preview-linux-x64

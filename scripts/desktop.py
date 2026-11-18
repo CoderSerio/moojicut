@@ -276,7 +276,7 @@ class DesktopBuild:
         return shared + ("本包针对 Ubuntu 22.04 x86_64 构建，随包提供固定版本的媒体运行库。\n"
                          "请完整解压，保留 runtime 文件夹。其它发行版的实际运行按发布说明验收。\n"
                          "需要 GTK 3、Ayatana AppIndicator、libcurl、libportal 和系统音频服务：\n"
-                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 libportal-gtk3-1 libpulse0 libpipewire-0.3-0\n"
+                         "  sudo apt install libgtk-3-0 libayatana-appindicator3-1 libcurl4 libportal1 libportal-gtk3-1 libpulse0 libpipewire-0.3-0\n"
                          "解压后运行 ./launch.sh 打开设置；./moojicut 仅启动托盘。\n"
                          "从托盘菜单或设置中启动截图，也可运行 ./moojicut --capture。\n"
                          "X11 支持桌面框选；Wayland 使用系统截图门户，需要可用的\n"
