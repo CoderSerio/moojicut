@@ -64,7 +64,8 @@
           "native/macos/plugins/MCPluginResultController.m"
         ],
         "requires": [
-          "shared.plugin_host.posix"
+          "shared.plugin_host.posix",
+          "shared.plugin_host.package"
         ],
         "files": [
           "native/macos/plugins/MCPluginPackageStore.h",
@@ -432,11 +433,15 @@
       },
       "platform.plugin_host": {
         "sources": [
-          "platform/windows/plugin_host/worker_process.c"
+          "platform/windows/plugin_host/worker_process.c",
+          "platform/windows/plugin_host/package_store.c"
         ],
         "files": [],
         "requires": [
           "shared.plugin_host.process"
+        ],
+        "includes": [
+          "shared.plugin_host.storage"
         ]
       }
     },
@@ -636,6 +641,7 @@
         "bindings/c/feature_runtime.h",
         "bindings/c/image_session.h",
         "bindings/c/pin_policy.h",
+        "bindings/c/plugin_application.h",
         "bindings/c/plugin_protocol.h",
         "bindings/c/recording_flow.h",
         "bindings/c/recording_plan.h",
@@ -697,12 +703,30 @@
         "shared.plugin_host.protocol"
       ]
     },
+    "shared.plugin_host.package": {
+      "sources": [
+        "platform/shared/plugin_host/package_zip.c"
+      ],
+      "files": [
+        "platform/shared/plugin_host/package_zip.h"
+      ],
+      "requires": []
+    },
     "shared.plugin_host.protocol": {
       "sources": [
         "platform/shared/plugin_host/worker_protocol.c"
       ],
       "files": [
         "platform/shared/plugin_host/worker_protocol.h"
+      ],
+      "requires": []
+    },
+    "shared.plugin_host.storage": {
+      "sources": [
+        "platform/shared/plugin_host/package_store_posix.c"
+      ],
+      "files": [
+        "platform/shared/plugin_host/package_store.h"
       ],
       "requires": []
     },

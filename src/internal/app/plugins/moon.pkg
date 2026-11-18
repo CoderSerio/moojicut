@@ -1,0 +1,8 @@
+import {
+  "moojicut/core/internal/app/tools" @tools,
+  "moojicut/core/internal/features/capture" @capture,
+  "moojicut/core/internal/plugins/contracts" @contract,
+  "moojicut/core/internal/plugins/runtime/lifecycle" @runtime,
+  "moojicut/core/internal/shared/protocol" @protocol,
+  "moonbitlang/core/json",
+}

@@ -229,6 +229,7 @@ jobs:
           path: |
             .artifacts/${{ matrix.platform }}/runtime-checks.json
             .artifacts/${{ matrix.platform }}/plugin-worker-*/*.log
+            .artifacts/${{ matrix.platform }}/plugin-store-*/*.log
             .artifacts/${{ matrix.platform }}/plugin-worker-*/sample*/**/*-result.json
             .artifacts/${{ matrix.platform }}/media-tests/**/results.json
             .artifacts/${{ matrix.platform }}/media-tests/**/*.log

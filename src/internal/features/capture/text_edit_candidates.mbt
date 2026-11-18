@@ -29,6 +29,7 @@ let text_next_candidate : Ref[Int32] = Ref(1)
 ///|
 fn candidate_retire_session(session : Int32) -> Unit {
   if text_candidate_sessions.get(session) is Some(ticket) {
+    plugin_annotation_gestures.remove(ticket)
     text_candidates.remove(ticket)
     text_candidate_sessions.remove(session)
   }
@@ -327,6 +328,10 @@ pub fn candidate_ready(session : Int32, ticket : Int32) -> Int32 {
   }
   if text_candidate_sessions.get(session) != Some(ticket) ||
     image_session_revision(session) != c.revision {
+    return 0
+  }
+  if plugin_annotation_gestures.get(ticket) is Some(gesture) &&
+    @capture_ui.active(gesture) {
     return 0
   }
   if c.style != 0 {

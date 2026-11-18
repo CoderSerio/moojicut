@@ -395,6 +395,20 @@ class DesktopBuild:
         self.canvas_smoke()
         self.video_smoke()
         self.plugin_worker_smoke(self.bundle)
+        self.plugin_store_smoke()
+
+    def plugin_sample_path(self):
+        if not hasattr(self, "plugin_sample"):
+            fixture_path = self.env.get("MOOJICUT_PLUGIN_FIXTURE")
+            if fixture_path:
+                self.plugin_sample = (ROOT / fixture_path).resolve()
+            else:
+                directory = Path(tempfile.mkdtemp(prefix="plugin-sample-", dir=self.directory))
+                sample = directory / "capture-info.zip"
+                project = ROOT / "plugins/examples/capture-info"
+                self.run(sys.executable, ROOT / "scripts/package_plugin.py", project, "--output", sample)
+                self.plugin_sample = sample
+        return self.plugin_sample
 
     def plugin_worker_smoke(self, bundle):
         from plugin_worker_fixture import prepare_sample, verify_results
@@ -407,21 +421,25 @@ class DesktopBuild:
             self.link_plugin_program(
                 [*native_sources(self.system, adapter), ROOT / "test/native/plugin-worker-host.c"],
                 executable, cwd=directory, link_flags=[] if windows else ["-pthread"])
-            fixture_path = self.env.get("MOOJICUT_PLUGIN_FIXTURE")
-            if fixture_path:
-                sample = (ROOT / fixture_path).resolve()
-            else:
-                sample = directory / "capture-info.zip"
-                project = ROOT / "plugins/examples/capture-info"
-                self.run(sys.executable, ROOT / "scripts/package_plugin.py", project, "--output", sample)
-            self.plugin_sample = sample
             self.plugin_fixture_executable = executable
+        sample = self.plugin_sample_path()
         output = directory / "sample with spaces"
-        wasm = prepare_sample(self.plugin_sample, output)
-        print("Packaged MoonBit plugin fixture SHA-256:", digest(self.plugin_sample), flush=True)
+        wasm = prepare_sample(sample, output)
+        print("Packaged MoonBit plugin fixture SHA-256:", digest(sample), flush=True)
         self.run(self.plugin_fixture_executable, bundle / self.plugin_worker_name, wasm, output,
                  cwd=directory, env=self.app_test_environment(), timeout=45, log=directory / "run.log")
         verify_results(output)
+
+    def plugin_store_smoke(self):
+        directory = Path(tempfile.mkdtemp(prefix="plugin-store-", dir=self.directory))
+        windows = self.system == "windows"
+        adapter = "platform.plugin_host" if windows else "shared.plugin_host.storage"
+        fixture = ROOT / "test/native" / ("plugin-package-store-windows.c" if windows else "plugin-package-store-posix.c")
+        executable = directory / ("plugin-package-store.exe" if windows else "plugin-package-store")
+        self.link_plugin_program([*native_sources(self.system, adapter), fixture], executable, cwd=directory)
+        sample = self.plugin_sample_path()
+        self.run(executable, sample, digest(sample), cwd=directory, env=self.app_test_environment(),
+                 timeout=45, log=directory / "run.log")
 
     def video_smoke(self, prepared=False):
         if not hasattr(self.media, "fixtures"):
@@ -500,7 +518,8 @@ class DesktopBuild:
             checks.append(("native-ui-smoke", lambda: self.run(self.executable, "--smoke", env=self.app_test_environment())))
         checks.extend((("shared-canvas", self.canvas_smoke),
                        ("video-editor", lambda: self.video_smoke(prepared=True)),
-                       ("plugin-worker", lambda: self.plugin_worker_smoke(self.bundle))))
+                       ("plugin-worker", lambda: self.plugin_worker_smoke(self.bundle)),
+                       ("plugin-store", self.plugin_store_smoke)))
         results, failures = {}, []
         for name, action in checks:
             try:
@@ -553,7 +572,7 @@ class DesktopBuild:
             checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
             metadata = dict(self.metadata, archive=archive.name, sha256=checksum,
                             checks=["moon-check", "moon-tests", "gst-media", "mp4-mux", "media-worker", "media-waveform", "video-editor-host",
-                                    "native-core", "native-ui-smoke", "shared-canvas", "video-editor", "plugin-worker",
+                                    "native-core", "native-ui-smoke", "shared-canvas", "video-editor", "plugin-worker", "plugin-store",
                                     "unpacked-native-core", "unpacked-plugin-worker"])
             shutil.copy2(archive, releases / archive.name)
             (releases / (archive.name + ".sha256")).write_text(checksum + "  " + archive.name + "\n", encoding="utf-8")

@@ -1,4 +1,5 @@
 #import "MCPluginPackageStore.h"
+#include "platform/shared/plugin_host/package_zip.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -8,34 +9,7 @@
 #include <errno.h>
 #include <zlib.h>
 
-// macOS ships libarchive but this SDK omits its headers. These stable opaque C
-// entry points were checked against libarchive 3.7.4 archive.h/archive_entry.h:
-// https://github.com/libarchive/libarchive/tree/v3.7.4/libarchive
-// No archive extraction API is used; all entry data is read into bounded memory.
-struct archive;
-struct archive_entry;
-extern struct archive *archive_read_new(void);
-extern int archive_read_support_format_zip_seekable(struct archive *);
-extern int archive_read_open_memory(struct archive *, const void *, size_t);
-extern int archive_read_next_header(struct archive *, struct archive_entry **);
-extern ssize_t archive_read_data(struct archive *, void *, size_t);
-extern int archive_read_has_encrypted_entries(struct archive *);
-extern int archive_read_close(struct archive *);
-extern int archive_read_free(struct archive *);
-extern const char *archive_error_string(struct archive *);
-extern const char *archive_entry_pathname(struct archive_entry *);
-extern const char *archive_entry_symlink(struct archive_entry *);
-extern const char *archive_entry_hardlink(struct archive_entry *);
-extern mode_t archive_entry_filetype(struct archive_entry *);
-extern int64_t archive_entry_size(struct archive_entry *);
-extern int archive_entry_is_encrypted(struct archive_entry *);
-
 NSErrorDomain const MCPluginPackageErrorDomain = @"dev.moojicut.plugin-package";
-static const NSUInteger MCZIPLimit = 8 * 1024 * 1024;
-static const NSUInteger MCWasmLimit = 4 * 1024 * 1024;
-static const NSUInteger MCManifestLimit = 64 * 1024;
-static const NSUInteger MCIconLimit = 256 * 1024;
-static const NSUInteger MCTotalLimit = 5 * 1024 * 1024;
 static const NSUInteger MCCatalogLimit = 1024 * 1024;
 
 static BOOL MCFail(NSError **error, NSInteger code, NSString *message) {
@@ -53,96 +27,6 @@ static BOOL MCDigestIsValid(id value) {
     if (![value isKindOfClass:NSString.class] || [value length] != 64) return NO;
     return [value rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location == NSNotFound;
 }
-static NSUInteger MCLimitForName(NSString *name) {
-    if ([name isEqual:@"manifest.json"]) return MCManifestLimit;
-    if ([name isEqual:@"plugin.wasm"]) return MCWasmLimit;
-    if ([name isEqual:@"assets/icon.png"]) return MCIconLimit;
-    return 0;
-}
-static uint16_t MC16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
-static uint32_t MC32(const uint8_t *p) { return (uint32_t)MC16(p) | (uint32_t)MC16(p + 2) << 16; }
-static BOOL MCExtraValid(const uint8_t *bytes, NSUInteger size) {
-    while (size) {
-        if (size < 4) return NO;
-        NSUInteger length = MC16(bytes + 2);
-        if (MC16(bytes) == 1 || length > size - 4) return NO; // ZIP64 is not part of this package format.
-        bytes += 4 + length; size -= 4 + length;
-    }
-    return YES;
-}
-
-// Require a single ordinary ZIP with an exact central/local-name match. This
-// also rejects hidden local entries, overlapping records, ZIP64 and split ZIPs.
-// The small format surface keeps ambiguous paths out before libarchive sees it.
-static NSDictionary *MCZIPIndex(NSData *data, NSError **error) {
-    const uint8_t *bytes = data.bytes;
-    NSUInteger size = data.length, end = NSNotFound;
-    if (size < 22 || size > MCZIPLimit) { MCFail(error, 1, @"ZIP 大小不符合限制。"); return nil; }
-    NSUInteger low = size > 65557 ? size - 65557 : 0;
-    for (NSUInteger pos = size - 22;; pos--) {
-        if (MC32(bytes + pos) == 0x06054b50 && pos + 22 + MC16(bytes + pos + 20) == size) { end = pos; break; }
-        if (pos == low) break;
-    }
-    if (end == NSNotFound || MC16(bytes + end + 4) || MC16(bytes + end + 6) ||
-        MC16(bytes + end + 8) != MC16(bytes + end + 10)) {
-        MCFail(error, 1, @"需要完整、非分卷的 ZIP 文件。"); return nil;
-    }
-    NSUInteger count = MC16(bytes + end + 10), central = MC32(bytes + end + 16), centralSize = MC32(bytes + end + 12);
-    if (count < 2 || count > 4 || central > end || centralSize != end - central) {
-        MCFail(error, 1, @"ZIP 目录无效或包含多余条目。"); return nil;
-    }
-    NSMutableDictionary *index = [NSMutableDictionary dictionary];
-    NSMutableArray *ranges = [NSMutableArray array];
-    NSUInteger cursor = central, total = 0;
-    for (NSUInteger i = 0; i < count; i++) {
-        if (cursor > end || end - cursor < 46 || MC32(bytes + cursor) != 0x02014b50) goto invalid;
-        const uint8_t *entry = bytes + cursor;
-        NSUInteger nameLength = MC16(entry + 28), extra = MC16(entry + 30), comment = MC16(entry + 32);
-        NSUInteger recordSize = 46 + nameLength + extra + comment;
-        if (recordSize > end - cursor || MC16(entry + 34) || !MCExtraValid(entry + 46 + nameLength, extra)) goto invalid;
-        NSString *name = [[NSString alloc] initWithBytes:entry + 46 length:nameLength encoding:NSUTF8StringEncoding];
-        BOOL directory = [name isEqual:@"assets/"];
-        NSUInteger limit = MCLimitForName(name);
-        uint16_t flags = MC16(entry + 8), method = MC16(entry + 10);
-        uint32_t crc = MC32(entry + 16), packed = MC32(entry + 20), unpacked = MC32(entry + 24);
-        mode_t type = (MC32(entry + 38) >> 16) & S_IFMT;
-        if (!name || (!directory && !limit) || index[name] || (flags & (1 | 64 | 8192)) ||
-            (method != 0 && method != 8) || unpacked > limit ||
-            (type && type != (directory ? S_IFDIR : S_IFREG)) || (directory && unpacked)) goto invalid;
-        if (total > MCTotalLimit - unpacked) goto invalid;
-        total += unpacked;
-        NSUInteger offset = MC32(entry + 42);
-        if (offset > central || central - offset < 30 || MC32(bytes + offset) != 0x04034b50) goto invalid;
-        const uint8_t *local = bytes + offset;
-        NSUInteger localName = MC16(local + 26), localExtra = MC16(local + 28), header = 30 + localName + localExtra;
-        if (header > central - offset || localName != nameLength || MC16(local + 6) != flags ||
-            MC16(local + 8) != method || memcmp(local + 30, entry + 46, nameLength) ||
-            packed > central - offset - header || !MCExtraValid(local + 30 + localName, localExtra)) goto invalid;
-        NSUInteger recordEnd = offset + header + packed;
-        if (flags & 8) {
-            if (central - recordEnd >= 4 && MC32(bytes + recordEnd) == 0x08074b50) recordEnd += 4;
-            if (central - recordEnd < 12 || MC32(bytes + recordEnd) != crc ||
-                MC32(bytes + recordEnd + 4) != packed || MC32(bytes + recordEnd + 8) != unpacked) goto invalid;
-            recordEnd += 12;
-        } else if (MC32(local + 14) != crc || MC32(local + 18) != packed || MC32(local + 22) != unpacked) goto invalid;
-        index[name] = @{@"size":@(unpacked), @"crc":@(crc)};
-        [ranges addObject:@[@(offset), @(recordEnd)]];
-        cursor += recordSize;
-    }
-    if (cursor != end || !index[@"manifest.json"] || !index[@"plugin.wasm"]) goto invalid;
-    [ranges sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [a[0] compare:b[0]]; }];
-    cursor = 0;
-    for (NSArray *range in ranges) {
-        if ([range[0] unsignedIntegerValue] != cursor) goto invalid;
-        cursor = [range[1] unsignedIntegerValue];
-    }
-    if (cursor != central) goto invalid;
-    return index;
-invalid:
-    MCFail(error, 1, @"ZIP 包含不支持、重复、加密或不安全的条目。");
-    return nil;
-}
-
 @interface MCPluginPackageCandidate ()
 - (instancetype)initWithManifest:(NSData *)manifest wasm:(NSData *)wasm icon:(nullable NSData *)icon;
 @end
@@ -173,53 +57,34 @@ invalid:
 }
 @end
 
+static bool MCInflateRaw(void *context, const uint8_t *input, size_t inputSize,
+                         uint8_t *output, size_t outputCapacity, size_t *consumed, size_t *written) {
+    (void)context;
+    z_stream stream = {0};
+    stream.next_in = (Bytef *)input;
+    stream.avail_in = (uInt)inputSize;
+    stream.next_out = output;
+    stream.avail_out = (uInt)outputCapacity;
+    if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) return false;
+    int status = inflate(&stream, Z_FINISH);
+    *consumed = stream.total_in;
+    *written = stream.total_out;
+    return inflateEnd(&stream) == Z_OK && status == Z_STREAM_END;
+}
+
 static MCPluginPackageCandidate *MCReadZIP(NSData *data, NSError **error) {
-    NSDictionary *index = MCZIPIndex(data, error);
-    if (!index) return nil;
-    struct archive *reader = archive_read_new();
-    NSMutableDictionary *files = [NSMutableDictionary dictionary];
-    NSMutableSet *seen = [NSMutableSet set];
-    BOOL valid = reader && archive_read_support_format_zip_seekable(reader) == 0 &&
-        archive_read_open_memory(reader, data.bytes, data.length) == 0;
-    NSUInteger total = 0;
-    while (valid) {
-        struct archive_entry *entry = NULL;
-        int status = archive_read_next_header(reader, &entry);
-        if (status == 1) break;
-        if (status != 0 || !entry) { valid = NO; break; }
-        const char *path = archive_entry_pathname(entry);
-        NSString *name = path ? [NSString stringWithUTF8String:path] : nil;
-        NSDictionary *expected = name ? index[name] : nil;
-        BOOL directory = [name isEqual:@"assets/"];
-        if (!expected || [seen containsObject:name] || archive_entry_is_encrypted(entry) ||
-            archive_entry_symlink(entry) || archive_entry_hardlink(entry) ||
-            archive_entry_filetype(entry) != (directory ? S_IFDIR : S_IFREG) ||
-            archive_entry_size(entry) != [expected[@"size"] longLongValue]) { valid = NO; break; }
-        [seen addObject:name];
-        NSMutableData *payload = [NSMutableData data];
-        uint8_t buffer[32768]; uLong crc = crc32(0, Z_NULL, 0);
-        while (valid) {
-            ssize_t length = archive_read_data(reader, buffer, sizeof(buffer));
-            if (!length) break;
-            if (length < 0 || (NSUInteger)length > MCLimitForName(name) - payload.length ||
-                (NSUInteger)length > MCTotalLimit - total) { valid = NO; break; }
-            [payload appendBytes:buffer length:(NSUInteger)length]; total += (NSUInteger)length;
-            crc = crc32(crc, buffer, (uInt)length);
-        }
-        if (payload.length != [expected[@"size"] unsignedIntegerValue] || (uint32_t)crc != [expected[@"crc"] unsignedIntValue]) valid = NO;
-        if (!directory) files[name] = [payload copy];
+    MCPluginZipPackage package = {0};
+    MCPluginZipError zipError;
+    if (!mc_plugin_zip_read(data.bytes, data.length, MCInflateRaw, NULL, &package, &zipError)) {
+        MCFail(error, 1, [NSString stringWithFormat:@"无法读取插件 ZIP：%s", mc_plugin_zip_error_text(zipError)]);
+        return nil;
     }
-    if (reader) {
-        if (archive_read_has_encrypted_entries(reader) != 0) valid = NO;
-        if (!valid && error) {
-            const char *detail = archive_error_string(reader);
-            MCFail(error, 1, detail ? [NSString stringWithFormat:@"ZIP 校验失败：%s", detail] : @"ZIP 条目或校验和无效。");
-        }
-        if (archive_read_close(reader) != 0) valid = NO;
-        if (archive_read_free(reader) != 0) valid = NO;
-    }
-    if (!valid || seen.count != index.count) { if (!error || !*error) MCFail(error, 1, @"ZIP 不完整或无法安全读取。"); return nil; }
-    return [[MCPluginPackageCandidate alloc] initWithManifest:files[@"manifest.json"] wasm:files[@"plugin.wasm"] icon:files[@"assets/icon.png"]];
+    NSData *manifest = [NSData dataWithBytes:package.manifest.bytes length:package.manifest.size];
+    NSData *wasm = [NSData dataWithBytes:package.wasm.bytes length:package.wasm.size];
+    NSData *icon = package.has_icon
+        ? [NSData dataWithBytes:package.icon.bytes length:package.icon.size] : nil;
+    mc_plugin_zip_clear(&package);
+    return [[MCPluginPackageCandidate alloc] initWithManifest:manifest wasm:wasm icon:icon];
 }
 
 static NSData *MCReadFD(int fd, NSUInteger limit, NSError **error) {
@@ -264,14 +129,14 @@ static MCPluginPackageCandidate *MCReadPayload(int packages, NSString *digest, N
     int folder = openat(packages, digest.UTF8String, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (folder < 0) { MCIOFail(error, @"无法打开已安装插件"); return nil; }
     BOOL valid = MCNamesAllowed(folder, [NSSet setWithArray:@[@"manifest.json", @"plugin.wasm", @"assets"]], error);
-    NSData *manifest = valid ? MCReadFile(folder, "manifest.json", MCManifestLimit, NO, error) : nil;
-    NSData *wasm = manifest ? MCReadFile(folder, "plugin.wasm", MCWasmLimit, NO, error) : nil;
+    NSData *manifest = valid ? MCReadFile(folder, "manifest.json", MC_PLUGIN_ZIP_MAX_MANIFEST_BYTES, NO, error) : nil;
+    NSData *wasm = manifest ? MCReadFile(folder, "plugin.wasm", MC_PLUGIN_ZIP_MAX_WASM_BYTES, NO, error) : nil;
     NSData *icon = nil;
     int assets = wasm ? openat(folder, "assets", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) : -1;
     if (wasm && assets < 0 && errno != ENOENT) { MCIOFail(error, @"无法读取图标目录"); valid = NO; }
     if (assets >= 0) {
         valid = MCNamesAllowed(assets, [NSSet setWithObject:@"icon.png"], error);
-        if (valid) { icon = MCReadFile(assets, "icon.png", MCIconLimit, NO, error); valid = icon != nil; }
+        if (valid) { icon = MCReadFile(assets, "icon.png", MC_PLUGIN_ZIP_MAX_ICON_BYTES, NO, error); valid = icon != nil; }
         close(assets);
     }
     close(folder);
@@ -398,7 +263,7 @@ static BOOL MCInstallPayload(int root, MCPluginPackageCandidate *candidate, NSEr
     if (!url.isFileURL) { MCFail(error, 1, @"请选择本地 ZIP 文件。"); return nil; }
     int fd = open(url.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) { MCIOFail(error, @"无法打开 ZIP 文件"); return nil; }
-    NSData *data = MCReadFD(fd, MCZIPLimit, error); close(fd);
+    NSData *data = MCReadFD(fd, MC_PLUGIN_ZIP_MAX_BYTES, error); close(fd);
     return data ? MCReadZIP(data, error) : nil;
 }
 - (int)openRootCreating:(BOOL)create error:(NSError **)error {

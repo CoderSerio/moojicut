@@ -1,6 +1,10 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "moojicut/core/internal/plugins/runtime/lifecycle"
 
+import {
+  "moonbitlang/core/debug",
+}
+
 // Values
 pub fn feature_can_invoke(Int32) -> Int32
 
@@ -9,6 +13,128 @@ pub fn feature_transition(Int32, Int32) -> Int32
 // Errors
 
 // Types and methods
+#derive(Eq, @debug.Debug)
+pub(all) struct ContributionGrant {
+  id : String
+  effect : String
+}
+pub fn ContributionGrant::equal(Self, Self) -> Bool
+pub fn ContributionGrant::not_equal(Self, Self) -> Bool
+pub fn ContributionGrant::to_repr(Self) -> @debug.Repr
+
+#derive(Eq, @debug.Debug)
+pub enum InstallPhase {
+  Checking
+  Ready
+  Publishing
+  Installed
+  Failed
+  Cancelled
+}
+pub fn InstallPhase::equal(Self, Self) -> Bool
+pub fn InstallPhase::not_equal(Self, Self) -> Bool
+pub fn InstallPhase::to_repr(Self) -> @debug.Repr
+
+pub struct InstallTicket {
+  // private fields
+}
+pub fn InstallTicket::begin_publish(Self) -> Bool
+pub fn InstallTicket::cancel(Self) -> Unit
+pub fn InstallTicket::health_complete(Self, Bool) -> Bool
+pub fn InstallTicket::needs_cancel(Self) -> Bool
+pub fn InstallTicket::phase(Self) -> InstallPhase
+pub fn InstallTicket::publish_complete(Self, Bool) -> Bool
+pub fn InstallTicket::ready(Self) -> Bool
+
+pub struct Invocation {
+  // private fields
+}
+pub fn Invocation::allowed_effect(Self) -> String
+pub fn Invocation::cancel(Self) -> Unit
+pub fn Invocation::content(Self) -> PackageContent
+pub fn Invocation::needs_cancel(Self) -> Bool
+pub fn Invocation::phase(Self) -> InvocationPhase
+pub fn Invocation::prepare_result(Self, String) -> ResultTicket?
+pub fn Invocation::reject(Self) -> Bool
+pub fn Invocation::worker_drained(Self) -> Bool
+
+#derive(Eq, @debug.Debug)
+pub enum InvocationPhase {
+  Running
+  Prepared
+  Completed
+  Rejected
+  Cancelling
+  Cancelled
+}
+pub fn InvocationPhase::equal(Self, Self) -> Bool
+pub fn InvocationPhase::not_equal(Self, Self) -> Bool
+pub fn InvocationPhase::to_repr(Self) -> @debug.Repr
+
+#derive(Eq, @debug.Debug)
+pub struct OwnerSnapshot {
+  owner : Int32
+  session_generation : Int32
+  generation : Int32
+  revision : Double
+}
+pub fn OwnerSnapshot::equal(Self, Self) -> Bool
+pub fn OwnerSnapshot::not_equal(Self, Self) -> Bool
+pub fn OwnerSnapshot::to_repr(Self) -> @debug.Repr
+
+#derive(Eq, @debug.Debug)
+pub(all) struct PackageContent {
+  package_id : String
+  digest : String
+  version : String
+}
+pub fn PackageContent::equal(Self, Self) -> Bool
+pub fn PackageContent::not_equal(Self, Self) -> Bool
+pub fn PackageContent::to_repr(Self) -> @debug.Repr
+
+#derive(Eq, @debug.Debug)
+pub(all) struct PackageSnapshot {
+  content : PackageContent
+  generation : Int32
+  install_generation : Int32
+  desired_enabled : Bool
+}
+pub fn PackageSnapshot::equal(Self, Self) -> Bool
+pub fn PackageSnapshot::not_equal(Self, Self) -> Bool
+pub fn PackageSnapshot::to_repr(Self) -> @debug.Repr
+
+pub(all) struct RestoredPackage {
+  content : PackageContent
+  desired_enabled : Bool
+  grants : Array[ContributionGrant]
+}
+
+pub struct ResultTicket {
+  // private fields
+}
+pub fn ResultTicket::abort(Self) -> Bool
+pub fn ResultTicket::commit(Self) -> Bool
+pub fn ResultTicket::ready(Self) -> Bool
+
+pub struct Runtime {
+  // private fields
+}
+pub fn Runtime::begin_close(Self) -> Unit
+pub fn Runtime::begin_invocation(Self, String, Int32, String, OwnerSnapshot, String) -> Invocation?
+pub fn Runtime::close_owner(Self, OwnerSnapshot) -> Bool
+pub fn Runtime::content_in_use(Self, String, String) -> Bool
+pub fn Runtime::is_closing(Self) -> Bool
+pub fn Runtime::new() -> Self
+pub fn Runtime::open_owner(Self, Int32, Double) -> OwnerSnapshot?
+pub fn Runtime::owner_current(Self, OwnerSnapshot) -> Bool
+pub fn Runtime::package_generation(Self, String) -> Int32
+pub fn Runtime::package_snapshot(Self, String) -> PackageSnapshot?
+pub fn Runtime::prepare_configuration(Self, String, Int32, Bool, Array[ContributionGrant]) -> InstallTicket?
+pub fn Runtime::prepare_install(Self, PackageContent, Int32, Bool, Array[ContributionGrant]) -> InstallTicket?
+pub fn Runtime::prepare_remove(Self, String, Int32) -> InstallTicket?
+pub fn Runtime::quiescent(Self) -> Bool
+pub fn Runtime::restore_packages(Self, Array[RestoredPackage]) -> Bool
+pub fn Runtime::update_owner(Self, OwnerSnapshot, Double) -> OwnerSnapshot?
 
 // Type aliases
 

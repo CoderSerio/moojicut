@@ -13,7 +13,15 @@ pub fn encode_manifest(Manifest) -> @json.Json
 
 pub fn encode_tool(UserTool, Bool) -> @json.Json
 
+pub fn local_key_valid(String) -> Bool
+
 pub fn parse_object(String, Int32) -> Map[String, @json.Json] raise @protocol.InputError
+
+pub fn parse_plugin_package(String) -> PluginPackage raise @protocol.InputError
+
+pub fn plugin_health_request() -> String
+
+pub fn plugin_id_valid(String) -> Bool
 
 pub fn plugin_manifest_validate(String) -> String
 
@@ -29,6 +37,63 @@ pub struct Manifest {
 }
 pub fn Manifest::plugin_id(Self) -> String
 pub fn Manifest::tools(Self) -> Array[UserTool]
+
+pub(all) struct PluginCapture {
+  width : Int32
+  height : Int32
+  revision : Double
+  selection : PluginSelection?
+}
+
+pub struct PluginContribution {
+  plugin_id : String
+  tool_id : String
+  title : String
+  gesture : PluginGesture
+  effect : PluginEffect
+}
+pub fn PluginContribution::id(Self) -> String
+
+pub(all) enum PluginEffect {
+  ShowText
+  AddAnnotations
+}
+pub fn PluginEffect::key(Self) -> String
+
+pub(all) enum PluginGesture {
+  Invoke
+  DragRect
+}
+
+pub struct PluginInvocation {
+  // private fields
+}
+pub fn PluginInvocation::effect_key(Self) -> String
+pub fn PluginInvocation::request(Self) -> String
+pub fn PluginInvocation::validate_output(Self, String) -> PluginResponse raise @protocol.InputError
+
+pub struct PluginPackage {
+  plugin_id : String
+  name : String
+  version : String
+  // private fields
+}
+pub fn PluginPackage::contribution(Self, String) -> PluginContribution?
+pub fn PluginPackage::contributions(Self) -> Array[PluginContribution]
+pub fn PluginPackage::prepare_invocation(Self, String, String, PluginCapture) -> PluginInvocation raise @protocol.InputError
+pub fn PluginPackage::validate_health(Self, String) -> Unit raise @protocol.InputError
+
+pub(all) enum PluginResponse {
+  Text(String, String)
+  Annotations(Array[@json.Json])
+}
+
+pub(all) struct PluginSelection {
+  x : Double
+  y : Double
+  width : Double
+  height : Double
+}
 
 pub(all) struct ToolContribution {
   id : String

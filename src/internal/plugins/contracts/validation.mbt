@@ -116,7 +116,7 @@ fn ascii_digit(value : Int32) -> Bool {
 }
 
 ///|
-fn local_key_valid(value : String) -> Bool {
+pub fn local_key_valid(value : String) -> Bool {
   if value.length() == 0 || !ascii_lower(value[0].to_int()) {
     return false
   }
@@ -130,7 +130,7 @@ fn local_key_valid(value : String) -> Bool {
 }
 
 ///|
-fn plugin_id_valid(value : String) -> Bool {
+pub fn plugin_id_valid(value : String) -> Bool {
   if value.has_prefix("builtin") {
     return false
   }
@@ -257,8 +257,9 @@ pub fn decode_manifest(value : Json) -> Manifest raise InputError {
 ///|
 fn invocation_id(fields : Map[String, Json]) -> String raise InputError {
   let value = string(fields, "invocationId", 128, "invalid_request")
-  for char in value.iter() {
-    if char.to_int() < 33 || char.to_int() > 126 {
+  for index in 0..<value.length() {
+    let code = value[index].to_int()
+    if code < 33 || code > 126 {
       raise InputError(
         "invalid_request", "invocationId must be printable ASCII without spaces",
       )

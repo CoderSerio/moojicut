@@ -1,0 +1,10 @@
+import {
+  "gmlewis/moonbit-pdk/pdk/host",
+  "moonbitlang/core/json",
+}
+
+options(
+  link: {
+    "wasm": { "export-memory-name": "memory", "exports": [ "mooji_run" ] },
+  },
+)

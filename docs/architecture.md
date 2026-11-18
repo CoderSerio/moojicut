@@ -67,6 +67,7 @@ moojicut/
 │     │  ├─ jobs.mbt                 # 长任务身份、进度、取消和结果
 │     │  ├─ automation.mbt           # 本地请求路由与上下文校验
 │     │  ├─ tools/                   # 组合扩展贡献，向通用目录注入；不实现图元规则
+│     │  ├─ plugins/                 # 组合包安装事务、调用租约与功能效果
 │     │  ├─ preferences/             # 通用设置模型与共享设置 UI
 │     │  ├─ shortcuts/               # 跨平台快捷键规则
 │     │  └─ updates/                 # 版本、渠道、平台资产筛选

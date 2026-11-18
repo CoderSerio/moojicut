@@ -6,6 +6,8 @@ import {
 }
 
 // Values
+pub fn active(Int32) -> Bool
+
 pub fn close(Int32) -> Unit
 
 pub fn editor_style_group_gap() -> Int32

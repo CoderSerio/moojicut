@@ -1,0 +1,85 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/app/plugins"
+
+import {
+  "moojicut/core/internal/plugins/contracts",
+  "moojicut/core/internal/plugins/runtime/lifecycle",
+  "moojicut/core/internal/shared/protocol",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn desktop_plugin_close(Int32) -> Int32
+
+pub fn desktop_plugin_open(String, String, String) -> String
+
+pub fn desktop_plugin_request(Int32, String) -> String
+
+pub fn parse_plugin_index(String) -> PluginIndex raise @protocol.InputError
+
+pub fn prepare_plugin_installation(@lifecycle.Runtime, String, String, Int32, Array[String]) -> PluginInstallation raise @protocol.InputError
+
+pub fn restore_plugin_index(@lifecycle.Runtime, PluginIndex, Array[VerifiedPluginArchive]) -> Array[InstalledPlugin] raise @protocol.InputError
+
+// Errors
+
+// Types and methods
+pub struct CapturePluginCall {
+  // private fields
+}
+pub fn CapturePluginCall::complete(Self, String) -> CapturePluginResult raise @protocol.InputError
+pub fn CapturePluginCall::needs_cancel(Self) -> Bool
+pub fn CapturePluginCall::request(Self) -> String
+pub fn CapturePluginCall::worker_failed(Self) -> Unit
+
+pub(all) enum CapturePluginResult {
+  ShowText(String, String)
+  DocumentChanged
+  Discarded
+}
+
+pub struct InstalledPlugin {
+  // private fields
+}
+pub fn InstalledPlugin::begin_capture_call(Self, @lifecycle.OwnerSnapshot, String, String, @contracts.PluginSelection?) -> CapturePluginCall raise @protocol.InputError
+
+pub struct PluginIndex {
+  revision : Int32
+  // private fields
+}
+pub fn PluginIndex::empty(@json.Json) -> Self raise @protocol.InputError
+pub fn PluginIndex::encode(Self) -> String
+pub fn PluginIndex::layout(Self) -> @json.Json
+pub fn PluginIndex::packages(Self) -> Array[PluginIndexEntry]
+pub fn PluginIndex::with_layout(Self, @json.Json) -> Self raise @protocol.InputError
+pub fn PluginIndex::with_package(Self, String, String, Bool, Array[String], layout? : @json.Json) -> Self raise @protocol.InputError
+pub fn PluginIndex::without_package(Self, String, layout? : @json.Json) -> Self raise @protocol.InputError
+
+pub struct PluginIndexEntry {
+  plugin_id : String
+  digest : String
+  enabled : Bool
+  // private fields
+}
+pub fn PluginIndexEntry::granted(Self) -> Array[String]
+
+pub struct PluginInstallation {
+  // private fields
+}
+pub fn PluginInstallation::awaiting_health(Self) -> Bool
+pub fn PluginInstallation::begin_publish(Self) -> Bool
+pub fn PluginInstallation::cancel(Self) -> Unit
+pub fn PluginInstallation::health_failed(Self) -> Unit
+pub fn PluginInstallation::health_request(Self) -> String
+pub fn PluginInstallation::needs_cancel(Self) -> Bool
+pub fn PluginInstallation::publish_complete(Self, Bool) -> InstalledPlugin?
+pub fn PluginInstallation::validate_health(Self, String) -> Bool raise @protocol.InputError
+
+pub(all) struct VerifiedPluginArchive {
+  manifest_json : String
+  digest : String
+}
+
+// Type aliases
+
+// Traits

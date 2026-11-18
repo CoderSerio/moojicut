@@ -10,6 +10,8 @@ pub fn tool_registry_normalize(String) -> String
 
 pub fn tool_registry_resolve(String) -> String
 
+pub fn tool_registry_resolve_packages(String) -> String
+
 pub fn tool_registry_snapshot_close(Int32) -> Int32
 
 pub fn tool_registry_snapshot_count(Int32, Int32) -> Int32
@@ -19,6 +21,8 @@ pub fn tool_registry_snapshot_layout(Int32) -> String
 pub fn tool_registry_snapshot_move(Int32, String, String) -> Int32
 
 pub fn tool_registry_snapshot_open(String, Int32) -> Int32
+
+pub fn tool_registry_snapshot_open_packages(String, Int32) -> Int32
 
 pub fn tool_registry_snapshot_set_enabled(Int32, String, Int32) -> Int32
 

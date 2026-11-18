@@ -251,7 +251,7 @@ class NativeBuild:
             shutil.copy2(ROOT / "assets/icons/lucide/LICENSE", resources / "Lucide-LICENSE.txt")
             self.run("xcrun", "clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror",
                      "-I", self.include, "-I", ROOT, "-I", native, "-F", sparkle, *link_inputs, archive,
-                     "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath,@executable_path/../Frameworks",
+                     "-framework", "Sparkle", "-lz", "-Wl,-rpath,@executable_path/../Frameworks",
                      *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                      "-o", executable)
             arch, minimum_macos = self.binary_platform(executable)
@@ -407,7 +407,7 @@ class NativeBuild:
                  preferences / "MCPreferencesController.m", preferences / "MCToolRegistryStore.m",
                  preferences / "MCPluginManagementController.m", *user_plugins, archive,
                  "-framework", "AppKit", "-framework", "Carbon", "-framework", "UniformTypeIdentifiers",
-                 "-larchive", "-lz", "-o", pin_shortcuts)
+                 "-lz", "-o", pin_shortcuts)
         self.run(pin_shortcuts)
         pinned_image = shortcuts / "pinned-image"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", ROOT / "native/macos",
@@ -473,7 +473,7 @@ class NativeBuild:
                  preferences / "MCPreferencesController.m", preferences / "MCPinShortcutStore.m",
                  preferences / "MCShortcutStore.m", preferences / "MCShortcutRecorder.m", preferences / "MCSystemShortcutCheck.m",
                  *user_plugins, archive, "-framework", "AppKit", "-framework", "Carbon",
-                 "-framework", "UniformTypeIdentifiers", "-larchive", "-lz", "-o", tool_settings)
+                 "-framework", "UniformTypeIdentifiers", "-lz", "-o", tool_settings)
         self.run(tool_settings)
         plugin_directory = ARTIFACTS / "native-plugins"
         plugin_worker = self.build_plugin_worker(plugin_directory / "Contents")
@@ -486,7 +486,8 @@ class NativeBuild:
         package_test = plugin_directory / "plugin-package"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
                  ROOT / "test/native/plugin-package.m", ROOT / "native/macos/plugins/MCPluginPackageStore.m",
-                 "-framework", "Foundation", "-larchive", "-lz", "-o", package_test)
+                 *native_sources("macos", "shared.plugin_host.package"),
+                 "-framework", "Foundation", "-lz", "-o", package_test)
         self.run(package_test)
         sample = ROOT / "plugins/examples/capture-info"
         sample_zip = plugin_directory / "capture-info.zip"
@@ -494,12 +495,34 @@ class NativeBuild:
         # example's pinned PDK before compiling the real Wasm integration input.
         offline = ("--offline",) if (sample / ".mooncakes/.moon-lock").is_file() else ()
         self.run(sys.executable, ROOT / "scripts/package_plugin.py", sample, "--output", sample_zip, *offline)
+        zip_test = plugin_directory / "plugin-package-zip"
+        self.run("xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/plugin-package-zip.c",
+                 *native_sources("macos", "shared.plugin_host.package"), "-lz", "-o", zip_test)
+        self.run(zip_test, sample_zip)
         manager_test = plugin_directory / "plugin-manager"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
                  ROOT / "test/native/plugin-manager.m", *user_plugins, preferences / "MCToolRegistryStore.m", archive,
                  "-framework", "AppKit", "-framework", "UniformTypeIdentifiers", "-framework", "Carbon",
-                 "-larchive", "-lz", "-o", manager_test)
+                 "-lz", "-o", manager_test)
         self.run(manager_test, plugin_worker, sample_zip)
+        numbered_sample = ROOT / "plugins/examples/numbered-box"
+        numbered_zip = plugin_directory / "numbered-box.zip"
+        offline = ("--offline",) if (numbered_sample / ".mooncakes/.moon-lock").is_file() else ()
+        self.run(sys.executable, ROOT / "scripts/package_plugin.py", numbered_sample, "--output", numbered_zip, *offline)
+        plugin_application = plugin_directory / "plugin-application"
+        self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", ROOT, "-I", self.include,
+                 ROOT / "test/native/plugin-application.m", ROOT / "native/macos/plugins/MCPluginPackageStore.m",
+                 *native_sources("macos", "shared.plugin_host.package", "shared.plugin_host.storage",
+                                 "shared.plugin_host.posix"),
+                 archive, "-framework", "Foundation", "-lz", "-o", plugin_application)
+        plugin_profile = Path(tempfile.mkdtemp(prefix="application-", dir=plugin_directory))
+        self.run(plugin_application, plugin_worker, numbered_zip, plugin_profile)
+        disk_test = plugin_directory / "plugin-package-store-posix"
+        self.run("xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", ROOT,
+                 ROOT / "test/native/plugin-package-store-posix.c",
+                 *native_sources("macos", "shared.plugin_host.storage"), "-o", disk_test)
+        self.run(disk_test, numbered_zip, hashlib.sha256(numbered_zip.read_bytes()).hexdigest())
         sparkle = install_sparkle()
         updater = shortcuts / "updater-smoke"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
@@ -524,7 +547,7 @@ class NativeBuild:
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-F", sparkle,
                  "-I", ROOT, "-I", self.include, "-I", ROOT / "native/macos",
                  ROOT / "test/native/app-termination.m", *host_inputs, archive,
-                 "-framework", "Sparkle", "-larchive", "-lz", "-Wl,-rpath," + str(sparkle),
+                 "-framework", "Sparkle", "-lz", "-Wl,-rpath," + str(sparkle),
                  *(argument for framework in FRAMEWORKS for argument in ("-framework", framework)),
                  "-o", termination)
         for mode in ("idle-gcd", "async-event", "worker-event", "editor-close-gcd", "editor-failure"):

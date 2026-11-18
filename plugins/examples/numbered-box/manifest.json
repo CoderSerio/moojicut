@@ -1,0 +1,12 @@
+{
+  "apiVersion": 2,
+  "pluginId": "com.moojicut.examples.numbered-box",
+  "name": "Numbered Box",
+  "version": "1.0.0",
+  "entry": "plugin.wasm",
+  "runtime": "extism-1",
+  "tools": [
+    {"toolId": "numbered-box", "title": "编号框", "gesture": "dragRect", "effect": "capture.annotations.add"},
+    {"toolId": "describe", "title": "查看尺寸", "gesture": "invoke", "effect": "result.text"}
+  ]
+}

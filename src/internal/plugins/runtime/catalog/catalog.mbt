@@ -29,6 +29,7 @@ fn ToolGroup::from_key(key : String) -> ToolGroup? {
 priv enum AvailableTool {
   BuiltinTool(@plugin_protocol.ToolContribution)
   PluginTool(@plugin_protocol.UserTool)
+  PackageTool(@plugin_protocol.PluginContribution)
 }
 
 ///|
@@ -36,6 +37,7 @@ fn AvailableTool::key(self : AvailableTool) -> String {
   match self {
     BuiltinTool(tool) => tool.id
     PluginTool(tool) => tool.global_id()
+    PackageTool(tool) => tool.id()
   }
 }
 
@@ -43,7 +45,7 @@ fn AvailableTool::key(self : AvailableTool) -> String {
 fn AvailableTool::belongs_to(self : AvailableTool, group : ToolGroup) -> Bool {
   match self {
     BuiltinTool(tool) => tool.target == group.key()
-    PluginTool(_) => group is Screenshot
+    PluginTool(_) | PackageTool(_) => group is Screenshot
   }
 }
 
@@ -51,7 +53,7 @@ fn AvailableTool::belongs_to(self : AvailableTool, group : ToolGroup) -> Bool {
 fn AvailableTool::default_enabled(self : AvailableTool) -> Bool {
   match self {
     BuiltinTool(tool) => tool.default_enabled
-    PluginTool(_) => true
+    PluginTool(_) | PackageTool(_) => true
   }
 }
 
@@ -59,7 +61,7 @@ fn AvailableTool::default_enabled(self : AvailableTool) -> Bool {
 fn AvailableTool::slot(self : AvailableTool) -> String {
   match self {
     BuiltinTool(tool) => tool.slot
-    PluginTool(_) => "tools"
+    PluginTool(_) | PackageTool(_) => "tools"
   }
 }
 
@@ -67,14 +69,14 @@ fn AvailableTool::slot(self : AvailableTool) -> String {
 fn AvailableTool::group(self : AvailableTool) -> ToolGroup {
   match self {
     BuiltinTool(tool) => ToolGroup::from_key(tool.target).unwrap()
-    PluginTool(_) => Screenshot
+    PluginTool(_) | PackageTool(_) => Screenshot
   }
 }
 
 ///|
 priv struct Catalog {
   builtins : Array[@plugin_protocol.ToolContribution]
-  users : Array[@plugin_protocol.UserTool]
+  users : Array[AvailableTool]
   manifests : Array[Json]
 }
 
@@ -86,8 +88,8 @@ fn Catalog::find(self : Catalog, key : String) -> AvailableTool? {
     }
   }
   for tool in self.users {
-    if tool.global_id() == key {
-      return Some(PluginTool(tool))
+    if tool.key() == key {
+      return Some(tool)
     }
   }
   None
@@ -103,7 +105,7 @@ fn Catalog::all(self : Catalog, group : ToolGroup) -> Array[AvailableTool] {
   }
   if group is Screenshot {
     for tool in self.users {
-      result.push(PluginTool(tool))
+      result.push(tool)
     }
   }
   result

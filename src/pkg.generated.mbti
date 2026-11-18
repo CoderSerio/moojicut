@@ -244,6 +244,12 @@ pub fn pin_visibility_action(Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
 pub fn pin_zoom_step(Double, Int32) -> Double
 
+pub fn plugin_application_close(Int32) -> Int32
+
+pub fn plugin_application_open(String, String, String) -> String
+
+pub fn plugin_application_request(Int32, String) -> String
+
 pub fn plugin_manifest_validate(String) -> String
 
 pub fn plugin_output_validate(String) -> String

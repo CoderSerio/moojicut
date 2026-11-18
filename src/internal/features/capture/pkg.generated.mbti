@@ -62,6 +62,8 @@ pub fn image_session_hit(Int32, Double, Double, Double, Int32) -> Int32
 
 pub fn image_session_prepare_command(Int32, Int32, Double, String, String) -> Int32
 
+pub fn image_session_prepare_plugin_annotations(Int32, Double, String) -> Int32
+
 pub fn image_session_preview_value(Int32, Int32) -> Double
 
 pub fn image_session_redo(Int32) -> Int32

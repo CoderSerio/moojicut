@@ -4,6 +4,7 @@ priv struct RegistrySnapshot {
   layout_json : String
   groups : Array[Array[Json]]
   capabilities : Int32
+  packages : Bool
 }
 
 ///|
@@ -17,6 +18,16 @@ pub fn snapshot_open(
   builtins : Array[@plugin_protocol.ToolContribution],
   response_json : String,
   capabilities : Int32,
+) -> Int32 {
+  snapshot_open_with_packages(builtins, response_json, capabilities, false)
+}
+
+///|
+fn snapshot_open_with_packages(
+  builtins : Array[@plugin_protocol.ToolContribution],
+  response_json : String,
+  capabilities : Int32,
+  packages : Bool,
 ) -> Int32 {
   if capabilities < 0 ||
     snapshots.length() >= 64 ||
@@ -39,9 +50,10 @@ pub fn snapshot_open(
   }
   // Never trust a caller-provided command/kind/slot. Reconstruct the entire
   // descriptor set from app-owned contributions plus validated manifests.
-  let checked = resolve_catalog(
+  let checked = resolve_with_packages(
     builtins,
     Json::object({ "layout": layout, "manifests": manifests }).stringify(),
+    packages,
   )
   let canonical = @plugin_protocol.parse_object(checked, 262144) catch {
     _ => return 0
@@ -66,6 +78,7 @@ pub fn snapshot_open(
     layout_json: layout.stringify(),
     groups,
     capabilities,
+    packages,
   }
   handle
 }
@@ -221,15 +234,21 @@ fn snapshot_candidate(
   let source = @plugin_protocol.parse_object(snapshot.result_json, 262144) catch {
     _ => return 0
   }
-  let response = resolve_catalog(
+  let response = resolve_with_packages(
     builtins,
     Json::object({
       "layout": source["layout"],
       "manifests": source["manifests"],
       "command": command,
     }).stringify(),
+    snapshot.packages,
   )
-  snapshot_open(builtins, response, snapshot.capabilities)
+  snapshot_open_with_packages(
+    builtins,
+    response,
+    snapshot.capabilities,
+    snapshot.packages,
+  )
 }
 
 ///|

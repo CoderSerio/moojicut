@@ -1,1 +1,5 @@
 // Shared lifecycle policy; native hosts retain ownership of resources.
+import {
+  "moonbitlang/core/double",
+  "moonbitlang/core/debug",
+}

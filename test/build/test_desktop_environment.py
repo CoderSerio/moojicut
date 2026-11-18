@@ -41,6 +41,7 @@ class DesktopEnvironmentTest(unittest.TestCase):
         build.canvas_smoke = lambda: calls.append("canvas")
         build.video_smoke = lambda *, prepared: calls.append(("editor", prepared))
         build.plugin_worker_smoke = lambda bundle: calls.append(("plugin-worker", bundle))
+        build.plugin_store_smoke = lambda: calls.append("plugin-store")
         with tempfile.TemporaryDirectory() as temporary:
             build.directory = Path(temporary)
             build.bundle = build.directory / "bundle"
@@ -48,10 +49,11 @@ class DesktopEnvironmentTest(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError, "checks failed: media"):
                 build.runtime_tests()
             report = json.loads((build.directory / "runtime-checks.json").read_text())
-        self.assertEqual(calls, ["media", "core", "canvas", ("editor", True), ("plugin-worker", build.bundle)])
+        self.assertEqual(calls, ["media", "core", "canvas", ("editor", True), ("plugin-worker", build.bundle), "plugin-store"])
         self.assertEqual(report["result"], "failed")
         self.assertEqual(report["checks"]["video-editor"]["result"], "passed")
         self.assertEqual(report["checks"]["plugin-worker"]["result"], "passed")
+        self.assertEqual(report["checks"]["plugin-store"]["result"], "passed")
 
     def test_packaged_app_uses_the_actual_windows_system_drive_without_sdk_paths(self):
         build = DesktopBuild.__new__(DesktopBuild)

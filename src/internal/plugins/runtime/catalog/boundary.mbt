@@ -250,6 +250,8 @@ fn result(layout : Layout, catalog : Catalog) -> Json raise InputError {
         Known(BuiltinTool(tool)) =>
           tools.push(encode_contribution(tool, entry.enabled))
         Known(PluginTool(tool)) => tools.push(encode_user(tool, entry.enabled))
+        Known(PackageTool(tool)) =>
+          tools.push(encode_package_tool(tool, entry.enabled))
         Unknown(_) => ()
       }
     }
@@ -347,7 +349,7 @@ fn decode_catalog(
       )
   }
   let seen : Map[String, Bool] = Map([])
-  let users : Array[@plugin_protocol.UserTool] = []
+  let users : Array[AvailableTool] = []
   let canonical : Array[Json] = []
   for value in manifests {
     let manifest = @plugin_protocol.decode_manifest(value)
@@ -367,7 +369,7 @@ fn decode_catalog(
       if base.find(tool.global_id()) is Some(_) {
         raise InputError("invalid_catalog", "Contribution identity collision")
       }
-      users.push(tool)
+      users.push(PluginTool(tool))
     }
   }
   { builtins: base.builtins, users, manifests: canonical, }
@@ -380,6 +382,15 @@ pub fn resolve_catalog(
   builtins : Array[@plugin_protocol.ToolContribution],
   request_json : String,
 ) -> String {
+  resolve_with_packages(builtins, request_json, false)
+}
+
+///|
+fn resolve_with_packages(
+  builtins : Array[@plugin_protocol.ToolContribution],
+  request_json : String,
+  packages : Bool,
+) -> String {
   @protocol.response(() => {
     let request = @plugin_protocol.parse_object(request_json, 262144)
     for key, _ in request {
@@ -391,7 +402,12 @@ pub fn resolve_catalog(
       }
     }
     let catalog = match request.get("manifests") {
-      Some(value) => decode_catalog(builtins, value)
+      Some(value) =>
+        if packages {
+          decode_package_catalog(builtins, value)
+        } else {
+          decode_catalog(builtins, value)
+        }
       None => raise InputError("invalid_catalog", "manifests is required")
     }
     let layout = match request.get("layout") {

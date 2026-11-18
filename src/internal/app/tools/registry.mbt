@@ -25,6 +25,19 @@ pub fn tool_registry_resolve(request : String) -> String {
 }
 
 ///|
+pub fn tool_registry_resolve_packages(request : String) -> String {
+  @catalog.resolve_packages(contributions(), request)
+}
+
+///|
+pub fn tool_registry_snapshot_open_packages(
+  response : String,
+  capabilities : Int32,
+) -> Int32 {
+  @catalog.snapshot_open_packages(contributions(), response, capabilities)
+}
+
+///|
 pub fn tool_registry_snapshot_open(
   response : String,
   capabilities : Int32,
