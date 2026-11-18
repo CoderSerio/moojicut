@@ -157,7 +157,7 @@ class DesktopBuild:
                          "comctl32.lib", "shell32.lib", "user32.lib", "kernel32.lib", "oldnames.lib",
                          "gdi32.lib", "gdiplus.lib", "advapi32.lib", "ole32.lib", "uuid.lib", "dbghelp.lib",
                          "mfplat.lib", "mfreadwrite.lib", "mfuuid.lib", "mf.lib", "propsys.lib",
-                         "winhttp.lib", "bcrypt.lib", "comdlg32.lib", "oleacc.lib", "oleaut32.lib",
+                         "winhttp.lib", "bcrypt.lib", "comdlg32.lib", "imm32.lib", "oleacc.lib", "oleaut32.lib",
                          *self.media.libraries)
                 shutil.copy2(linked_executable, executable)
                 shutil.copytree(self.media.runtime_payload, staging, dirs_exist_ok=True)
@@ -354,7 +354,7 @@ class DesktopBuild:
                      "/MANIFESTINPUT:" + str(ROOT / "native/windows/app.manifest"),
                      "/IMPLIB:" + str(directory / "video-editor.lib"),
                      *self.media.libraries, "user32.lib", "kernel32.lib", "gdi32.lib", "comctl32.lib",
-                     "ole32.lib", "oleacc.lib", "oleaut32.lib", "uuid.lib", "oldnames.lib",
+                     "ole32.lib", "oleacc.lib", "oleaut32.lib", "imm32.lib", "uuid.lib", "oldnames.lib",
                      "advapi32.lib", "dbghelp.lib", "shell32.lib")
         else:
             flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0"))
@@ -385,7 +385,7 @@ class DesktopBuild:
             self.run("cl", "/nologo", *objects, self.core_archive, "/Fe" + str(executable),
                      "/link", "/SUBSYSTEM:CONSOLE", "/IMPLIB:" + str(directory / "shared-canvas.lib"),
                      "user32.lib", "kernel32.lib", "gdi32.lib", "comctl32.lib", "ole32.lib",
-                     "oleacc.lib", "oleaut32.lib", "uuid.lib", "oldnames.lib", "advapi32.lib", "dbghelp.lib")
+                     "oleacc.lib", "oleaut32.lib", "imm32.lib", "uuid.lib", "oldnames.lib", "advapi32.lib", "dbghelp.lib")
         else:
             flags = shlex.split(self.run("pkg-config", "--cflags", "--libs", "gtk+-3.0"))
             self.run("cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",

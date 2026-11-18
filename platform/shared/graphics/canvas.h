@@ -51,6 +51,18 @@ typedef struct {
 
 moonbit_string_t mc_canvas_input_json(const MCCanvasInput *input);
 
+/* Independent text-system facts. Offsets are canonical LF/UTF-16; Windows
+ * CRLF/GTK character offsets must be converted by the native bridge first.
+ * Unknown selection uses zero placeholders, never an invented native caret.
+ * The callback may synchronously replace a frame/retire a field; check identity
+ * after returning. Strings in this structure are borrowed for this call only. */
+typedef struct {
+  int32_t type, token, version, start, end, selection_kind, anchor, focus;
+  const uint16_t *id, *text;
+  size_t id_length, text_length;
+} MCCanvasTextInput;
+moonbit_string_t mc_canvas_text_input_json(const MCCanvasTextInput *input);
+
 #ifdef __cplusplus
 }
 #endif

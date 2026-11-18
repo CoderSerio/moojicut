@@ -80,7 +80,9 @@
           "components/style_controls/macos/MCStyleControls.m",
           "components/style_controls/macos/MCStylePropertiesView.m"
         ],
-        "requires": [],
+        "requires": [
+          "platform.graphics"
+        ],
         "files": [
           "components/style_controls/macos/MCStyleControls.h",
           "components/style_controls/macos/MCStylePropertiesView.h"
@@ -139,7 +141,9 @@
         "requires": [
           "component.style_controls",
           "component.image_effects",
-          "feature.select"
+          "feature.select",
+          "platform.graphics",
+          "component.shared_canvas"
         ],
         "files": [
           "plugins/feature/image_editor/macos/MCImageEditorController.h"
@@ -172,7 +176,8 @@
           "plugins/feature/capture/macos/MCCaptureController.h"
         ],
         "includes": [
-          "component.selection"
+          "component.selection",
+          "shared.bindings"
         ]
       },
       "feature.capture_text": {
@@ -296,6 +301,17 @@
         ],
         "files": [],
         "requires": []
+      },
+      "platform.graphics": {
+        "sources": [
+          "platform/macos/graphics/MCSharedTextInput.m",
+          "platform/macos/graphics/MCSystemColorPanel.m"
+        ],
+        "files": [
+          "platform/macos/graphics/MCSharedTextInput.h",
+          "platform/macos/graphics/MCSystemColorPanel.h"
+        ],
+        "requires": []
       }
     },
     "windows": {
@@ -372,7 +388,8 @@
         "requires": [
           "component.style_controls",
           "component.hud",
-          "feature.select"
+          "feature.select",
+          "platform.graphics"
         ],
         "files": [
           "plugins/feature/capture/windows/capture.h"
@@ -414,11 +431,13 @@
       "platform.graphics": {
         "sources": [
           "platform/windows/graphics/shared_canvas.c",
-          "platform/windows/graphics/shared_canvas_accessibility.c"
+          "platform/windows/graphics/shared_canvas_accessibility.c",
+          "platform/windows/graphics/text_input.c"
         ],
         "files": [
           "platform/windows/graphics/shared_canvas.h",
-          "platform/windows/graphics/shared_canvas_accessibility.h"
+          "platform/windows/graphics/shared_canvas_accessibility.h",
+          "platform/windows/graphics/text_input.h"
         ],
         "requires": [
           "shared.graphics"
@@ -506,7 +525,8 @@
         ],
         "requires": [
           "component.style_controls",
-          "feature.select"
+          "feature.select",
+          "platform.graphics"
         ],
         "files": [
           "plugins/feature/capture/linux/capture.h",
@@ -567,10 +587,12 @@
       },
       "platform.graphics": {
         "sources": [
-          "platform/linux/graphics/shared_canvas.c"
+          "platform/linux/graphics/shared_canvas.c",
+          "platform/linux/graphics/text_input.c"
         ],
         "files": [
-          "platform/linux/graphics/shared_canvas.h"
+          "platform/linux/graphics/shared_canvas.h",
+          "platform/linux/graphics/text_input.h"
         ],
         "requires": [
           "shared.graphics"
@@ -650,6 +672,7 @@
     "shared.bindings": {
       "sources": [],
       "files": [
+        "bindings/c/capture_edit.h",
         "bindings/c/capture_ui.h",
         "bindings/c/editor_style.h",
         "bindings/c/feature_runtime.h",

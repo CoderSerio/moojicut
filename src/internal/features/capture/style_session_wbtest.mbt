@@ -17,13 +17,13 @@ test "editor tool capabilities expose the shared style domains" {
     let (minimum, maximum, step, initial) = domains[property]
     assert_eq(@image.editor_style_min(property), minimum)
     assert_eq(@image.editor_style_max(property), maximum)
-    assert_eq(@capture_ui.editor_style_step(property), step)
+    assert_eq(editor_style_step(property), step)
     assert_eq(@annotation_tools.editor_style_default(property), initial)
   }
   for property in [-1, 6, 2147483647] {
     assert_eq(@image.editor_style_min(property), 0)
     assert_eq(@image.editor_style_max(property), 0)
-    assert_eq(@capture_ui.editor_style_step(property), 0)
+    assert_eq(editor_style_step(property), 0)
     assert_eq(@annotation_tools.editor_style_default(property), 0)
   }
 }

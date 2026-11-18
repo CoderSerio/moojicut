@@ -16,7 +16,7 @@ pub fn editor_style_swatch_size() -> Int {
 ///|
 #export_name("editor_style_visible_mask")
 pub fn editor_style_visible_mask(tool : Int, shape : Int) -> Int {
-  @capture_ui.editor_style_visible_mask(tool, shape)
+  @capture.editor_style_visible_mask(tool, shape)
 }
 
 ///|
@@ -46,7 +46,7 @@ pub fn editor_style_max(property : Int) -> Double {
 ///|
 #export_name("editor_style_step")
 pub fn editor_style_step(property : Int) -> Double {
-  @capture_ui.editor_style_step(property)
+  @capture.editor_style_step(property)
 }
 
 ///|

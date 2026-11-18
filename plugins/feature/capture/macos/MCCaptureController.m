@@ -5,6 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <math.h>
+#include "bindings/c/capture_edit.h"
 
 static NSError *MCCaptureError(NSString *message) {
     return [NSError errorWithDomain:@"dev.moojicut.capture" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
@@ -58,8 +59,22 @@ static NSError *MCCaptureError(NSString *message) {
 - (void)applyToolConfiguration:(NSDictionary *)candidate {
     NSAssert(NSThread.isMainThread, @"Tool configuration must be applied on the main thread");
     // No editor is changed until all existing screens accept the same snapshot.
-    if (![self canApplyToolConfiguration:candidate error:NULL]) return;
-    for (MCImageEditorController *editor in [self toolConfigurationEditors]) [editor applyToolConfiguration:candidate];
+    NSArray<MCImageEditorController *> *editors = [self toolConfigurationEditors];
+    NSMutableArray *publications = [NSMutableArray array];
+    for (MCImageEditorController *editor in editors) {
+        NSDictionary *publication = [editor preparedToolConfigurationPublication:candidate error:NULL];
+        if (!publication) return;
+        if (publication.count) [publications addObject:publication];
+    }
+    if (publications.count) {
+        NSData *data = [NSJSONSerialization dataWithJSONObject:publications options:0 error:NULL];
+        NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        moonbit_string_t request = moonbit_make_string_raw((int32_t)json.length);
+        [json getCharacters:request range:NSMakeRange(0,json.length)];
+        int accepted = capture_candidate_commit_many(request); moonbit_decref(request);
+        if (!accepted) return;
+    }
+    for (MCImageEditorController *editor in editors) [editor completeToolConfigurationPublication:candidate];
     self.toolConfiguration = candidate;
 }
 

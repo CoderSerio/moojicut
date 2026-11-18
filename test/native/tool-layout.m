@@ -5,6 +5,9 @@
 #import "components/icons/macos/MCIcon.h"
 #include "moonbit.h"
 #include "bindings/c/tool_registry.h"
+#include "bindings/c/capture_edit.h"
+#import "components/shared_canvas/macos/MCSharedCanvas.h"
+#import "platform/macos/graphics/MCSharedTextInput.h"
 #include <math.h>
 #import <objc/runtime.h>
 
@@ -19,6 +22,13 @@
 @end
 @interface MCImageEditorController (MCToolLayoutTest)
 @property (readonly) MCImageCanvas *canvas;
+@property (readonly) NSDictionary<NSString *,MCSharedTextInputView *> *textPropertyInputs;
+@property (readonly) MCSharedCanvasView *textPropertiesCanvas;
+@property (readonly) int32_t textEdit;
+@property (readonly) int32_t imageSession;
+- (void)sharedColorChanged:(id)sender;
+- (void)syncTextControls;
+- (BOOL)finishSharedText:(BOOL)commit;
 @property (readonly) NSSegmentedControl *tools;
 @property (readonly) NSInteger activeTool;
 @property (readonly) MCStylePropertiesView *properties;
@@ -40,8 +50,16 @@
 @end
 @interface MCColorControl (MCColorPanelTest)
 - (void)showColorPanel:(id)sender;
-- (void)panelColorChanged:(NSColorPanel *)panel;
 @end
+static void textNumber(MCImageEditorController *editor, NSString *id, NSString *raw) {
+    MCSharedTextInputView *input = editor.textPropertyInputs[id];
+    [input selectAll:nil]; [input insertText:raw replacementRange:NSMakeRange(0,input.string.length)];
+}
+static void textColor(MCImageEditorController *editor, NSColor *color) {
+    NSColorPanel *panel = NSColorPanel.sharedColorPanel;
+    panel.color = color; [editor sharedColorChanged:panel];
+    textNumber(editor,@"style.opacity",[NSString stringWithFormat:@"%.12g",color.alphaComponent*100]);
+}
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL tool layout: %s\n", message); passed = NO; } } while (0)
 
 static NSDictionary *registryConfiguration(NSArray<NSDictionary *> *entries, NSArray *manifests) {
@@ -128,6 +146,7 @@ static void draw(MCImageEditorController *editor, NSPoint from, NSPoint to) {
     [editor.canvas mouseUp:mouse(editor.canvas, NSEventTypeLeftMouseUp, to)];
 }
 static void color(MCImageEditorController *editor, NSColor *color) {
+    if (editor.textEdit) { textColor(editor,color); return; }
     editor.properties.colorControl.color = color;
     MCColorControl *control = editor.properties.colorControl;
     if (control.onChange) control.onChange(control.well);
@@ -150,8 +169,7 @@ static BOOL interactions(void) {
     CHECK([arrow[@"type"] isEqual:@"arrow"] && [arrow[@"stroke"] intValue] == 7 && [arrow[@"color"] isEqual:@"#ff0000"], "reordered arrow draws the right kind and style");
     choose(e, 3);
     color(e, [NSColor colorWithSRGBRed:0 green:0 blue:1 alpha:1]);
-    NSStepper *font = e.properties.fontControl.stepper;
-    font.doubleValue = 36; [font sendAction:font.action to:font.target];
+    textNumber(e,@"style.fontSize",@"36");
     [e.canvas mouseDown:mouse(e.canvas, NSEventTypeLeftMouseDown, NSMakePoint(50, 220))];
     CHECK(e.canvas.textView != nil, "reordered text enters the real inline editor");
     [e.canvas.textView insertText:@"中文工具 ✅" replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -220,9 +238,10 @@ static BOOL validationAndFanout(void) {
     CHECK([first.toolConfiguration isEqual:base] && [opened.toolConfiguration isEqual:base] && [capture.toolConfiguration isEqual:base] &&
           first.activeTool == 2 && [first.document isEqual:firstDocument], "multi-editor preflight never applies half a configuration");
     [second.canvas.textView unmarkText];
+    NSString *validText = second.canvas.textView.string;
     second.canvas.textView.string = [@"x" stringByPaddingToLength:10001 withString:@"x" startingAtIndex:0];
-    CHECK(![capture canApplyToolConfiguration:none error:NULL] && second.canvas.textView.string.length == 10001,
-          "MoonBit text validation failure retains the full uncommitted input");
+    CHECK([capture canApplyToolConfiguration:none error:NULL] && [second.canvas.textView.string isEqual:validText],
+          "shared field rejects oversized replacement before it can corrupt the live draft");
     second.canvas.textView.string = @"你好";
     choose(first, 2);
     NSTextField *field = first.properties.strokeControl.field;
@@ -304,6 +323,7 @@ static BOOL pinAction(void) {
           [textView.string isEqual:composed] && e.window.firstResponder == responder,
           "explicit pin rejects IME without touching composition, selection, draft or history");
     [textView insertText:@"保留草稿" replacementRange:NSMakeRange(NSNotFound,0)];
+    draft = e.canvas.textDraft;
     NSRange selectedRange = textView.selectedRange;
     NSData *unannotated = result;
     NSUndoManager *textUndo = textView.undoManager;
@@ -315,11 +335,12 @@ static BOOL pinAction(void) {
           textView.undoManager == textUndo && textUndo.canUndo == canUndo && [e.document isEqual:before],
           "handler failure retains the exact live text transaction and document history");
     CHECK(![result isEqual:unannotated], "candidate PNG includes the pending text without committing it into the editor");
-    textView.string = [@"x" stringByPaddingToLength:10001 withString:@"x" startingAtIndex:0];
+    textNumber(e,@"style.fontSize",@"invalid");
+    draft = e.canvas.textDraft;
     choose(e,100);
-    CHECK(calls == 4 && e.activeTool == 3 && e.canvas.textView == textView && textView.string.length == 10001 &&
-          e.canvas.textDraft == draft && [e.document isEqual:before],
-          "pin cannot discard a text draft rejected by the shared document validator");
+    CHECK(calls == 4 && e.activeTool == 3 && e.canvas.textView == textView &&
+          [e.textPropertyInputs[@"style.fontSize"].string isEqual:@"invalid"] && e.canvas.textDraft == draft && [e.document isEqual:before],
+          "pin cannot discard a numeric draft rejected by the shared field validator");
     [e.canvas finishTextEditing:NO];
     choose(e,2);
     CHECK(e.properties.values.stroke == 9 && e.properties.values.rgb == 0xff0000, "the prior arrow defaults survive pin attempts and text edits");
@@ -804,8 +825,19 @@ static BOOL propertySpacing(void) {
                 }
                 previous = group;
             }
+            if (e.textEdit) {
+                NSArray *children = e.textPropertiesCanvas.accessibilityChildren;
+                for (MCSharedTextInputView *field in e.textPropertyInputs.allValues) {
+                    CHECK(NSContainsRect(e.textPropertiesCanvas.bounds,field.frame), "shared numeric surface fits the actual property canvas");
+                    CHECK([children containsObject:field] && [field.accessibilityRole isEqual:NSAccessibilityTextFieldRole],
+                          "shared canvas exposes the real editable accessibility child once");
+                    CHECK([[children filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id item, NSDictionary *bindings) {
+                        (void)bindings; return item == field;
+                    }]] count] == 1, "field accessibility is not duplicated");
+                }
+            }
             MCColorSwatch *well = e.properties.colorControl.well;
-            if (!e.properties.colorControl.hidden) {
+            if (!e.textEdit && !e.properties.colorControl.hidden) {
                 CHECK(NSWidth(well.frame) == editor_style_swatch_size() && NSHeight(well.frame) == editor_style_swatch_size(),
                       "light and dark swatches share a square drawing and input container");
                 CHECK([well hitTest:NSMakePoint(NSMidX(well.frame), NSMidY(well.frame))] == well &&
@@ -853,30 +885,30 @@ static BOOL colorPanelLifetime(void) {
     second.onChange = ^(__unused id sender) { secondChanges++; };
     [first showColorPanel:nil];
     NSColorPanel *panel = NSColorPanel.sharedColorPanel;
-    CHECK(observedColorTarget == first && firstChanges == 0, "opening the system panel binds without changing a style");
+    CHECK(observedColorTarget != nil && firstChanges == 0, "opening the system panel binds without changing a style");
     [second showColorPanel:nil];
+    id router = observedColorTarget;
     second.color = [NSColor colorWithSRGBRed:.1 green:.8 blue:.2 alpha:.6];
     NSColor *rebound = [panel.color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-    CHECK(secondChanges == 0 && observedColorTarget == second && fabs(rebound.greenComponent - .8) < .001 &&
+    CHECK(secondChanges == 0 && observedColorTarget == router && fabs(rebound.greenComponent - .8) < .001 &&
           fabs(rebound.alphaComponent - .6) < .001, "rebinding an open color panel stays synchronized without creating an edit");
     panel.color = [NSColor colorWithSRGBRed:.2 green:.4 blue:.8 alpha:.35];
-    [first panelColorChanged:panel];
-    CHECK(firstChanges == 0 && observedColorTarget == second, "a former panel owner ignores a late color action");
+    CHECK(firstChanges == 0 && observedColorTarget == router, "a former panel owner ignores a late color action");
     // NSColorPanel's color setter dispatches its real target/action. Do not
     // manually invoke the current owner and accidentally count the event twice.
     CHECK(secondChanges == 1 && fabs(second.color.alphaComponent - .35) < .001,
           "the current panel owner receives RGBA through its normal change callback");
     [first closePopover];
-    CHECK(observedColorTarget == second, "closing a former owner does not detach the active panel owner");
+    CHECK(observedColorTarget == router, "closing a former owner does not detach the active panel owner");
     [second removeFromSuperview];
     CHECK(observedColorTarget == nil, "removing a property view detaches the system panel target");
-    [second panelColorChanged:panel];
+    panel.color = [NSColor colorWithSRGBRed:.7 green:.2 blue:.3 alpha:.8];
     CHECK(secondChanges == 1, "a removed property view rejects a queued panel action");
     __weak MCColorControl *released;
     @autoreleasepool {
         MCColorControl *temporary = [[MCColorControl alloc] initWithFrame:NSZeroRect];
         [temporary showColorPanel:nil]; released = temporary;
-        CHECK(observedColorTarget == temporary, "a standalone color component can own the panel");
+        CHECK(observedColorTarget != nil, "a standalone color component can own the panel through its lease");
     }
     CHECK(released == nil && observedColorTarget == nil, "component deallocation clears its panel target without retaining it");
     NSStackView *content = (NSStackView *)first.popover.contentViewController.view;

@@ -1,4 +1,5 @@
 #import "MCStyleControls.h"
+#import "platform/macos/graphics/MCSystemColorPanel.h"
 #include "bindings/c/editor_style.h"
 #include <math.h>
 
@@ -112,9 +113,8 @@ static NSTextField *MCStyleLabel(NSString *text) {
 @property (nonatomic, readwrite) MCNumberControl *opacityControl;
 @property (nonatomic, readwrite) NSPopover *popover;
 @property NSSlider *opacitySlider;
-@property BOOL ownsColorPanel;
+@property MCSystemColorPanelLease *colorPanelLease;
 @end
-static __weak MCColorControl *MCColorPanelOwner;
 @implementation MCColorControl
 - (instancetype)initWithFrame:(NSRect)frame {
     if ((self = [super initWithFrame:frame])) {
@@ -182,19 +182,7 @@ static __weak MCColorControl *MCColorPanelOwner;
     self.well.color = rgb;
     self.opacityControl.value = rgb.alphaComponent * 100;
     self.opacitySlider.doubleValue = self.opacityControl.value;
-    if (self.ownsColorPanel && NSColorPanel.sharedColorPanelExists) {
-        NSColorPanel *panel = NSColorPanel.sharedColorPanel;
-        NSColor *current = [panel.color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-        if (![current isEqual:rgb]) {
-            // Undo/selection rebinding updates the open panel silently. Its
-            // color setter sends actions, so this must not create a new edit.
-            [panel setTarget:nil]; [panel setAction:NULL];
-            panel.color = rgb;
-            if (self.ownsColorPanel && MCColorPanelOwner == self) {
-                [panel setTarget:self]; [panel setAction:@selector(panelColorChanged:)];
-            }
-        }
-    }
+    if (self.colorPanelLease.active) [self.colorPanelLease updateColor:rgb];
 }
 - (void)syncFromSender:(id)sender {
     if (sender == self.opacityControl.field || sender == self.opacityControl.stepper) {
@@ -241,39 +229,30 @@ static __weak MCColorControl *MCColorPanelOwner;
     (void)sender;
     if (![self popoverShouldClose:self.popover]) return;
     [self.popover close];
+    self.colorPanelLease = [MCSystemColorPanelLease beginWithOwner:self color:self.color showsAlpha:YES
+        onColor:^(MCColorControl *owner, NSColor *color) {
+            if (!owner.well.enabled) return;
+            owner.color = color;
+            [owner changed:owner.well];
+        }];
     NSColorPanel *panel = NSColorPanel.sharedColorPanel;
-    [panel setTarget:nil]; [panel setAction:NULL];
-    MCColorPanelOwner.ownsColorPanel = NO;
-    MCColorPanelOwner = self; self.ownsColorPanel = YES;
-    panel.showsAlpha = YES;
     panel.level = MAX(NSFloatingWindowLevel, self.window.level + 1);
-    panel.color = self.color;
-    [panel setTarget:self]; [panel setAction:@selector(panelColorChanged:)];
     [panel orderFront:nil];
-}
-- (void)panelColorChanged:(NSColorPanel *)panel {
-    if (MCColorPanelOwner != self || !self.well.enabled) return;
-    self.color = panel.color;
-    [self changed:self.well];
 }
 - (void)closePopover {
     [self.popover close];
-    if (self.ownsColorPanel && NSColorPanel.sharedColorPanelExists) {
-        self.ownsColorPanel = NO;
-        MCColorPanelOwner = nil;
-        NSColorPanel *panel = NSColorPanel.sharedColorPanel;
-        [panel setTarget:nil]; [panel setAction:NULL]; [panel orderOut:nil];
-    }
+    BOOL active = self.colorPanelLease.active;
+    [self.colorPanelLease invalidate]; self.colorPanelLease = nil;
+    if (active && NSColorPanel.sharedColorPanelExists) [NSColorPanel.sharedColorPanel orderOut:nil];
 }
 - (void)viewWillMoveToWindow:(NSWindow *)window {
     if (self.window && !window) [self closePopover];
     [super viewWillMoveToWindow:window];
 }
 - (void)dealloc {
-    if (_ownsColorPanel && NSColorPanel.sharedColorPanelExists) {
-        NSColorPanel *panel = NSColorPanel.sharedColorPanel;
-        [panel setTarget:nil]; [panel setAction:NULL]; [panel orderOut:nil];
-    }
+    BOOL active = _colorPanelLease.active;
+    [_colorPanelLease invalidate];
+    if (active && NSColorPanel.sharedColorPanelExists) [NSColorPanel.sharedColorPanel orderOut:nil];
 }
 - (void)changed:(id)sender {
     [self syncFromSender:sender];

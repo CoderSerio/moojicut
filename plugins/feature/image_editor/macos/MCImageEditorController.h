@@ -27,6 +27,10 @@ NS_ASSUME_NONNULL_BEGIN
 // A failed preflight leaves the configuration, input and document untouched.
 - (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error;
 - (void)applyToolConfiguration:(NSDictionary *)candidate;
+// Coordinator-only: prepare every editor, publish all tickets in MoonBit, then
+// tear down native input. Empty dictionaries mean that no document edit is needed.
+- (nullable NSDictionary *)preparedToolConfigurationPublication:(NSDictionary *)candidate error:(NSError **)error;
+- (void)completeToolConfigurationPublication:(NSDictionary *)candidate;
 - (void)show;
 - (void)prepareOverlayInFrame:(NSRect)screenFrame;
 - (BOOL)applyAnnotation:(NSDictionary *)annotation;

@@ -33,7 +33,8 @@ enum { MC_UI_DRAW_X = 0, MC_UI_DRAW_Y = 1, MC_UI_DRAW_WIDTH = 2, MC_UI_DRAW_HEIG
        MC_UI_DRAW_Y2 = 7, MC_UI_DRAW_FONT_SIZE = 8 };
 enum { MC_UI_DRAW_TYPE = 0, MC_UI_DRAW_FILL = 1, MC_UI_DRAW_STROKE = 2,
        MC_UI_DRAW_COLOR = 3, MC_UI_DRAW_WEIGHT = 4, MC_UI_DRAW_ALIGN = 5, MC_UI_DRAW_VALIGN = 6 };
-enum { MC_UI_WEIGHT_REGULAR = 0, MC_UI_WEIGHT_MEDIUM = 1, MC_UI_WEIGHT_BOLD = 2 };
+enum { MC_UI_WEIGHT_REGULAR = 0, MC_UI_WEIGHT_MEDIUM = 1, MC_UI_WEIGHT_BOLD = 2,
+       MC_UI_WEIGHT_SEMIBOLD = 3 /* editable fields only */ };
 enum { MC_UI_ALIGN_LEFT = 0, MC_UI_ALIGN_CENTER = 1, MC_UI_ALIGN_RIGHT = 2 };
 enum { MC_UI_VALIGN_TOP = 0, MC_UI_VALIGN_CENTER = 1 };
 enum { MC_UI_ROLE_GROUP = 0, MC_UI_ROLE_BUTTON = 1, MC_UI_ROLE_SLIDER = 2,
@@ -56,6 +57,38 @@ int32_t ui_frame_semantic_count(int32_t handle);
 int32_t ui_frame_semantic_value(int32_t handle, int32_t index, int32_t field);
 double ui_frame_semantic_number(int32_t handle, int32_t index, int32_t field);
 moonbit_string_t ui_frame_semantic_text(int32_t handle, int32_t index, int32_t field);
+/* Editable field snapshots, <=64/frame; native input objects own accessibility
+ * for these IDs, which cannot also occur in semantics. Unknown selection has
+ * placeholder offsets; never overwrite a real native caret with them. Marked
+ * endpoints are -1 when not composing. All ranges are UTF-16 and end-exclusive.
+ * clip defaults to the field rect. Getters follow the same invalid-value rules. */
+enum { MC_UI_FIELD_TOKEN = 0, MC_UI_FIELD_VERSION = 1, MC_UI_FIELD_ENABLED = 2,
+       MC_UI_FIELD_READ_ONLY = 3, MC_UI_FIELD_FOCUSED = 4, MC_UI_FIELD_MULTILINE = 5,
+       MC_UI_FIELD_SELECTION_KNOWN = 6, MC_UI_FIELD_DIRECTION_KNOWN = 7,
+       MC_UI_FIELD_ANCHOR = 8, MC_UI_FIELD_FOCUS = 9, MC_UI_FIELD_MARKED_START = 10,
+       MC_UI_FIELD_MARKED_END = 11, MC_UI_FIELD_COLOR = 12,
+       MC_UI_FIELD_CAN_UNDO = 13, MC_UI_FIELD_CAN_REDO = 14, MC_UI_FIELD_WEIGHT = 15 };
+enum { MC_UI_FIELD_X = 0, MC_UI_FIELD_Y = 1, MC_UI_FIELD_WIDTH = 2, MC_UI_FIELD_HEIGHT = 3,
+       MC_UI_FIELD_CLIP_X = 4, MC_UI_FIELD_CLIP_Y = 5, MC_UI_FIELD_CLIP_WIDTH = 6,
+       MC_UI_FIELD_CLIP_HEIGHT = 7, MC_UI_FIELD_FONT_SIZE = 8, MC_UI_FIELD_OPACITY = 9 };
+enum { MC_UI_FIELD_ID = 0, MC_UI_FIELD_RAW = 1, MC_UI_FIELD_LABEL = 2,
+       MC_UI_FIELD_TOOLTIP = 3, MC_UI_FIELD_ERROR = 4 };
+int32_t ui_frame_field_count(int32_t handle);
+int32_t ui_frame_field_value(int32_t handle, int32_t index, int32_t field);
+double ui_frame_field_number(int32_t handle, int32_t index, int32_t field);
+moonbit_string_t ui_frame_field_text(int32_t handle, int32_t index, int32_t field);
+enum { MC_UI_TEXT_REPLACE = 1, MC_UI_TEXT_SELECT = 2, MC_UI_TEXT_COMPOSITION_START = 3,
+       MC_UI_TEXT_COMPOSITION_UPDATE = 4, MC_UI_TEXT_COMPOSITION_COMMIT = 5,
+       MC_UI_TEXT_COMPOSITION_CANCEL = 6, MC_UI_TEXT_UNDO = 7, MC_UI_TEXT_REDO = 8 };
+enum { MC_UI_SELECTION_UNKNOWN = 0, MC_UI_SELECTION_DIRECTED = 1, MC_UI_SELECTION_UNDIRECTED = 2 };
+/* Generic field event encoder. No domain parsing or document mutation. ID is
+ * 1..256 units, text <=32768; all ranges/known offsets 0..32768. Unused start/end
+ * and anchor/focus are 0. Only replace/composition-update/commit carry text.
+ * CompositionCommit confirms IME into the draft; it does NOT publish a document.
+ * Invalid input yields owned empty string. Native selection/composition offsets
+ * must first be normalized to absolute UTF-16 positions in the resulting raw. */
+moonbit_string_t ui_text_event(int32_t type, moonbit_string_t id, int32_t token, int32_t version,
+    int32_t start, int32_t end, moonbit_string_t text, int32_t selection_kind, int32_t anchor, int32_t focus);
 /* Generic event encoder, no hit-testing or business interpretation. Pointer and
  * scroll positions/deltas must be finite +/-1e6. Text is empty for pointer,
  * cancel/scroll; key/activate require 1..256 units; appearance is light/dark.

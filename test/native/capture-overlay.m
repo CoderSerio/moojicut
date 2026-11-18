@@ -3,6 +3,9 @@
 #import "components/style_controls/macos/MCStylePropertiesView.h"
 #include "moonbit.h"
 #include "bindings/c/tool_registry.h"
+#include "bindings/c/capture_edit.h"
+#import "components/shared_canvas/macos/MCSharedCanvas.h"
+#import "platform/macos/graphics/MCSharedTextInput.h"
 #include <math.h>
 #import <objc/runtime.h>
 
@@ -18,6 +21,13 @@
 @end
 @interface MCImageEditorController (MCOverlayTest)
 @property (readonly) MCImageCanvas *canvas;
+@property (readonly) NSDictionary<NSString *,MCSharedTextInputView *> *textPropertyInputs;
+@property (readonly) MCSharedCanvasView *textPropertiesCanvas;
+@property (readonly) int32_t textEdit;
+@property (readonly) int32_t imageSession;
+- (void)sharedColorChanged:(id)sender;
+- (void)syncTextControls;
+- (BOOL)finishSharedText:(BOOL)commit;
 @property (readonly) NSView *floatingToolbar;
 @property (readonly) BOOL hasCaptureRegion;
 @property (readonly) NSSegmentedControl *tools;
@@ -44,6 +54,15 @@
 - (void)showError:(NSError *)error;
 @end
 
+static void textNumber(MCImageEditorController *editor, NSString *id, NSString *raw) {
+    MCSharedTextInputView *input = editor.textPropertyInputs[id];
+    [input selectAll:nil]; [input insertText:raw replacementRange:NSMakeRange(0,input.string.length)];
+}
+static void textColor(MCImageEditorController *editor, NSColor *color) {
+    NSColorPanel *panel = NSColorPanel.sharedColorPanel;
+    panel.color = color; [editor sharedColorChanged:panel];
+    textNumber(editor,@"style.opacity",[NSString stringWithFormat:@"%.12g",color.alphaComponent*100]);
+}
 #define CHECK(c, message) do { if (!(c)) { fprintf(stderr, "FAIL capture overlay: %s\n", message); passed = NO; } } while (0)
 
 static void selectTool(MCImageEditorController *editor, NSInteger kind) {
@@ -177,7 +196,7 @@ static BOOL exercise(CGFloat scale) {
     CHECK(!editor.colorGroup.hidden && editor.fontGroup.hidden && editor.strokeGroup.hidden,
           "filled cover exposes color/opacity without unrelated stroke or font properties");
     selectTool(editor, 3);
-    CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden &&
+    CHECK(editor.properties.hidden && !editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 2 &&
           NSContainsRect(editor.window.contentView.bounds, editor.floatingToolbar.frame),
           "changing tools fits the current properties within the screen");
     NSRect toolbarFrame = editor.floatingToolbar.frame;
@@ -192,10 +211,9 @@ static BOOL exercise(CGFloat scale) {
           editor.window.firstResponder == textResponder && NSEqualRects(toolbarFrame, editor.floatingToolbar.frame),
           "tool switching preserves ongoing IME composition and HUD placement");
     [canvas.textView insertText:@"原地编辑 🌙\n第二行" replacementRange:NSMakeRange(NSNotFound, 0)];
-    editor.fontStepper.doubleValue = 32;
-    [editor.fontStepper sendAction:editor.fontStepper.action to:editor.fontStepper.target];
-    CHECK(editor.fontSize.doubleValue == 32 && [editor.document[@"annotations"] count] == 0,
-          "native font stepper updates the text draft without premature document history");
+    textNumber(editor,@"style.fontSize",@"32");
+    CHECK([editor.textPropertyInputs[@"style.fontSize"].string doubleValue] == 32 && [editor.document[@"annotations"] count] == 0,
+          "shared font input updates the text draft without premature document history");
     NSBitmapImageRep *snapshot = [NSBitmapImageRep imageRepWithData:[editor capturePNGData:&error]];
     CHECK(snapshot.pixelsWide == 400 && snapshot.pixelsHigh == 300 && canvas.textView != nil &&
           [editor.document[@"annotations"] count] == 0,
@@ -208,6 +226,16 @@ static BOOL exercise(CGFloat scale) {
         NSBitmapImageRep *preview = [content bitmapImageRepForCachingDisplayInRect:content.bounds];
         [content cacheDisplayInRect:content.bounds toBitmapImageRep:preview];
         [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:previewPath atomically:YES];
+        for (NSString *mode in @[@"light",@"dark"]) {
+            editor.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+            [editor syncTextControls]; [content layoutSubtreeIfNeeded];
+            [editor.window.effectiveAppearance performAsCurrentDrawingAppearance:^{
+                NSBitmapImageRep *themed = [content bitmapImageRepForCachingDisplayInRect:content.bounds];
+                [content cacheDisplayInRect:content.bounds toBitmapImageRep:themed];
+                NSString *path = [[[previewPath stringByDeletingPathExtension] stringByAppendingFormat:@"-%@",mode] stringByAppendingPathExtension:@"png"];
+                [[themed representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+            }];
+        }
     }
     error = nil;
     NSData *result = [editor renderPNGData:&error];
@@ -220,8 +248,8 @@ static BOOL exercise(CGFloat scale) {
     selectTool(editor, 0);
     canvas.selectedID = textID;
     [editor refresh];
-    CHECK(!editor.colorGroup.hidden && !editor.fontGroup.hidden && editor.strokeGroup.hidden,
-          "selecting an existing text object retains text properties in the select tool");
+    CHECK(!editor.textPropertiesCanvas.hidden && editor.textPropertyInputs.count == 2 && editor.properties.hidden,
+          "selecting an existing text object retains shared text properties in the select tool");
     // An untouched point must come from the same source location, not from a
     // downscaled full-screen image. This catches crop-origin/Retina regressions.
     NSColor *pixel = [[bitmap colorAtX:5 y:290] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
@@ -273,8 +301,8 @@ static BOOL independentToolStyles(void) {
         selectTool(editor, tool);
         MCStyleValues values = properties.values;
         values.rgb = colors[tool]; values.opacity = tool * .2;
-        properties.values = values;
-        properties.colorControl.onChange(properties.colorControl.well);
+        if (tool == 3) textColor(editor,[NSColor colorWithSRGBRed:0 green:0 blue:1 alpha:.6]);
+        else { properties.values = values; properties.colorControl.onChange(properties.colorControl.well); }
         if (tool <= 2) {
             editor.strokeStepper.doubleValue = 3 * tool;
             [editor.strokeStepper sendAction:editor.strokeStepper.action to:editor.strokeStepper.target];
@@ -284,6 +312,8 @@ static BOOL independentToolStyles(void) {
     for (NSInteger tool = 4; tool >= 1; tool--) {
         selectTool(editor, tool);
         MCStyleValues values = properties.values;
+        if (tool == 3) { values.rgb = (int32_t)capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_RGB);
+            values.opacity = capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_OPACITY); }
         CHECK(values.rgb == colors[tool] && fabs(values.opacity - tool * .2) < .001,
               "each tool restores its own RGBA values after visiting every other tool");
         if (tool <= 2) CHECK(values.stroke == 3 * tool, "rectangle and arrow have independent line widths");
@@ -297,8 +327,8 @@ static BOOL independentToolStyles(void) {
     [editor.canvas.textView insertText:@"第一段" replacementRange:NSMakeRange(NSNotFound, 0)];
     CHECK([editor.canvas finishTextEditing:YES], "new styled text commits through the normal inline editor");
     NSUInteger history = [editor.document[@"undo"] count];
-    properties.colorControl.color = [NSColor colorWithSRGBRed:1 green:1 blue:0 alpha:.9];
-    properties.colorControl.onChange(properties.colorControl.well);
+    [editor syncTextControls]; textColor(editor,[NSColor colorWithSRGBRed:1 green:1 blue:0 alpha:.9]);
+    CHECK([editor finishSharedText:YES], "selected shared RGBA draft commits once");
     NSDictionary *changed = [editor.document[@"annotations"] firstObject];
     CHECK([changed[@"color"] isEqual:@"#ffff00"] && fabs([changed[@"opacity"] doubleValue] - .9) < .001 &&
           [editor.document[@"undo"] count] == history + 1,
@@ -307,7 +337,7 @@ static BOOL independentToolStyles(void) {
     CHECK([editor.document[@"annotations"][0][@"color"] isEqual:@"#0000ff"], "one undo restores the selected object's color");
     [editor redo:nil];
     [editor chooseTool:editor.tools];
-    CHECK(properties.values.rgb == 0x0000ff && fabs(properties.values.opacity - .6) < .001,
+    CHECK(capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_RGB) == 0x0000ff && fabs(capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_OPACITY) - .6) < .001,
           "modifying an existing object never overwrites text creation defaults");
     [editor addTextAtPoint:NSMakePoint(30, 180)];
     [editor.canvas.textView insertText:@"第二段" replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -500,13 +530,12 @@ static BOOL contentSnapshots(void) {
           "uncommitted text invalidates asynchronous results even while the document revision is unchanged");
     CHECK([original[@"annotations"][0][@"text"] isEqual:@"原稿"], "saved snapshot strings do not alias the live text storage");
     NSDictionary *beforeStyle = editor.captureContentSnapshot;
-    editor.fontStepper.doubleValue = 40;
-    [editor.fontStepper sendAction:editor.fontStepper.action to:editor.fontStepper.target];
+    textNumber(editor,@"style.fontSize",@"40");
     CHECK([editor.document[@"revision"] isEqual:revision] && ![beforeStyle isEqual:editor.captureContentSnapshot] &&
           [beforeStyle[@"annotations"][0][@"fontSize"] intValue] != 40,
           "uncommitted annotation styling changes identity without mutating the older draft snapshot");
-    [editor.window makeFirstResponder:editor.fontSize];
-    NSText *input = editor.fontSize.currentEditor;
+    NSTextView *input = editor.textPropertyInputs[@"style.fontSize"];
+    [editor.window makeFirstResponder:input];
     CHECK(input != nil, "the snapshot regression exercises a real native numeric field editor");
     NSDictionary *beforeField = editor.captureContentSnapshot;
     input.string = @"48";
@@ -533,13 +562,13 @@ static BOOL contentSnapshots(void) {
     selectTool(editor,3); [editor addTextAtPoint:NSMakePoint(300,80)];
     [editor.canvas.textView insertText:@"待编辑" replacementRange:NSMakeRange(NSNotFound,0)];
     revision = editor.document[@"revision"];
-    [editor.window makeFirstResponder:editor.fontSize];
-    numericInput = (NSTextView *)editor.fontSize.currentEditor;
+    numericInput = editor.textPropertyInputs[@"style.fontSize"];
+    [editor.window makeFirstResponder:numericInput];
     numericInput.string = @"invalid";
     CHECK(editor.captureContentSnapshot == nil && [editor capturePNGData:NULL] == nil,
           "invalid pending numeric text cannot keep a stale OCR lease alive");
     numericInput.string = @"48";
-    [numericInput setMarkedText:@"49" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0, input.string.length)];
+    [numericInput setMarkedText:@"49" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0, numericInput.string.length)];
     NSString *numericComposition = [numericInput.string copy];
     NSRange numericMarkedRange = numericInput.markedRange;
     NSError *compositionError = nil;

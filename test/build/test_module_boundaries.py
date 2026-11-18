@@ -37,6 +37,8 @@ class ModuleBoundariesTest(unittest.TestCase):
             ("plugins/contracts", "plugins/runtime"),
             ("features/recording/core", "features/capture/core"),
             ("features/capture/ui", "app"),
+            ("features/capture/ui", "features/capture/extensions/annotations"),
+            ("features/capture/ui/fields", "features/capture"),
             ("features/capture/core", "shared/test_support"),
             ("shared/geometry", "features/video_editor/core/legacy_document"),
             ("plugins/runtime/catalog", "features/video_editor/core"),
@@ -51,6 +53,19 @@ class ModuleBoundariesTest(unittest.TestCase):
                 manifest.parent.mkdir(parents=True)
                 manifest.write_text('import { "sample/app/internal/' + target + '" }\n')
                 self.assertEqual(len(check_boundaries(root)), 1)
+
+    def test_ui_consumes_core_and_shared_fields_without_loading_contributions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "moon.mod").write_text('name = "sample/app"\nsource = "src"\n')
+            manifest = root / "src/internal/features/capture/ui/moon.pkg"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('import {\n'
+                                '"sample/app/internal/features/capture/core"\n'
+                                '"sample/app/internal/features/capture/ui/layout"\n'
+                                '"sample/app/internal/shared/ui/fields"\n}\n'
+                                'import { "sample/app/internal/features/capture" } for "wbtest"\n')
+            self.assertEqual(check_boundaries(root), [])
 
     def test_retired_package_roots_cannot_reappear_even_without_a_manifest(self):
         for name in RETIRED_PACKAGES:

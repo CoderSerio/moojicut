@@ -2,9 +2,13 @@ import {
   "moojicut/core/internal/features/capture/core" @image,
   "moojicut/core/internal/features/capture/ui" @capture_ui,
   "moojicut/core/internal/features/capture/extensions/annotations" @annotation_tools,
+  "moojicut/core/internal/shared/ui/fields" @fields,
+  "moojicut/core/internal/shared/protocol" @protocol,
+  "moonbitlang/core/string",
   "moonbitlang/core/json",
 }
 
 import {
   "moojicut/core/internal/shared/test_support" @test_support,
+  "moojicut/core/internal/shared/ui/frame" @ui_frame,
 } for "wbtest"

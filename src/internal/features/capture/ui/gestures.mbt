@@ -145,8 +145,9 @@ pub fn event(request : String) -> String {
         let opacity = number(fields, "opacity")
         let color = text(fields, "color")
         let shape = if fields.contains("shape") { @protocol.integer_field(fields, "shape", 0, 2).to_int() } else { 0 }
-        let block = if fields.contains("blockSize") { number(fields, "blockSize") } else { @annotation_tools.editor_style_default(5) }
-        if (shape != 0 && shape >= @annotation_tools.editor_style_shape_count(kind)) ||
+        let block = number(fields, "blockSize")
+        let shape_count = @protocol.integer_field(fields, "shapeCount", 0, 3).to_int()
+        if (shape != 0 && shape >= shape_count) ||
           !@image.editor_style_value_valid(5, block) {
           raise InputError("invalid_style", "Invalid screenshot shape or mosaic size")
         }

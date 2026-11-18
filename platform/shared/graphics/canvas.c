@@ -70,3 +70,18 @@ moonbit_string_t mc_canvas_input_json(const MCCanvasInput *input) {
   moonbit_decref(text);
   return result;
 }
+
+moonbit_string_t mc_canvas_text_input_json(const MCCanvasTextInput *input) {
+  if (!input || !input->id_length || input->id_length > 256 || !input->id ||
+      input->text_length > 32768 || (input->text_length && !input->text))
+    return moonbit_make_string_raw(0);
+  moonbit_string_t id = moonbit_make_string_raw((int32_t)input->id_length);
+  moonbit_string_t text = moonbit_make_string_raw((int32_t)input->text_length);
+  memcpy(id, input->id, input->id_length * sizeof(uint16_t));
+  if (input->text_length) memcpy(text, input->text, input->text_length * sizeof(uint16_t));
+  moonbit_string_t result = ui_text_event(input->type, id, input->token, input->version,
+      input->start, input->end, text, input->selection_kind, input->anchor, input->focus);
+  moonbit_decref(id);
+  moonbit_decref(text);
+  return result;
+}

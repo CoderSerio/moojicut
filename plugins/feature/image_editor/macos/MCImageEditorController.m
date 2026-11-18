@@ -4,14 +4,16 @@
 #import "components/style_controls/macos/MCStylePropertiesView.h"
 #import "components/selection/macos/MCSelectionSurface.h"
 #import "components/image_effects/macos/MCPixelate.h"
+#import "components/shared_canvas/macos/MCSharedCanvas.h"
+#import "platform/macos/graphics/MCSharedTextInput.h"
+#import "platform/macos/graphics/MCSystemColorPanel.h"
 #include "moonbit.h"
 #include "bindings/c/image_session.h"
+#include "bindings/c/capture_edit.h"
 #include "bindings/c/capture_ui.h"
 #include "bindings/c/tool_registry.h"
 #include <math.h>
 
-extern moonbit_string_t image_create(moonbit_string_t);
-extern moonbit_string_t image_apply(moonbit_string_t);
 extern moonbit_string_t image_finalize(moonbit_string_t);
 extern moonbit_string_t image_selection(moonbit_string_t);
 
@@ -152,6 +154,24 @@ static NSDictionary *MCCallCore(moonbit_string_t (*function)(moonbit_string_t), 
 }
 static NSDictionary *MCCallImage(moonbit_string_t (*function)(moonbit_string_t), NSDictionary *request, NSError **error) {
     return MCCallCore(function, request, error)[@"document"];
+}
+static moonbit_string_t MCEditString(NSString *text) {
+    moonbit_string_t result = moonbit_make_string_raw((int32_t)text.length);
+    [text getCharacters:result range:NSMakeRange(0,text.length)];
+    return result;
+}
+static moonbit_string_t MCEditJSON(id value) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:value ?: NSNull.null options:NSJSONWritingFragmentsAllowed error:NULL];
+    return MCEditString(data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"");
+}
+static id MCEditRead(moonbit_string_t value) {
+    NSString *text = [[NSString alloc] initWithCharacters:value length:(NSUInteger)Moonbit_array_length(value)];
+    moonbit_decref(value);
+    return [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:NSJSONReadingFragmentsAllowed error:NULL];
+}
+static NSString *MCEditReadString(moonbit_string_t value) {
+    NSString *text = [[NSString alloc] initWithCharacters:value length:(NSUInteger)Moonbit_array_length(value)];
+    moonbit_decref(value); return text;
 }
 static NSColor *MCAnnotationColor(NSDictionary *annotation) {
     unsigned int rgb = 0;
@@ -345,6 +365,27 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property MCStylePropertiesView *properties;
 @property int32_t styleHandle;
 @property int32_t captureUIHandle;
+@property int32_t imageSession;
+@property int32_t textEdit;
+@property NSDictionary *textSnapshot;
+@property MCSharedCanvasView *textPropertiesCanvas;
+@property NSMutableDictionary<NSString *, MCSharedTextInputView *> *textPropertyInputs;
+@property BOOL syncingText;
+@property BOOL endingText;
+@property MCSystemColorPanelLease *textColorLease;
+@property NSDictionary *configurationCandidate;
+@property NSArray *configurationInputIdentity;
+@property int32_t configurationTicket;
+- (BOOL)beginTextTransaction:(NSInteger)mode annotation:(NSDictionary *)annotation;
+- (BOOL)sendTextEvent:(NSDictionary *)event;
+- (void)syncSharedText;
+- (void)endNativeTextInput;
+- (BOOL)finishSharedText:(BOOL)commit;
+- (double)textMeasurement;
+- (void)sharedColorChanged:(id)sender;
+- (void)sharedColorPicked:(NSColor *)color;
+- (void)sharedTextUndo:(BOOL)redo;
+- (BOOL)handleSharedTextUIEvent:(NSDictionary *)event;
 @property (readonly) NSStackView *colorGroup;
 @property (readonly) NSStackView *fontGroup;
 @property (readonly) NSStackView *strokeGroup;
@@ -388,9 +429,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (void)confirm:(id)sender;
 @end
 
-@interface MCInlineTextView : NSTextView
+@interface MCInlineTextView : MCSharedTextInputView
 @property (weak) MCImageCanvas *canvas;
-@property NSUndoManager *textUndo;
 @end
 
 @interface MCImageCanvas : MCSelectionSurface <NSTextViewDelegate>
@@ -399,7 +439,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @property NSDictionary *pending;
 @property BOOL dragging;
 @property NSString *selectedID;
-@property NSMutableDictionary *textDraft;
+@property NSDictionary *textDraft;
 @property MCInlineTextView *textView;
 @property NSView *textHost;
 @property NSDictionary *transformOriginal;
@@ -416,32 +456,6 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @end
 
 @implementation MCInlineTextView
-- (NSUndoManager *)undoManager {
-    if (!self.textUndo) self.textUndo = [NSUndoManager new];
-    return self.textUndo;
-}
-- (BOOL)performKeyEquivalent:(NSEvent *)event {
-    NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    if ((flags & NSEventModifierFlagCommand) && [event.charactersIgnoringModifiers.lowercaseString isEqualToString:@"z"]) {
-        if (self.hasMarkedText) return [super performKeyEquivalent:event];
-        if (flags & NSEventModifierFlagShift) [self.undoManager redo]; else [self.undoManager undo];
-        return YES;
-    }
-    if (event.keyCode == 36 && (flags & NSEventModifierFlagCommand) && !self.hasMarkedText) {
-        [self.canvas finishTextEditing:YES];
-        return YES;
-    }
-    return [super performKeyEquivalent:event];
-}
-- (void)keyDown:(NSEvent *)event {
-    if (event.keyCode == 53 && !self.hasMarkedText) { [self.canvas finishTextEditing:NO]; return; }
-    [super keyDown:event];
-}
-- (void)cancelOperation:(id)sender {
-    (void)sender;
-    if (self.hasMarkedText) [self unmarkText];
-    else [self.canvas finishTextEditing:NO];
-}
 - (void)drawRect:(NSRect)dirtyRect {
     [NSGraphicsContext saveGraphicsState];
     NSDictionary *draft = self.canvas.textDraft;
@@ -465,8 +479,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     }
     if (!maskClip.empty) {
         [maskClip addClip];
-        NSMutableDictionary *live = [draft mutableCopy]; live[@"text"] = self.string;
-        [annotations addObject:live];
+        [annotations addObject:draft];
         NSMutableDictionary *document = [self.canvas.editor.document mutableCopy]; document[@"annotations"] = annotations;
         MCDrawImage(self.canvas.editor.image, document, nil, NSZeroRect);
     }
@@ -603,89 +616,30 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [self.window invalidateCursorRectsForView:self];
 }
 - (void)beginEditingText:(NSDictionary *)annotation {
-    if (![self.editor isToolEnabled:MCTextTool]) return;
-    if (![self finishTextEditing:YES]) return;
-    self.selectedID = annotation[@"id"];
-    self.textDraft = [annotation mutableCopy];
+    if (![self.editor isToolEnabled:MCTextTool] || ![self finishTextEditing:YES]) return;
+    BOOL existing = NO;
+    for (NSDictionary *item in self.editor.document[@"annotations"])
+        if ([item[@"id"] isEqual:annotation[@"id"]]) existing = YES;
+    if (![self.editor beginTextTransaction:existing ? MC_CAPTURE_TEXT_EXISTING : MC_CAPTURE_TEXT_NEW annotation:annotation]) return;
+    self.selectedID = MCEditReadString(capture_text_text(self.editor.imageSession,self.editor.textEdit,MC_CAPTURE_TEXT_ANNOTATION_ID));
     self.textHost = [[NSView alloc] initWithFrame:NSZeroRect];
     self.textView = [[MCInlineTextView alloc] initWithFrame:NSZeroRect];
     self.textView.canvas = self;
-    self.textView.delegate = self;
-    self.textView.richText = NO;
-    self.textView.importsGraphics = NO;
-    self.textView.drawsBackground = NO;
-    self.textView.textContainerInset = NSZeroSize;
-    self.textView.textContainer.lineFragmentPadding = 0;
-    self.textView.textContainer.widthTracksTextView = YES;
-    self.textView.textContainer.heightTracksTextView = NO;
-    self.textView.horizontallyResizable = NO;
-    self.textView.verticallyResizable = NO;
-    self.textView.allowsUndo = YES;
-    self.textView.automaticQuoteSubstitutionEnabled = NO;
-    self.textView.automaticDashSubstitutionEnabled = NO;
-    self.textView.accessibilityLabel = @"画布文字编辑";
-    [self.textView.textStorage setAttributedString:[[NSAttributedString alloc] initWithString:annotation[@"text"] ?: @"" attributes:MCTextAttributes(annotation)]];
-    self.textView.typingAttributes = MCTextAttributes(annotation);
-    [self.textHost addSubview:self.textView];
-    [self addSubview:self.textHost];
-    [self updateTextFrame];
-    [self.editor syncTextControls];
-    self.editor.confirmButton.keyEquivalent = @"";
-    self.editor.cancelButton.keyEquivalent = @"";
+    __weak MCImageEditorController *editor = self.editor;
+    self.textView.onEdit = ^BOOL(NSDictionary *event) { return [editor sendTextEvent:event]; };
+    self.textView.onAction = ^(NSString *action) {
+        if ([action isEqual:@"commit"]) { if ([editor.canvas finishTextEditing:YES]) [editor syncTextControls]; }
+        else if ([action isEqual:@"cancel"]) { [editor.canvas finishTextEditing:NO]; [editor refresh]; }
+    };
+    [self.textHost addSubview:self.textView]; [self addSubview:self.textHost];
+    self.editor.confirmButton.keyEquivalent = @""; self.editor.cancelButton.keyEquivalent = @"";
     self.editor.confirmButton.toolTip = @"确认并复制（点击完成；回车用于换行）";
-    self.editor.cancelButton.toolTip = @"取消截图";
+    [self.editor syncSharedText]; [self.editor syncTextControls];
     [self.window makeFirstResponder:self.textView];
-    self.textView.selectedRange = NSMakeRange(self.textView.string.length, 0);
 }
-- (BOOL)finishTextEditing:(BOOL)commit {
-    if (!self.textView) return YES;
-    // A click on a canvas action accepts the input method's current text.
-    // Return/Escape while composing are handled by NSTextView instead.
-    if (self.textView.hasMarkedText) [self.textView unmarkText];
-    self.textDraft[@"text"] = self.textView.string;
-    NSDictionary *original = nil;
-    for (NSDictionary *annotation in self.editor.document[@"annotations"])
-        if ([annotation[@"id"] isEqual:self.selectedID]) original = annotation;
-    BOOL empty = [self.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length == 0;
-    if (commit) {
-        BOOL applied = YES;
-        if (empty && original) applied = [self.editor applyCommand:@{@"type":@"remove", @"ids":@[self.selectedID]}];
-        else if (!empty && ![original isEqual:self.textDraft])
-            applied = original ? [self.editor applyCommand:@{@"type":@"update", @"id":self.selectedID, @"patch":self.textDraft}] :
-                                 [self.editor applyAnnotation:self.textDraft];
-        if (!applied) return NO;
-    }
-    if ((!commit && !original) || (commit && empty)) self.selectedID = nil;
-    [self.window makeFirstResponder:self];
-    self.textView.delegate = nil;
-    [self.textHost removeFromSuperview];
-    self.textView = nil;
-    self.textHost = nil;
-    self.textDraft = nil;
-    self.editor.confirmButton.keyEquivalent = @"\r";
-    self.editor.cancelButton.keyEquivalent = @"\e";
-    self.editor.confirmButton.toolTip = @"确认并复制（Return）";
-    self.editor.cancelButton.toolTip = @"取消截图（Esc）";
-    [self.editor refresh];
-    [self updateTextFrame];
-    return YES;
-}
-- (BOOL)textView:(NSTextView *)textView shouldChangeTextInRange:(NSRange)range replacementString:(NSString *)replacement {
-    if (replacement && textView.string.length - range.length + replacement.length > 10000) {
-        [self.editor showError:MCEditorError(@"文字最多支持 10000 个字符。")];
-        return NO;
-    }
-    return YES;
-}
-- (void)textDidChange:(NSNotification *)notification {
-    (void)notification;
-    self.textDraft[@"text"] = self.textView.string;
-    self.textDraft[@"height"] = @(MIN(MCTextHeight(self.textDraft),
-        [self.editor.document[@"height"] doubleValue] - [self.textDraft[@"y"] doubleValue]));
-    [self updateTextFrame];
-    self.editor.undoButton.enabled = self.textView.undoManager.canUndo;
-    self.editor.redoButton.enabled = self.textView.undoManager.canRedo;
-}
+- (BOOL)finishTextEditing:(BOOL)commit { return [self.editor finishSharedText:commit]; }
+// AppKit mutation notifications are consumed by the generic input bridge.
+- (void)textDidChange:(NSNotification *)notification { (void)notification; [self.editor syncSharedText]; }
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     [NSColor.underPageBackgroundColor setFill]; NSRectFill(self.bounds);
@@ -700,7 +654,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     for (NSDictionary *annotation in self.editor.document[@"annotations"]) {
         if ([annotation[@"id"] isEqual:self.selectedID]) {
             if (self.textView) continue; // The live native text view draws this object.
-            [annotations addObject:self.transformPreview ?: annotation];
+            [annotations addObject:self.transformPreview ?: self.textDraft ?: annotation];
         } else [annotations addObject:annotation];
     }
     display[@"annotations"] = annotations;
@@ -891,6 +845,189 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 @end
 
 @implementation MCImageEditorController
+- (BOOL)beginTextTransaction:(NSInteger)mode annotation:(NSDictionary *)annotation {
+    if (self.textEdit && ![self finishSharedText:YES]) return NO;
+    moonbit_string_t identifier = MCEditString(mode == MC_CAPTURE_TEXT_EXISTING ? annotation[@"id"] : @"");
+    self.textEdit = capture_text_begin(self.imageSession,self.styleHandle,(int32_t)mode,identifier,
+        image_session_revision(self.imageSession),[annotation[@"x"] doubleValue],[annotation[@"y"] doubleValue],
+        [annotation[@"width"] doubleValue],[annotation[@"height"] doubleValue]);
+    moonbit_decref(identifier);
+    return self.textEdit != 0;
+}
+- (NSDictionary *)textRenderAnnotation {
+    NSDictionary *snapshot = self.textSnapshot;
+    if (!snapshot || [snapshot[@"mode"] integerValue] == MC_CAPTURE_TEXT_DEFAULTS) return nil;
+    NSMutableDictionary *annotation = [NSMutableDictionary dictionary];
+    for (NSDictionary *item in self.document[@"annotations"])
+        if ([item[@"id"] isEqual:snapshot[@"annotationID"]]) [annotation addEntriesFromDictionary:item];
+    NSDictionary *preview = snapshot[@"preview"];
+    [annotation addEntriesFromDictionary:@{@"id":snapshot[@"annotationID"],@"type":@"text",@"stroke":annotation[@"stroke"] ?: @3,
+        @"x":preview[@"x"],@"y":preview[@"y"],@"width":preview[@"width"],@"height":preview[@"height"],
+        @"fontSize":preview[@"fontSize"],@"opacity":preview[@"opacity"],
+        @"color":[NSString stringWithFormat:@"#%06x",[preview[@"rgb"] unsignedIntValue]]}];
+    for (NSDictionary *field in snapshot[@"fields"])
+        if ([field[@"id"] isEqual:@"annotation.text"]) annotation[@"text"] = field[@"raw"];
+    return annotation;
+}
+- (double)textMeasurement {
+    NSDictionary *annotation = [self textRenderAnnotation];
+    return annotation ? MCTextHeight(annotation) : 0;
+}
+- (BOOL)sendTextEvent:(NSDictionary *)event {
+    if (!self.textEdit || self.endingText) return NO;
+    int32_t token = self.textEdit;
+    moonbit_string_t request = MCEditJSON(event);
+    int accepted = capture_text_event_json(self.imageSession,token,
+        (int32_t)capture_text_value(self.imageSession,token,MC_CAPTURE_TEXT_VERSION),request);
+    moonbit_decref(request);
+    if (token == self.textEdit) [self syncSharedText];
+    return accepted != 0;
+}
+- (void)syncSharedText {
+    if (!self.textEdit || self.syncingText || self.endingText) return;
+    self.syncingText = YES;
+    @try {
+        self.textSnapshot = MCEditRead(capture_text_snapshot(self.imageSession,self.textEdit));
+        if (![self.textSnapshot[@"ok"] boolValue]) return;
+        NSMutableDictionary *annotation = [[self textRenderAnnotation] mutableCopy];
+        double measured = [self textMeasurement];
+        if (annotation) {
+            double height = capture_text_measured_height(self.imageSession,self.textEdit,
+                [self.textSnapshot[@"version"] intValue],measured);
+            if (height > 0) annotation[@"height"] = @(height);
+            self.canvas.textDraft = [annotation copy];
+        }
+        int dark = [[self.window.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua,NSAppearanceNameDarkAqua]] isEqual:NSAppearanceNameDarkAqua];
+        if (self.canvas.textView && annotation) {
+            NSDictionary *frame = MCEditRead(capture_text_frame(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_INLINE,
+                [annotation[@"width"] doubleValue],[annotation[@"height"] doubleValue],1,dark));
+            NSDictionary *field = [frame[@"editableFields"] firstObject];
+            if (field) [self.canvas.textView applyFieldDescription:field];
+            [self.canvas updateTextFrame];
+        }
+        double width = capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_WIDTH);
+        double height = capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_HEIGHT);
+        if (width > 0 && height > 0 && self.textPropertiesCanvas) {
+            NSDictionary *frame = MCEditRead(capture_text_frame(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_PROPERTIES,width,height,1,dark));
+            self.textPropertiesCanvas.frameDescription = frame;
+            NSMutableSet *remaining = [NSMutableSet setWithArray:self.textPropertyInputs.allKeys];
+            for (NSDictionary *field in frame[@"editableFields"]) {
+                NSString *identifier = field[@"id"];
+                MCSharedTextInputView *input = self.textPropertyInputs[identifier];
+                if (!input) {
+                    input = [[MCSharedTextInputView alloc] initWithFrame:NSZeroRect];
+                    __weak MCImageEditorController *weakSelf = self;
+                    input.onEdit = ^BOOL(NSDictionary *event) { return [weakSelf sendTextEvent:event]; };
+                    input.onKey = ^BOOL(NSDictionary *event) { return [weakSelf handleSharedTextUIEvent:event]; };
+                    input.shouldResign = ^BOOL {
+                        MCImageEditorController *editor = weakSelf;
+                        return !editor || editor.endingText || !editor.textEdit ||
+                            capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_VALID) == 1;
+                    };
+                    input.onAction = ^(NSString *action) {
+                        MCImageEditorController *editor = weakSelf;
+                        if (!editor || editor.syncingText || editor.endingText) return;
+                        if ([action isEqual:@"cancel"]) [editor finishSharedText:NO];
+                        else if ([action isEqual:@"commit"] &&
+                            capture_text_value(editor.imageSession,editor.textEdit,MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS) {
+                            if ([editor finishSharedText:YES]) [editor syncTextControls];
+                        } else if ([action isEqual:@"blur"]) {
+                            int32_t edit = editor.textEdit;
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                MCImageEditorController *owner = weakSelf;
+                                if (!owner.window || owner.textEdit != edit || !edit) return;
+                                NSResponder *responder = owner.window.firstResponder;
+                                if ([responder isKindOfClass:NSView.class] && [(NSView *)responder isDescendantOf:owner.textPropertiesCanvas]) return;
+                                if (capture_text_value(owner.imageSession,edit,MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS &&
+                                    [owner finishSharedText:YES]) [owner syncTextControls];
+                            });
+                        }
+                    };
+                    self.textPropertyInputs[identifier] = input;
+                    [self.textPropertiesCanvas addSubview:input];
+                }
+                input.frame = MCAnnotationRect(field);
+                [input applyFieldDescription:field]; [remaining removeObject:identifier];
+            }
+            for (NSString *identifier in remaining) {
+                [self.textPropertyInputs[identifier] invalidate];
+                [self.textPropertyInputs[identifier] removeFromSuperview];
+                [self.textPropertyInputs removeObjectForKey:identifier];
+            }
+        }
+        self.undoButton.enabled = capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_CAN_UNDO) == 1;
+        self.redoButton.enabled = capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_CAN_REDO) == 1;
+        self.canvas.needsDisplay = YES;
+    } @finally { self.syncingText = NO; }
+}
+- (void)endNativeTextInput {
+    self.endingText = YES;
+    self.textEdit = 0; self.textSnapshot = nil;
+    [self.canvas.textView invalidate];
+    for (MCSharedTextInputView *input in self.textPropertyInputs.allValues) { [input invalidate]; [input removeFromSuperview]; }
+    [self.textPropertyInputs removeAllObjects];
+    [self.canvas.textHost removeFromSuperview]; self.canvas.textHost = nil; self.canvas.textView = nil; self.canvas.textDraft = nil;
+    self.confirmButton.keyEquivalent = @"\r"; self.cancelButton.keyEquivalent = @"\e";
+    self.confirmButton.toolTip = @"确认并复制（Return）";
+    [self.textColorLease invalidate]; self.textColorLease = nil;
+    self.endingText = NO;
+}
+- (BOOL)finishSharedText:(BOOL)commit {
+    if (!self.textEdit) return YES;
+    if (commit) {
+        [self syncSharedText];
+        int32_t ticket = capture_text_prepare(self.imageSession,self.textEdit,
+            (int32_t)capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_VERSION),
+            MC_CAPTURE_CANDIDATE_PUBLISH,[self textMeasurement]);
+        if (!ticket || !capture_candidate_commit(self.imageSession,ticket)) {
+            if (ticket) capture_candidate_close(ticket);
+            [self showError:MCEditorError(MCEditReadString(capture_text_text(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ERROR)))];
+            return NO;
+        }
+        self.document = MCEditRead(image_session_document(self.imageSession));
+    } else {
+        capture_text_cancel(self.imageSession,self.textEdit,
+            (int32_t)capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_VERSION));
+    }
+    [self endNativeTextInput]; [self.window makeFirstResponder:self.canvas];
+    // Refresh document rendering without immediately reopening a defaults edit.
+    self.canvas.needsDisplay = YES; [self.canvas updateTextFrame];
+    return YES;
+}
+- (void)sharedColorChanged:(id)sender {
+    [self sharedColorPicked:[sender color]];
+}
+- (void)sharedColorPicked:(NSColor *)input {
+    NSColor *color = [input colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (!color || !self.textEdit) return;
+    unsigned rgb = ((unsigned)lround(color.redComponent*255) << 16) |
+        ((unsigned)lround(color.greenComponent*255) << 8) | (unsigned)lround(color.blueComponent*255);
+    [self sendTextEvent:@{@"type":@"color",@"rgb":@(rgb)}];
+}
+- (BOOL)handleSharedTextUIEvent:(NSDictionary *)event {
+    if (!self.textEdit) return NO;
+    moonbit_string_t input = MCEditJSON(event);
+    int result = capture_text_ui_event(self.imageSession,self.textEdit,
+        (int32_t)capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_VERSION),input,
+        capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_WIDTH),
+        capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_HEIGHT));
+    moonbit_decref(input); [self syncSharedText];
+    if (result == MC_CAPTURE_TEXT_CHOOSE_COLOR) {
+        NSColorPanel *panel = NSColorPanel.sharedColorPanel;
+        NSColor *color = MCAnnotationColor(@{@"color":[NSString stringWithFormat:@"#%06x",(unsigned)capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_RGB)],@"opacity":@1});
+        self.textColorLease = [MCSystemColorPanelLease beginWithOwner:self color:color showsAlpha:NO
+            onColor:^(id owner, NSColor *picked) { [(MCImageEditorController *)owner sharedColorPicked:picked]; }];
+        panel.level = self.window.level + 1; [panel orderFront:nil];
+    }
+    return result != MC_CAPTURE_TEXT_REJECTED;
+}
+- (void)sharedTextUndo:(BOOL)redo {
+    NSString *active = self.textSnapshot[@"activeField"];
+    for (NSDictionary *field in self.textSnapshot[@"fields"]) if ([field[@"id"] isEqual:active]) {
+        [self sendTextEvent:@{@"type":@"field",@"id":active,@"token":field[@"token"],
+            @"expectedVersion":field[@"version"],@"edit":@{@"type":redo ? @"redo" : @"undo"}}]; return;
+    }
+}
 - (BOOL)isToolEnabled:(MCImageTool)tool {
     if (self.activeCommand.length && tool == self.activeTool) {
         for (NSDictionary *entry in MCImageToolDescriptors(self.toolConfiguration))
@@ -971,111 +1108,118 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         for (NSDictionary *entry in MCImageToolDescriptors(candidate))
             if ([entry[@"id"] isEqual:self.activeToolIdentifier]) { enabled = [entry[@"enabled"] boolValue]; break; }
     } else if (!enabled) enabled = MCImageToolEnabled(candidate,self.activeTool);
-    return !enabled || (self.canvas.textView && [self isToolEnabled:MCTextTool] && !MCImageToolEnabled(candidate,MCTextTool));
+    return !enabled || (self.textEdit && [self isToolEnabled:MCTextTool] && !MCImageToolEnabled(candidate,MCTextTool));
 }
 // Construct the exact document change without changing the editor, its field editor,
 // IME state, style bank or history. Capture preflights every screen before applying.
-- (NSDictionary *)toolConfigurationCommitPlan:(NSDictionary *)candidate error:(NSError **)error {
-    if (!MCValidImageToolConfiguration(candidate, error)) return nil;
-    if (![self configurationEndsCurrentTool:candidate]) return @{};
-    return [self pendingEditCommitPlan:error];
+- (NSDictionary *)pendingEditCommitPlanForPurpose:(int32_t)purpose error:(NSError **)error {
+    int32_t ticket = 0;
+    if (self.textEdit) {
+        self.textSnapshot = MCEditRead(capture_text_snapshot(self.imageSession,self.textEdit));
+        ticket = capture_text_prepare(self.imageSession,self.textEdit,
+            (int32_t)capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_VERSION),purpose,[self textMeasurement]);
+        if (!ticket && error) *error = MCEditorError(MCEditReadString(capture_text_text(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ERROR)));
+    } else {
+        NSMutableDictionary *fields = [NSMutableDictionary dictionary];
+        NSArray<MCNumberControl *> *controls = self.properties ?
+            @[self.fontControl, self.strokeControl, self.colorControl.opacityControl, self.properties.blockControl] : @[];
+        const int32_t properties[] = {MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_OPACITY, MC_STYLE_BLOCK};
+        for (NSUInteger index = 0; index < controls.count; index++) {
+            MCNumberControl *control = controls[index];
+            NSText *editor = control.field.currentEditor;
+            if (!editor) continue;
+            if ([editor isKindOfClass:NSTextView.class] && [(NSTextView *)editor hasMarkedText]) {
+                if (error) *error = MCEditorError(@"请先完成输入，再执行此操作。");
+                return nil;
+            }
+            NSScanner *scanner = [NSScanner scannerWithString:[editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
+            scanner.locale = [(NSNumberFormatter *)control.field.formatter locale];
+            double value = 0;
+            if (![scanner scanDouble:&value] || !scanner.isAtEnd || !isfinite(value) ||
+                value < control.stepper.minValue || value > control.stepper.maxValue ||
+                (properties[index] == MC_STYLE_BLOCK && floor(value) != value)) {
+                if (error) *error = MCEditorError(@"请先填写有效的标注属性，再执行此操作。");
+                return nil;
+            }
+            fields[@(properties[index])] = @(properties[index] == MC_STYLE_OPACITY ? value / 100 : value);
+        }
+        NSDictionary *selected = [self.canvas selectedAnnotation];
+        NSMutableDictionary *annotation = [selected mutableCopy];
+        if (fields[@(MC_STYLE_STROKE)]) annotation[@"stroke"] = fields[@(MC_STYLE_STROKE)];
+        if (fields[@(MC_STYLE_OPACITY)]) annotation[@"opacity"] = fields[@(MC_STYLE_OPACITY)];
+        if (fields[@(MC_STYLE_BLOCK)]) annotation[@"blockSize"] = fields[@(MC_STYLE_BLOCK)];
+        if (fields[@(MC_STYLE_FONT)]) {
+            annotation[@"fontSize"] = fields[@(MC_STYLE_FONT)];
+            if (annotation) annotation[@"height"] = @(MIN(MCTextHeight(annotation), [self.document[@"height"] doubleValue] - [annotation[@"y"] doubleValue]));
+        }
+        NSDictionary *command = nil;
+        if (selected && fields.count && ![selected isEqual:annotation]) {
+            command = @{@"type":@"update", @"id":self.canvas.selectedID, @"patch":annotation};
+        }
+
+        NSMutableDictionary *values = [NSMutableDictionary dictionary];
+        for (NSNumber *property in fields) values[property.stringValue] = fields[property];
+        id defaults = !selected && fields.count ? @{@"tool":@(self.activeTool),@"values":values} : NSNull.null;
+        moonbit_string_t cmd = MCEditJSON(command), style = MCEditJSON(defaults);
+        ticket = image_session_prepare_command(self.imageSession,self.styleHandle,image_session_revision(self.imageSession),cmd,style);
+        moonbit_decref(cmd); moonbit_decref(style);
+        if (!ticket && error) *error = MCEditorError(@"请先填写有效的标注属性，再执行此操作。");
+    }
+    if (!ticket) return nil;
+    NSDictionary *document = MCEditRead(capture_candidate_document(ticket));
+    if (!document) { capture_candidate_close(ticket); return nil; }
+    return @{@"ticket":@(ticket),@"document":document};
 }
 - (NSDictionary *)pendingEditCommitPlan:(NSError **)error {
-    if (self.canvas.textView.hasMarkedText) {
-        if (error) *error = MCEditorError(@"请先完成中文输入，再执行此操作。");
-        return nil;
+    return [self pendingEditCommitPlanForPurpose:MC_CAPTURE_CANDIDATE_PREVIEW error:error];
+}
+- (NSDictionary *)preparedToolConfigurationPublication:(NSDictionary *)candidate error:(NSError **)error {
+    if (!MCValidImageToolConfiguration(candidate,error)) return nil;
+    if (![self configurationEndsCurrentTool:candidate]) return @{};
+    // Non-text tools still use legacy native number fields in this slice. Their
+    // raw input has no shared draft version, so include it in the prepared lease.
+    NSMutableArray *inputIdentity = [NSMutableArray array];
+    if (!self.textEdit && self.properties) for (MCNumberControl *control in
+        @[self.fontControl,self.strokeControl,self.colorControl.opacityControl,self.properties.blockControl]) {
+        NSText *field = control.field.currentEditor;
+        BOOL marked = [field isKindOfClass:NSTextView.class] && [(NSTextView *)field hasMarkedText];
+        [inputIdentity addObject:field ? @[field.string ?: @"",marked ? @YES : @NO] : NSNull.null];
     }
-    NSMutableDictionary *fields = [NSMutableDictionary dictionary];
-    NSArray<MCNumberControl *> *controls = self.properties ?
-        @[self.fontControl, self.strokeControl, self.colorControl.opacityControl, self.properties.blockControl] : @[];
-    const int32_t properties[] = {MC_STYLE_FONT, MC_STYLE_STROKE, MC_STYLE_OPACITY, MC_STYLE_BLOCK};
-    for (NSUInteger index = 0; index < controls.count; index++) {
-        MCNumberControl *control = controls[index];
-        NSText *editor = control.field.currentEditor;
-        if (!editor) continue;
-        if ([editor isKindOfClass:NSTextView.class] && [(NSTextView *)editor hasMarkedText]) {
-            if (error) *error = MCEditorError(@"请先完成输入，再执行此操作。");
-            return nil;
-        }
-        NSScanner *scanner = [NSScanner scannerWithString:[editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
-        scanner.locale = [(NSNumberFormatter *)control.field.formatter locale];
-        double value = 0;
-        if (![scanner scanDouble:&value] || !scanner.isAtEnd || !isfinite(value) ||
-            value < control.stepper.minValue || value > control.stepper.maxValue ||
-            (properties[index] == MC_STYLE_BLOCK && floor(value) != value)) {
-            if (error) *error = MCEditorError(@"请先填写有效的标注属性，再执行此操作。");
-            return nil;
-        }
-        fields[@(properties[index])] = @(properties[index] == MC_STYLE_OPACITY ? value / 100 : value);
+    if (![self.configurationCandidate isEqual:candidate] || ![self.configurationInputIdentity isEqual:inputIdentity] || !self.configurationTicket ||
+        !capture_candidate_ready(self.imageSession,self.configurationTicket)) {
+        NSDictionary *plan = [self pendingEditCommitPlanForPurpose:MC_CAPTURE_CANDIDATE_PUBLISH error:error];
+        if (!plan) return nil;
+        self.configurationCandidate = candidate; self.configurationTicket = [plan[@"ticket"] intValue];
+        self.configurationInputIdentity = inputIdentity;
     }
-    NSDictionary *selected = [self.canvas selectedAnnotation];
-    NSDictionary *original = nil;
-    for (NSDictionary *annotation in self.document[@"annotations"])
-        if ([annotation[@"id"] isEqual:self.canvas.selectedID]) { original = annotation; break; }
-    NSMutableDictionary *annotation = [selected mutableCopy];
-    if (self.canvas.textView) annotation[@"text"] = self.canvas.textView.string;
-    if (fields[@(MC_STYLE_STROKE)]) annotation[@"stroke"] = fields[@(MC_STYLE_STROKE)];
-    if (fields[@(MC_STYLE_OPACITY)]) annotation[@"opacity"] = fields[@(MC_STYLE_OPACITY)];
-    if (fields[@(MC_STYLE_BLOCK)]) annotation[@"blockSize"] = fields[@(MC_STYLE_BLOCK)];
-    if (fields[@(MC_STYLE_FONT)]) {
-        annotation[@"fontSize"] = fields[@(MC_STYLE_FONT)];
-        if (annotation) annotation[@"height"] = @(MIN(MCTextHeight(annotation), [self.document[@"height"] doubleValue] - [annotation[@"y"] doubleValue]));
-    }
-    NSDictionary *command = nil;
-    if (self.canvas.textView) {
-        BOOL empty = [self.canvas.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length == 0;
-        if (empty && original) command = @{@"type":@"remove", @"ids":@[self.canvas.selectedID]};
-        else if (!empty && ![original isEqual:annotation]) command = original ?
-            @{@"type":@"update", @"id":self.canvas.selectedID, @"patch":annotation} : @{@"type":@"add", @"annotations":@[annotation]};
-    } else if (selected && fields.count && ![selected isEqual:annotation]) {
-        command = @{@"type":@"update", @"id":self.canvas.selectedID, @"patch":annotation};
-    }
-    NSMutableDictionary *plan = [@{@"fields":fields} mutableCopy];
-    if (!selected || (self.canvas.textView && !original)) plan[@"defaultTool"] = @(self.canvas.textView ? MCTextTool : self.activeTool);
-    if (annotation) plan[@"annotation"] = annotation;
-    if (command) {
-        NSDictionary *document = MCCallImage(image_apply, @{@"document":self.document,
-            @"expectedRevision":self.document[@"revision"], @"command":command}, error);
-        if (!document) return nil;
-        plan[@"document"] = document;
-    }
-    return plan;
+    return @{@"session":@(self.imageSession),@"candidate":@(self.configurationTicket)};
 }
 - (BOOL)canApplyToolConfiguration:(NSDictionary *)candidate error:(NSError **)error {
-    NSAssert(NSThread.isMainThread, @"Tool configuration must be applied on the main thread");
-    return [self toolConfigurationCommitPlan:candidate error:error] != nil;
+    NSAssert(NSThread.isMainThread,@"Tool configuration must be applied on the main thread");
+    return [self preparedToolConfigurationPublication:candidate error:error] != nil;
 }
-- (void)applyToolConfiguration:(NSDictionary *)candidate {
-    NSAssert(NSThread.isMainThread, @"Tool configuration must be applied on the main thread");
-    NSError *error = nil;
-    NSDictionary *plan = [self toolConfigurationCommitPlan:candidate error:&error];
-    if (!plan) return; // A defensive caller must not force a failed preflight through.
-    if ([self configurationEndsCurrentTool:candidate]) {
-        NSDictionary *fields = plan[@"fields"];
-        if (plan[@"defaultTool"]) for (NSNumber *property in fields)
-            editor_style_set(self.styleHandle, [plan[@"defaultTool"] intValue], property.intValue, [fields[property] doubleValue]);
-        if (plan[@"document"]) self.document = plan[@"document"];
-        if (self.canvas.textView) self.canvas.textDraft = [plan[@"annotation"] mutableCopy];
-        if (fields[@(MC_STYLE_FONT)]) self.fontControl.value = [fields[@(MC_STYLE_FONT)] doubleValue];
-        if (fields[@(MC_STYLE_STROKE)]) self.strokeControl.value = [fields[@(MC_STYLE_STROKE)] doubleValue];
-        if (fields[@(MC_STYLE_BLOCK)]) self.properties.blockControl.value = [fields[@(MC_STYLE_BLOCK)] doubleValue];
-        if (fields[@(MC_STYLE_OPACITY)]) self.colorControl.color = [self.colorControl.color colorWithAlphaComponent:[fields[@(MC_STYLE_OPACITY)] doubleValue]];
-        // The document already contains the validated edit; this only ends the
-        // native text transaction and restores shortcuts, without a second undo.
-        if (![self.canvas finishTextEditing:YES]) return;
-        [self.window makeFirstResponder:self.canvas];
-        [self.canvas cancelGesture];
+- (void)completeToolConfigurationPublication:(NSDictionary *)candidate {
+    BOOL ending = [self configurationEndsCurrentTool:candidate];
+    self.configurationTicket = 0; self.configurationCandidate = nil; self.configurationInputIdentity = nil;
+    if (ending) {
+        self.document = MCEditRead(image_session_document(self.imageSession));
+        [self endNativeTextInput];
         self.canvas.selectedID = nil;
         self.activeTool = MCSelectTool; self.activeToolIdentifier = nil; self.activeCommand = nil;
-        self.toolConfiguration = candidate;
-        [self rebuildToolSegments];
-        [self refresh];
-    } else {
-        self.toolConfiguration = candidate;
-        // A reorder or unrelated disable must not replace controls, reset style
-        // defaults, end marked text, or clear a gesture in progress.
-        [self rebuildToolSegments];
+        [self.window makeFirstResponder:self.canvas]; [self.canvas cancelGesture];
     }
+    self.toolConfiguration = candidate; [self rebuildToolSegments];
+    if (ending) [self refresh];
+}
+- (void)applyToolConfiguration:(NSDictionary *)candidate {
+    NSDictionary *publication = [self preparedToolConfigurationPublication:candidate error:NULL];
+    if (!publication) return;
+    if (publication.count) {
+        moonbit_string_t request = MCEditJSON(@[publication]);
+        int accepted = capture_candidate_commit_many(request); moonbit_decref(request);
+        if (!accepted) return;
+    }
+    [self completeToolConfigurationPublication:candidate];
 }
 - (instancetype)initWithPNGData:(NSData *)data error:(NSError **)error {
     self = [super init];
@@ -1086,7 +1230,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         if (error) *error = MCEditorError(@"截图无法读取，或图片尺寸过大。");
         return nil;
     }
-    _document = MCCallImage(image_create, @{@"width":@(bitmap.pixelsWide), @"height":@(bitmap.pixelsHigh)}, error);
+    _imageSession = image_session_create((int32_t)bitmap.pixelsWide,(int32_t)bitmap.pixelsHigh);
+    _document = _imageSession ? MCEditRead(image_session_document(_imageSession)) : nil;
     if (!_document) return nil;
     _pluginContextIdentifier = NSUUID.UUID.UUIDString;
     _pluginIcons = @{};
@@ -1100,7 +1245,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [_image addRepresentation:bitmap];
     return self;
 }
-- (void)dealloc { editor_style_dispose(_styleHandle); capture_ui_close(_captureUIHandle); }
+- (void)dealloc { image_session_dispose(_imageSession); editor_style_dispose(_styleHandle); capture_ui_close(_captureUIHandle); }
 - (MCColorSwatch *)color { return self.properties.colorControl.well; }
 - (NSTextField *)fontSize { return self.properties.fontControl.field; }
 - (NSStepper *)fontStepper { return self.properties.fontControl.stepper; }
@@ -1173,6 +1318,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.properties = [[MCStylePropertiesView alloc] initWithFrame:NSZeroRect];
         __weak MCImageEditorController *weakSelf = self;
         self.properties.onChange = ^(id sender) { [weakSelf styleChanged:sender]; };
+        self.textPropertyInputs = [NSMutableDictionary dictionary];
+        self.textPropertiesCanvas = [[MCSharedCanvasView alloc] initWithFrame:NSZeroRect];
+        self.textPropertiesCanvas.hidden = YES;
+        self.textPropertiesCanvas.onEvent = ^(NSDictionary *event) { [weakSelf handleSharedTextUIEvent:event]; };
         self.undoButton = [self button:@"撤销" action:@selector(undo:) key:@"z"];
         self.redoButton = [self button:@"重做" action:@selector(redo:) key:@"z"];
         [self configureIconButton:self.undoButton icon:MC_ICON_UNDO label:@"撤销" shortcut:@"⌘Z"];
@@ -1209,6 +1358,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         self.properties.frame = NSMakeRect(24, height - 86, width - 48, 28);
         self.properties.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
         [root addSubview:self.properties];
+        self.textPropertiesCanvas.frame = self.properties.frame;
+        self.textPropertiesCanvas.autoresizingMask = self.properties.autoresizingMask;
+        [root addSubview:self.textPropertiesCanvas];
         [self syncContentActions];
         [self.window center];
     }
@@ -1255,10 +1407,11 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     BOOL passed = YES;
     if (!self.hasCaptureRegion) {
         NSError *error = nil;
-        NSDictionary *created = MCCallImage(image_create, @{@"width":self.document[@"width"], @"height":self.document[@"height"],
-            @"viewport":viewport}, &error);
-        if (!created) { [self showError:error]; return NO; }
-        self.document = created;
+        int32_t created = image_session_create_viewport([self.document[@"width"] intValue],[self.document[@"height"] intValue],
+            (int32_t)left,(int32_t)top,(int32_t)(right-left),(int32_t)(bottom-top));
+        if (!created) { [self showError:error ?: MCEditorError(@"无法创建截图选区。")]; return NO; }
+        [self endNativeTextInput]; image_session_dispose(self.imageSession); self.imageSession = created;
+        self.document = MCEditRead(image_session_document(created));
         self.hasCaptureRegion = YES;
         // Text is immediately available once the selection is complete.
         self.activeTool = MCSelectTool; self.activeToolIdentifier = nil; self.activeCommand = nil;
@@ -1291,12 +1444,18 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     // Hidden property groups detach from the stack, so each tool contributes
     // only its actual controls. Keep numeric/text fields at their natural width;
     // exceptionally narrow displays scroll the row instead of squeezing input.
-    BOOL hasProperties = NO;
-    for (NSView *view in self.properties.arrangedSubviews) if (!view.hidden) { hasProperties = YES; break; }
-    CGFloat propertiesWidth = hasProperties ? ceil(self.properties.fittingSize.width) : 0;
+    BOOL textProperties = self.textEdit != 0;
+    BOOL hasProperties = textProperties;
+    if (!textProperties) for (NSView *view in self.properties.arrangedSubviews) if (!view.hidden) { hasProperties = YES; break; }
+    CGFloat propertiesWidth = textProperties ? capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_WIDTH) :
+        hasProperties ? ceil(self.properties.fittingSize.width) : 0;
+    NSView *propertyRow = textProperties ? self.textPropertiesCanvas : self.properties;
+    if (self.propertiesScroll.documentView != propertyRow) self.propertiesScroll.documentView = propertyRow;
     CGFloat rowHeight = MCEditorToolHeight, padding = 6;
-    double *frame = capture_ui_toolbar_frame(NSWidth(root.bounds), NSHeight(root.bounds),
-        NSMinX(region), NSHeight(root.bounds) - NSMaxY(region), NSWidth(region), NSHeight(region), rowWidth, propertiesWidth);
+    CGFloat propertyHeight = textProperties ? capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_HEIGHT) : rowHeight;
+    double *frame = capture_ui_measured_toolbar_frame(NSWidth(root.bounds), NSHeight(root.bounds),
+        NSMinX(region), NSHeight(root.bounds) - NSMaxY(region), NSWidth(region), NSHeight(region),
+        MAX(rowWidth,propertiesWidth) + 2*inset, 2*padding + rowHeight + (hasProperties ? propertyHeight + 4 : 0));
     CGFloat x = frame[0], width = frame[2], height = frame[3];
     CGFloat y = NSHeight(root.bounds) - frame[1] - height;
     moonbit_decref(frame);
@@ -1304,9 +1463,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     CGFloat viewportWidth = MAX(1, width - 2 * inset);
     self.toolbarScroll.frame = NSMakeRect(inset, height - padding - rowHeight, viewportWidth, rowHeight);
     self.propertiesScroll.hidden = !hasProperties;
-    self.propertiesScroll.frame = NSMakeRect(inset, padding, viewportWidth, rowHeight);
+    self.propertiesScroll.frame = NSMakeRect(inset, padding, viewportWidth, propertyHeight);
     self.toolbar.frame = NSMakeRect(0, 0, MAX(rowWidth, viewportWidth), rowHeight);
-    self.properties.frame = NSMakeRect(0, 0, MAX(1, propertiesWidth), rowHeight);
+    propertyRow.frame = NSMakeRect(0, 0, MAX(1, propertiesWidth), propertyHeight);
     [self.floatingToolbar layoutSubtreeIfNeeded];
     [self.window invalidateCursorRectsForView:self.canvas];
 }
@@ -1356,8 +1515,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     // the saved identity can never alias live mutable text storage.
     NSMutableArray *annotations = [NSMutableArray array];
     for (NSDictionary *value in document[@"annotations"]) [annotations addObject:annotation(value)];
-    return @{@"context":self.pluginContextIdentifier, @"width":document[@"width"], @"height":document[@"height"],
+    NSDictionary *identity = @{@"context":self.pluginContextIdentifier, @"width":document[@"width"], @"height":document[@"height"],
         @"viewport":annotation(document[@"viewport"]), @"annotations":[annotations copy]};
+    capture_candidate_close([plan[@"ticket"] intValue]);
+    return identity;
 }
 - (void)showPluginMessage:(NSString *)message {
     self.properties.status.stringValue = message; self.properties.status.hidden = NO;
@@ -1399,6 +1560,21 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)syncTextControls {
     NSDictionary *annotation = [self.canvas selectedAnnotation];
+    BOOL textContext = [annotation[@"type"] isEqual:@"text"] || (!annotation && self.activeTool == MCTextTool);
+    if (textContext && !self.textEdit && !self.endingText) {
+        [self beginTextTransaction:annotation ? MC_CAPTURE_TEXT_EXISTING : MC_CAPTURE_TEXT_DEFAULTS annotation:annotation];
+    }
+    self.properties.hidden = self.textEdit != 0;
+    self.textPropertiesCanvas.hidden = self.textEdit == 0;
+    if (self.textEdit) {
+        [self syncSharedText]; [self positionFloatingToolbar];
+        if (!self.overlayMode) {
+            NSRect row = self.properties.frame;
+            row.size.height = capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_ROW_HEIGHT);
+            self.textPropertiesCanvas.frame = row;
+        }
+        [self.window invalidateCursorRectsForView:self.canvas]; return;
+    }
     NSInteger tool = self.activeTool;
     NSInteger shape = 0;
     if (annotation) {
@@ -1427,21 +1603,19 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     [self.window invalidateCursorRectsForView:self.canvas];
 }
 - (void)styleChanged:(id)sender {
+    // Text properties are exclusively editableFields; these legacy controls
+    // remain only for the shape tools that have not migrated in this slice.
+    if (self.textEdit) return;
     int32_t fields = [self.properties syncFromSender:sender];
     if (!fields) return;
     MCStyleValues values = self.properties.values;
     NSDictionary *selected = [self.canvas selectedAnnotation];
-    BOOL isNewText = self.canvas.textDraft != nil;
-    for (NSDictionary *annotation in self.document[@"annotations"])
-        if ([annotation[@"id"] isEqual:self.canvas.selectedID]) isNewText = NO;
-    // Only explicit default edits and a new text draft update the tool bank.
-    // Selecting or styling an existing object never overwrites creation defaults.
-    if (!selected || isNewText) {
-        int32_t tool = isNewText ? MCTextTool : (int32_t)self.activeTool;
+    if ([selected[@"type"] isEqual:@"text"] || self.activeTool == MCTextTool) { [self syncTextControls]; return; }
+    if (!selected) {
         const double valuesByField[] = {values.rgb, values.opacity, values.stroke, values.fontSize,
             self.properties.shapeControl.selectedSegment, self.properties.blockControl.value};
         for (int32_t field = MC_STYLE_COLOR; field <= MC_STYLE_BLOCK; field++)
-            if (fields & (1 << field)) editor_style_set(self.styleHandle, tool, field, valuesByField[field]);
+            if (fields & (1 << field)) editor_style_set(self.styleHandle, (int32_t)self.activeTool, field, valuesByField[field]);
     }
     if (!selected) { [self syncTextControls]; return; }
     if (fields & (1 << MC_STYLE_SHAPE)) {
@@ -1457,16 +1631,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         changed[@"fontSize"] = @(values.fontSize);
         changed[@"height"] = @(MIN(MCTextHeight(changed), [self.document[@"height"] doubleValue] - [changed[@"y"] doubleValue]));
     }
-    if (self.canvas.textView) {
-        self.canvas.textDraft = changed;
-        NSDictionary *attributes = MCTextAttributes(changed);
-        // Preserve the string, selected range, and input-method composition.
-        [self.canvas.textView.textStorage addAttributes:attributes range:NSMakeRange(0, self.canvas.textView.string.length)];
-        self.canvas.textView.typingAttributes = attributes;
-        [self.canvas updateTextFrame];
-    } else if (![selected isEqual:changed]) {
-        [self applyCommand:@{@"type":@"update", @"id":self.canvas.selectedID, @"patch":changed}];
-    }
+    if (![selected isEqual:changed]) [self applyCommand:@{@"type":@"update", @"id":self.canvas.selectedID, @"patch":changed}];
 }
 - (void)chooseTool:(id)sender {
     (void)sender;
@@ -1486,11 +1651,11 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     BOOL command = [entry[@"interaction"] isEqual:@"dragRect"];
     MCImageTool tool = command ? MCRectTool : [entry[@"kind"] integerValue];
     if (!command && !MCImageToolEnabled(self.toolConfiguration,tool)) { [self selectActiveToolSegment]; return; }
-    [self.canvas cancelGesture];
     self.activeTool = tool;
     self.activeToolIdentifier = tool == MCSelectTool ? nil : entry[@"id"];
     self.activeCommand = command ? entry[@"command"] : nil;
     self.canvas.selectedID = nil;
+    [self.canvas cancelGesture];
     [self selectActiveToolSegment]; [self syncTextControls];
     [self.window makeFirstResponder:self.canvas];
 }
@@ -1522,7 +1687,8 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 }
 - (void)addTextAtPoint:(NSPoint)point {
     if (![self isToolEnabled:MCTextTool]) return;
-    CGFloat size = MAX(editor_style_min(MC_STYLE_FONT), MIN(editor_style_max(MC_STYLE_FONT), self.fontSize.doubleValue));
+    if (![self finishSharedText:YES]) return;
+    CGFloat size = editor_style_get(self.styleHandle,MCTextTool,MC_STYLE_FONT);
     CGFloat width = [self.document[@"width"] doubleValue], height = [self.document[@"height"] doubleValue];
     NSRect region = self.overlayMode && self.hasCaptureRegion ? MCAnnotationRect(self.document[@"viewport"]) : NSMakeRect(0, 0, width, height);
     CGFloat boxWidth = MIN(280, region.size.width), boxHeight = MIN(ceil(size * 1.5), region.size.height);
@@ -1534,22 +1700,22 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         @"opacity":@(self.color.color.alphaComponent), @"color":[self colorHex]}];
 }
 - (BOOL)applyCommand:(NSDictionary *)command {
-    NSError *error = nil;
-    NSDictionary *document = MCCallImage(image_apply, @{@"document":self.document, @"expectedRevision":self.document[@"revision"], @"command":command}, &error);
-    if (!document) { [self showError:error]; return NO; }
-    self.document = document;
-    [self refresh];
-    return YES;
+    if (self.textEdit && ![self finishSharedText:YES]) return NO;
+    moonbit_string_t input = MCEditJSON(command);
+    int accepted = image_session_command(self.imageSession,image_session_revision(self.imageSession),input);
+    moonbit_decref(input);
+    if (!accepted) { [self showError:MCEditorError(@"MoonBit 无法应用标注。")]; return NO; }
+    self.document = MCEditRead(image_session_document(self.imageSession)); [self refresh]; return YES;
 }
 - (BOOL)applyAnnotation:(NSDictionary *)annotation { return [self applyCommand:@{@"type":@"add", @"annotations":@[annotation]}]; }
 - (void)undo:(id)sender {
     (void)sender;
-    if (self.canvas.textView) { [self.canvas.textView.undoManager undo]; return; }
+    if (self.canvas.textView || [self.window.firstResponder isKindOfClass:MCSharedTextInputView.class]) { [self sharedTextUndo:NO]; return; }
     [self.canvas cancelGesture]; [self applyCommand:@{@"type":@"undo"}];
 }
 - (void)redo:(id)sender {
     (void)sender;
-    if (self.canvas.textView) { [self.canvas.textView.undoManager redo]; return; }
+    if (self.canvas.textView || [self.window.firstResponder isKindOfClass:MCSharedTextInputView.class]) { [self sharedTextUndo:YES]; return; }
     [self.canvas cancelGesture]; [self applyCommand:@{@"type":@"redo"}];
 }
 - (NSData *)renderPNGData:(NSError **)error {
@@ -1569,7 +1735,9 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
         return nil;
     }
     NSDictionary *plan = [self pendingEditCommitPlan:error];
-    return plan ? [self renderDocumentPNGData:plan[@"document"] ?: self.document error:error] : nil;
+    NSData *png = plan ? [self renderDocumentPNGData:plan[@"document"] ?: self.document error:error] : nil;
+    if (plan) capture_candidate_close([plan[@"ticket"] intValue]);
+    return png;
 }
 - (NSData *)renderDocumentPNGData:(NSDictionary *)document error:(NSError **)error {
     if (self.overlayMode && !self.hasCaptureRegion) {
@@ -1637,6 +1805,7 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
     NSError *error = nil;
     NSDictionary *plan = [self pendingEditCommitPlan:&error];
     NSData *png = plan ? [self renderDocumentPNGData:plan[@"document"] ?: self.document error:&error] : nil;
+    if (plan) capture_candidate_close([plan[@"ticket"] intValue]);
     if (png && self.onPinPNGData(png)) { [self.window close]; return; }
     // Keep the original text/field editor, selection and undo state intact on
     // failure. showError: hides property controls, which could end field input.
@@ -1648,6 +1817,10 @@ static BOOL MCValidImageToolConfiguration(NSDictionary *candidate, NSError **err
 - (void)cancel:(id)sender { (void)sender; [self.canvas finishTextEditing:NO]; [self.window close]; }
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
+    if (self.textEdit) capture_text_cancel(self.imageSession,self.textEdit,
+        (int32_t)capture_text_value(self.imageSession,self.textEdit,MC_CAPTURE_TEXT_VERSION));
+    [self endNativeTextInput];
+    image_session_dispose(self.imageSession); self.imageSession = 0;
     capture_ui_close(self.captureUIHandle);
     self.captureUIHandle = 0;
     void (^closed)(void) = self.onClose;

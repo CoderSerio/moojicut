@@ -1,6 +1,9 @@
 #include "capture.h"
 #include "bindings/c/image_session.h"
 #include "bindings/c/capture_ui.h"
+#include "bindings/c/capture_edit.h"
+#include "platform/linux/graphics/text_input.h"
+#include "platform/linux/graphics/shared_canvas.h"
 #include "bindings/c/tool_registry.h"
 #include "platform/shared/image/pixelate.h"
 #include "components/icons/shared/mc_icons.h"
@@ -34,18 +37,21 @@ typedef struct {
   MCStyleControls *style_controls;
   GtkWidget *tool_slots[2];
   GPtrArray *contributions;
-  char *active_tool_id, *tool_command;
+  char *active_tool_id, *tool_command, *drag_annotation_id;
+  double drag_revision;
   int style_bank;
   GdkPixbuf *image;
   GdkRectangle toolbar_bounds, entry_bounds;
-  GPtrArray *draft_undo, *draft_redo;
-  TextSnapshot *draft_before;
-  int draft_action_depth;
-  gboolean restoring_draft;
+  MCLinuxTextInputs *body_inputs, *property_inputs;
+  GtkWidget *body_fixed, *property_overlay, *property_canvas, *color_dialog;
+  int text_edit, prepared_tool_candidate;
+  gboolean syncing_text, ending_text, pointer_dispatch;
+  guint text_blur_idle;
   GDBusConnection *bus;
   char *request_path;
   guint subscription;
-  int session, tool, color, stroke, font_size, width, height, root_width, root_height;
+  int session, tool, color, stroke, width, height, root_width, root_height;
+  double font_size;
   int selected, edit_index, gesture, shape, block;
   MCSelectionDrag selection;
   double zoom, offset_x, offset_y, opacity, crop[4], original[10], preview[10];
@@ -65,6 +71,13 @@ static void draw_document(cairo_t *cr, gboolean export);
 static void rebuild_tool_rows(void);
 static void sync_tool_selection(void);
 static void command(GtkWidget *widget, gpointer data);
+static void sync_text(void);
+static void cancel_text(void);
+static double text_measurement(void);
+static int text_version(void);
+static gboolean text_event(moonbit_string_t event);
+static void end_text_controls(void);
+static gboolean start_text_transaction(int mode, int index, double x, double y, double w, double h);
 static PangoLayout *text_layout(cairo_t *cr, const char *text, double width, double size);
 static void tool_control_free(gpointer data) {
   ToolControl *tool = data;
@@ -94,65 +107,19 @@ static TextSnapshot *snapshot_text(void) {
   value->selection = gtk_text_iter_get_offset(&selection);
   return value;
 }
-static void push_snapshot(GPtrArray *array, TextSnapshot *snapshot) {
-  if (strlen(snapshot->text) > 40000) {
-    snapshot_free(snapshot);
-    return;
-  }
-  if (array->len >= 100)
-    g_ptr_array_remove_index(array, 0);
-  g_ptr_array_add(array, snapshot);
+static moonbit_string_t core_string(const char *text) {
+  glong length = 0;
+  gunichar2 *value = g_utf8_to_utf16(text ? text : "", -1, NULL, &length, NULL);
+  moonbit_string_t result = moonbit_make_string_raw((int32_t)length);
+  if (length) memcpy(result, value, (gsize)length * sizeof(gunichar2));
+  g_free(value); return result;
 }
-static void reset_draft_history(void) {
-  if (!capture.draft_undo)
-    capture.draft_undo = g_ptr_array_new_with_free_func(snapshot_free);
-  if (!capture.draft_redo)
-    capture.draft_redo = g_ptr_array_new_with_free_func(snapshot_free);
-  g_ptr_array_set_size(capture.draft_undo, 0);
-  g_ptr_array_set_size(capture.draft_redo, 0);
-  g_clear_pointer(&capture.draft_before, snapshot_free);
-  capture.draft_action_depth = 0;
-}
-static void draft_action_begin(GtkTextBuffer *buffer, gpointer data) {
-  (void)buffer;
-  (void)data;
-  if (!capture.editing || capture.restoring_draft)
-    return;
-  if (capture.draft_action_depth++ == 0)
-    capture.draft_before = snapshot_text();
-}
-static void draft_action_end(GtkTextBuffer *buffer, gpointer data) {
-  (void)buffer;
-  (void)data;
-  if (!capture.editing || capture.restoring_draft || capture.draft_action_depth <= 0)
-    return;
-  if (--capture.draft_action_depth || !capture.draft_before)
-    return;
-  TextSnapshot *after = snapshot_text(), *before = capture.draft_before;
-  capture.draft_before = NULL;
-  if (strcmp(before->text, after->text)) {
-    push_snapshot(capture.draft_undo, before);
-    g_ptr_array_set_size(capture.draft_redo, 0);
-  } else
-    snapshot_free(before);
-  snapshot_free(after);
+static char *core_text(moonbit_string_t value) {
+  char *text = g_utf16_to_utf8((const gunichar2 *)value, Moonbit_array_length(value), NULL, NULL, NULL);
+  moonbit_decref(value); return text ? text : g_strdup("");
 }
 static void draft_undo(gboolean redo) {
-  GPtrArray *from = redo ? capture.draft_redo : capture.draft_undo;
-  GPtrArray *to = redo ? capture.draft_undo : capture.draft_redo;
-  if (!from || !from->len)
-    return;
-  TextSnapshot *value = g_ptr_array_steal_index(from, from->len - 1);
-  push_snapshot(to, snapshot_text());
-  capture.restoring_draft = TRUE;
-  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
-  gtk_text_buffer_set_text(buffer, value->text, -1);
-  GtkTextIter cursor, selection;
-  gtk_text_buffer_get_iter_at_offset(buffer, &cursor, value->cursor);
-  gtk_text_buffer_get_iter_at_offset(buffer, &selection, value->selection);
-  gtk_text_buffer_select_range(buffer, &cursor, &selection);
-  capture.restoring_draft = FALSE;
-  snapshot_free(value);
+  if (capture.entry) mc_linux_text_inputs_history(capture.body_inputs, capture.entry, redo);
 }
 static void report(const char *message) {
   if (capture.smoke) {
@@ -188,6 +155,9 @@ void mc_linux_capture_close(void) {
     gtk_grab_remove(capture.canvas);
   release_portal(TRUE);
   mc_style_controls_close_dialog(capture.style_controls);
+  end_text_controls();
+  mc_linux_text_inputs_destroy(capture.body_inputs); capture.body_inputs = NULL;
+  mc_linux_text_inputs_destroy(capture.property_inputs); capture.property_inputs = NULL;
   GtkWidget *window = capture.editor;
   capture.editor = NULL;
   if (window)
@@ -195,14 +165,13 @@ void mc_linux_capture_close(void) {
   g_clear_pointer(&capture.contributions, g_ptr_array_unref);
   g_clear_pointer(&capture.active_tool_id, g_free);
   g_clear_pointer(&capture.tool_command, g_free);
+  g_clear_pointer(&capture.drag_annotation_id, g_free);
   if (capture.session > 0)
     image_session_dispose(capture.session);
   if (capture.style_bank > 0)
     editor_style_dispose(capture.style_bank);
   g_clear_object(&capture.image);
-  g_clear_pointer(&capture.draft_before, snapshot_free);
-  g_clear_pointer(&capture.draft_undo, g_ptr_array_unref);
-  g_clear_pointer(&capture.draft_redo, g_ptr_array_unref);
+
   memset(&capture, 0, sizeof(capture));
   if (host.restore_visibility)
     host.restore_visibility(host.data);
@@ -212,18 +181,23 @@ gboolean mc_linux_capture_busy(void) {
 }
 gboolean mc_linux_capture_preflight_tools(int snapshot, const char **reason) {
   const char *failure = NULL;
+  if (capture.prepared_tool_candidate) { capture_candidate_close(capture.prepared_tool_candidate); capture.prepared_tool_candidate = 0; }
   if (tool_registry_snapshot_count(snapshot, MC_TOOL_GROUP_SCREENSHOT) < 0)
     failure = "工具配置无效，原设置未改动。";
-  else if (capture.composing || capture.editing || capture.dragging || capture.selecting)
-    failure = "请先完成当前框选、拖动或文字输入，再调整工具。";
-  else if (capture.editor) {
+  else if (capture.dragging || capture.selecting)
+    failure = "请先完成当前框选或拖动，再调整工具。";
+  else if (capture.color_dialog || mc_linux_text_inputs_composing(capture.body_inputs) || mc_linux_text_inputs_composing(capture.property_inputs))
+    failure = "请先完成输入法或颜色选择，再调整工具。";
+  else if (capture.text_edit) {
+    capture.prepared_tool_candidate = capture_text_prepare(capture.session, capture.text_edit,
+        text_version(), MC_CAPTURE_CANDIDATE_PUBLISH, text_measurement());
+    if (!capture.prepared_tool_candidate) failure = "请先完成有效的文字属性，再调整工具。";
+  } else if (capture.editor) {
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(capture.editor));
-    if (focus && (GTK_IS_EDITABLE(focus) || GTK_IS_TEXT_VIEW(focus)))
-      failure = "请先完成属性输入，再调整工具。";
+    if (focus && (GTK_IS_EDITABLE(focus) || GTK_IS_TEXT_VIEW(focus))) failure = "请先完成属性输入，再调整工具。";
     GList *windows = gtk_window_list_toplevels();
     for (GList *item = windows; item; item = item->next)
-      if (gtk_widget_get_visible(item->data) &&
-          gtk_window_get_transient_for(GTK_WINDOW(item->data)) == GTK_WINDOW(capture.editor))
+      if (gtk_widget_get_visible(item->data) && gtk_window_get_transient_for(GTK_WINDOW(item->data)) == GTK_WINDOW(capture.editor))
         failure = "请先关闭属性弹窗，再调整工具。";
     g_list_free(windows);
   }
@@ -231,6 +205,20 @@ gboolean mc_linux_capture_preflight_tools(int snapshot, const char **reason) {
   return failure == NULL;
 }
 void mc_linux_capture_publish_tools(int snapshot) {
+  if (capture.prepared_tool_candidate) {
+    int candidate = capture.prepared_tool_candidate; capture.prepared_tool_candidate = 0;
+    char *id = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ANNOTATION_ID));
+    if (!capture_candidate_commit(capture.session, candidate)) {
+      g_free(id); capture_candidate_close(candidate); report("工具配置的文字候选已过期，请重试。"); return;
+    }
+    end_text_controls(); capture.selected = -1;
+    for (int i = 0; i < image_session_count(capture.session); i++) {
+      char *stored = core_text(image_session_annotation_id(capture.session, i));
+      if (!strcmp(stored, id)) capture.selected = i;
+      g_free(stored);
+    }
+    g_free(id);
+  }
   published_tools = snapshot;
   if (capture.editor) { rebuild_tool_rows(); layout_controls(); }
 }
@@ -256,50 +244,23 @@ static char *annotation_text(int index) {
   moonbit_decref(value);
   return text;
 }
-static gboolean pending_text(const char *text) {
-  glong length = 0;
-  gunichar2 *value = g_utf8_to_utf16(text, -1, NULL, &length, NULL);
-  if (!value || length < 1 || length > 10000) {
-    g_free(value);
-    return FALSE;
-  }
-  moonbit_string_t input = moonbit_make_string_raw((int32_t)length);
-  memcpy(input, value, (gsize)length * sizeof(gunichar2));
-  g_free(value);
-  int result = image_session_set_text(capture.session, input);
-  moonbit_decref(input);
-  return result == 1;
-}
 static gboolean update_annotation(int index, const double *r) {
-  double adjusted[10];
-  memcpy(adjusted, r, sizeof(adjusted));
   int kind = (int)image_session_value(capture.session, index, 0);
-  if (kind == TEXT && !capture.editing) {
-    char *text = annotation_text(index);
-    gboolean ok = pending_text(text ? text : "");
-    if (ok) {
-      cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
-      cairo_t *cr = cairo_create(surface);
-      PangoLayout *layout = text_layout(cr, text, adjusted[2], adjusted[6]);
-      int height;
-      pango_layout_get_pixel_size(layout, NULL, &height);
-      adjusted[3] = fmin(capture.height - adjusted[1], fmax(adjusted[3], height + 2));
-      g_object_unref(layout);
-      cairo_destroy(cr);
-      cairo_surface_destroy(surface);
-    }
-    g_free(text);
-    if (!ok)
-      return FALSE;
+  if (kind == TEXT) {
+    moonbit_string_t id = image_session_annotation_id(capture.session, index);
+    double font = r[6] == image_session_value(capture.session, index, 7) ? -1 : r[6];
+    int result = image_session_geometry(capture.session, image_session_revision(capture.session), id,
+                                       r[0], r[1], r[2], r[3], font);
+    moonbit_decref(id); return result == 1;
   }
-  return image_session_update_rgba(capture.session, index, (int)adjusted[0], (int)adjusted[1],
-                                   kind == ARROW ? (int)adjusted[2] : MAX(1, (int)adjusted[2]),
-                                   kind == ARROW ? (int)adjusted[3] : MAX(1, (int)adjusted[3]),
-                                   (int)adjusted[4], (int)adjusted[5], (int)adjusted[6], adjusted[7]) == 1;
+  return image_session_update_rgba(capture.session, index, (int)r[0], (int)r[1],
+                                   kind == ARROW ? (int)r[2] : MAX(1, (int)r[2]),
+                                   kind == ARROW ? (int)r[3] : MAX(1, (int)r[3]),
+                                   (int)r[4], (int)r[5], (int)r[6], r[7]) == 1;
 }
 static PangoLayout *text_layout(cairo_t *cr, const char *text, double width, double size) {
   PangoLayout *layout = pango_cairo_create_layout(cr);
-  PangoFontDescription *font = pango_font_description_from_string("Sans Bold");
+  PangoFontDescription *font = pango_font_description_from_string("Sans Semibold");
   pango_font_description_set_absolute_size(font, size * PANGO_SCALE);
   pango_layout_set_font_description(layout, font);
   pango_font_description_free(font);
@@ -368,19 +329,17 @@ static void composite_document(cairo_t *destination, gboolean export, gboolean d
   cairo_paint(cr);
   int count = image_session_count(capture.session);
   for (int pass = 0; pass < 2; pass++) {
-    if (pass == 1 && draft_text && capture.editing) {
-      GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
-      GtkTextIter first, last;
-      gtk_text_buffer_get_bounds(buffer, &first, &last);
-      char *text = gtk_text_buffer_get_text(buffer, &first, &last, FALSE);
-      double r[10]; memcpy(r, capture.preview, sizeof(r));
-      r[4] = capture.color; r[6] = capture.font_size; r[7] = capture.opacity;
-      draw_shape(cr, TEXT, r, text); g_free(text);
+    if (pass == 1 && !export && capture.text_edit &&
+        capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) != MC_CAPTURE_TEXT_DEFAULTS &&
+        (draft_text || !capture.editing)) {
+      char *text = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW));
+      draw_shape(cr, TEXT, capture.preview, text); g_free(text);
     }
     for (int i = 0; i < count; i++) {
       int kind = (int)image_session_value(capture.session, i, 0);
       if ((kind == REDACT) != (pass == 1)) continue;
-      if (!export && capture.editing && (capture.edit_index == i || (kind == REDACT && !draft_text))) continue;
+      if (!export && capture.text_edit && capture.edit_index == i) continue;
+      if (!export && capture.editing && kind == REDACT && !draft_text) continue;
       double r[10]; read_annotation(i, r);
       if (!export && capture.dragging && capture.gesture == 1 && capture.selected == i)
         memcpy(r, capture.preview, sizeof(r));
@@ -526,6 +485,16 @@ static GdkPixbuf *flatten(void) {
   cairo_surface_destroy(surface);
   return image;
 }
+static GdkPixbuf *flatten_preview(void) {
+  if (!capture.text_edit) return flatten();
+  int ticket = capture_text_prepare(capture.session, capture.text_edit, text_version(), MC_CAPTURE_CANDIDATE_PREVIEW, text_measurement());
+  if (!ticket) return NULL;
+  cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, (int)capture.crop[2], (int)capture.crop[3]);
+  cairo_t *cr = cairo_create(surface); cairo_translate(cr, -capture.crop[0], -capture.crop[1]);
+  composite_document(cr, FALSE, TRUE); cairo_destroy(cr);
+  GdkPixbuf *result = gdk_pixbuf_get_from_surface(surface, 0, 0, (int)capture.crop[2], (int)capture.crop[3]);
+  cairo_surface_destroy(surface); capture_candidate_close(ticket); return result;
+}
 static gboolean copy_image(void) {
   GdkPixbuf *image = flatten();
   if (!image)
@@ -545,7 +514,7 @@ static void sync_crop(void) {
     capture.crop[i] = image_session_viewport_value(capture.session, i);
 }
 static int context_kind(void) {
-  if (capture.editing)
+  if (capture.text_edit)
     return TEXT;
   if (capture.selected >= 0)
     return (int)image_session_value(capture.session, capture.selected, 0);
@@ -560,20 +529,29 @@ static void current_style(double values[MC_STYLE_PROPERTY_COUNT]) {
   values[MC_STYLE_BLOCK] = capture.block;
 }
 static void sync_control_values(void) {
-  double values[MC_STYLE_PROPERTY_COUNT];
-  current_style(values);
+  if (!capture.style_controls || capture.ending_text) return;
+  if (!capture.text_edit && !capture.dragging && !capture.gesture && !capture.pointer_dispatch && capture.session > 0) {
+    int kind = capture.selected >= 0 ? (int)image_session_value(capture.session, capture.selected, 0) : capture.tool;
+    if (kind == TEXT) {
+      int mode = capture.selected >= 0 ? MC_CAPTURE_TEXT_EXISTING : MC_CAPTURE_TEXT_DEFAULTS;
+      start_text_transaction(mode, capture.selected, 0, 0, 0, 0);
+    }
+  }
+  if (capture.text_edit) { sync_text(); return; }
+  if (capture.property_overlay) gtk_widget_hide(capture.property_overlay);
+  double values[MC_STYLE_PROPERTY_COUNT]; current_style(values);
   mc_style_controls_set_tool(capture.style_controls, context_kind());
   unsigned mask = (unsigned)editor_style_visible_mask(context_kind(), capture.shape);
-  if (capture.tool_command && capture.selected < 0)
-    mask &= ~((1u << MC_STYLE_SHAPE) | (1u << MC_STYLE_BLOCK));
+  if (capture.tool_command && capture.selected < 0) mask &= ~((1u << MC_STYLE_SHAPE) | (1u << MC_STYLE_BLOCK));
   mc_style_controls_sync(capture.style_controls, mask, values);
+  gtk_widget_show(mc_style_controls_widget(capture.style_controls));
 }
 static void refresh_context(void) { sync_control_values(); }
 static void load_tool_style(int tool) {
   capture.color = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_COLOR);
   capture.opacity = editor_style_get(capture.style_bank, tool, MC_STYLE_OPACITY);
   capture.stroke = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_STROKE);
-  capture.font_size = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_FONT);
+  capture.font_size = editor_style_get(capture.style_bank, tool, MC_STYLE_FONT);
   capture.shape = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_SHAPE);
   capture.block = (int)editor_style_get(capture.style_bank, tool, MC_STYLE_BLOCK);
 }
@@ -585,116 +563,158 @@ static void sync_style(void) {
     capture.shape = (int)image_session_value(capture.session, capture.selected, 9);
     capture.block = (int)image_session_value(capture.session, capture.selected, 10);
     if ((int)image_session_value(capture.session, capture.selected, 0) == TEXT)
-      capture.font_size = (int)image_session_value(capture.session, capture.selected, 7);
+      capture.font_size = image_session_value(capture.session, capture.selected, 7);
   } else if (!capture.editing)
     load_tool_style(capture.tool);
   sync_control_values();
 }
-static void text_style(void) {
-  char *css = g_strdup_printf("textview, textview text {background-color: transparent; color: "
-                              "rgba(%d,%d,%d,%.3f); caret-color:#faf5eb; font-family: "
-                              "Sans; font-weight: bold; font-size: %.2fpx; padding: 0; border: 0;}",
-                              (capture.color >> 16) & 255, (capture.color >> 8) & 255, capture.color & 255,
-                              capture.opacity, capture.font_size * capture.zoom);
-  GtkCssProvider *provider = gtk_css_provider_new();
-  gtk_css_provider_load_from_data(provider, css, -1, NULL);
-  gtk_style_context_add_provider(gtk_widget_get_style_context(capture.entry), GTK_STYLE_PROVIDER(provider),
-                                 GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-  g_object_unref(provider);
-  g_free(css);
+static int text_version(void) {
+  return (int)capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_VERSION);
 }
-static void begin_text(int index, double x, double y) {
-  if (index < 0 && (x >= capture.crop[0] + capture.crop[2] - 8 || y >= capture.crop[1] + capture.crop[3] - 8))
-    return;
-  if (!commit_text())
-    return;
-  reset_draft_history();
-  capture.editing = TRUE;
-  capture.edit_index = index;
-  capture.selected = index;
-  if (index >= 0) {
-    read_annotation(index, capture.preview);
-    sync_style();
-  } else {
-    load_tool_style(TEXT);
-    refresh_context();
-    double right = capture.crop[0] + capture.crop[2], bottom = capture.crop[1] + capture.crop[3];
-    double r[] = {x,
-                  y,
-                  fmin(240, right - x),
-                  fmin(80, bottom - y),
-                  capture.color,
-                  capture.stroke,
-                  capture.font_size,
-                  capture.opacity};
-    memcpy(capture.preview, r, sizeof(r));
+static gboolean text_event(moonbit_string_t event) {
+  if (!capture.text_edit || capture.closing) return FALSE;
+  int accepted = capture_text_event_json(capture.session, capture.text_edit, text_version(), event);
+  if (accepted && capture.prepared_tool_candidate) {
+    capture_candidate_close(capture.prepared_tool_candidate); capture.prepared_tool_candidate = 0;
   }
-  char *text = index >= 0 ? annotation_text(index) : g_strdup("");
-  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), text ? text : "", -1);
-  g_free(text);
-  text_style();
-  layout_controls();
-  gtk_widget_show(capture.entry);
-  gtk_widget_grab_focus(capture.entry);
-  gtk_widget_queue_draw(capture.editor);
+  sync_text();
+  if (capture.editor) { layout_controls(); gtk_widget_queue_draw(capture.editor); }
+  return accepted == 1;
+}
+static gboolean input_event(gpointer data, moonbit_string_t event) { (void)data; return text_event(event); }
+static double text_measurement(void) {
+  if (!capture.text_edit || capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS) return 0;
+  char *text = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW));
+  cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+  cairo_t *cr = cairo_create(surface);
+  PangoLayout *layout = text_layout(cr, text,
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_WIDTH),
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_FONT_SIZE));
+  int height; pango_layout_get_size(layout, NULL, &height);
+  g_object_unref(layout); cairo_destroy(cr); cairo_surface_destroy(surface); g_free(text);
+  return (double)height / PANGO_SCALE;
+}
+static gboolean start_text_transaction(int mode, int index, double x, double y, double w, double h) {
+  moonbit_string_t id = index >= 0 ? image_session_annotation_id(capture.session, index) : core_string("");
+  capture.text_edit = capture_text_begin(capture.session, capture.style_bank, mode, id,
+      image_session_revision(capture.session), x, y, w, h);
+  moonbit_decref(id);
+  if (!capture.text_edit) return FALSE;
+  capture.edit_index = index; return TRUE;
+}
+static void end_text_controls(void) {
+  capture.ending_text = TRUE;
+  if (capture.text_blur_idle) { g_source_remove(capture.text_blur_idle); capture.text_blur_idle = 0; }
+  if (capture.prepared_tool_candidate) { capture_candidate_close(capture.prepared_tool_candidate); capture.prepared_tool_candidate = 0; }
+  if (capture.color_dialog) { GtkWidget *dialog = capture.color_dialog; capture.color_dialog = NULL; gtk_widget_destroy(dialog); }
+  capture.text_edit = 0; capture.entry = NULL; capture.editing = capture.composing = FALSE;
+  mc_linux_text_inputs_set_frame(capture.body_inputs, 0);
+  mc_linux_text_inputs_set_frame(capture.property_inputs, 0);
+  if (capture.body_fixed) gtk_widget_hide(capture.body_fixed);
+  if (capture.property_overlay) gtk_widget_hide(capture.property_overlay);
+  capture.ending_text = FALSE;
 }
 static gboolean commit_text(void) {
-  if (capture.composing)
-    return FALSE;
-  if (!capture.editing)
-    return TRUE;
-  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
-  GtkTextIter start, end;
-  gtk_text_buffer_get_bounds(buffer, &start, &end);
-  char *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
-  gboolean ok = TRUE;
-  if (*text) {
-    if (!pending_text(text))
-      ok = FALSE;
-    else {
-      double *r = capture.preview;
-      r[4] = capture.color;
-      r[6] = capture.font_size;
-      r[7] = capture.opacity;
-      cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
-      cairo_t *cr = cairo_create(s);
-      PangoLayout *layout = text_layout(cr, text, r[2], r[6]);
-      int h;
-      pango_layout_get_pixel_size(layout, NULL, &h);
-      r[3] = fmin(capture.height - r[1], fmax(r[3], h + 2));
-      g_object_unref(layout);
-      cairo_destroy(cr);
-      cairo_surface_destroy(s);
-      if (capture.edit_index >= 0)
-        ok = update_annotation(capture.edit_index, r);
-      else {
-        ok = image_session_add_rgba(capture.session, TEXT, (int)r[0], (int)r[1], (int)r[2], (int)r[3],
-                                    (int)r[4], (int)r[5], (int)r[6], r[7]) == 1;
-        if (ok)
-          capture.selected = image_session_count(capture.session) - 1;
-      }
-    }
-  } else if (capture.edit_index >= 0) {
-    ok = image_session_remove(capture.session, capture.edit_index) == 1;
-    capture.selected = -1;
+  if (!capture.text_edit) return TRUE;
+  if (mc_linux_text_inputs_composing(capture.body_inputs) || mc_linux_text_inputs_composing(capture.property_inputs)) return FALSE;
+  if (!mc_linux_text_inputs_flush(capture.body_inputs) || !mc_linux_text_inputs_flush(capture.property_inputs)) return FALSE;
+  char *id = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ANNOTATION_ID));
+  int ticket = capture_text_prepare(capture.session, capture.text_edit, text_version(), MC_CAPTURE_CANDIDATE_PUBLISH, text_measurement());
+  if (!ticket || !capture_candidate_commit(capture.session, ticket)) {
+    g_free(id);
+    if (ticket) capture_candidate_close(ticket);
+    sync_text(); return FALSE;
   }
-  g_free(text);
-  if (!ok) {
-    report("文字未能保存。请缩短内容或调整文字框后重试。");
-    return FALSE;
+  /* Commit ends the root edit. Remember its stable identity before native
+   * controls retire; list indices are merely transient rendering lookups. */
+  if (!*id && capture.edit_index >= 0) { g_free(id); id = core_text(image_session_annotation_id(capture.session, capture.edit_index)); }
+  end_text_controls();
+  capture.selected = -1;
+  for (int i = 0; i < image_session_count(capture.session); i++) {
+    char *candidate = core_text(image_session_annotation_id(capture.session, i));
+    if (!strcmp(id, candidate)) capture.selected = i;
+    g_free(candidate);
   }
-  capture.editing = FALSE;
-  gtk_widget_hide(capture.entry);
-  sync_style();
-  gtk_widget_queue_draw(capture.editor);
+  g_free(id);
+  if (capture.editor) gtk_widget_queue_draw(capture.editor);
   return TRUE;
 }
 static void cancel_text(void) {
-  capture.editing = FALSE;
+  if (capture.text_edit) capture_text_cancel(capture.session, capture.text_edit, text_version());
   capture.selected = capture.edit_index;
-  sync_style();
-  gtk_widget_hide(capture.entry);
-  gtk_widget_grab_focus(capture.canvas);
+  end_text_controls();
+  if (capture.canvas) gtk_widget_grab_focus(capture.canvas);
+  if (capture.editor) gtk_widget_queue_draw(capture.editor);
+}
+static gboolean blur_text(gpointer data) {
+  int edit = GPOINTER_TO_INT(data); capture.text_blur_idle = 0;
+  if (!capture.editor || capture.closing || capture.text_edit != edit ||
+      capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_MODE) != MC_CAPTURE_TEXT_DEFAULTS) return G_SOURCE_REMOVE;
+  GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(capture.editor));
+  if (!mc_linux_text_inputs_contains(capture.property_inputs, focus) && !capture.color_dialog) {
+    if (commit_text()) { refresh_context(); layout_controls(); }
+  }
+  return G_SOURCE_REMOVE;
+}
+static void input_action(gpointer data, GtkWidget *field, int action) {
+  (void)data; (void)field;
+  if (!capture.text_edit || capture.ending_text || capture.closing) return;
+  if (action == MC_LINUX_TEXT_CANCEL) { cancel_text(); refresh_context(); layout_controls(); }
+  else if (action == MC_LINUX_TEXT_ACCEPT) {
+    if (commit_text()) { gtk_widget_grab_focus(capture.canvas); refresh_context(); layout_controls(); }
+  } else if (action == MC_LINUX_TEXT_BLUR && !capture.text_blur_idle)
+    capture.text_blur_idle = g_idle_add(blur_text, GINT_TO_POINTER(capture.text_edit));
+}
+static void sync_text(void) {
+  if (!capture.text_edit || capture.syncing_text || capture.ending_text || !capture.property_canvas) return;
+  capture.syncing_text = TRUE;
+  int edit = capture.text_edit;
+  capture.color = (int)capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_RGB);
+  capture.opacity = capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_OPACITY);
+  capture.font_size = capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_FONT_SIZE);
+  capture.composing = mc_linux_text_inputs_composing(capture.body_inputs) || mc_linux_text_inputs_composing(capture.property_inputs);
+  for (int i = 0; i < 4; i++) capture.preview[i] = capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_X + i);
+  capture.preview[4] = capture.color; capture.preview[6] = capture.font_size; capture.preview[7] = capture.opacity;
+  double height = capture_text_measured_height(capture.session, edit, text_version(), text_measurement());
+  if (height > 0) capture.preview[3] = height;
+  double rw = capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_ROW_WIDTH);
+  double rh = capture_text_value(capture.session, edit, MC_CAPTURE_TEXT_ROW_HEIGHT);
+  gboolean dark = FALSE; g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &dark, NULL);
+  moonbit_string_t json = capture_text_frame(capture.session, edit, MC_CAPTURE_TEXT_PROPERTIES, rw, rh, 1, dark);
+  int frame = ui_frame_open(json); moonbit_decref(json);
+  if (frame) {
+    mc_linux_text_inputs_set_frame(capture.property_inputs, frame);
+    if (!mc_linux_canvas_set_frame(capture.property_canvas, frame)) ui_frame_close(frame);
+    gtk_widget_set_size_request(capture.property_overlay, (int)ceil(rw), (int)ceil(rh));
+  }
+  gtk_widget_show(capture.property_canvas);
+  gtk_widget_show(mc_linux_text_inputs_widget(capture.property_inputs));
+  gtk_widget_show(capture.property_overlay);
+  gtk_widget_hide(mc_style_controls_widget(capture.style_controls));
+  if (capture.editing) {
+    double scale = capture.zoom > 0 ? capture.zoom : 1;
+    json = capture_text_frame(capture.session, edit, MC_CAPTURE_TEXT_INLINE,
+        capture.preview[2] * scale, capture.preview[3] * scale, scale, dark);
+    frame = ui_frame_open(json); moonbit_decref(json);
+    if (frame) { mc_linux_text_inputs_set_frame(capture.body_inputs, frame); ui_frame_close(frame); }
+    capture.entry = mc_linux_text_inputs_field(capture.body_inputs, "annotation.text");
+    gtk_widget_show(capture.body_fixed);
+  }
+  capture.syncing_text = FALSE;
+}
+static void begin_text(int index, double x, double y) {
+  if (!commit_text()) return;
+  if (index >= 0) read_annotation(index, capture.preview);
+  else {
+    capture.preview[0] = x; capture.preview[1] = y;
+    capture.preview[2] = fmin(240, capture.crop[0] + capture.crop[2] - x);
+    capture.preview[3] = fmin(80, capture.crop[1] + capture.crop[3] - y);
+  }
+  if (!start_text_transaction(index >= 0 ? MC_CAPTURE_TEXT_EXISTING : MC_CAPTURE_TEXT_NEW, index,
+      capture.preview[0], capture.preview[1], capture.preview[2], capture.preview[3])) return;
+  capture.editing = TRUE; capture.selected = index;
+  sync_text(); layout_controls();
+  if (capture.entry) gtk_widget_grab_focus(capture.entry);
   gtk_widget_queue_draw(capture.editor);
 }
 static int handle_at(double x, double y, const double *r) {
@@ -720,12 +740,14 @@ static void event_position(double ex, double ey, double *x, double *y) {
   *x = point.x;
   *y = point.y;
 }
-static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+static gboolean canvas_press_inner(GtkWidget *widget, GdkEventButton *event, gpointer data) {
   (void)data;
   if (event->button != 1 || capture.zoom <= 0)
     return FALSE;
   if (!commit_text())
     return TRUE;
+  g_clear_pointer(&capture.drag_annotation_id, g_free);
+  capture.drag_revision = -1;
   double x, y;
   event_position(event->x, event->y, &x, &y);
   gtk_widget_grab_focus(widget);
@@ -804,10 +826,20 @@ static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer 
   }
   capture.selection.original = selection_rect(capture.original);
   memcpy(capture.preview, capture.original, sizeof(capture.preview));
+  if (capture.gesture == 1 && (int)image_session_value(capture.session, capture.selected, 0) == TEXT) {
+    capture.drag_annotation_id = core_text(image_session_annotation_id(capture.session, capture.selected));
+    capture.drag_revision = image_session_revision(capture.session);
+  }
   capture.dragging = TRUE;
   gtk_grab_add(widget);
   gtk_widget_queue_draw(widget);
   return TRUE;
+}
+static gboolean canvas_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+  capture.pointer_dispatch = TRUE;
+  gboolean handled = canvas_press_inner(widget, event, data);
+  capture.pointer_dispatch = FALSE;
+  return handled;
 }
 static void motion(double x, double y) {
   mc_selection_update(&capture.selection, (MCSelectionPoint){x, y});
@@ -820,7 +852,7 @@ static void motion(double x, double y) {
     int handle = capture.selection.handle;
     if (capture.gesture == 1 && handle >= 0 && (handle % 2) == 0 &&
         (int)image_session_value(capture.session, capture.selected, 0) == TEXT)
-      r[6] = CLAMP(round(o[6] * fmin(r[2] / o[2], r[3] / o[3])),
+      r[6] = CLAMP(o[6] * fmin(r[2] / o[2], r[3] / o[3]),
                    editor_style_min(MC_STYLE_FONT), editor_style_max(MC_STYLE_FONT));
   }
 }
@@ -863,7 +895,19 @@ static gboolean canvas_release(GtkWidget *widget, GdkEventButton *event, gpointe
   if (capture.selecting)
     finish_selection();
   else if (capture.gesture == 1) {
-    update_annotation(capture.selected, capture.preview);
+    if (capture.drag_annotation_id) {
+      moonbit_string_t id = core_string(capture.drag_annotation_id);
+      double *r = capture.preview;
+      image_session_geometry(capture.session, capture.drag_revision, id, r[0], r[1], r[2], r[3],
+          r[6] == capture.original[6] ? -1 : r[6]);
+      moonbit_decref(id);
+      capture.selected = -1;
+      for (int i = 0; i < image_session_count(capture.session); i++) {
+        char *stored = core_text(image_session_annotation_id(capture.session, i));
+        if (!strcmp(stored, capture.drag_annotation_id)) capture.selected = i;
+        g_free(stored);
+      }
+    } else update_annotation(capture.selected, capture.preview);
     sync_style();
   } else if (capture.gesture == 2) {
     image_session_crop(capture.session, (int)capture.preview[0], (int)capture.preview[1],
@@ -873,6 +917,7 @@ static gboolean canvas_release(GtkWidget *widget, GdkEventButton *event, gpointe
     image_session_shape_event(capture.session, 1, x, y);
   }
   capture.gesture = 0;
+  g_clear_pointer(&capture.drag_annotation_id, g_free); capture.drag_revision = -1;
   layout_controls();
   gtk_widget_queue_draw(widget);
   return TRUE;
@@ -921,7 +966,7 @@ static void style_finished(gpointer data) {
 }
 static void style_changed(unsigned fields, const double values[MC_STYLE_PROPERTY_COUNT], gpointer data) {
   (void)data;
-  if (capture.closing || capture.composing)
+  if (capture.closing || capture.composing || capture.text_edit || context_kind() == TEXT)
     return;
   fields &= (unsigned)editor_style_visible_mask(context_kind(), capture.shape);
   if (capture.tool_command && capture.selected < 0)
@@ -952,12 +997,10 @@ static void style_changed(unsigned fields, const double values[MC_STYLE_PROPERTY
   if (fields & (1u << MC_STYLE_COLOR)) capture.color = (int)values[MC_STYLE_COLOR];
   if (fields & (1u << MC_STYLE_OPACITY)) capture.opacity = values[MC_STYLE_OPACITY];
   if (fields & (1u << MC_STYLE_STROKE)) capture.stroke = (int)values[MC_STYLE_STROKE];
-  if (fields & (1u << MC_STYLE_FONT)) capture.font_size = (int)values[MC_STYLE_FONT];
+  if (fields & (1u << MC_STYLE_FONT)) capture.font_size = values[MC_STYLE_FONT];
   if (fields & (1u << MC_STYLE_SHAPE)) capture.shape = (int)values[MC_STYLE_SHAPE];
   if (fields & (1u << MC_STYLE_BLOCK)) capture.block = (int)values[MC_STYLE_BLOCK];
-  if (capture.editing)
-    text_style();
-  else if (capture.selected >= 0) {
+  if (capture.selected >= 0) {
     double r[10];
     read_annotation(capture.selected, r);
     r[4] = capture.color;
@@ -1061,8 +1104,18 @@ static void command(GtkWidget *widget, gpointer data) {
     mc_linux_capture_close();
     return;
   }
-  if (action == 5 && !pin_available())
-    return;
+  if (action == 5 && !pin_available()) return;
+  if ((action == 1 || action == 2) && capture.text_edit) {
+    GtkWidget *field = mc_linux_text_inputs_active(capture.property_inputs);
+    if (field) { mc_linux_text_inputs_history(capture.property_inputs, field, action == 2); return; }
+    if (capture.editing) {
+      field = mc_linux_text_inputs_active(capture.body_inputs);
+      if (field) mc_linux_text_inputs_history(capture.body_inputs, field, action == 2);
+      return;
+    }
+    /* Merely selecting an annotation opens property snapshots, not a native
+     * text-editor focus. Its toolbar undo still addresses document history. */
+  }
   if (!commit_text())
     return;
   if (action == 1 || action == 2) {
@@ -1104,30 +1157,9 @@ static void command(GtkWidget *widget, gpointer data) {
 static gboolean editor_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
   (void)widget;
   (void)data;
-  /* Property entries own copy/delete/undo and caret movement while focused.
-   * Do not turn their editing shortcuts into document/export commands. */
   GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(capture.editor));
-  if (focus && GTK_IS_EDITABLE(focus))
-    return FALSE;
-  if (capture.editing) {
-    if (capture.composing)
-      return FALSE;
-    guint key = gdk_keyval_to_lower(event->keyval);
-    if ((event->state & GDK_CONTROL_MASK) && (key == GDK_KEY_z || key == GDK_KEY_y)) {
-      draft_undo(key == GDK_KEY_y || (event->state & GDK_SHIFT_MASK));
-      return TRUE;
-    }
-    if (event->keyval == GDK_KEY_Escape) {
-      cancel_text();
-      return TRUE;
-    }
-    if ((event->state & GDK_CONTROL_MASK) && event->keyval == GDK_KEY_Return) {
-      if (commit_text())
-        gtk_widget_grab_focus(capture.canvas);
-      return TRUE;
-    }
-    return FALSE;
-  }
+  if (mc_linux_text_inputs_contains(capture.body_inputs, focus) ||
+      mc_linux_text_inputs_contains(capture.property_inputs, focus) || (focus && GTK_IS_EDITABLE(focus))) return FALSE;
   if (event->keyval == GDK_KEY_Escape) {
     mc_linux_capture_close();
     return TRUE;
@@ -1135,6 +1167,7 @@ static gboolean editor_key(GtkWidget *widget, GdkEventKey *event, gpointer data)
   if (capture.selecting)
     return FALSE;
   if (event->keyval == GDK_KEY_Delete && capture.selected >= 0) {
+    if (!commit_text()) return TRUE;
     image_session_remove(capture.session, capture.selected);
     capture.selected = -1;
     sync_style();
@@ -1164,8 +1197,8 @@ static gboolean delete_window(GtkWidget *widget, GdkEvent *event, gpointer data)
 static void layout_controls(void) {
   if (!capture.canvas || !capture.toolbar)
     return;
-  refresh_context();
   transform();
+  refresh_context();
   int ww = gtk_widget_get_allocated_width(capture.canvas),
       hh = gtk_widget_get_allocated_height(capture.canvas);
   GtkRequisition size;
@@ -1196,7 +1229,7 @@ static gboolean overlay_position(GtkOverlay *overlay, GtkWidget *child, GdkRecta
     *allocation = capture.toolbar_bounds;
     return TRUE;
   }
-  if (child == capture.entry) {
+  if (child == capture.body_fixed) {
     *allocation = capture.entry_bounds;
     return TRUE;
   }
@@ -1208,11 +1241,52 @@ static void size_changed(GtkWidget *widget, GtkAllocation *allocation, gpointer 
   (void)data;
   layout_controls();
 }
-static void preedit_changed(GtkTextView *view, const char *text, gpointer data) {
-  (void)view;
+static void color_response(GtkDialog *dialog, int response, gpointer data) {
+  int edit = GPOINTER_TO_INT(data);
+  gboolean current = capture.editor && !capture.closing && capture.text_edit == edit && capture.color_dialog == GTK_WIDGET(dialog);
+  if (current && response == GTK_RESPONSE_OK) {
+    GdkRGBA rgba; gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(dialog), &rgba);
+    int rgb = ((int)lround(rgba.red * 255) << 16) | ((int)lround(rgba.green * 255) << 8) | (int)lround(rgba.blue * 255);
+    char *json = g_strdup_printf("{\"type\":\"color\",\"rgb\":%d}", rgb);
+    moonbit_string_t event = core_string(json); g_free(json); text_event(event); moonbit_decref(event);
+  }
+  if (capture.color_dialog == GTK_WIDGET(dialog)) capture.color_dialog = NULL;
+  gtk_widget_destroy(GTK_WIDGET(dialog));
+  if (current && capture.text_edit && capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_MODE) == MC_CAPTURE_TEXT_DEFAULTS) {
+    if (commit_text()) { refresh_context(); layout_controls(); }
+  }
+}
+static gboolean input_key(gpointer data, const MCCanvasInput *input) {
   (void)data;
-  capture.composing = text && *text;
-  mc_style_controls_set_blocked(capture.style_controls, capture.composing);
+  if (!capture.text_edit || capture.closing) return FALSE;
+  moonbit_string_t event = mc_canvas_input_json(input);
+  int result = capture_text_ui_event(capture.session, capture.text_edit, text_version(), event,
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH),
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_HEIGHT));
+  moonbit_decref(event); sync_text();
+  if (capture.editor) { layout_controls(); gtk_widget_queue_draw(capture.editor); }
+  return result != MC_CAPTURE_TEXT_REJECTED;
+}
+static void property_event(gpointer data, GtkWidget *canvas, const MCCanvasInput *input) {
+  (void)data;
+  if (!capture.text_edit || capture.closing) return;
+  moonbit_string_t event = mc_canvas_input_json(input);
+  int result = capture_text_ui_event(capture.session, capture.text_edit, text_version(), event,
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_WIDTH),
+      capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_ROW_HEIGHT));
+  moonbit_decref(event);
+  if (input->type == MC_UI_INPUT_POINTER_DOWN) mc_linux_canvas_set_capture(canvas, TRUE);
+  if (input->type == MC_UI_INPUT_POINTER_UP || input->type == MC_UI_INPUT_CANCEL) mc_linux_canvas_set_capture(canvas, FALSE);
+  sync_text();
+  if (result == MC_CAPTURE_TEXT_CHOOSE_COLOR && !capture.color_dialog) {
+    capture.color_dialog = gtk_color_chooser_dialog_new("颜色", GTK_WINDOW(capture.editor));
+    gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(capture.color_dialog), FALSE);
+    int rgb = (int)capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RGB);
+    GdkRGBA rgba = {((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0, 1};
+    gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(capture.color_dialog), &rgba);
+    g_signal_connect(capture.color_dialog, "response", G_CALLBACK(color_response), GINT_TO_POINTER(capture.text_edit));
+    gtk_widget_show(capture.color_dialog);
+  }
 }
 static gboolean open_editor(GdkPixbuf *image) {
   int width = gdk_pixbuf_get_width(image), height = gdk_pixbuf_get_height(image);
@@ -1259,18 +1333,12 @@ static gboolean open_editor(GdkPixbuf *image) {
   capture.canvas = gtk_drawing_area_new();
   gtk_widget_set_can_focus(capture.canvas, TRUE);
   gtk_container_add(GTK_CONTAINER(overlay), capture.canvas);
-  capture.entry = gtk_text_view_new();
-  g_signal_connect(capture.entry, "preedit-changed", G_CALLBACK(preedit_changed), NULL);
-  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
-  g_signal_connect(buffer, "begin-user-action", G_CALLBACK(draft_action_begin), NULL);
-  g_signal_connect(buffer, "end-user-action", G_CALLBACK(draft_action_end), NULL);
-  gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(capture.entry), GTK_WRAP_WORD_CHAR);
-  gtk_text_view_set_left_margin(GTK_TEXT_VIEW(capture.entry), 0);
-  gtk_text_view_set_right_margin(GTK_TEXT_VIEW(capture.entry), 0);
-  gtk_text_view_set_top_margin(GTK_TEXT_VIEW(capture.entry), 0);
-  gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(capture.entry), 0);
-  gtk_widget_set_no_show_all(capture.entry, TRUE);
-  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.entry);
+  MCLinuxTextCallbacks input_callbacks = {input_event, input_action, input_key};
+  capture.body_inputs = mc_linux_text_inputs_new(&input_callbacks, NULL);
+  capture.property_inputs = mc_linux_text_inputs_new(&input_callbacks, NULL);
+  capture.body_fixed = mc_linux_text_inputs_widget(capture.body_inputs);
+  gtk_widget_set_no_show_all(capture.body_fixed, TRUE);
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.body_fixed);
   GtkWidget *masks = gtk_drawing_area_new();
   /* The overlay wrapper is pass-through; its child must not create a separate
    * full-screen input window or it would still intercept canvas events. */
@@ -1309,6 +1377,13 @@ static gboolean open_editor(GdkPixbuf *image) {
                                                  style_changed, style_finished, NULL);
   gtk_box_pack_start(GTK_BOX(capture.toolbar), mc_style_controls_widget(capture.style_controls),
                      FALSE, FALSE, 0);
+  capture.property_overlay = gtk_overlay_new();
+  gtk_widget_set_no_show_all(capture.property_overlay, TRUE);
+  MCLinuxCanvasCallbacks property_callbacks = {property_event, NULL, NULL, NULL};
+  capture.property_canvas = mc_linux_canvas_new(&property_callbacks, NULL);
+  gtk_container_add(GTK_CONTAINER(capture.property_overlay), capture.property_canvas);
+  gtk_overlay_add_overlay(GTK_OVERLAY(capture.property_overlay), mc_linux_text_inputs_widget(capture.property_inputs));
+  gtk_box_pack_start(GTK_BOX(capture.toolbar), capture.property_overlay, FALSE, FALSE, 0);
   sync_control_values();
   mc_style_hud_apply(capture.toolbar);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), capture.toolbar);
@@ -1399,17 +1474,38 @@ static void smoke_pump(void) {
   if (!elapsed)
     g_source_remove(timer);
 }
+static GtkWidget *smoke_property(int field) {
+  if (capture.text_edit) {
+    const char *id = field == MC_STYLE_FONT ? "style.fontSize" : field == MC_STYLE_OPACITY ? "style.opacity" : "";
+    return mc_linux_text_inputs_field(capture.property_inputs, id);
+  }
+  return mc_style_controls_entry(capture.style_controls, field);
+}
+static gboolean smoke_property_visible(int field) {
+  if (!capture.text_edit) return mc_style_controls_property_visible(capture.style_controls, field);
+  if (field == MC_STYLE_COLOR) return gtk_widget_get_visible(capture.property_overlay);
+  GtkWidget *widget = smoke_property(field); return widget && gtk_widget_get_visible(widget);
+}
+static void smoke_buffer_set(GtkWidget *widget, const char *text) {
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget));
+  gtk_text_buffer_begin_user_action(buffer); gtk_text_buffer_set_text(buffer, text, -1);
+  GtkTextIter end; gtk_text_buffer_get_end_iter(buffer, &end); gtk_text_buffer_place_cursor(buffer, &end);
+  gtk_text_buffer_end_user_action(buffer);
+}
+static void smoke_preedit(const char *text) {
+  g_signal_emit_by_name(capture.entry, "preedit-changed", text);
+}
 static void smoke_style_step(int field, gboolean increase) {
-  gtk_button_clicked(GTK_BUTTON(mc_style_controls_step_button(capture.style_controls, field, increase)));
+  if (capture.text_edit) {
+    const char *id = field == MC_STYLE_FONT ? "style.fontSize" : "style.opacity";
+    char *json = g_strdup_printf("{\"type\":\"step\",\"id\":\"%s\",\"delta\":%d}", id, increase ? 1 : -1);
+    moonbit_string_t value = core_string(json); g_free(json); text_event(value); moonbit_decref(value);
+  } else gtk_button_clicked(GTK_BUTTON(mc_style_controls_step_button(capture.style_controls, field, increase)));
 }
 static void smoke_style_number(int field, const char *text) {
-  gtk_entry_set_text(GTK_ENTRY(mc_style_controls_entry(capture.style_controls, field)), text);
-}
-static gboolean smoke_style_key(int field, GdkEventKey *event) {
-  gboolean handled = FALSE;
-  g_signal_emit_by_name(mc_style_controls_entry(capture.style_controls, field),
-                        "key-press-event", event, &handled);
-  return handled;
+  GtkWidget *widget = smoke_property(field);
+  if (GTK_IS_TEXT_VIEW(widget)) smoke_buffer_set(widget, text);
+  else gtk_entry_set_text(GTK_ENTRY(widget), text);
 }
 typedef struct { int closed, results; gboolean valid; } CaptureHostProbe;
 static gboolean smoke_pin_unavailable(gpointer data) { (void)data; return FALSE; }
@@ -1421,6 +1517,12 @@ static void smoke_host_pin(GdkPixbuf *image, const GdkRectangle *bounds, gpointe
                  !mc_linux_capture_busy();
 }
 static void smoke_style_rgba(int color, double opacity) {
+  if (capture.text_edit) {
+    char *json = g_strdup_printf("{\"type\":\"color\",\"rgb\":%d}", color);
+    moonbit_string_t value = core_string(json); g_free(json); text_event(value); moonbit_decref(value);
+    char raw[G_ASCII_DTOSTR_BUF_SIZE]; g_ascii_dtostr(raw, sizeof(raw), opacity * 100);
+    smoke_style_number(MC_STYLE_OPACITY, raw); return;
+  }
   double values[MC_STYLE_PROPERTY_COUNT];
   current_style(values);
   values[MC_STYLE_COLOR] = color;
@@ -1454,11 +1556,11 @@ static gboolean smoke_contributions(void) {
   const char *reason = NULL;
   begin_text(-1, 60, 80);
   gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), "未提交草稿", -1);
-  ok = !mc_linux_capture_preflight_tools(enabled, &reason) && reason && image_session_count(capture.session) == 0 && ok;
+  ok = mc_linux_capture_preflight_tools(enabled, &reason) && !reason && image_session_count(capture.session) == 0 && ok;
   TextSnapshot *draft = snapshot_text(); ok = !strcmp(draft->text, "未提交草稿") && ok; snapshot_free(draft);
-  preedit_changed(GTK_TEXT_VIEW(capture.entry), "组合中", NULL);
+  smoke_preedit("组合中");
   ok = !mc_linux_capture_preflight_tools(enabled, &reason) && capture.composing && ok;
-  preedit_changed(GTK_TEXT_VIEW(capture.entry), "", NULL); cancel_text();
+  smoke_preedit(""); cancel_text();
   gtk_widget_grab_focus(capture.canvas);
   ok = mc_linux_capture_preflight_tools(enabled, &reason) && ok;
   if (enabled > 0) mc_linux_capture_publish_tools(enabled);
@@ -1497,12 +1599,21 @@ static gboolean smoke_contributions(void) {
   ok = first && !strcmp(first->id, "builtin.image.text") && ok;
   if (first) gtk_button_clicked(GTK_BUTTON(first->button));
   ok = capture.tool == TEXT && image_session_count(capture.session) == 2 && ok;
-  /* Configuration publication must not insert a document history entry. */
+  /* Prepared candidates are read-only until the caller has stored settings. */
+  smoke_style_number(MC_STYLE_FONT, "31.25");
+  double previous_default = editor_style_get(capture.style_bank, TEXT, MC_STYLE_FONT);
+  ok = mc_linux_capture_preflight_tools(moved, &reason) && !reason &&
+       editor_style_get(capture.style_bank, TEXT, MC_STYLE_FONT) == previous_default && ok;
+  mc_linux_capture_publish_tools(moved);
+  ok = editor_style_get(capture.style_bank, TEXT, MC_STYLE_FONT) == 31.25 && image_session_count(capture.session) == 2 && ok;
+  /* Configuration defaults do not introduce document history. */
+  cancel_text();
   ok = image_session_undo(capture.session) == 1 && image_session_count(capture.session) == 0 && ok;
   mc_linux_capture_publish_tools(original_snapshot);
   if (enabled > 0) tool_registry_snapshot_close(enabled);
   if (disabled > 0) tool_registry_snapshot_close(disabled);
   if (moved > 0) tool_registry_snapshot_close(moved);
+  cancel_text();
   image_session_dispose(capture.session); capture.session = original_session;
   capture.selected = -1; tool_clicked(NULL, GINT_TO_POINTER(SELECT)); sync_crop();
   g_print("Linux contribution fixture %s: slots, draft/IME/drag preflight, generic composite undo, disable and reorder.\n", ok ? "passed" : "FAILED");
@@ -1510,6 +1621,7 @@ static gboolean smoke_contributions(void) {
 }
 static gboolean smoke_tool_styles(void) {
   int original_session = capture.session;
+  cancel_text(); editor_style_dispose(capture.style_bank); capture.style_bank = editor_style_create();
   capture.session = image_session_create(capture.width, capture.height);
   if (capture.session <= 0) {
     capture.session = original_session;
@@ -1580,6 +1692,7 @@ static gboolean smoke_tool_styles(void) {
   ok = capture.color == 0xCC8844 && fabs(capture.opacity - .25) < .00001 && ok;
   image_session_dispose(capture.session);
   capture.session = original_session;
+  cancel_text();
   editor_style_dispose(capture.style_bank);
   capture.style_bank = editor_style_create();
   tool_clicked(NULL, GINT_TO_POINTER(SELECT));
@@ -1761,24 +1874,230 @@ static gboolean smoke_pointer_route(GtkApplication *application) {
   }
   if (ok) {
     int x, y;
-    GtkWidget *button = mc_style_controls_step_button(capture.style_controls, MC_STYLE_FONT, TRUE);
-    int previous = capture.font_size;
+    GtkWidget *button = smoke_property(MC_STYLE_FONT);
     gtk_widget_translate_coordinates(button, capture.editor, gtk_widget_get_allocated_width(button) / 2,
                                      gtk_widget_get_allocated_height(button) / 2, &x, &y);
     motion_event(display, -1, ox + x, oy + y, 0);
-    button_event(display, 1, TRUE, 0);
-    button_event(display, 1, FALSE, 0);
-    smoke_pump();
-    ok = capture.editing && capture.font_size == previous + 1 &&
-         gtk_window_get_focus(GTK_WINDOW(capture.editor)) == capture.entry;
-    if (!ok)
-      g_printerr("XTest fixture: font stepper failed or stole inline text focus\n");
+    button_event(display, 1, TRUE, 0); button_event(display, 1, FALSE, 0); smoke_pump();
+    smoke_style_number(MC_STYLE_FONT, "31.25");
+    ok = capture.editing && capture.font_size == 31.25 && image_session_count(capture.session) == 0 &&
+         gtk_window_get_focus(GTK_WINDOW(capture.editor)) == button && ok;
+    if (!ok) g_printerr("XTest fixture: shared numeric input routing/focus failed\n");
   }
   mc_linux_capture_close();
   ok = host_probe.closed == 1 && host_probe.results == 0 && ok;
   dlclose(library);
   g_print("Linux XTest pointer fixture %s: frozen canvas, toolbar, inline text focus.\n",
           ok ? "passed" : "FAILED");
+  return ok;
+}
+typedef struct { int session, style, edit, events; gboolean retire; MCLinuxTextInputs *inputs; } TextBridgeProbe;
+static gboolean bridge_probe_event(gpointer data, moonbit_string_t event) {
+  TextBridgeProbe *probe = data; probe->events++;
+  int version = (int)capture_text_value(probe->session, probe->edit, MC_CAPTURE_TEXT_VERSION);
+  gboolean accepted = capture_text_event_json(probe->session, probe->edit, version, event) == 1;
+  if (probe->retire) {
+    MCLinuxTextInputs *inputs = probe->inputs; probe->inputs = NULL; mc_linux_text_inputs_destroy(inputs);
+  } else {
+    moonbit_string_t json = capture_text_frame(probe->session, probe->edit, MC_CAPTURE_TEXT_INLINE, 200, 80, 1, 0);
+    int frame = ui_frame_open(json); moonbit_decref(json);
+    if (frame) { mc_linux_text_inputs_set_frame(probe->inputs, frame); ui_frame_close(frame); }
+  }
+  return accepted;
+}
+static void bridge_probe_destroy(GtkWidget *widget, gpointer data) {
+  (void)widget; TextBridgeProbe *probe = data;
+  MCLinuxTextInputs *inputs = probe->inputs; probe->inputs = NULL;
+  mc_linux_text_inputs_destroy(inputs);
+}
+static gboolean smoke_bridge_retirement(void) {
+  TextBridgeProbe probe = {0}; probe.session = image_session_create(640, 400); probe.style = editor_style_create();
+  moonbit_string_t empty = core_string("");
+  probe.edit = capture_text_begin(probe.session, probe.style, MC_CAPTURE_TEXT_NEW, empty,
+      image_session_revision(probe.session), 10, 10, 200, 80); moonbit_decref(empty);
+  MCLinuxTextCallbacks callbacks = {bridge_probe_event, NULL, NULL};
+  probe.inputs = mc_linux_text_inputs_new(&callbacks, &probe);
+  moonbit_string_t json = capture_text_frame(probe.session, probe.edit, MC_CAPTURE_TEXT_INLINE, 200, 80, 1, 0);
+  int frame = ui_frame_open(json); moonbit_decref(json);
+  gboolean ok = frame && mc_linux_text_inputs_set_frame(probe.inputs, frame);
+  if (frame) ui_frame_close(frame);
+  GtkWidget *view = mc_linux_text_inputs_field(probe.inputs, "annotation.text");
+  if (!view) { mc_linux_text_inputs_destroy(probe.inputs); image_session_dispose(probe.session); editor_style_dispose(probe.style); return FALSE; }
+  g_object_ref(view);
+  smoke_buffer_set(view, "已确认😀");
+  g_signal_emit_by_name(view, "preedit-changed", "迟到");
+  g_signal_emit_by_name(view, "preedit-changed", "");
+  int events = probe.events;
+  mc_linux_text_inputs_destroy(probe.inputs); probe.inputs = NULL;
+  smoke_pump();
+  ok = probe.events == events && image_session_count(probe.session) == 0 && ok;
+  g_object_unref(view);
+  capture_text_cancel(probe.session, probe.edit, (int)capture_text_value(probe.session, probe.edit, MC_CAPTURE_TEXT_VERSION));
+  empty = core_string("");
+  probe.edit = capture_text_begin(probe.session, probe.style, MC_CAPTURE_TEXT_NEW, empty,
+      image_session_revision(probe.session), 10, 10, 200, 80); moonbit_decref(empty);
+  probe.inputs = mc_linux_text_inputs_new(&callbacks, &probe);
+  json = capture_text_frame(probe.session, probe.edit, MC_CAPTURE_TEXT_INLINE, 200, 80, 1, 0);
+  frame = ui_frame_open(json); moonbit_decref(json);
+  if (frame) { mc_linux_text_inputs_set_frame(probe.inputs, frame); ui_frame_close(frame); } else ok = FALSE;
+  view = mc_linux_text_inputs_field(probe.inputs, "annotation.text");
+  if (view) {
+    g_object_ref(view);
+    char *limit = g_malloc0(10000); memset(limit, 'x', 9999);
+    smoke_buffer_set(view, limit); g_free(limit);
+    g_signal_emit_by_name(view, "preedit-changed", "你");
+    g_signal_emit_by_name(view, "preedit-changed", "");
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
+    gtk_text_buffer_begin_user_action(buffer);
+    gtk_text_buffer_insert_at_cursor(buffer, "你好", -1);
+    gtk_text_buffer_end_user_action(buffer);
+    smoke_pump();
+    moonbit_string_t raw = capture_text_text(probe.session, probe.edit, MC_CAPTURE_TEXT_RAW);
+    ok = !mc_linux_text_inputs_composing(probe.inputs) && Moonbit_array_length(raw) == 9999 &&
+         gtk_text_buffer_get_char_count(buffer) == 9999 &&
+         capture_text_value(probe.session, probe.edit, MC_CAPTURE_TEXT_VALID) == 1 && ok;
+    moonbit_decref(raw);
+    /* A rejected terminal result restores the old draft, not an orphaned
+     * marked range: the next ordinary insertion must still be accepted. */
+    gtk_text_buffer_insert_at_cursor(buffer, "a", -1);
+    raw = capture_text_text(probe.session, probe.edit, MC_CAPTURE_TEXT_RAW);
+    ok = Moonbit_array_length(raw) == 10000 && capture_text_value(probe.session, probe.edit, MC_CAPTURE_TEXT_VALID) == 1 && ok;
+    moonbit_decref(raw);
+    probe.retire = TRUE;
+    smoke_buffer_set(view, "回调退休");
+    ok = !probe.inputs && image_session_count(probe.session) == 0 && ok;
+    g_object_unref(view);
+  } else ok = FALSE;
+  mc_linux_text_inputs_destroy(probe.inputs); probe.inputs = NULL;
+  capture_text_cancel(probe.session, probe.edit, (int)capture_text_value(probe.session, probe.edit, MC_CAPTURE_TEXT_VERSION));
+  empty = core_string("");
+  probe.edit = capture_text_begin(probe.session, probe.style, MC_CAPTURE_TEXT_DEFAULTS, empty,
+      image_session_revision(probe.session), 0, 0, 0, 0); moonbit_decref(empty);
+  probe.retire = FALSE; probe.inputs = mc_linux_text_inputs_new(&callbacks, &probe);
+  json = capture_text_frame(probe.session, probe.edit, MC_CAPTURE_TEXT_PROPERTIES,
+      capture_text_value(probe.session, probe.edit, MC_CAPTURE_TEXT_ROW_WIDTH),
+      capture_text_value(probe.session, probe.edit, MC_CAPTURE_TEXT_ROW_HEIGHT), 1, 0);
+  frame = ui_frame_open(json); moonbit_decref(json);
+  if (frame) { mc_linux_text_inputs_set_frame(probe.inputs, frame); ui_frame_close(frame); } else ok = FALSE;
+  view = mc_linux_text_inputs_field(probe.inputs, "style.opacity");
+  if (view) {
+    /* Retirement of the first of two fields synchronously retires the owner:
+     * the outer set_frame must not retain the second GList node across it. */
+    g_signal_connect(view, "destroy", G_CALLBACK(bridge_probe_destroy), &probe);
+    mc_linux_text_inputs_set_frame(probe.inputs, 0);
+    ok = !probe.inputs && ok;
+  } else ok = FALSE;
+  mc_linux_text_inputs_destroy(probe.inputs);
+  image_session_dispose(probe.session); editor_style_dispose(probe.style);
+  g_print("Linux text bridge lifetime fixture %s: rejected IME result, cancelled idle, event and field-destroy reentrancy.\n", ok ? "passed" : "FAILED");
+  return ok;
+}
+static gboolean smoke_shared_text(void) {
+  gboolean ok = TRUE;
+#define TEXT_CHECK(condition, description) do { if (!(condition)) { ok = FALSE; g_printerr("Linux shared text: %s\n", description); } } while (0)
+  tool_clicked(NULL, GINT_TO_POINTER(SELECT));
+  if (capture.x11) gdk_window_focus(gtk_widget_get_window(capture.editor), GDK_CURRENT_TIME);
+  begin_text(-1, 60, 80);
+  smoke_pump();
+  if (!capture.entry) { g_printerr("Linux shared text: failed to mount body\n"); return FALSE; }
+  smoke_buffer_set(capture.entry, "截图 MoonBit 😀\r\n第二行");
+  char *raw = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW));
+  TEXT_CHECK(!strcmp(raw, "截图 MoonBit 😀\n第二行"), "CRLF and astral text round trip"); g_free(raw);
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
+  gtk_text_buffer_begin_user_action(buffer); gtk_text_buffer_insert_at_cursor(buffer, "追加", -1); gtk_text_buffer_end_user_action(buffer);
+  draft_undo(FALSE);
+  TextSnapshot *draft = snapshot_text(); TEXT_CHECK(!strstr(draft->text, "追加") && image_session_count(capture.session) == 0, "draft undo must not commit"); snapshot_free(draft);
+  draft_undo(TRUE); draft = snapshot_text(); TEXT_CHECK(strstr(draft->text, "追加"), "draft redo"); snapshot_free(draft);
+  draft_undo(FALSE);
+  /* Preedit is not inserted into GtkTextBuffer. Root keeps it separately and
+   * reports unknown caret, never fabricates a position GTK did not expose. */
+  smoke_preedit("拼😀");
+  moonbit_string_t json = capture_text_frame(capture.session, capture.text_edit, MC_CAPTURE_TEXT_INLINE, 240, 80, 1, 0);
+  int frame = ui_frame_open(json); moonbit_decref(json);
+  TEXT_CHECK(frame > 0 && ui_frame_field_value(frame, 0, MC_UI_FIELD_SELECTION_KNOWN) == 0 && ui_frame_field_value(frame, 0, MC_UI_FIELD_MARKED_START) >= 0, "IME unknown selection");
+  if (frame) ui_frame_close(frame);
+  sync_text(); draft = snapshot_text(); TEXT_CHECK(!strstr(draft->text, "拼"), "same-identity redraw must not copy preedit into the buffer"); snapshot_free(draft);
+  const char *reason = NULL;
+  TEXT_CHECK(!commit_text() && !mc_linux_capture_preflight_tools(published_tools, &reason), "preflight must preserve live composition");
+  smoke_preedit("");
+  gtk_text_buffer_begin_user_action(buffer); gtk_text_buffer_insert_at_cursor(buffer, "拼好😀", -1); gtk_text_buffer_end_user_action(buffer);
+  raw = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW));
+  TEXT_CHECK(strstr(raw, "拼好😀") && !mc_linux_text_inputs_composing(capture.body_inputs), "empty preedit followed by commit must not cancel"); g_free(raw);
+  smoke_pump();
+  raw = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW));
+  TEXT_CHECK(strstr(raw, "拼好😀"), "late empty-preedit idle cannot restore old text"); g_free(raw);
+  smoke_preedit("未确认"); smoke_preedit(""); smoke_pump();
+  raw = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW));
+  TEXT_CHECK(!strstr(raw, "未确认") && strstr(raw, "拼好😀"), "composition cancellation restores previous draft"); g_free(raw);
+  GtkWidget *font = smoke_property(MC_STYLE_FONT), *opacity = smoke_property(MC_STYLE_OPACITY);
+  TEXT_CHECK(font && opacity && ATK_IS_TEXT(gtk_widget_get_accessible(font)), "real accessible numeric input");
+  gtk_widget_grab_focus(font);
+  smoke_style_number(MC_STYLE_FONT, "-");
+  sync_text();
+  TEXT_CHECK(capture_text_value(capture.session, capture.text_edit, MC_CAPTURE_TEXT_VALID) == 0 && !commit_text() && !mc_linux_capture_preflight_tools(published_tools, &reason), "raw invalid numeric draft remains pending");
+  GtkTextIter first, last; GtkTextBuffer *numbers = gtk_text_view_get_buffer(GTK_TEXT_VIEW(font));
+  gtk_text_buffer_get_bounds(numbers, &first, &last); raw = gtk_text_buffer_get_text(numbers, &first, &last, FALSE);
+  TEXT_CHECK(!strcmp(raw, "-"), "redraw must preserve invalid numeric raw"); g_free(raw);
+  smoke_style_number(MC_STYLE_FONT, "31.25");
+  GdkEventKey step_key = {0}; step_key.keyval = GDK_KEY_Up; gboolean stepped = FALSE;
+  g_signal_emit_by_name(font, "key-press-event", &step_key, &stepped);
+  TEXT_CHECK(stepped && capture.font_size == 32.25, "native ArrowUp delegates step to shared UI");
+  step_key.keyval = GDK_KEY_Down; stepped = FALSE;
+  g_signal_emit_by_name(font, "key-press-event", &step_key, &stepped);
+  TEXT_CHECK(stepped && capture.font_size == 31.25, "native ArrowDown delegates step to shared UI");
+  smoke_style_rgba(0x225577, .35);
+  TEXT_CHECK(capture.font_size == 31.25 && fabs(capture.opacity - .35) < 1e-12 && image_session_count(capture.session) == 0, "fractional font and opacity preview");
+  int version = text_version(); double revision = image_session_revision(capture.session);
+  GdkPixbuf *preview = flatten_preview();
+  TEXT_CHECK(preview && text_version() == version && image_session_revision(capture.session) == revision && capture.editing, "read-only PNG preparation"); g_clear_object(&preview);
+  /* Focus is an input fact even when selection did not change. */
+  gtk_widget_grab_focus(capture.entry); smoke_pump();
+  command(NULL, GINT_TO_POINTER(1));
+  raw = core_text(capture_text_text(capture.session, capture.text_edit, MC_CAPTURE_TEXT_RAW));
+  TEXT_CHECK(!strstr(raw, "拼好😀") && capture.opacity == .35, "toolbar undo follows focused body, not last numeric field"); g_free(raw);
+  command(NULL, GINT_TO_POINTER(2));
+  TEXT_CHECK(commit_text() && image_session_count(capture.session) == 1 && image_session_value(capture.session, 0, 7) == 31.25 && image_session_value(capture.session, 0, 8) == .35, "atomic body/style publication");
+  TEXT_CHECK(editor_style_get(capture.style_bank, TEXT, MC_STYLE_FONT) == 31.25 && editor_style_get(capture.style_bank, TEXT, MC_STYLE_OPACITY) == .35, "new annotation publishes default bank with document");
+  TEXT_CHECK(image_session_undo(capture.session) == 1 && image_session_count(capture.session) == 0 && image_session_redo(capture.session) == 1, "one document undo restores whole annotation");
+  begin_text(0, 0, 0); smoke_buffer_set(capture.entry, "改过的文字");
+  smoke_style_number(MC_STYLE_FONT, "40"); smoke_style_rgba(0xAA3355, .6);
+  cancel_text();
+  TEXT_CHECK(image_session_value(capture.session, 0, 7) == 31.25 && image_session_value(capture.session, 0, 8) == .35, "cancel keeps original style");
+  begin_text(0, 0, 0); smoke_buffer_set(capture.entry, "改过的文字");
+  TEXT_CHECK(commit_text() && editor_style_get(capture.style_bank, TEXT, MC_STYLE_FONT) == 31.25, "existing edit leaves tool defaults alone");
+  char *text = annotation_text(0); TEXT_CHECK(!strcmp(text, "改过的文字"), "existing text commits"); g_free(text);
+  TEXT_CHECK(image_session_undo(capture.session) == 1, "existing edit undo");
+  text = annotation_text(0); TEXT_CHECK(strstr(text, "MoonBit"), "undo restores body"); g_free(text);
+  image_session_redo(capture.session);
+  /* Move preserves the complete annotation style; no native remeasure/rounding. */
+  double height = image_session_value(capture.session, 0, 4);
+  GdkEventButton gesture = {0}; gesture.button = 1;
+  gesture.x = capture.offset_x + 100 * capture.zoom; gesture.y = capture.offset_y + 100 * capture.zoom;
+  TEXT_CHECK(canvas_press(capture.canvas, &gesture, NULL), "text move begins");
+  GdkEventMotion move = {0}; move.x = gesture.x + 15 * capture.zoom; move.y = gesture.y + 10 * capture.zoom;
+  canvas_motion(capture.canvas, &move, NULL); gesture.x = move.x; gesture.y = move.y;
+  TEXT_CHECK(canvas_release(capture.canvas, &gesture, NULL) && image_session_value(capture.session, 0, 1) == 75 && image_session_value(capture.session, 0, 7) == 31.25 && image_session_value(capture.session, 0, 4) == height, "move preserves fractional font and original height");
+  TEXT_CHECK(smoke_property_visible(MC_STYLE_FONT) && smoke_property_visible(MC_STYLE_COLOR) && !smoke_property_visible(MC_STYLE_STROKE), "existing properties use shared row");
+  smoke_style_number(MC_STYLE_FONT, "40");
+  TEXT_CHECK(image_session_value(capture.session, 0, 7) == 31.25 && capture.font_size == 40, "property typing is preview only");
+  GdkEventKey key = {0}; key.keyval = GDK_KEY_c; key.state = GDK_CONTROL_MASK;
+  gtk_widget_grab_focus(smoke_property(MC_STYLE_FONT));
+  TEXT_CHECK(!editor_key(capture.editor, &key, NULL), "numeric copy cannot export/close capture");
+  smoke_style_number(MC_STYLE_FONT, "999");
+  TEXT_CHECK(!commit_text(), "invalid numeric publication rejected");
+  cancel_text();
+  TEXT_CHECK(image_session_value(capture.session, 0, 7) == 31.25 && editor_style_get(capture.style_bank, TEXT, MC_STYLE_FONT) == 31.25, "invalid cancel does not mutate object or defaults");
+  /* A concurrent core command invalidates the frozen pointer revision. */
+  gesture.x = capture.offset_x + 100 * capture.zoom; gesture.y = capture.offset_y + 110 * capture.zoom;
+  TEXT_CHECK(canvas_press(capture.canvas, &gesture, NULL) && capture.drag_annotation_id, "text drag freezes identity and revision");
+  double before_x = image_session_value(capture.session, 0, 1);
+  TEXT_CHECK(image_session_add(capture.session, RECTANGLE, 400, 300, 30, 30, 0, 2) == 1, "concurrent document command");
+  gesture.x += 10 * capture.zoom; gesture.y += 5 * capture.zoom;
+  canvas_release(capture.canvas, &gesture, NULL);
+  TEXT_CHECK(image_session_value(capture.session, 0, 1) == before_x, "stale pointer release cannot overwrite newer document");
+  cancel_text(); image_session_undo(capture.session); capture.selected = -1;
+  g_print("Linux shared text fixture %s: real GTK input, UTF-16/IME, focus/history, root preview and atomic styles.\n", ok ? "passed" : "FAILED");
+#undef TEXT_CHECK
   return ok;
 }
 gboolean mc_linux_capture_smoke(GtkApplication *application) {
@@ -1820,24 +2139,24 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   ok = canvas_release(capture.canvas, &selection_event, NULL) && !capture.selecting &&
        capture.editor == original && !gtk_window_get_decorated(GTK_WINDOW(original)) && ok;
   ok = smoke_contributions() && smoke_tool_styles() && smoke_shape_variants() && ok;
-  ok = (editor_style_property_mask(context_kind()) == 0) && !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
-       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) && ok;
+  ok = (editor_style_property_mask(context_kind()) == 0) && !smoke_property_visible(MC_STYLE_COLOR) &&
+       !smoke_property_visible(MC_STYLE_FONT) && ok;
   tool_clicked(NULL, GINT_TO_POINTER(TEXT));
-  ok = mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) && mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) &&
-       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) && ok;
+  ok = smoke_property_visible(MC_STYLE_COLOR) && smoke_property_visible(MC_STYLE_FONT) &&
+       !smoke_property_visible(MC_STYLE_STROKE) && ok;
   smoke_style_step(MC_STYLE_FONT, TRUE);
   ok = capture.font_size == editor_style_default(MC_STYLE_FONT) + editor_style_step(MC_STYLE_FONT) && image_session_count(capture.session) == 0 && ok;
   smoke_style_step(MC_STYLE_FONT, FALSE);
   tool_clicked(NULL, GINT_TO_POINTER(RECTANGLE));
-  ok = mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) && mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) &&
-       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) && ok;
+  ok = smoke_property_visible(MC_STYLE_COLOR) && smoke_property_visible(MC_STYLE_STROKE) &&
+       !smoke_property_visible(MC_STYLE_FONT) && ok;
   smoke_style_number(MC_STYLE_STROKE, "8");
   ok = capture.stroke == 8 && ok;
   smoke_style_number(MC_STYLE_STROKE, "4");
   tool_clicked(NULL, GINT_TO_POINTER(REDACT));
-  ok = !(editor_style_property_mask(context_kind()) == 0) && mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
-       mc_style_controls_property_visible(capture.style_controls, MC_STYLE_OPACITY) && !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) &&
-       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) && ok;
+  ok = !(editor_style_property_mask(context_kind()) == 0) && smoke_property_visible(MC_STYLE_COLOR) &&
+       smoke_property_visible(MC_STYLE_OPACITY) && !smoke_property_visible(MC_STYLE_FONT) &&
+       !smoke_property_visible(MC_STYLE_STROKE) && ok;
   for (int i = 0; i < 2; i++) {
     if (!capture.future_tools[i]) { ok = FALSE; continue; }
     AtkStateSet *state = atk_object_ref_state_set(gtk_widget_get_accessible(capture.future_tools[i]));
@@ -1847,112 +2166,8 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
     g_free(tip);
     g_object_unref(state);
   }
-  tool_clicked(NULL, GINT_TO_POINTER(SELECT));
-  begin_text(-1, 60, 80);
-  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), "截图 MoonBit ✅\n第二行",
-                           -1);
-  GtkTextBuffer *draft_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry));
-  gtk_text_buffer_begin_user_action(draft_buffer);
-  gtk_text_buffer_insert_at_cursor(draft_buffer, "追加", -1);
-  gtk_text_buffer_end_user_action(draft_buffer);
-  draft_undo(FALSE);
-  TextSnapshot *draft = snapshot_text();
-  ok = strstr(draft->text, "追加") == NULL && image_session_count(capture.session) == 0 && ok;
-  snapshot_free(draft);
-  draft_undo(TRUE);
-  draft = snapshot_text();
-  ok = strstr(draft->text, "追加") != NULL && ok;
-  snapshot_free(draft);
-  draft_undo(FALSE);
-  gtk_widget_grab_focus(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT));
-  guint undo_count = capture.draft_undo->len;
-  GdkEventKey property_key = {0};
-  property_key.state = GDK_CONTROL_MASK;
-  property_key.keyval = GDK_KEY_z;
-  ok = !editor_key(capture.editor, &property_key, NULL) && capture.draft_undo->len == undo_count &&
-       capture.editing && ok;
-  property_key.keyval = GDK_KEY_c;
-  ok = !editor_key(capture.editor, &property_key, NULL) && capture.editor && capture.editing && ok;
-  property_key.state = 0;
-  property_key.keyval = GDK_KEY_Delete;
-  ok = !editor_key(capture.editor, &property_key, NULL) && capture.editing && ok;
-  property_key.keyval = GDK_KEY_Up;
-  int before_font = capture.font_size;
-  ok = smoke_style_key(MC_STYLE_FONT, &property_key) && capture.font_size == before_font + 1 && ok;
-  property_key.keyval = GDK_KEY_Down;
-  smoke_style_key(MC_STYLE_FONT, &property_key);
-  property_key.keyval = GDK_KEY_Escape;
-  ok = smoke_style_key(MC_STYLE_FONT, &property_key) &&
-       gtk_window_get_focus(GTK_WINDOW(capture.editor)) == capture.entry && ok;
-  preedit_changed(GTK_TEXT_VIEW(capture.entry), "拼", NULL);
-  before_font = capture.font_size;
-  smoke_style_step(MC_STYLE_FONT, TRUE);
-  ok = capture.font_size == before_font && ok;
-  GdkEventKey ime_key = {0};
-  ime_key.keyval = GDK_KEY_Escape;
-  ok = !editor_key(capture.editor, &ime_key, NULL) && capture.editing && !commit_text() && ok;
-  preedit_changed(GTK_TEXT_VIEW(capture.entry), "", NULL);
-  ok = commit_text() && ok;
-  ok = image_session_count(capture.session) == 1 && ok;
-  begin_text(0, 0, 0);
-  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(capture.entry)), "改过的文字", -1);
-  ok = commit_text() && ok;
-  char *text = annotation_text(0);
-  ok = g_strcmp0(text, "改过的文字") == 0 && ok;
-  g_free(text);
-  ok = image_session_undo(capture.session) == 1 && ok;
-  text = annotation_text(0);
-  ok = text && strstr(text, "MoonBit") && ok;
-  g_free(text);
-  image_session_redo(capture.session);
-  GdkEventButton gesture = {0};
-  gesture.button = 1;
-  gesture.x = capture.offset_x + 100 * capture.zoom;
-  gesture.y = capture.offset_y + 100 * capture.zoom;
-  ok = canvas_press(capture.canvas, &gesture, NULL) && ok;
-  GdkEventMotion move = {0};
-  move.x = gesture.x + 15 * capture.zoom;
-  move.y = gesture.y + 10 * capture.zoom;
-  ok = canvas_motion(capture.canvas, &move, NULL) && ok;
-  gesture.x = move.x;
-  gesture.y = move.y;
-  ok = canvas_release(capture.canvas, &gesture, NULL) && image_session_value(capture.session, 0, 1) == 75 &&
-       ok;
-  text = annotation_text(0);
-  ok = g_strcmp0(text, "改过的文字") == 0 && ok;
-  g_free(text);
+  ok = smoke_bridge_retirement() && smoke_shared_text() && ok;
   double r[10];
-  read_annotation(0, r);
-  r[2] = 100;
-  r[4] = 0x225577;
-  r[6] = 32;
-  ok = update_annotation(0, r) && image_session_value(capture.session, 0, 7) == 32 && ok;
-  sync_style();
-  ok = mc_style_controls_property_visible(capture.style_controls, MC_STYLE_FONT) && mc_style_controls_property_visible(capture.style_controls, MC_STYLE_COLOR) &&
-       !mc_style_controls_property_visible(capture.style_controls, MC_STYLE_STROKE) && ok;
-  smoke_style_step(MC_STYLE_FONT, TRUE);
-  ok = image_session_value(capture.session, 0, 7) == 33 && ok;
-  image_session_undo(capture.session);
-  sync_style();
-  ok = capture.font_size == 32 && ok;
-  gtk_entry_set_text(GTK_ENTRY(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT)), "40");
-  ok = image_session_value(capture.session, 0, 7) == 40 && ok;
-  gtk_widget_grab_focus(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT));
-  int annotation_count = image_session_count(capture.session);
-  property_key.keyval = GDK_KEY_Delete;
-  property_key.state = 0;
-  ok = !editor_key(capture.editor, &property_key, NULL) &&
-       image_session_count(capture.session) == annotation_count && ok;
-  property_key.keyval = GDK_KEY_c;
-  property_key.state = GDK_CONTROL_MASK;
-  ok = !editor_key(capture.editor, &property_key, NULL) && capture.editor &&
-       image_session_count(capture.session) == annotation_count && ok;
-  gtk_widget_grab_focus(capture.canvas);
-  gtk_entry_set_text(GTK_ENTRY(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT)), "999");
-  sync_control_values();
-  ok = !strcmp(gtk_entry_get_text(GTK_ENTRY(mc_style_controls_entry(capture.style_controls, MC_STYLE_FONT))), "40") && ok;
-  image_session_undo(capture.session);
-  sync_style();
   ok = image_session_add(capture.session, REDACT, 50, 60, 80, 60, 0, 4) == 1 && ok;
   ok = hit_test(70, 80) == image_session_count(capture.session) - 1 && ok;
   GdkPixbuf *image = flatten();
@@ -2017,13 +2232,15 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   image_session_undo(capture.session);
   capture.selected = 0;
   sync_style();
-  smoke_style_number(MC_STYLE_OPACITY, "35");
+  smoke_style_number(MC_STYLE_OPACITY, "45");
+  ok = commit_text() && ok;
   read_annotation(0, r);
   r[0] += 1;
-  ok = update_annotation(0, r) && fabs(image_session_value(capture.session, 0, 8) - .35) < .001 && ok;
+  ok = update_annotation(0, r) && fabs(image_session_value(capture.session, 0, 8) - .45) < .001 && ok;
   image_session_undo(capture.session);
   image_session_undo(capture.session);
-  sync_style();
+  cancel_text();
+  capture.selected = -1;
   ok = image_session_crop(capture.session, 40, 60, 200, 120) == 1 && ok;
   sync_crop();
   image = flatten();
@@ -2036,8 +2253,11 @@ gboolean mc_linux_capture_smoke(GtkApplication *application) {
   if (preview_path && *preview_path) {
     /* Readable synthetic preview, after all behavior and privacy pixel checks.
      * It uses the same document and native renderer as interactive capture. */
-    if (pending_text("原地编辑"))
-      image_session_update(capture.session, 0, 150, 100, 180, 70, 0xF26769, 4, 32);
+    begin_text(0, 0, 0);
+    if (capture.entry) smoke_buffer_set(capture.entry, "原地编辑");
+    ok = commit_text() && ok;
+    read_annotation(0, r); r[0] = 150; r[1] = 100; r[2] = 180; r[3] = 70;
+    ok = update_annotation(0, r) && ok;
     image_session_crop(capture.session, 30, 50, 440, 200);
     capture.selected = 0;
     sync_crop();

@@ -1,0 +1,61 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moojicut/core/internal/shared/ui/fields"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn apply(Int32, String, Int32, Edit) -> Bool
+
+pub fn boundary(String, Int32) -> Bool
+
+pub fn close(Int32) -> Bool
+
+pub fn open(String, String, Int32, Selection) -> Int32
+
+pub fn snapshot(Int32) -> Snapshot?
+
+pub fn valid_text(String, Int32) -> Bool
+
+// Errors
+
+// Types and methods
+pub(all) enum Edit {
+  Replace(Int32, Int32, String, Selection)
+  Select(Selection)
+  CompositionStart(Int32, Int32, Selection)
+  CompositionUpdate(String, Selection)
+  CompositionCommit(String, Selection)
+  CompositionCancel
+  Undo
+  Redo
+}
+
+pub(all) enum Selection {
+  Directed(Int32, Int32)
+  Undirected(Int32, Int32)
+  Unknown
+}
+
+#derive(Eq, @debug.Debug)
+pub struct Snapshot {
+  field_id : String
+  token : Int32
+  version : Int32
+  raw : String
+  anchor : Int32
+  focus : Int32
+  selection_known : Bool
+  direction_known : Bool
+  marked : (Int32, Int32)?
+  can_undo : Bool
+  can_redo : Bool
+}
+pub fn Snapshot::equal(Self, Self) -> Bool
+pub fn Snapshot::not_equal(Self, Self) -> Bool
+pub fn Snapshot::to_repr(Self) -> @debug.Repr
+
+// Type aliases
+
+// Traits

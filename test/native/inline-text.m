@@ -1,6 +1,10 @@
 #import <AppKit/AppKit.h>
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
 #import "components/style_controls/macos/MCStyleControls.h"
+#import "platform/macos/graphics/MCSharedTextInput.h"
+#import "components/shared_canvas/macos/MCSharedCanvas.h"
+#import "platform/macos/graphics/MCSystemColorPanel.h"
+#import <objc/runtime.h>
 #include "moonbit.h"
 #include <math.h>
 
@@ -19,18 +23,24 @@
 - (void)deleteSelection;
 @end
 
+@interface MCColorControl (MCPanelLeaseTest)
+@property (readonly) MCSystemColorPanelLease *colorPanelLease;
+- (void)showColorPanel:(id)sender;
+@end
+
 @interface MCImageEditorController (MCInlineTextTest)
 @property (readonly) MCImageCanvas *canvas;
 @property (readonly) NSSegmentedControl *tools;
 @property (readonly) MCColorSwatch *color;
 @property (readonly) MCColorControl *colorControl;
-@property (readonly) NSTextField *fontSize;
+@property (readonly) NSDictionary<NSString *, MCSharedTextInputView *> *textPropertyInputs;
+@property (readonly) MCSharedCanvasView *textPropertiesCanvas;
 @property (readonly) NSButton *confirmButton;
 @property (readonly) NSButton *cancelButton;
 - (void)prepareWindow;
 - (void)chooseTool:(id)sender;
 - (void)addTextAtPoint:(NSPoint)point;
-- (void)styleChanged:(id)sender;
+- (void)sharedColorChanged:(id)sender;
 @end
 
 #define CHECK(condition, message) do { \
@@ -79,6 +89,24 @@ static NSRect rect(NSDictionary *annotation) {
 static BOOL near(CGFloat actual, CGFloat expected) { return fabs(actual - expected) < 0.01; }
 static NSUInteger history(MCImageEditorController *editor) { return [editor.document[@"undo"] count]; }
 
+// Drive the actual shared-field NSTextView, including replacement and selection
+// callbacks. No field value or annotation dictionary is patched by this fixture.
+static BOOL editProperty(MCImageEditorController *editor, NSString *identifier, NSString *raw) {
+    MCSharedTextInputView *input = editor.textPropertyInputs[identifier];
+    if (!input) return NO;
+    [input setSelectedRange:NSMakeRange(0,input.string.length)];
+    [input insertText:raw replacementRange:NSMakeRange(NSNotFound,0)];
+    return [input.string isEqual:raw];
+}
+static void chooseTextColor(MCImageEditorController *editor, NSColor *color) {
+    // Exercise the system picker result adapter without ordering its window on
+    // screen. The shared UI owns the button/hit/field; this is the OS RGB result.
+    NSColorPanel *panel = NSColorPanel.sharedColorPanel;
+    panel.target = nil; panel.action = NULL;
+    panel.color = color;
+    [editor sharedColorChanged:panel];
+}
+
 static BOOL creationAndEditing(void) {
     BOOL passed = YES;
     NSError *error = nil;
@@ -123,10 +151,8 @@ static BOOL creationAndEditing(void) {
     [canvas beginEditingText:original];
     [canvas.textView selectAll:nil];
     [canvas.textView insertText:@"重新编辑\nHello 🌙" replacementRange:NSMakeRange(NSNotFound, 0)];
-    editor.color.color = [NSColor colorWithSRGBRed:0.1 green:0.5 blue:0.9 alpha:1];
-    [editor styleChanged:editor.color];
-    editor.fontSize.doubleValue = 40;
-    [editor styleChanged:editor.fontSize];
+    chooseTextColor(editor,[NSColor colorWithSRGBRed:0.1 green:0.5 blue:0.9 alpha:1]);
+    CHECK(editProperty(editor,@"style.fontSize",@"40"), "font size enters the shared numeric text input");
     CHECK([canvas.textView.string isEqualToString:@"重新编辑\nHello 🌙"], "style changes preserve current typing");
     CHECK([canvas finishTextEditing:YES], "re-editing commits successfully");
     NSDictionary *updated = [editor.document[@"annotations"] firstObject];
@@ -184,6 +210,9 @@ static BOOL manipulationAtScale(CGFloat scale) {
     NSDictionary *moved = [canvas selectedAnnotation];
     NSRect movedRect = rect(moved);
     CHECK(near(movedRect.origin.x, 130) && near(movedRect.origin.y, 115), "drag maps view points to the same image coordinates at any zoom");
+    if (history(editor) != before + 1)
+        fprintf(stderr, "inline drag diagnostic scale=%.2f history=%lu->%lu annotation=%s\n", (double)scale,
+            (unsigned long)before, (unsigned long)history(editor), moved.description.UTF8String);
     CHECK(history(editor) == before + 1 && [editor.document[@"annotations"] count] == 1,
           "a drag commits one move without duplicating the object");
     CHECK(canvas.textView == nil, "single-click dragging does not enter text editing");
@@ -277,6 +306,8 @@ static BOOL rgbaStyles(void) {
     [canvas mouseDragged:mouse(canvas, NSEventTypeLeftMouseDragged, NSMakePoint(320, 120), 1)];
     [canvas mouseUp:mouse(canvas, NSEventTypeLeftMouseUp, NSMakePoint(320, 120), 1)];
     NSDictionary *cover = [editor.document[@"annotations"] firstObject];
+    if (![cover[@"color"] isEqual:@"#00ff00"] || !near([cover[@"opacity"] doubleValue],.25))
+        fprintf(stderr,"inline cover diagnostic %s\n",cover.description.UTF8String);
     CHECK([cover[@"color"] isEqual:@"#00ff00"] && near([cover[@"opacity"] doubleValue], .25),
           "shared color component commits colored translucent fill to MoonBit");
     NSBitmapImageRep *exported = [NSBitmapImageRep imageRepWithData:[editor renderPNGData:&error]];
@@ -285,8 +316,8 @@ static BOOL rgbaStyles(void) {
     CHECK(pixel.redComponent > .70 && pixel.redComponent < .85 && pixel.greenComponent > .95 && pixel.blueComponent > .70 && pixel.blueComponent < .85,
           "export blends a 25 percent green cover over white instead of forcing black/opaque");
     selectTool(editor, 3);
-    editor.colorControl.color = [NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:.5];
-    editor.colorControl.onChange(editor.colorControl.well);
+    chooseTextColor(editor,[NSColor colorWithSRGBRed:1 green:0 blue:0 alpha:1]);
+    CHECK(editProperty(editor,@"style.opacity",@"50"), "text default alpha uses the shared percentage field");
     [editor addTextAtPoint:NSMakePoint(30, 30)];
     [canvas.textView insertText:@"A" replacementRange:NSMakeRange(NSNotFound, 0)];
     CHECK(near([canvas.textDraft[@"opacity"] doubleValue], .5), "new text uses the shared color alpha");
@@ -310,56 +341,263 @@ static BOOL rgbaStyles(void) {
     return passed;
 }
 
-static BOOL colorPopoverInput(void) {
+static BOOL sharedPropertyInput(void) {
     BOOL passed = YES;
     MCImageEditorController *editor = fixture(1, NULL);
-    NSDictionary *annotation = @{@"id":@"color-input",@"type":@"text",@"text":@"颜色弹层",
+    NSDictionary *annotation = @{@"id":@"color-input",@"type":@"text",@"text":@"颜色属性",
         @"x":@80,@"y":@80,@"width":@240,@"height":@60,@"fontSize":@24,@"stroke":@3,@"opacity":@1,@"color":@"#ff0000"};
-    CHECK([editor applyAnnotation:annotation], "color popover fixture stores one text annotation");
+    CHECK([editor applyAnnotation:annotation], "property fixture stores one text annotation");
     [editor.canvas beginEditingText:editor.document[@"annotations"][0]];
-    MCColorControl *color = editor.colorControl;
-    CHECK(![color.opacityControl isDescendantOf:color] &&
-          [color.opacityControl isDescendantOf:color.popover.contentViewController.view],
-          "opacity lives inside the color popover rather than the persistent property row");
-    // Mount the actual popover contents in a hidden window to exercise native
-    // field-editor/IME behavior without presenting any popup on the desktop.
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,262,130)
-        styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-    window.releasedWhenClosed = NO;
-    window.contentView = color.popover.contentViewController.view;
-    [window.contentView layoutSubtreeIfNeeded];
-    [window makeFirstResponder:color.opacityControl.field];
-    NSTextView *input = (NSTextView *)color.opacityControl.field.currentEditor;
-    CHECK(input != nil, "popover percentage uses a real native numeric field editor");
+    MCSharedTextInputView *input = editor.textPropertyInputs[@"style.opacity"];
+    MCSharedTextInputView *font = editor.textPropertyInputs[@"style.fontSize"];
+    CHECK(input && font && [input isDescendantOf:editor.textPropertiesCanvas],
+          "shared property frame mounts real opacity and font inputs");
+    if (!input || !font) { [editor cancel:nil]; return NO; }
+    CHECK([input.accessibilityRole isEqual:NSAccessibilityTextFieldRole] && input.accessibilityLabel.length > 0,
+          "numeric input exposes the native editable AX role and shared label");
+    BOOL colorSemantic = NO;
+    for (NSDictionary *semantic in editor.textPropertiesCanvas.frameDescription[@"semantics"])
+        if ([semantic[@"id"] isEqual:@"style.color"] && [semantic[@"role"] isEqual:@"button"]) colorSemantic = YES;
+    CHECK(colorSemantic, "color picker entry comes from shared frame semantics");
+    [editor.window makeFirstResponder:input];
+    CHECK(editor.window.firstResponder == input && !editor.window.visible,
+          "property input is a real first responder inside the hidden editor");
     NSNumber *revision = editor.document[@"revision"];
-    id<NSPopoverDelegate> delegate = color.popover.delegate;
-    input.string = @"invalid";
-    CHECK(![delegate popoverShouldClose:color.popover] && window.firstResponder == input &&
-          [editor.document[@"revision"] isEqual:revision], "invalid popover input stays editable instead of silently committing zero");
-    NSStackView *swatches = ((NSStackView *)color.popover.contentViewController.view).arrangedSubviews[0];
-    MCColorSwatch *blue = swatches.arrangedSubviews[4];
-    [blue performClick:nil];
-    CHECK([input.string isEqual:@"invalid"] && [editor.canvas.textDraft[@"color"] isEqual:@"#ff0000"],
-          "choosing a palette color cannot discard invalid percentage input");
+    CHECK(editProperty(editor,@"style.opacity",@"invalid"), "invalid numeric draft is retained verbatim");
+    CHECK([input.string isEqual:@"invalid"] && [editor.document[@"revision"] isEqual:revision] &&
+          editor.captureContentSnapshot == nil && [editor capturePNGData:NULL] == nil,
+          "invalid shared property prevents publication and read-only PNG without altering the document");
+    CHECK(![editor.canvas finishTextEditing:YES] && editor.canvas.textView != nil && [input.string isEqual:@"invalid"],
+          "rejected property commit keeps the exact editable draft");
     [input setMarkedText:@"25" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0,input.string.length)];
-    CHECK(![delegate popoverShouldClose:color.popover] && input.hasMarkedText && window.firstResponder == input &&
-          [editor.document[@"revision"] isEqual:revision] && editor.captureContentSnapshot == nil,
-          "closing the color popover cannot commit or discard numeric IME composition");
+    CHECK(input.hasMarkedText && [editor.document[@"revision"] isEqual:revision] && editor.captureContentSnapshot == nil,
+          "numeric IME composition remains native while shared publication is blocked");
     [input insertText:@"25" replacementRange:NSMakeRange(NSNotFound,0)];
-    CHECK([delegate popoverShouldClose:color.popover] && editor.canvas.textView != nil &&
+    CHECK(!input.hasMarkedText && editor.canvas.textView != nil &&
           near([editor.canvas.textDraft[@"opacity"] doubleValue],.25) && [editor.document[@"revision"] isEqual:revision],
-          "valid opacity input updates the pending text style while preserving its document transaction");
-    [blue performClick:nil];
+          "valid opacity updates the preview while preserving its document transaction");
+    chooseTextColor(editor,[NSColor colorWithSRGBRed:59.0/255 green:130.0/255 blue:246.0/255 alpha:1]);
     CHECK([editor.canvas.textDraft[@"color"] isEqual:@"#3b82f6"] &&
           near([editor.canvas.textDraft[@"opacity"] doubleValue],.25) && [editor.document[@"revision"] isEqual:revision],
-          "palette changes preserve alpha and stay inside the same live text transaction");
+          "system RGB result preserves the independent shared opacity draft");
+    CHECK(editProperty(editor,@"style.fontSize",@"24.5"), "fractional font size is accepted without spinner quantization");
+    CHECK([editor capturePNGData:NULL].length > 0 && editor.canvas.textView != nil &&
+          [editor.document[@"revision"] isEqual:revision], "valid PNG candidate leaves body and numeric transaction uncommitted");
     CHECK([editor.canvas finishTextEditing:YES] && history(editor) == 2 &&
-          near([editor.document[@"annotations"][0][@"opacity"] doubleValue],.25),
-          "finishing text commits its popover alpha as one undoable edit");
+          near([editor.document[@"annotations"][0][@"opacity"] doubleValue],.25) &&
+          near([editor.document[@"annotations"][0][@"fontSize"] doubleValue],24.5),
+          "text, RGB, alpha and fractional size commit as one undoable edit");
     [editor undo:nil];
-    CHECK(near([editor.document[@"annotations"][0][@"opacity"] doubleValue],1),
-          "undo restores the original alpha after editing through the color popover");
-    window.contentView = nil; [window close]; [editor cancel:nil];
+    CHECK([editor.document[@"annotations"][0] isEqual:annotation],
+          "undo restores the original text and all properties together");
+    [editor cancel:nil];
+    return passed;
+}
+
+// Suppress only presentation in this isolated fixture process. The production
+// control still acquires the real system-panel lease, sets its color and routes
+// actual AppKit color actions. No product callback or input rule is stubbed.
+static NSUInteger hiddenPanelPresentations;
+static void hiddenPanelOrderFront(id panel, SEL selector, id sender) {
+    (void)panel; (void)selector; (void)sender;
+    hiddenPanelPresentations++;
+}
+static BOOL colorPanelOwnership(void) {
+    BOOL passed = YES;
+    Method orderFront = class_getInstanceMethod(NSColorPanel.class,@selector(orderFront:));
+    IMP original = method_getImplementation(orderFront);
+    const char *encoding = method_getTypeEncoding(orderFront);
+    class_replaceMethod(NSColorPanel.class,@selector(orderFront:),(IMP)hiddenPanelOrderFront,encoding);
+    @try {
+        NSColorPanel *panel = NSColorPanel.sharedColorPanel;
+        CHECK(!panel.visible, "panel ownership fixture starts with a hidden system panel");
+        __block NSUInteger legacyCalls = 0, textCalls = 0;
+        NSObject *textOwner = [NSObject new];
+        MCSystemColorPanelLease *lastLease = nil;
+        __weak MCColorControl *retiredLegacy = nil;
+        @autoreleasepool {
+        MCColorControl *legacy = [[MCColorControl alloc] initWithFrame:NSZeroRect];
+        legacy.onChange = ^(id sender) { (void)sender; legacyCalls++; };
+        [legacy showColorPanel:nil];
+        MCSystemColorPanelLease *oldLease = legacy.colorPanelLease;
+        CHECK(oldLease.active && hiddenPanelPresentations > 0, "legacy color control binds through the generic lease");
+        panel.color = NSColor.greenColor;
+        CHECK(legacyCalls == 1, "the real panel color action reaches the legacy receiver once");
+        MCSystemColorPanelLease *textLease = [MCSystemColorPanelLease beginWithOwner:textOwner color:NSColor.redColor showsAlpha:NO
+            onColor:^(id owner, NSColor *color) { (void)owner; (void)color; textCalls++; }];
+        CHECK(textLease.active && !oldLease.active && legacyCalls == 1 && textCalls == 0,
+              "text lease takes ownership without dispatching initial color to the old receiver");
+        [legacy closePopover]; [oldLease invalidate]; oldLease = nil;
+        panel.color = NSColor.blueColor;
+        CHECK(textLease.active && textCalls == 1 && legacyCalls == 1,
+              "closing and retiring the old legacy lease cannot disconnect the new text receiver");
+        [textLease updateColor:NSColor.orangeColor];
+        CHECK(textCalls == 1, "selection and undo can synchronize the system panel without producing edits");
+        [legacy showColorPanel:nil];
+        CHECK(legacy.colorPanelLease.active && !textLease.active, "legacy control can take ownership back from text input");
+        [textLease invalidate]; textLease = nil;
+        panel.color = NSColor.purpleColor;
+        CHECK(legacyCalls == 2 && textCalls == 1,
+              "retiring the superseded text lease leaves the current legacy receiver connected");
+        lastLease = [MCSystemColorPanelLease beginWithOwner:textOwner color:NSColor.yellowColor showsAlpha:NO
+            onColor:^(id owner, NSColor *color) { (void)owner; (void)color; textCalls++; }];
+        retiredLegacy = legacy;
+        legacy = nil;
+        } // Drain AppKit's temporary references before asserting actual dealloc.
+        panel.color = NSColor.cyanColor;
+        if (retiredLegacy != nil || !lastLease.active || textCalls != 2)
+            fprintf(stderr,"panel lease diagnostic legacyAlive=%d active=%d calls=%lu\n",retiredLegacy != nil,lastLease.active,(unsigned long)textCalls);
+        CHECK(retiredLegacy == nil && lastLease.active && textCalls == 2,
+              "destroying the superseded legacy control cannot clear the new panel target");
+        textOwner = nil;
+        panel.color = NSColor.magentaColor;
+        CHECK(!lastLease.active && textCalls == 2,
+              "a retained lease never calls an owner that has been released");
+        [lastLease invalidate];
+        CHECK(!panel.visible, "all ownership transfers leave the system color panel hidden");
+    } @finally {
+        class_replaceMethod(NSColorPanel.class,@selector(orderFront:),original,encoding);
+    }
+    return passed;
+}
+
+static BOOL drainInputFrames(void) {
+    __block BOOL delivered = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ delivered = YES; });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (!delivered && deadline.timeIntervalSinceNow > 0)
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+    return delivered;
+}
+
+static BOOL focusRoutesDraftUndo(void) {
+    BOOL passed = YES;
+    MCImageEditorController *editor = fixture(1,NULL);
+    [editor addTextAtPoint:NSMakePoint(40,40)];
+    NSTextView *body = editor.canvas.textView;
+    [body insertText:@"正文草稿" replacementRange:NSMakeRange(NSNotFound,0)];
+    NSRange caret = body.selectedRange;
+    MCSharedTextInputView *opacity = editor.textPropertyInputs[@"style.opacity"];
+    CHECK([editor.window makeFirstResponder:opacity] && editProperty(editor,@"style.opacity",@"25"),
+          "the property field takes real focus and edits its own draft");
+    CHECK([editor.window makeFirstResponder:body] && NSEqualRanges(body.selectedRange,caret),
+          "returning focus to the body preserves its existing caret");
+    [editor undo:nil];
+    CHECK(body.string.length == 0 && [opacity.string isEqual:@"25"] && history(editor) == 0 &&
+          [editor.document[@"annotations"] count] == 0,
+          "toolbar Undo follows body focus without undoing opacity or publishing the document");
+    [editor redo:nil];
+    CHECK([body.string isEqual:@"正文草稿"] && [opacity.string isEqual:@"25"] && history(editor) == 0,
+          "toolbar Redo restores the focused body draft and preserves independent style input");
+    [editor.window makeFirstResponder:opacity];
+    MCSharedTextInputView *bodyInput = (MCSharedTextInputView *)body;
+    NSDictionary *field = bodyInput.fieldDescription;
+    CHECK(bodyInput.onEdit && bodyInput.onEdit(@{@"type":@"field",@"id":field[@"id"],@"token":field[@"token"],
+        @"expectedVersion":field[@"version"],@"edit":@{@"type":@"select",@"selection":@{@"kind":@"undirected",
+        @"anchor":@(body.selectedRange.location),@"focus":@(NSMaxRange(body.selectedRange))}}}),
+        "shared selection accepts a programmatic body focus request");
+    CHECK(drainInputFrames(), "deferred input frame work is delivered on the real main queue");
+    if (editor.window.firstResponder != body) fprintf(stderr,"focus edge diagnostic current=%s fieldFocused=%d pending=%s active=%s\n",
+        NSStringFromClass([editor.window.firstResponder class]).UTF8String,[bodyInput.fieldDescription[@"focused"] boolValue],
+        [[bodyInput valueForKey:@"focusPending"] description].UTF8String,[[editor valueForKey:@"textSnapshot"][@"activeField"] UTF8String]);
+    CHECK(editor.window.firstResponder == body,
+          "a shared focused edge moves native focus after frame publication and acknowledgement");
+    [editor.window makeFirstResponder:editor.canvas];
+    [bodyInput applyFieldDescription:bodyInput.fieldDescription];
+    CHECK(drainInputFrames(), "deferred input frame work is delivered on the real main queue");
+    if (editor.window.firstResponder != editor.canvas) fprintf(stderr,"focus repeat diagnostic current=%s bodyfocused=%d pending=%s\n",
+        NSStringFromClass([editor.window.firstResponder class]).UTF8String,[bodyInput.fieldDescription[@"focused"] boolValue],[[bodyInput valueForKey:@"focusPending"] description].UTF8String);
+    CHECK(editor.window.firstResponder == editor.canvas,
+          "same-focused frame refresh does not repeatedly steal native focus");
+    [editor.window makeFirstResponder:opacity];
+    [opacity setMarkedText:@"40" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0,opacity.string.length)];
+    field = bodyInput.fieldDescription;
+    CHECK(bodyInput.onEdit(@{@"type":@"field",@"id":field[@"id"],@"token":field[@"token"],
+        @"expectedVersion":field[@"version"],@"edit":@{@"type":@"select",@"selection":@{@"kind":@"undirected",
+        @"anchor":@(body.selectedRange.location),@"focus":@(NSMaxRange(body.selectedRange))}}}),
+        "shared body focus can be pending while another native field composes");
+    CHECK(drainInputFrames(), "deferred input frame work is delivered on the real main queue");
+    CHECK(editor.window.firstResponder == opacity && opacity.hasMarkedText,
+          "programmatic focus never interrupts another field's active IME composition");
+    [opacity insertText:@"40" replacementRange:NSMakeRange(NSNotFound,0)];
+    [editor cancel:nil];
+    return passed;
+}
+
+static NSEvent *arrowKey(NSView *view, unsigned short code) {
+    unichar character = code == 126 ? NSUpArrowFunctionKey : NSDownArrowFunctionKey;
+    NSString *text = [NSString stringWithCharacters:&character length:1];
+    return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+        timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:view.window.windowNumber context:nil
+        characters:text charactersIgnoringModifiers:text isARepeat:NO keyCode:code];
+}
+static BOOL numericArrowInput(void) {
+    BOOL passed = YES;
+    MCImageEditorController *editor = fixture(1,NULL);
+    [editor addTextAtPoint:NSMakePoint(40,40)];
+    MCSharedTextInputView *body = (MCSharedTextInputView *)editor.canvas.textView;
+    [body insertText:@"键盘步进" replacementRange:NSMakeRange(NSNotFound,0)];
+    MCSharedTextInputView *font = editor.textPropertyInputs[@"style.fontSize"];
+    [editor.window makeFirstResponder:font];
+    CHECK(editProperty(editor,@"style.fontSize",@"24.5"), "arrow fixture begins with an actual fractional font draft");
+    [font keyDown:arrowKey(font,126)];
+    CHECK([font.string isEqual:@"25.5"] && near([editor.canvas.textDraft[@"fontSize"] doubleValue],25.5),
+          "native Up is interpreted by the shared numeric policy without rounding fractional font size");
+    [font keyDown:arrowKey(font,125)];
+    CHECK([font.string isEqual:@"24.5"], "native Down applies the inverse shared step");
+    MCSharedTextInputView *opacity = editor.textPropertyInputs[@"style.opacity"];
+    [editor.window makeFirstResponder:opacity];
+    CHECK(editProperty(editor,@"style.opacity",@"25"), "arrow fixture enters opacity through its native input");
+    [opacity keyDown:arrowKey(opacity,126)];
+    CHECK([opacity.string isEqual:@"26"] && near([editor.canvas.textDraft[@"opacity"] doubleValue],.26),
+          "opacity Up uses the shared percentage-to-stored-value conversion");
+    [opacity keyDown:arrowKey(opacity,125)];
+    CHECK([opacity.string isEqual:@"25"] && history(editor) == 0,
+          "numeric steps stay in the pending text transaction");
+    __block NSUInteger forwarded = 0;
+    BOOL (^normalKey)(NSDictionary *) = opacity.onKey;
+    opacity.onKey = ^BOOL(NSDictionary *event) { forwarded++; return normalKey ? normalKey(event) : NO; };
+    [opacity setMarkedText:@"40" selectedRange:NSMakeRange(2,0) replacementRange:NSMakeRange(0,opacity.string.length)];
+    [opacity keyDown:arrowKey(opacity,126)];
+    CHECK(forwarded == 0, "Up during native IME composition stays with the system input method");
+    opacity.onKey = normalKey;
+    [opacity unmarkText];
+    [editor.window makeFirstResponder:body];
+    body.onKey = ^BOOL(NSDictionary *event) { (void)event; forwarded++; return NO; };
+    [body keyDown:arrowKey(body,126)];
+    CHECK(forwarded == 0 && history(editor) == 0, "multiline body arrows never become numeric steps");
+    body.onKey = nil;
+    [editor cancel:nil];
+    return passed;
+}
+
+static BOOL canonicalAndRetiredInput(void) {
+    BOOL passed = YES;
+    MCImageEditorController *editor = fixture(1,NULL);
+    [editor addTextAtPoint:NSMakePoint(30,30)];
+    MCSharedTextInputView *input = (MCSharedTextInputView *)editor.canvas.textView;
+    [input insertText:@"A\r\nB\rC" replacementRange:NSMakeRange(NSNotFound,0)];
+    CHECK([input.string isEqual:@"A\nB\nC"] && [editor.canvas.textDraft[@"text"] isEqual:input.string],
+          "native insertion and shared draft use canonical LF line endings");
+    [input setMarkedText:@"中\r\n文" selectedRange:NSMakeRange(4,0) replacementRange:NSMakeRange(NSNotFound,0)];
+    CHECK(input.hasMarkedText && [input.string isEqual:@"A\nB\nC中\n文"] && input.selectedRange.location == input.string.length,
+          "marked CRLF text maps the relative UTF-16 caret to canonical text");
+    [input cancelOperation:nil];
+    CHECK(!input.hasMarkedText && [input.string isEqual:@"A\nB\nC"] && history(editor) == 0,
+          "cancelled composition restores the previous shared draft without a document edit");
+    [input setAccessibilityValue:@"通过无障碍 🌙"];
+    CHECK([editor.canvas.textDraft[@"text"] isEqual:@"通过无障碍 🌙"] && history(editor) == 0,
+          "native AX value changes use the same MoonBit draft transaction");
+    CHECK([editor.canvas finishTextEditing:NO], "retiring an input cancels its draft");
+    [editor addTextAtPoint:NSMakePoint(45,45)];
+    [editor.canvas.textView insertText:@"新的内容" replacementRange:NSMakeRange(NSNotFound,0)];
+    [input insertText:@"迟到的旧输入" replacementRange:NSMakeRange(NSNotFound,0)];
+    CHECK([editor.canvas.textView.string isEqual:@"新的内容"] && history(editor) == 0,
+          "a retained retired native input cannot mutate the replacement edit");
+    CHECK([editor.canvas finishTextEditing:YES] && history(editor) == 1 &&
+          [editor.document[@"annotations"][0][@"text"] isEqual:@"新的内容"],
+          "replacement input commits only its own acknowledged content");
+    [editor cancel:nil];
     return passed;
 }
 
@@ -404,7 +642,11 @@ int main(void) {
         passed = manipulationAtScale(1.5) && passed;
         passed = emptyAndCancelledInput() && passed;
         passed = rgbaStyles() && passed;
-        passed = colorPopoverInput() && passed;
+        passed = sharedPropertyInput() && passed;
+        passed = colorPanelOwnership() && passed;
+        passed = focusRoutesDraftUndo() && passed;
+        passed = numericArrowInput() && passed;
+        passed = canonicalAndRetiredInput() && passed;
         passed = liveShapeMasks() && passed;
         puts(passed ? "PASS inline text: hidden AppKit editor, IME/multiline, re-edit/style, scaled drag/resize, undo and PNG clipboard"
                     : "FAIL inline text interaction");

@@ -452,7 +452,16 @@ static NSAccessibilityRole MCCanvasRole(NSDictionary *descriptor) {
 - (void)viewDidHide { [super viewDidHide]; [self cancelInput]; }
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSAccessibilityRole)accessibilityRole { return NSAccessibilityGroupRole; }
-- (NSArray *)accessibilityChildren { return self.semanticElements; }
+- (NSArray *)accessibilityChildren {
+    NSMutableArray *children = [self.semanticElements mutableCopy] ?: [NSMutableArray array];
+    // System input surfaces supply real editing accessibility. Frame producers
+    // omit virtual nodes for those fields; media/overlay surfaces opt out.
+    for (NSView *view in self.subviews) {
+        if (!view.hiddenOrHasHiddenAncestor && view.isAccessibilityElement && ![children containsObject:view])
+            [children addObject:view];
+    }
+    return children;
+}
 - (void)updateSemantics {
     NSMutableArray<NSDictionary *> *descriptors = [NSMutableArray array];
     for (int32_t index=0; index<ui_frame_semantic_count(self.frameHandle); index++) {

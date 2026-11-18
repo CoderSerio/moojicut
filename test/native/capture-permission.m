@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #import "plugins/feature/capture/macos/MCCaptureController.h"
 #import "plugins/feature/image_editor/macos/MCImageEditorController.h"
+#import "platform/macos/graphics/MCSharedTextInput.h"
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include "moonbit.h"
 #include <string.h>
@@ -25,7 +26,7 @@ static NSMutableArray<NSWindow *> *orderedOutWindows;
 @end
 @interface MCImageEditorController (MCSuspensionTest)
 @property (readonly) MCImageCanvas *canvas;
-@property (readonly) NSTextField *fontSize;
+@property (readonly) NSDictionary<NSString *, MCSharedTextInputView *> *textPropertyInputs;
 @property (readonly) NSSegmentedControl *tools;
 - (BOOL)setCaptureRegion:(NSRect)rect;
 - (void)addTextAtPoint:(NSPoint)point;
@@ -426,13 +427,14 @@ static BOOL exerciseSuspendedCapture(void) {
             break;
         }
     }
-    [first.window makeFirstResponder:first.fontSize];
-    NSText *numericInput = first.fontSize.currentEditor;
-    numericInput.string = @"48";
+    MCSharedTextInputView *numericInput = first.textPropertyInputs[@"style.fontSize"];
+    [first.window makeFirstResponder:numericInput];
+    [numericInput setSelectedRange:NSMakeRange(0,numericInput.string.length)];
+    [numericInput insertText:@"48" replacementRange:NSMakeRange(NSNotFound,0)];
     NSDictionary *numericDocument = first.document;
     NSDictionary *numericSnapshot = first.captureContentSnapshot;
     [focused addTextAtPoint:NSMakePoint(160,180)];
-    focused.canvas.textView.string = @"unfinished text stays editable";
+    [focused.canvas.textView insertText:@"unfinished text stays editable" replacementRange:NSMakeRange(NSNotFound,0)];
     [focused.window makeFirstResponder:focused.canvas.textView];
     NSTextView *textInput = focused.canvas.textView;
     CHECK(numericInput && first.window.firstResponder == numericInput &&
@@ -482,7 +484,7 @@ static BOOL exerciseSuspendedCapture(void) {
           ![busySamples containsObject:@NO] && closedContexts.count == 0,
           "resuming leaves editing, undo, draft and capture identity intact without reporting idle");
     CHECK(focused.window.firstResponder == textInput && [textInput.string isEqual:@"unfinished text stays editable"] &&
-          first.window.firstResponder == numericInput && first.fontSize.currentEditor == numericInput &&
+          first.window.firstResponder == numericInput && first.textPropertyInputs[@"style.fontSize"] == numericInput &&
           [numericInput.string isEqual:@"48"] && [first.document isEqual:numericDocument] &&
           [first.captureContentSnapshot isEqual:numericSnapshot],
           "resume preserves text focus and uncommitted numeric field input without committing or replacing either responder");
@@ -493,6 +495,26 @@ static BOOL exerciseSuspendedCapture(void) {
     CHECK(![controller completeSuspendedCaptureWithPNGData:longPNG error:&error] && error &&
           [focused.document isEqual:document] && !controller.editor,
           "a result arriving after the suspended attempt was resumed cannot replace the original edit");
+    [numericInput setMarkedText:@"49" selectedRange:NSMakeRange(2,0)
+              replacementRange:NSMakeRange(0,numericInput.string.length)];
+    NSRange markedRange = numericInput.markedRange;
+    NSRange markedSelection = numericInput.selectedRange;
+    CHECK(numericInput.hasMarkedText && first.captureContentSnapshot == nil &&
+          [first.document isEqual:numericDocument],
+          "real numeric IME composition blocks publication without changing the document");
+    CHECK([controller suspendCaptureForEditor:first error:NULL],
+          "another overlay can suspend while its numeric IME composition remains uncommitted");
+    [controller resumeSuspendedCapture];
+    CHECK(first.window.firstResponder == numericInput && first.textPropertyInputs[@"style.fontSize"] == numericInput &&
+          numericInput.hasMarkedText && NSEqualRanges(numericInput.markedRange,markedRange) &&
+          NSEqualRanges(numericInput.selectedRange,markedSelection) && [numericInput.string isEqual:@"49"] &&
+          [first.document isEqual:numericDocument] && focused.canvas.textView == textInput &&
+          [textInput.string isEqual:@"unfinished text stays editable"] && [focused.document isEqual:document],
+          "suspend/resume retains both native responders and exact marked text, selection and independent drafts");
+    [numericInput insertText:@"48" replacementRange:NSMakeRange(NSNotFound,0)];
+    CHECK(!numericInput.hasMarkedText && [numericInput.string isEqual:@"48"] &&
+          [first.document isEqual:numericDocument] && [first.captureContentSnapshot isEqual:numericSnapshot],
+          "committing IME resumes the same shared numeric draft without publishing document history");
     [focused.canvas finishTextEditing:NO];
     [focused undo:nil];
     CHECK([focused.document[@"annotations"] count] == 0 && [focused.document[@"redo"] count] == 1,

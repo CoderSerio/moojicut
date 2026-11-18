@@ -1,6 +1,5 @@
 import {
   "moojicut/core/internal/features/capture/core" @image,
-  "moojicut/core/internal/features/capture/extensions/annotations" @annotation_tools,
   "moojicut/core/internal/shared/protocol" @protocol,
   "moonbitlang/core/json",
 }

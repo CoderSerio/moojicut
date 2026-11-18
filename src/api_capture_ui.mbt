@@ -7,7 +7,7 @@ pub fn capture_ui_open(width : Double, height : Double) -> Int32 {
 ///|
 #export_name("capture_ui_event")
 pub fn capture_ui_event(request : String) -> String {
-  @capture_ui.event(request)
+  @capture.capture_ui_event(request)
 }
 
 ///|

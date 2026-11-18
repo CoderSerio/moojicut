@@ -32,6 +32,7 @@ FRAMEWORKS = ["AppKit", "Foundation", "Carbon", "ScreenCaptureKit", "AVKit",
               "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "QuartzCore", "UniformTypeIdentifiers",
               "Vision", "ImageIO", "SwiftUI", "Translation"]
 TEXT_FRAMEWORKS = ("AppKit", "Foundation", "CoreGraphics", "Vision", "ImageIO", "SwiftUI", "Translation")
+CANVAS_LINK = ("-framework", "AVFoundation", "-framework", "QuartzCore")
 SWIFT_MINIMUM_MACOS = "26.0"
 
 
@@ -431,23 +432,23 @@ class NativeBuild:
                  "-I", ROOT, "-I", ROOT / "native/macos", "-DCGPreflightScreenCaptureAccess=MCFakePreflight",
                  "-DCGRequestScreenCaptureAccess=MCFakeRequest", ROOT / "test/native/capture-permission.m",
                  *native_sources("macos", "feature.capture"), archive,
-                 "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", capture_permission)
+                 "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", *CANVAS_LINK, "-o", capture_permission)
         self.run(capture_permission)
         inline_text = shortcuts / "inline-text"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
                  "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/inline-text.m",
-                 *native_sources("macos", "feature.image_editor"), archive, "-framework", "AppKit", "-o", inline_text)
+                 *native_sources("macos", "feature.image_editor"), archive, "-framework", "AppKit", *CANVAS_LINK, "-o", inline_text)
         self.run(inline_text)
         capture_overlay = shortcuts / "capture-overlay"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
                  "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/capture-overlay.m",
-                 *native_sources("macos", "feature.image_editor"), archive, "-framework", "AppKit", "-o", capture_overlay)
+                 *native_sources("macos", "feature.image_editor"), archive, "-framework", "AppKit", *CANVAS_LINK, "-o", capture_overlay)
         self.run(capture_overlay)
         tool_layout = shortcuts / "tool-layout"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", self.include,
                  "-I", ROOT, "-I", ROOT / "native/macos", ROOT / "test/native/tool-layout.m",
                  *native_sources("macos", "feature.capture"), archive,
-                 "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", "-o", tool_layout)
+                 "-framework", "AppKit", "-framework", "CoreGraphics", "-framework", "ScreenCaptureKit", *CANVAS_LINK, "-o", tool_layout)
         self.run(tool_layout)
         recording_experience = shortcuts / "recording-experience"
         self.run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",

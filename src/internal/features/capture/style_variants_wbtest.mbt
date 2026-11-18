@@ -10,8 +10,8 @@ test "shape and mosaic defaults are per tool and visibility follows the selected
   assert_eq(editor_style_set(id, 1, 4, 2), 0)
   assert_eq(editor_style_set(id, 2, 4, 1), 0)
   assert_eq(editor_style_set(id, 4, 5, 4.5), 0)
-  assert_eq(@capture_ui.editor_style_visible_mask(1, 1), 23)
-  assert_eq(@capture_ui.editor_style_visible_mask(4, 1), 19)
-  assert_eq(@capture_ui.editor_style_visible_mask(4, 2), 48)
+  assert_eq(editor_style_visible_mask(1, 1), 23)
+  assert_eq(editor_style_visible_mask(4, 1), 19)
+  assert_eq(editor_style_visible_mask(4, 2), 48)
   editor_style_dispose(id)
 }

@@ -1,4 +1,5 @@
 import {
   "moojicut/core/internal/shared/protocol",
+  "moojicut/core/internal/shared/ui/fields" @edit_fields,
   "moonbitlang/core/json",
 }

@@ -32,6 +32,17 @@ fn expect_frame(
 ///|
 fn send(id : Int32, fields : Map[String, Json]) -> Json {
   fields["session"] = Json(id)
+  // Explicit contribution capabilities injected by the feature root in production.
+  if fields.get("type") == Some(Json("begin")) {
+    if !fields.contains("blockSize") { fields["blockSize"] = Json(12) }
+    if !fields.contains("shapeCount") {
+      fields["shapeCount"] = Json(match fields.get("kind") {
+        Some(Number(1,..)) => 2
+        Some(Number(4,..)) => 3
+        _ => 0
+      })
+    }
+  }
   @json.parse(event(Json::object(fields).stringify())) catch {
     _ => abort("invalid response")
   }

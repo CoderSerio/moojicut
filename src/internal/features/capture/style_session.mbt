@@ -23,6 +23,7 @@ fn editor_style_initial(tool : Int) -> EditorStyleValues {
 ///|
 priv struct EditorStyleSession {
   tools : Array[EditorStyleValues]
+  mut revision : Int
 }
 
 ///|
@@ -39,7 +40,7 @@ pub fn editor_style_create() -> Int {
   editor_style_next_id.val = handle + 1
   let tools : Array[EditorStyleValues] = []
   for tool in 0..<5 { tools.push(editor_style_initial(tool)) }
-  editor_style_sessions[handle] = { tools, }
+  editor_style_sessions[handle] = { tools, revision: 0 }
   handle
 }
 
@@ -72,6 +73,9 @@ pub fn editor_style_set(handle : Int, tool : Int, property : Int, value : Double
   if (@annotation_tools.editor_style_property_mask(tool) & (1 << property)) == 0 { return 0 }
   if property == 4 && value >= @annotation_tools.editor_style_shape_count(tool).to_double() { return 0 }
   let values = match editor_style_values(handle, tool) { Some(values) => values; None => return 0 }
+  let session = editor_style_sessions[handle]
+  if editor_style_get(handle, tool, property) == value { return 1 }
+  if session.revision >= 2147483647 { return 0 }
   match property {
     0 => values.color = value.to_int()
     1 => values.opacity = value
@@ -81,6 +85,7 @@ pub fn editor_style_set(handle : Int, tool : Int, property : Int, value : Double
     5 => values.block = value
     _ => return 0
   }
+  session.revision += 1
   1
 }
 

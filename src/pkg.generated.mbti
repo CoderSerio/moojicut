@@ -2,6 +2,36 @@
 package "moojicut/core"
 
 // Values
+pub fn capture_candidate_close(Int32) -> Int32
+
+pub fn capture_candidate_commit(Int32, Int32) -> Int32
+
+pub fn capture_candidate_commit_many(String) -> Int32
+
+pub fn capture_candidate_document(Int32) -> String
+
+pub fn capture_candidate_ready(Int32, Int32) -> Int32
+
+pub fn capture_text_begin(Int32, Int32, Int32, String, Double, Double, Double, Double, Double) -> Int32
+
+pub fn capture_text_cancel(Int32, Int32, Int32) -> Int32
+
+pub fn capture_text_event_json(Int32, Int32, Int32, String) -> Int32
+
+pub fn capture_text_frame(Int32, Int32, Int32, Double, Double, Double, Int32) -> String
+
+pub fn capture_text_measured_height(Int32, Int32, Int32, Double) -> Double
+
+pub fn capture_text_prepare(Int32, Int32, Int32, Int32, Double) -> Int32
+
+pub fn capture_text_snapshot(Int32, Int32) -> String
+
+pub fn capture_text_text(Int32, Int32, Int32) -> String
+
+pub fn capture_text_ui_event(Int32, Int32, Int32, String, Double, Double) -> Int32
+
+pub fn capture_text_value(Int32, Int32, Int32) -> Double
+
 pub fn capture_ui_close(Int32) -> Unit
 
 pub fn capture_ui_event(String) -> String
@@ -66,6 +96,10 @@ pub fn image_session_add_rgba(Int32, Int32, Int32, Int32, Int32, Int32, Int32, I
 
 pub fn image_session_add_styled(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32) -> Int32
 
+pub fn image_session_annotation_id(Int32, Int32) -> String
+
+pub fn image_session_command(Int32, Double, String) -> Int32
+
 pub fn image_session_count(Int32) -> Int32
 
 pub fn image_session_create(Int32, Int32) -> Int32
@@ -76,13 +110,21 @@ pub fn image_session_crop(Int32, Int32, Int32, Int32, Int32) -> Int32
 
 pub fn image_session_dispose(Int32) -> Unit
 
+pub fn image_session_document(Int32) -> String
+
+pub fn image_session_geometry(Int32, Double, String, Double, Double, Double, Double, Double) -> Int32
+
 pub fn image_session_hit(Int32, Double, Double, Double, Int32) -> Int32
+
+pub fn image_session_prepare_command(Int32, Int32, Double, String, String) -> Int32
 
 pub fn image_session_preview_value(Int32, Int32) -> Double
 
 pub fn image_session_redo(Int32) -> Int32
 
 pub fn image_session_remove(Int32, Int32) -> Int32
+
+pub fn image_session_revision(Int32) -> Double
 
 pub fn image_session_set_text(Int32, String) -> Int32
 
@@ -246,6 +288,14 @@ pub fn ui_frame_command_text(Int32, Int32, Int32) -> String
 
 pub fn ui_frame_command_value(Int32, Int32, Int32, Int32) -> Int32
 
+pub fn ui_frame_field_count(Int32) -> Int32
+
+pub fn ui_frame_field_number(Int32, Int32, Int32) -> Double
+
+pub fn ui_frame_field_text(Int32, Int32, Int32) -> String
+
+pub fn ui_frame_field_value(Int32, Int32, Int32) -> Int32
+
 pub fn ui_frame_open(String) -> Int32
 
 pub fn ui_frame_semantic_count(Int32) -> Int32
@@ -261,6 +311,8 @@ pub fn ui_frame_value(Int32, Int32) -> Int32
 pub fn ui_frame_video_rect(Int32, Int32) -> Double
 
 pub fn ui_input_event(Int32, Double, Double, Double, Double, Int32, String) -> String
+
+pub fn ui_text_event(Int32, String, Int32, Int32, Int32, Int32, String, Int32, Int32, Int32) -> String
 
 pub fn update_release_create(String, Int32, String) -> Int32
 

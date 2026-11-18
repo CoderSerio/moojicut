@@ -93,6 +93,10 @@ def violation(package, dependency, module):
             allowed = (feature + "/core", "shared")
             if not any(within(target, name) for name in allowed):
                 return "feature core may depend only on its own core and shared foundations"
+        if len(parts) >= 3 and parts[2] == "ui":
+            if within(target, feature) and not any(
+                    within(target, name) for name in (feature + "/ui", feature + "/core")):
+                return "feature UI receives contributions from its root; it must not import the root or extensions"
     if within(package, "shared") and not within(target, "shared"):
         return "shared foundations must not depend on product features or orchestration"
     if within(package, "plugins"):

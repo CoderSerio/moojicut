@@ -22,6 +22,7 @@ priv struct Semantic {
 priv struct Frame {
   layers : Array[Array[Draw]]
   semantics : Array[Semantic]
+  editable : Array[Editable]
   video : Array[Double]?
   cursor : Int32
 }
@@ -293,7 +294,8 @@ fn decode(text : String) -> Frame raise InputError {
   let commands = array(fields, "commands", true)
   let overlay = array(fields, "overlayCommands", false)
   let nodes = array(fields, "semantics", false)
-  if commands.length() + overlay.length() > 32768 || nodes.length() > 16384 {
+  let input_fields = array(fields, "editableFields", false)
+  if commands.length() + overlay.length() > 32768 || nodes.length() > 16384 || input_fields.length() > 64 {
     raise InputError("invalid_frame", "Too many frame entries")
   }
   let layers : Array[Array[Draw]] = []
@@ -315,6 +317,21 @@ fn decode(text : String) -> Frame raise InputError {
     ids[id] = true
     semantics.push(node)
   }
+  let editable : Array[Editable] = []
+  let tokens : Map[Int, Bool] = Map([])
+  let mut focused = false
+  for item in input_fields {
+    let input = editable_field(item)
+    let id = input.texts[0]
+    let token = input.integers[0]
+    if ids.contains(id) || tokens.contains(token) || (focused && input.integers[4] == 1) {
+      raise InputError("invalid_frame", "Duplicate editable field identity or focus")
+    }
+    ids[id] = true
+    tokens[token] = true
+    focused = focused || input.integers[4] == 1
+    editable.push(input)
+  }
   let video = match fields.get("videoRect") {
     None | Some(Null) => None
     Some(value) => Some(rectangle(object(value)))
@@ -326,5 +343,5 @@ fn decode(text : String) -> Frame raise InputError {
     "crosshair" => 3
     _ => raise InputError("invalid_frame", "Unknown cursor")
   }
-  { layers, semantics, video, cursor, }
+  { layers, semantics, editable, video, cursor, }
 }

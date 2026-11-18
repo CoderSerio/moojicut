@@ -29,7 +29,7 @@ Mooji Cut 以 MoonBit 实现共享界面、交互、文档和业务规则，以�
 
 | 范围 | 当前已经具备 | 尚未完成 |
 | --- | --- | --- |
-| 截图 | MoonBit 文档、撤销、几何、工具贡献与大小/间距参数；三端接入标注、工具启停/排序和贴图复制、滚轮/边界等比缩放 | 颜色入口已为圆形，但控件绘制、调色板和属性排列仍由三端原生实现；通用属性 Schema、完整共享属性/选区 UI 未完成 |
+| 截图 | MoonBit 文档、撤销、几何、工具贡献与大小/间距参数；三端接入标注、工具启停/排序和贴图复制、滚轮/边界等比缩放 | 文字属性的共享 frame／输入事务已实现，三端接线本批验证中；其余形状属性仍使用旧原生控件，通用属性 Schema、完整共享属性/选区 UI 未完成 |
 | 选区 | macOS、Windows 截图与录屏各自复用同一原生选区组件；MoonBit 共用几何 | 完整三端选区 UI、窗口 hover 与选区调整；Linux 当前仍为独立选区适配 |
 | 视频编辑 | 三端接入同一 MoonBit 根会话、v2 文档、事务、时间映射、布局和时间线；macOS 已过本地回归，Windows/Ubuntu 22 构建、编辑/媒体测试与打包通过，Ubuntu 24 同包八项检查通过 | 多素材、字幕、效果仍有缺口；真实设备、DPI、输入与权限验收另列 |
 | 录屏 | 三端接入 MoonBit live flow 与倒计时面板；Windows 区域 MP4；Linux X11 与 Wayland ScreenCast/PipeWire→WebM | Windows/Linux 为静音；三端麦克风/暂停与完整运行时能力快照仍缺；实际授权、设备和交互验收按台账 |
@@ -41,9 +41,9 @@ Mooji Cut 以 MoonBit 实现共享界面、交互、文档和业务规则，以�
 
 三端构建通过不等于功能、权限、输入法、媒体和交互已经对齐。能力交付分别记录模型、UI、平台执行、CLI 和发布状态。
 
-MoonBit 的 `check_module_boundaries.py` 检查包归属及依赖方向，拒绝旧包路径重新出现；`check_native_boundaries.py` 检查原生源码、头文件、包含片段与打包资源的归属，以及实际 include/import。原生平台层不得反向依赖产品功能，跨功能协调应回到 app。现有 12 对旧引用逐条列入 `legacy_includes`，绑定迁移任务；新代码不能继承这些例外，删除旧引用后也必须删掉例外。这些检查已经进入构建入口，但不代替共享 UI、运行时行为或实机验收。
+MoonBit 的 `check_module_boundaries.py` 检查包归属及依赖方向，拒绝旧包路径重新出现，并禁止功能 `ui` 导入该功能根包或具体 `extensions`；`check_native_boundaries.py` 检查原生源码、头文件、包含片段与打包资源的归属，以及实际 include/import。原生平台层不得反向依赖产品功能，跨功能协调应回到 app。现有 12 对旧引用逐条列入 `legacy_includes`，绑定迁移任务；新代码不能继承这些例外，删除旧引用后也必须删掉例外。这些检查已经进入构建入口，但不代替共享 UI、运行时行为或实机验收。
 
-2026-11-18 交叉复核：共享画布及本批编辑器接入未扩大上述 12 对例外，MoonBit 与原生边界检查通过。Windows recording 中的旧编辑器已移除，完成素材改经 App 回调交给共享编辑窗口。macOS 编辑器也改由 MoonBit 根会话决定保存、媒体请求、导出和关闭，AppKit 负责资源执行与真实完成回执；它仍使用 AVFoundation，不复制 Windows/Linux 的 GStreamer 宿主。仍需收口的结构欠账是截图属性控件与固定 annotations 接线、macOS 录制器直接创建编辑器、原生 App 中的装配/退出策略，以及宿主中的插件资源策略。它们有迁移归属，但不能将“已登记例外”视作目标架构已经实现；新增平台适配不得复制这些职责。Windows/Linux 新媒体与窗口代码已接线，目标运行结果另记，不沿用旧批次的 CI 绿灯。
+2026-11-18 交叉复核：共享画布及本批编辑器接入未扩大上述 12 对例外，MoonBit 与原生边界检查通过。Windows recording 中的旧编辑器已移除，完成素材改经 App 回调交给共享编辑窗口。macOS 编辑器也改由 MoonBit 根会话决定保存、媒体请求、导出和关闭，AppKit 负责资源执行与真实完成回执；它仍使用 AVFoundation，不复制 Windows/Linux 的 GStreamer 宿主。仍需收口的结构欠账是截图其余属性控件、macOS 录制器直接创建编辑器、原生 App 中的装配/退出策略，以及宿主中的插件资源策略。它们有迁移归属，但不能将“已登记例外”视作目标架构已经实现；新增平台适配不得复制这些职责。Windows/Linux 新媒体与窗口代码已接线，目标运行结果另记，不沿用旧批次的 CI 绿灯。
 
 ## 目标目录
 
@@ -154,7 +154,7 @@ MCP 没有目标目录，也不是当前任务的前置条件。未来确需实�
 6. 平台后端执行 MoonBit 生成的受控计划，回报结果、错误和进度。播放器组合是派生执行状态，不是第二份可独立编辑的文档。
 7. UI 暂态、插件配置、持久文档和任务状态分开保存。缩放视口、预览倍率、hover 不进入文档历史。
 
-装配方向具体为：各功能提供领域命令处理器和贡献描述，app 注入通用注册表；runtime 校验通用身份、启停、能力与租约后返回受控分发结果，由 app 路由到所属功能处理器。运行时无需导入 capture/recording 的具体实现，core 也无需知道插件包和 worker。领域验证、文档事务仍由 core 执行。共享 UI 消费描述及快照，不能按插件 ID 硬编码新按钮；当前 capture/ui 对 annotations 的直接依赖是迁移中的固定接线，后续由描述注入替换。
+装配方向具体为：各功能提供领域命令处理器和贡献描述，app 注入通用注册表；runtime 校验通用身份、启停、能力与租约后返回受控分发结果，由 app 路由到所属功能处理器。运行时无需导入 capture/recording 的具体实现，core 也无需知道插件包和 worker。领域验证、文档事务仍由 core 执行。共享 UI 消费描述及快照，不能按插件 ID 硬编码新按钮；capture/ui 已移除对 annotations 的直接依赖，由 capture 根包注入描述；完整属性 Schema 与其余工具 UI 仍待迁移。
 
 原生进程在调用前初始化 MoonBit。现有会话入口由主线程串行调用；后台媒体线程使用复制后的计划，结果回到会话所有者处理。CLI 并发请求同样排入会话队列。不能将 MoonBit 状态句柄直接交给工作线程并发修改；改变线程模型时另行验证。
 
@@ -170,7 +170,7 @@ MoonBit 多后端支持共享代码，设备和界面能力仍通过 FFI 或宿�
 
 各端复用同一输入回放，对比命令、语义和布局约束；测量与绘制使用一致字体度量。交互一致不要求系统字体每个像素相同；字幕等需要构图一致的输出采用同一字体资产和排版规则。
 
-当前 macOS shared_canvas 仅承接视频所需的指针/快捷键，不是完整文本输入客户端。共享截图/插件属性 UI 的前置切片必须覆盖文本与数字输入：组合开始/更新/提交/取消、替换区间/插入点、候选窗位置、焦点与导航、剪贴板和无障碍值，并固定 UTF 编码与索引单位。数字框允许空字符串、负号等未完成草稿，校验成功才提交文档。可用原生隐藏输入桥接入系统 IME，字段状态、校验和布局仍属于共享 UI；验证完成前保留现有输入桥，不因换画布丢失输入能力。
+通用画布负责绘制、指针/快捷键与静态语义；系统文本输入由相邻的 `platform/<os>/graphics` 桥承接。本批 `shared/ui/fields` 与 frame 的 `editableFields` 已定义 UTF-16 选区、组合输入、原始草稿、字段身份与版本；三端截图文字属性按同一契约接线。数字框允许空字符串、负号等未完成草稿，MoonBit 校验成功才提交文档。原生桥保留真实 IME、候选窗、剪贴板、文本测量与无障碍对象，不能复制字号范围、透明度换算或文档提交策略。具体协议见[共享字段与文字事务](shared-editor-ui.zh-CN.md#共享可编辑字段与截图文字事务2026-11-18)；各端运行及实机结果单独验收，不由协议实现推断完成。
 
 ## 插件机制
 
@@ -354,11 +354,11 @@ Windows 混合 DPI、多屏和 IME，Linux X11/Wayland 与音频环境必须分�
 | src/internal/pin | MoonBit 数值/交互规则已到 capture/extensions/pin；窗口和像素资源到平台适配仍待提取 |
 | src/internal/video/recording.mbt | recording/core；资源协调到 recording 根会话 |
 | src/internal/video_project、video_ui、video | 已到 video_editor/core、ui 与 core/legacy_document；Windows 旧编辑器已替换，后续清理无调用 API。已有草稿读取/转换保留，不扩建用户插件兼容层 |
-| src/internal/tool_registry、feature_runtime、plugin_protocol | 已到 plugins/runtime/catalog、runtime/lifecycle、contracts；固定贡献、完整租约和功能专用契约的提取仍待做 |
+| src/internal/tool_registry、feature_runtime、plugin_protocol | 已到 plugins/runtime/catalog、runtime/lifecycle、contracts；截图贡献由 app/tools 注入；完整租约、外部插件 v2 与录屏/剪辑扩展仍待做 |
 | src/internal/desktop、updates | 已到 app/shortcuts、app/updates；应用命令、会话、任务编排尚未实现 |
 | src/internal/protocol、test_support | 已到 shared/protocol、shared/test_support；测试辅助只允许测试作用域导入 |
 | native、components、plugins/feature | 按迁移台账逐项提取；Windows/Linux capture 内嵌图片编辑、macOS 分散选区与旧控制器均单列任务；Windows/Linux 编辑窗口已进入 platform/<os>/app |
-| 原 native/shared 头文件 | 已迁：15 个 ABI 头在 bindings/c；pixelate.h 实现在 platform/shared/image；同仓调用者同步，无旧路径转发 |
+| 原 native/shared 头文件 | ABI 头已迁 bindings/c；pixelate.h 实现在 platform/shared/image；同仓调用者同步，无旧路径转发；新接口按同一归属登记 |
 | 原 plugins/system/builtins.json | 已迁 build/native-modules.json；构建前检查全量原生文件归属与实际 include 依赖 |
 | plugins/user-runtime | 当前仅作者 README，迁根 plugins/spec；真实执行器 native/tools/plugin-worker.m 与 native/macos/plugins 按台账拆分 |
 
@@ -370,8 +370,8 @@ Windows 混合 DPI、多屏和 IME，Linux X11/Wayland 与音频环境必须分�
 | --- | --- | --- |
 | A 架构基线 | 本文、全量迁移台账、三端能力矩阵和独立评审问题闭环 | 文档完成不等于实施完成；新发现回写同一台账 |
 | R0 原片保护 | 修正 Windows 原始录制与派生文件共用清理的路径 | 故障后保留原片并可找回；方案登记尚不代表修复 |
-| B 截图样板 | core/ui/extensions 首批结构已归位；B1 能力模型与 B2 贡献/属性 UI 仍待实现 | 通用注册、三端 IME 与共享工具栏通过真实操作；文档/撤销/样式/开关无回退 |
-| C 基础录屏 | 共用选区与准备 UI；Windows 现有主屏录制接区域/窗口，Linux 补基础视频采集，按能力补音源 | 选区→倒计时→录制→停止→可播放文件；X11/Wayland 分别验收 |
+| B 截图样板 | 结构、最小能力模型与截图贡献已接；完整运行时能力仍待补；B2a 文字属性接线验证中，其余共享属性/选区 UI 待做 | 通用注册、三端 IME 与共享工具栏通过真实操作；文档/撤销/样式/开关无回退 |
+| C 基础录屏 | Windows 区域、Linux X11/Wayland 基础采集已接，共用倒计时/控制面板已接；完整选区/准备 UI、窗口跟随与音源继续补齐 | 选区→倒计时→录制→停止→可播放文件；X11/Wayland 分别验收 |
 | D 插件与 CLI 案例 | 通用注册、新协议、本地服务和 CLI；先接截图命令，再接录制标记 | 人工/CLI 结果一致；内置/导入示例共用机制；异常不破坏录制 |
 | E 媒体与宿主对齐 | 三端共用视频 UI 与媒体端口；补 OCR/翻译、设置/快捷键和交付缺口 | 同一编辑序列、可恢复草稿、实际成片与音画同步；系统能力分别验收 |
 | F 后续扩展与拆库 | 摄像头/叠加、字幕/效果等实际用例推动，形成稳定公共库 | 契约和性能有实测，核心不依赖应用策略 |
@@ -396,7 +396,7 @@ C1/C2 可先完成采集/会话子项并交付可播放文件；“共享选区�
 | CLI | 查询无副作用、明确会话、UI/CLI 竞争版本、重试、JSON/退出码、任务完成/取消、不可连接和缺失能力 |
 | 平台 | 真实窗口、权限、混合 DPI、IME、视频表面、X11/Wayland；UI 存在不等于采集/导出可执行 |
 
-scripts/check_module_boundaries.py 已加入三端构建入口，检查生产导入，测试专用依赖单独处理；迁移期旧包名也映射到同一职责边界。复用现有 MoonBit 包内测试、scripts/native.py test、scripts/desktop.py test 和共享视频检查。文档变更检查内容、链接和差异；实际迁移和接线执行相应核心、宿主及三端验证，人工测试未完成时明确列出。
+scripts/check_module_boundaries.py 已加入三端构建入口，检查生产导入，测试专用依赖单独处理；旧包目录和导入直接拒绝，功能 ui 不得导入所属根包或具体 extensions。复用现有 MoonBit 包内测试、scripts/native.py test、scripts/desktop.py test 和共享视频检查。文档变更检查内容、链接和差异；实际迁移和接线执行相应核心、宿主及三端验证，人工测试未完成时明确列出。
 
 新增能力同时更新命令/扩展契约、支持平台、UI/CLI 可用性、持久化与取消策略、测试证据。实现完成只更新对应状态，不以规划或构建成功替代产品验收。
 

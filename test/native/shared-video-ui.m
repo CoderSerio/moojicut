@@ -461,9 +461,17 @@ static void Smoke(SharedVideoHarness *host, NSURL *directory) {
     NSCAssert(Wait(^BOOL { return host.media.currentOutputMilliseconds >= host.media.outputDurationMilliseconds-40; }, 10), @"Seek to final output frame");
     [host tick];
     [host send:@{@"type":@"activate", @"id":@"play"}];
-    NSCAssert(Wait(^BOOL { return host.media.player.rate > 0 && host.media.currentOutputMilliseconds < 500; }, 10), @"Play at the end restarts retained media");
+    NSCAssert(Wait(^BOOL { return !host.pendingSeek && host.media.player.rate > 0 && host.media.currentOutputMilliseconds < 500; }, 10), @"Play at the end restarts retained media");
+    // The wait can observe the media completion before the 30 Hz UI clock.
+    // Settle both before toggling Pause: this case exercises rejected Play,
+    // independently of transport changes during an in-flight seek.
+    [host tick];
+    NSCAssert([Semantic(host, @"play")[@"label"] containsString:@"暂停"], @"Restarted playback reaches shared UI before Pause");
     [host send:@{@"type":@"activate", @"id":@"play"}]; [host tick];
     NSCAssert(Wait(^BOOL { return !host.pendingSeek; }, 10), @"Replay seek settles before testing playback rejection");
+    [host tick];
+    NSCAssert(!host.media.playbackRequested && [Semantic(host, @"play")[@"label"] containsString:@"播放"],
+              @"Playback rejection starts from an acknowledged paused player and UI");
     // Remove only this fixture's player item to produce a real backend play
     // rejection. The document remains valid and the old clock stays paused.
     [host.media.player replaceCurrentItemWithPlayerItem:nil]; [host tick];

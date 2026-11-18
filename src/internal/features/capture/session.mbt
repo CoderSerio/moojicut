@@ -40,7 +40,7 @@ fn native_image_document(result : String) -> Map[String, Json]? {
 
 ///|
 fn native_image_create(request : Json) -> Int {
-  if native_image_sessions.length() >= 16 { return 0 }
+  if native_image_sessions.length() >= 16 || native_image_next_id.val >= 2147483647 { return 0 }
   let document = match native_image_document(@image.image_create(request.stringify())) {
     Some(document) => document
     None => return 0
@@ -295,8 +295,43 @@ pub fn image_session_text(id : Int, index : Int) -> String {
 
 ///|
 pub fn image_session_dispose(id : Int) -> Unit {
+  text_dispose_session(id)
   if native_image_sessions.get(id) is Some(session) { @capture_ui.close(session.gesture) }
   native_image_sessions.remove(id)
+}
+
+///|
+/// Read-only authoritative document snapshot; never accepts a host document.
+pub fn image_session_document(id : Int) -> String {
+  match native_image_sessions.get(id) {
+    Some(s) => Json::object(s.document).stringify()
+    None => ""
+  }
+}
+
+///|
+pub fn image_session_revision(id : Int) -> Double {
+  match native_image_sessions.get(id) {
+    Some(s) => image_number(s.document, "revision", 0)
+    None => -1
+  }
+}
+
+///|
+pub fn image_session_annotation_id(id : Int, index : Int) -> String {
+  match native_image_annotation(id, index) {
+    Some(a) => image_string(a, "id", "")
+    None => ""
+  }
+}
+
+///|
+pub fn image_session_command(id : Int, revision : Double, command : String) -> Int {
+  let s = match native_image_sessions.get(id) { Some(s) => s; None => return 0 }
+  if image_session_revision(id) != revision { return 0 }
+  let command = text_json(command, 33554432) catch { _ => return 0 }
+  if !(command is Object(_)) { return 0 }
+  native_image_command(s, command)
 }
 
 ///|
@@ -310,6 +345,7 @@ pub fn image_session_shape_begin(id : Int, kind : Int, x : Double, y : Double,
     "session": Json(s.gesture), "type": Json("begin"), "id": Json("native-\{s.next_annotation}"),
     "kind": Json(kind), "x": Json(x), "y": Json(y), "color": Json(native_image_color(color)),
     "stroke": Json(stroke), "opacity": Json(opacity), "shape": Json(shape), "blockSize": Json(block),
+    "shapeCount": Json(@annotation_tools.editor_style_shape_count(kind)),
   }).stringify())) catch { _ => return 0 }
   match result { Object({ "ok": True, .. }) => {
     s.preview = Json::null(); s.contribution = ""; s.gesture_revision = s.document["revision"]; 1

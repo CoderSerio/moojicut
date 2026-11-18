@@ -2,7 +2,7 @@
 
 2026-11-17 目录决策更新：本文继续维护共享 UI 与媒体接口细节；最终目录、插件生命周期和 CLI 优先策略统一见[架构与实施规划](architecture.md)。截图 MoonBit 模块与录屏核心现已完成第一批迁移；下文保留尚未迁移的原生路径，不能据此继续扩展 components 或 plugins/feature 根目录。
 
-状态：2026-11-16。共享 MoonBit UI 已接入 macOS 正式录后编辑与草稿恢复入口，通过通用画布连接真实媒体端口；独立样例继续用于回归。Windows 仍用旧编辑窗，Linux 尚无视频编辑链，不能据此视为三端已完成。当前多片段、音轨与后续字幕/效果范围见[视频编辑器推进计划](video-editor-roadmap.zh-CN.md)。
+状态：2026-11-18。三端正式视频编辑入口已经接入同一 MoonBit 根会话与 UI；macOS 本地回归，以及 Windows／Ubuntu 22 的媒体、实际编辑窗口和发行包检查通过，Ubuntu 24 的同一包运行检查通过。截图文字属性已接入下述共享字段协议，本批目标运行仍待 CI；不能因此将全部截图 UI 或插件 v2 记为完成。当前多片段、音轨与后续字幕/效果范围见[视频编辑器推进计划](video-editor-roadmap.zh-CN.md)。
 
 ## 一套复杂组件实现
 
@@ -46,12 +46,12 @@ flowchart TD
 | 层 | 截图现状依据 | 视频现状及目标职责 |
 | --- | --- | --- |
 | 共享业务核心 | `src/internal/features/capture/core` 管图片与样式值域，capture 根包协调会话；`shared/geometry` 管共用几何，经根 ABI 暴露 | `src/internal/features/video_editor/core/legacy_document` 保留已有视频文档/API与时间线几何，录屏在 `features/recording/core`；`src/internal/features/video_editor/core` 已实现 v2 片段、恒速、链接、版本事务和 RenderPlan |
-| 复杂 UI | `features/capture/ui` 的形状手势与定位已接入三端；annotations 管工具选项，ui 管属性显隐，core 管持久样式校验。三端 `components/style_controls` 仍负责控件绘制和输入，尚非一套共享控件渲染 | 已有 `src/internal/features/video_editor/ui` 负责布局、主题、交互和语义；播放条、时间线、属性面板按职责拆为包内模块，不能照搬三套原生 UI |
-| 通用组件/后端 | `components/icons`、`style_controls`、`hud` 等已有实际组件 | 已有 `components/shared_canvas/macos`；仅解释通用绘制和输入协议。Windows/Linux 对应画布尚未验收，可复用公共绘图/字体库减少适配量 |
+| 复杂 UI | `features/capture/ui` 的形状手势与定位已接入三端；文字属性新增同一 frame/fields 与根事务，原生桥保留系统输入；其余形状属性仍使用 `components/style_controls`，完整共享控件渲染未完成 | 已有 `src/internal/features/video_editor/ui` 负责布局、主题、交互和语义；播放条、时间线、属性面板按职责拆为包内模块，不能照搬三套原生 UI |
+| 通用组件/后端 | `components/icons`、`style_controls`、`hud` 等已有实际组件 | 已有 `components/shared_canvas/macos`；仅解释通用绘制和输入协议。Windows/Linux 对应画布已在 platform/<os>/graphics 接入并通过目标自动验证；通用输入字段是本批新增能力 |
 | 功能接入 | `plugins/feature/capture` 组织采集与编辑，`select`、`pin` 等各有入口 | 已有 `plugins/feature/recording` 与 macOS `video_editor`；保留录屏、草稿、窗口生命周期和媒体端口接线，不决定组件布局或剪辑规则 |
-| 应用装配 | `native/*` 宿主、`build/native-modules.json` 的 sources/requires | macOS 正式构建已装配共享 UI、通用画布与媒体端口，录制完成和恢复草稿进入同一编辑窗；其他平台仍待接入 |
+| 应用装配 | `native/*` 宿主、`build/native-modules.json` 的 sources/requires | macOS 正式构建已装配共享 UI、通用画布与媒体端口，录制完成和恢复草稿进入同一编辑窗；Windows/Linux 正式编辑窗口也已接入同一根会话 |
 
-这里 `plugins/feature` 是内置功能的源码组织，`builtins.json` 是原生构建依赖描述；它们不等于可导入的用户 Wasm 插件。现有 `src/internal/plugins/runtime/catalog` 和 `src/internal/plugins/contracts` 管工具目录与插件边界，不承接视频文档或播放规则。用户插件的录后编辑列表仍不能据此视为已有视频效果 API。
+这里 `plugins/feature` 是内置功能的源码组织，`build/native-modules.json` 是原生构建依赖描述；它们不等于可导入的用户 Wasm 插件。现有 `src/internal/plugins/runtime/catalog` 和 `src/internal/plugins/contracts` 管工具目录与插件边界，不承接视频文档或播放规则。用户插件的录后编辑列表仍不能据此视为已有视频效果 API。
 
 共享播放控制先在 `src/internal/features/video_editor/ui` 包内形成明确模块：统一观看状态、动作、可用性、焦点、布局和图标；`src/internal/features/video_editor/core` 管 v2 权威剪辑时间映射，媒体端口只执行 play/pause/seek/rate 并回报实际状态。确有第二个使用者时再提取独立 MoonBit 组件包与 C ABI，不预先虚构 `components/video_transport` 或第二套项目会话。`src/api_video_ui.mbt` / `bindings/c/video_ui.h` 保持薄边界，应用 feature 负责连接，不能把命中、按钮可用性或 1%/最多5秒跳转策略放回每端控制器。
 
@@ -102,3 +102,24 @@ flowchart TD
 本轮 v2 验证包括真实 NSView 输入/媒体集成与组件离屏渲染。正式接入由 `test/native/recording-experience.m` 覆盖共享画布输入、核心与媒体同步、v2 保存重开、旧草稿只读迁移、严格恢复、写入失败后重试及退出保护；测试使用生成的媒体与隔离目录。正式应用接线与自动回归不等于人工验收，不能把上一轮单片段的桌面自动点击结果扩写成 v2 手动验收，也不能代替实际录屏权限和更新检查。
 
 通用绘制协议目前采用批量 JSON，属于验证边界；大规模轨道/缩略图的性能仍需测量，后续可替换为紧凑命令缓冲而保留同一份组件逻辑。
+
+
+## 共享可编辑字段与截图文字事务（2026-11-18）
+
+本节记录本批源码契约；三端生产接入及验证状态以迁移台账为准。通用画布仍只负责绘制、静态语义和输入转换；系统文本输入是相邻的通用平台桥，不能把截图规则塞进画布。
+
+- `shared/ui/fields` 保存有界 raw 草稿、UTF-16 选区、组合输入和草稿撤销；不解析数字、不决定空白正文是否删除图元。每个字段有不复用的 token 与递增 version。
+- `shared/ui/frame` 增加 `editableFields`，与绘图命令并列。字段描述包含身份、raw、选区/marked、矩形/clip、字体/颜色/透明度、enabled/readOnly/focused 和可访问名称。正文只由真实文本输入对象呈现，不能再画第二份相同文字。
+- selection 明确区分 `directed`、`undirected`、`unknown`。系统 API 没有提供光标位置或方向时如实报告，不能用 0 伪造事实。原生桥统一发送 LF 文本与 UTF-16 偏移；Windows EDIT 的 CRLF、GTK 的字符索引必须在系统边界转换。
+- `ui_text_event` 与 C `mc_canvas_text_input_json` 编码替换、选区、compositionStart/Update/Commit/Cancel、草稿 undo/redo。事件携带字段 ID/token/expectedVersion，宿主同步应用根事件并回灌 ACK frame；退休字段的迟到输入无效。常规同 token/version 刷新只更新外观和几何，不能重置 IME。
+- 真实输入控件提供 AX/MSAA/ATK 文本接口；frame 不再为同 ID 生成一份虚拟输入节点。父画布必须让实际输入节点可被遍历，不能只验证单个控件的 role。
+
+截图文字扩展声明颜色、透明度和字号；capture 根包把属性描述和快照注入 capture/ui。圆色块直径、分组间距与属性行布局由 MoonBit 决定；平台只打开系统颜色选择器并返回颜色事实。
+
+`capture_text_begin/event/prepare/cancel` 管同一个文字编辑事务。新文字与默认值可一起发布，已有文字编辑不改变工具默认值。透明度百分数与持久值 0..1 的换算、数字中间草稿、空白正文、字号范围及错误都由根会话决定。native 保留实际输入法、剪贴板、字体测量与图片光栅化。
+
+`prepare` 仅生成候选：不结束 IME、不改焦点、默认值、文档或历史。预览候选不可提交；发布候选再次检查文档版本、编辑版本与样式版本，只能成功消费一次。多窗口配置用 `candidate_commit_many` 统一发布，原生焦点变化与控件拆除在全部文档发布之后发生。正文或字号未变时保留原文字框高度；改颜色、改透明度、打开再关闭都不触发重新排版。
+
+`image_session_geometry` 是几何专用薄入口：冻结文档 revision 和稳定图元 ID，移动不重写正文/样式，`font_size=-1` 保留原字号，文字缩放可传小数。活动文字事务必须先提交或取消；旧的 pending-text／整数样式接口不再参与这条文字移动路径。原片和图片导出仍复用既有渲染器。
+
+本切片不代表所有形状属性、通用用户插件属性 Schema、OCR 结果输入或 CLI 已完成；这些按各自工作包继续迁移。
