@@ -107,3 +107,27 @@ test("a changed R2 object cannot combine new bytes with old metadata", async () 
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal((await response.arrayBuffer()).byteLength, 0);
 });
+
+test("update index is short-lived and stale snapshots make clients fall back", async () => {
+  const path = "updates/releases.json";
+  const fresh = { ...metadata, uploaded: new Date() };
+  const fixture = bucketFixture({ async head(key) { return key === path ? fresh : null; } });
+  const response = await request(fixture, {}, path);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /^application\/json/);
+  assert.match(response.headers.get("cache-control"), /max-age=60/);
+  assert.doesNotMatch(response.headers.get("cache-control"), /immutable/);
+  const stale = bucketFixture({ async head() { return { ...fresh, uploaded: new Date(0) }; } });
+  assert.equal((await request(stale, {}, path)).status, 503);
+  assert.equal(stale.calls.length, 0);
+});
+
+test("versioned Sparkle appcast is served as immutable XML", async () => {
+  const path = "v0.1.0-alpha.22/macos.xml";
+  const fixture = bucketFixture({ async head(key) { return key === path ? metadata : null; } });
+  const response = await request(fixture, {}, path);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /^application\/xml/);
+  assert.match(response.headers.get("cache-control"), /immutable/);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+});

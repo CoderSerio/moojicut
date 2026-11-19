@@ -42,6 +42,18 @@ GET、HEAD、断点续传、无效路径和写入拒绝。生产桶仅用于正�
 5. 更新 `website/verified-mirrors.json`。官网构建会再比较 GitHub Release 的摘要和
    大小，匹配后将该平台的下载按钮指向 Cloudflare。
 
+## 应用内更新
+
+发布后，先按上面的流程同步并验证安装包。对 macOS ZIP 用
+`python3 scripts/generate_update_feed.py <archive.zip> --mirror --output <staging>/macos.xml`
+生成单独签名的镜像更新源，放到 `v<version>/macos.xml`。它引用同一份已验证的
+Cloudflare ZIP，GitHub Release 继续附上指向 GitHub 的签名更新源。
+
+用 `python3 scripts/build_update_index.py <staging>/releases.json` 从已公开的 GitHub
+Release 生成更新清单，最后上传到 R2 的 `updates/releases.json`。应用优先读取该清单，
+并在无法读取或使用镜像时尝试 GitHub。索引缓存在边缘一分钟，超过七天未同步时，
+镜像会返回 503，让客户端检查 GitHub 上的最新记录。
+
 ## Beta 多源交付计划
 
 - CI 对每个平台和架构生成一次产物，以版本化路径上传同一份字节到 GitHub、Cloudflare R2 和已配置的阿里云 OSS。每个公开源通过外网长度、完整 SHA-256 和断点请求检查后才能加入发布清单。清单按版本记录文件名、长度、摘要和候选地址。发布应用更新时，连同签名过的更新清单一起同步。

@@ -49,6 +49,7 @@ test "release selection includes previews only for preview installs and skips dr
   assert_eq(update_release_text(preview, 0), "0.1.0-alpha.10")
   assert_eq(update_release_size(preview), 1234)
   assert_eq(update_release_text(preview, 2), "moojicut-0.1.0-alpha.10-windows-x64.zip")
+  assert_eq(update_release_text(preview, 6), "https://moojicut-downloads.pages.dev/v0.1.0-alpha.10/moojicut-0.1.0-alpha.10-windows-x64.zip")
   let stable = update_release_create("0.0.8", 2, body)
   assert_eq(update_release_status(stable), 1)
   assert_eq(update_release_text(stable, 0), "0.0.9")
@@ -109,6 +110,7 @@ test "signed macOS feed is discovered as an asset without treating checksum as s
   let handle = update_release_create("0.1.0-alpha.9", 0, body)
   assert_eq(update_release_status(handle), 1)
   assert_eq(update_release_text(handle, 4), "https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.10/macos.xml")
+  assert_eq(update_release_text(handle, 7), "https://moojicut-downloads.pages.dev/v0.1.0-alpha.10/macos.xml")
   update_release_dispose(handle)
 }
 

@@ -130,13 +130,20 @@ static BOOL controllerFixtures(NSBundle *bundle) {
     passed &= require(controller.checks == 0 && !controller.canCheckForUpdates, @"capture starting during discovery defers Sparkle");
     busy = NO; [controller operationStateDidChange]; [controller operationStateDidChange];
     passed &= require(controller.checks == 1 && !controller.lastBackground &&
-        [controller.checkedFeed isEqual:@"https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.9/macos.xml"],
-        @"idle resumes exactly once using only the discovered signed-feed asset");
+        [controller.checkedFeed isEqual:@"https://moojicut-downloads.pages.dev/v0.1.0-alpha.9/macos.xml"],
+        @"idle resumes exactly once using the mirrored signed-feed asset");
     [controller checkForUpdates:nil];
     passed &= require(controller.focusRequests == 1 && source.callbacks.count == 5,
         @"Sparkle canCheck while showing UI focuses it without duplicate discovery");
     id<SPUUpdaterDelegate> delegate = (id)controller;
     controller.active = NO;
+    [delegate updater:(id)controller didFinishUpdateCycleForUpdateCheck:SPUUpdateCheckUpdates
+        error:[NSError errorWithDomain:SUSparkleErrorDomain code:SUAppcastError userInfo:nil]];
+    drain();
+    passed &= require(controller.checks == 2 &&
+        [controller.checkedFeed isEqual:@"https://github.com/CoderSerio/moojicut/releases/download/v0.1.0-alpha.9/macos.xml"],
+        @"Sparkle retries with the GitHub feed after the mirror fails");
+    controller.active = NO; controller.checks = 1;
     [delegate updater:(id)controller didFinishUpdateCycleForUpdateCheck:SPUUpdateCheckUpdates error:nil];
     [controller checkForUpdates:nil];
     complete(source, 5, [@"malformed" dataUsingEncoding:NSUTF8StringEncoding], nil);
@@ -251,20 +258,28 @@ static NSDictionary *protocolHeaders;
 static NSError *protocolError;
 static BOOL protocolHold;
 static atomic_uint protocolStarts;
+static atomic_uint githubStarts;
+static BOOL protocolHealthyFallback;
 @interface MCOfflineURLProtocol : NSURLProtocol
 @end
 @implementation MCOfflineURLProtocol
-+ (BOOL)canInitWithRequest:(NSURLRequest *)request { return [request.URL.host isEqual:@"api.github.com"]; }
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    return [@[@"moojicut-downloads.pages.dev", @"api.github.com"] containsObject:request.URL.host];
+}
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
 - (void)startLoading {
     atomic_fetch_add(&protocolStarts, 1);
+    BOOL github = [self.request.URL.host isEqual:@"api.github.com"];
+    if (github) atomic_fetch_add(&githubStarts, 1);
     if (protocolHold) return;
     if (protocolError) { [self.client URLProtocol:self didFailWithError:protocolError]; return; }
-    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:protocolStatus
+    NSData *body = github && protocolHealthyFallback ? [@"[]" dataUsingEncoding:NSUTF8StringEncoding] : protocolBody;
+    NSInteger status = github && protocolHealthyFallback ? 200 : protocolStatus;
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:status
         HTTPVersion:@"HTTP/1.1" headerFields:protocolHeaders];
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
-    for (NSUInteger offset = 0; offset < protocolBody.length; offset += 65536)
-        [self.client URLProtocol:self didLoadData:[protocolBody subdataWithRange:NSMakeRange(offset, MIN((NSUInteger)65536, protocolBody.length - offset))]];
+    for (NSUInteger offset = 0; offset < body.length; offset += 65536)
+        [self.client URLProtocol:self didLoadData:[body subdataWithRange:NSMakeRange(offset, MIN((NSUInteger)65536, body.length - offset))]];
     [self.client URLProtocolDidFinishLoading:self];
 }
 - (void)stopLoading {}
@@ -274,8 +289,8 @@ static BOOL transportFixtures(void) {
     BOOL passed = YES;
     NSURLSessionConfiguration *config = NSURLSessionConfiguration.ephemeralSessionConfiguration;
     config.protocolClasses = @[MCOfflineURLProtocol.class];
-    MCGitHubReleaseSource *source = [[MCGitHubReleaseSource alloc] initWithConfiguration:config];
-    for (NSInteger scenario = 0; scenario < 7; scenario++) {
+    MCReleaseIndexSource *source = [[MCReleaseIndexSource alloc] initWithConfiguration:config];
+    for (NSInteger scenario = 0; scenario < 9; scenario++) {
         protocolBody = [@"[]" dataUsingEncoding:NSUTF8StringEncoding];
         protocolStatus = 200; protocolError = nil; protocolHeaders = @{}; protocolHold = NO;
         if (scenario == 1) protocolStatus = 429;
@@ -284,10 +299,14 @@ static BOOL transportFixtures(void) {
         if (scenario == 4) protocolError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorTimedOut userInfo:nil];
         if (scenario == 5) protocolHeaders = @{@"Link":@"<https://api.github.com/repos/CoderSerio/moojicut/releases?page=2>; rel=\"next\""};
         if (scenario == 6) protocolHold = YES;
+        protocolHealthyFallback = scenario >= 7;
+        if (scenario == 7) protocolStatus = 404;
+        if (scenario == 8) protocolBody = [@"malformed" dataUsingEncoding:NSUTF8StringEncoding];
         __block NSUInteger calls = 0;
         __block NSData *result = nil;
         __block NSError *error = nil;
         unsigned before = atomic_load(&protocolStarts);
+        unsigned githubBefore = atomic_load(&githubStarts);
         [source fetchReleases:^(NSData *body, NSError *failure) { calls++; result = body; error = failure; }];
         if (scenario == 6) {
             passed &= require(waitFor(^BOOL{ return atomic_load(&protocolStarts) > before; }), @"held request starts only in fake URL protocol");
@@ -297,10 +316,13 @@ static BOOL transportFixtures(void) {
             [source cancel];
         }
         passed &= require(waitFor(^BOOL{ return calls > 0; }), @"transport completes every response/error/cancel without hanging");
-        passed &= require(calls == 1 && (scenario == 0 ? result.length == 2 && !error : !result && error != nil),
+        BOOL succeeds = scenario == 0 || scenario >= 7;
+        passed &= require(calls == 1 && (succeeds ? result.length == 2 && !error : !result && error != nil),
             [NSString stringWithFormat:@"bounded transport scenario %ld", (long)scenario]);
         drain();
         passed &= require(calls == 1, @"late URLSession cancellation events cannot call completion twice");
+        passed &= require(atomic_load(&githubStarts) - githubBefore == (scenario != 0 && scenario != 6 ? 1u : 0u),
+            @"GitHub is contacted once per failed mirror attempt and never on success or cancellation");
     }
     return passed;
 }

@@ -13,7 +13,7 @@
 #ifndef MOOJICUT_VERSION
 #define MOOJICUT_VERSION "development"
 #endif
-#define RELEASES_API "https://api.github.com/repos/CoderSerio/moojicut/releases?per_page=100"
+#define RELEASES_API MC_UPDATE_GITHUB_INDEX
 #define RELEASES_PAGE "https://github.com/CoderSerio/moojicut/releases"
 #define BODY_LIMIT (4u * 1024u * 1024u)
 #define DOWNLOAD_LIMIT (1024u * 1024u * 1024u)
@@ -24,14 +24,14 @@
 /* The worker owns only immutable request data and its sink. No GTK or MoonBit
  * is called off the UI thread. A page may die while its task is completing. */
 typedef struct {
-  char *url, *destination, *sha256;
+  char *url, *fallback, *destination, *sha256;
   gsize expected, received;
   GByteArray *body;
   GChecksum *checksum;
   GCancellable *cancel;
   int fd;
-  gboolean overflow, write_failed, paginated;
-  GBytes *fixture; /* Only isolated smoke tasks supply a transport fixture. */
+  gboolean overflow, write_failed, paginated, local_failure;
+  GBytes *fixture, *fixture_fallback; /* Only isolated smoke tasks supply transport fixtures. */
   char *fixture_header;
 } Request;
 typedef struct { char *body, *path; } Response;
@@ -69,11 +69,13 @@ static void response_free(Response *response) {
 }
 static void request_free(Request *request) {
   g_free(request->url);
+  g_free(request->fallback);
   g_free(request->destination);
   g_free(request->sha256);
   g_clear_pointer(&request->body, g_byte_array_unref);
   g_clear_pointer(&request->checksum, g_checksum_free);
   g_clear_pointer(&request->fixture, g_bytes_unref);
+  g_clear_pointer(&request->fixture_fallback, g_bytes_unref);
   g_free(request->fixture_header);
   g_free(request);
 }
@@ -142,6 +144,7 @@ static void transfer_worker(GTask *task, gpointer source, gpointer data, GCancel
     g_free(directory);
     request->fd = g_mkstemp_full(temporary, O_RDWR | O_CLOEXEC, 0600);
     if (request->fd < 0) {
+      request->local_failure = TRUE;
       g_set_error(&error, G_IO_ERROR, g_io_error_from_errno(errno), "无法创建下载文件：%s", g_strerror(errno));
       goto finished;
     }
@@ -178,7 +181,7 @@ static void transfer_worker(GTask *task, gpointer source, gpointer data, GCancel
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, request->destination ? 600L : 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, request->destination ? 600L : request->fallback ? 8L : 30L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 128L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
@@ -190,8 +193,10 @@ static void transfer_worker(GTask *task, gpointer source, gpointer data, GCancel
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, request);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     if (!request->destination) {
-      headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
-      headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
+      if (g_str_equal(request->url, RELEASES_API)) {
+        headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
+        headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
+      } else headers = curl_slist_append(headers, "Accept: application/json");
       curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     }
     result = curl_easy_perform(curl);
@@ -211,7 +216,7 @@ static void transfer_worker(GTask *task, gpointer source, gpointer data, GCancel
     goto finished;
   }
   if (http_status != 200 && http_status != 0) {
-    g_set_error(&error, G_IO_ERROR, G_IO_ERROR_FAILED, "GitHub 返回 HTTP %ld；请稍后重试。", http_status);
+    g_set_error(&error, G_IO_ERROR, G_IO_ERROR_FAILED, "更新源返回 HTTP %ld，请稍后重试。", http_status);
     goto finished;
   }
   if (result != CURLE_OK) {
@@ -228,11 +233,13 @@ static void transfer_worker(GTask *task, gpointer source, gpointer data, GCancel
     int close_result = close(request->fd);
     request->fd = -1;
     if (sync_result != 0 || close_result != 0) {
+      request->local_failure = TRUE;
       g_set_error_literal(&error, G_IO_ERROR, G_IO_ERROR_FAILED, "无法完整保存更新包。");
       goto finished;
     }
     if (g_cancellable_set_error_if_cancelled(cancel, &error)) goto finished;
     if (g_rename(temporary, request->destination) != 0) {
+      request->local_failure = TRUE;
       g_set_error(&error, G_IO_ERROR, g_io_error_from_errno(errno), "无法保存更新包：%s", g_strerror(errno));
       goto finished;
     }
@@ -242,7 +249,7 @@ static void transfer_worker(GTask *task, gpointer source, gpointer data, GCancel
     /* Reject embedded NUL and malformed UTF-8 before the shared JSON parser. */
     if (!request->body->len || memchr(request->body->data, 0, request->body->len) ||
         !g_utf8_validate((const char *)request->body->data, request->body->len, NULL)) {
-      g_set_error_literal(&error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "GitHub 返回了无效的更新数据。");
+      g_set_error_literal(&error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "更新源返回了无效数据。");
       goto finished;
     }
     response = g_new0(Response, 1);
@@ -290,11 +297,15 @@ static void page_busy(UpdatePage *page, gboolean busy) {
   if (busy) gtk_spinner_start(GTK_SPINNER(page->spinner));
   else gtk_spinner_stop(GTK_SPINNER(page->spinner));
 }
+static void start_transfer(UpdatePage *page, Request *request);
 static void transfer_done(GObject *source, GAsyncResult *result, gpointer data) {
   (void)source;
   UpdatePage *page = data;
   GError *error = NULL;
   Response *response = g_task_propagate_pointer(G_TASK(result), &error);
+  Request *finished = g_task_get_task_data(G_TASK(result));
+  gboolean cancelled_by_user = g_cancellable_is_cancelled(page->cancel_task);
+  gboolean invalid_index = FALSE;
   g_clear_object(&page->cancel_task);
   if (!page->destroyed) {
     if (error) gtk_label_set_text(GTK_LABEL(page->status),
@@ -313,6 +324,7 @@ static void transfer_done(GObject *source, GAsyncResult *result, gpointer data) 
       moonbit_decref(current);
       moonbit_decref(body);
       int status = page->release ? update_release_status(page->release) : MC_UPDATE_INVALID;
+      invalid_index = status == MC_UPDATE_INVALID;
       char *version = page->release ? release_text(page->release, MC_UPDATE_VERSION) : g_strdup("");
       char *message = status == MC_UPDATE_AVAILABLE ? g_strdup_printf("发现新版本 %s。可下载经过校验的 Linux x64 便携包。", version) :
                       status == MC_UPDATE_CURRENT ? g_strdup("当前已是此渠道的最新版本。") :
@@ -325,6 +337,16 @@ static void transfer_done(GObject *source, GAsyncResult *result, gpointer data) 
   page_busy(page, FALSE);
   active_pages = g_slist_remove(active_pages, page);
   if (page->application) g_application_release(page->application);
+  gboolean mirror_failed = invalid_index || (error && !finished->write_failed && !finished->local_failure);
+  if (!page->destroyed && !cancelled_by_user && finished->fallback && mirror_failed) {
+    Request *retry = g_new0(Request, 1);
+    retry->url = g_strdup(finished->fallback);
+    retry->destination = g_strdup(finished->destination);
+    retry->sha256 = g_strdup(finished->sha256);
+    retry->expected = finished->expected;
+    if (finished->fixture_fallback) retry->fixture = g_bytes_ref(finished->fixture_fallback);
+    start_transfer(page, retry);
+  }
   response_free(response);
   g_clear_error(&error);
   page_unref(page);
@@ -342,7 +364,7 @@ static void start_transfer(UpdatePage *page, Request *request) {
   /* Completion waits for the worker to remove partial files. */
   g_task_set_check_cancellable(task, FALSE);
   g_task_set_task_data(task, request, (GDestroyNotify)request_free);
-  gtk_label_set_text(GTK_LABEL(page->status), request->destination ? "正在下载并校验更新包…" : "正在检查 GitHub Releases…");
+  gtk_label_set_text(GTK_LABEL(page->status), request->destination ? "正在下载并校验更新包…" : "正在检查更新…");
   page_busy(page, TRUE);
   g_task_run_in_thread(task, transfer_worker);
   g_object_unref(task);
@@ -352,7 +374,8 @@ static void check_clicked(GtkButton *button, gpointer data) {
   UpdatePage *page = data;
   if (page->busy || page->destroyed) return;
   Request *request = g_new0(Request, 1);
-  request->url = g_strdup(RELEASES_API);
+  request->url = g_strdup(MC_UPDATE_MIRROR_INDEX);
+  request->fallback = g_strdup(RELEASES_API);
   start_transfer(page, request);
 }
 static void chooser_response(GtkDialog *dialog, int response, gpointer data) {
@@ -362,7 +385,8 @@ static void chooser_response(GtkDialog *dialog, int response, gpointer data) {
   gtk_widget_destroy(GTK_WIDGET(dialog));
   if (path && !page->destroyed && !page->busy && page->release) {
     Request *request = g_new0(Request, 1);
-    request->url = release_text(page->release, MC_UPDATE_DOWNLOAD_URL);
+    request->url = release_text(page->release, MC_UPDATE_MIRROR_DOWNLOAD_URL);
+    request->fallback = release_text(page->release, MC_UPDATE_DOWNLOAD_URL);
     request->sha256 = release_text(page->release, MC_UPDATE_SHA256);
     request->expected = (gsize)update_release_size(page->release);
     request->destination = path;
@@ -647,7 +671,7 @@ GtkWidget *mc_linux_update_preferences(const char *(*uninstall_blocker)(void), v
   g_object_set_data_full(G_OBJECT(page->page), "mooji-updates", page, (GDestroyNotify)page_unref);
   g_signal_connect(page->page, "destroy", G_CALLBACK(page_destroyed), page);
   gtk_box_pack_start(GTK_BOX(page->page), text_label("当前版本  " MOOJICUT_VERSION), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(page->page), text_label("更新来自 CoderSerio/moojicut 的 GitHub Releases。预览版接收预览更新，正式版接收正式更新。"), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(page->page), text_label("更新优先使用 Cloudflare 镜像。预览版接收预览更新，正式版接收正式更新。"), FALSE, FALSE, 0);
   page->status = text_label("检查并下载 Linux x64 便携包；下载后需手动解压运行，不会自动替换当前目录。");
   gtk_label_set_selectable(GTK_LABEL(page->status), TRUE);
   gtk_box_pack_start(GTK_BOX(page->page), page->status, FALSE, FALSE, 0);
@@ -817,8 +841,10 @@ gboolean mc_linux_update_smoke(void) {
       "\"name\":\"moojicut-99.0.0-linux-x64.tar.gz\",\"state\":\"uploaded\",\"size\":%zu,\"digest\":\"sha256:%s\","
       "\"browser_download_url\":\"https://github.com/CoderSerio/moojicut/releases/download/v99.0.0/moojicut-99.0.0-linux-x64.tar.gz\"}]}]",
       strlen(payload), hash);
-  start_transfer(page, smoke_request(NULL, release, NULL));
-  g_free(release);
+  Request *broken_mirror = smoke_request(NULL, "malformed", NULL);
+  broken_mirror->fallback = g_strdup(RELEASES_API);
+  broken_mirror->fixture_fallback = g_bytes_new_take(release, strlen(release));
+  start_transfer(page, broken_mirror);
   gint64 deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
   while (page->busy && g_get_monotonic_time() < deadline) {
     while (g_main_context_iteration(NULL, FALSE)) {}

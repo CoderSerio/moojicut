@@ -2,17 +2,20 @@
 #define MOOJICUT_UPDATE_RELEASE_H
 #include <stdint.h>
 #include "moonbit.h"
+#define MC_UPDATE_MIRROR_INDEX "https://moojicut-downloads.pages.dev/updates/releases.json"
+#define MC_UPDATE_GITHUB_INDEX "https://api.github.com/repos/CoderSerio/moojicut/releases?per_page=100"
 #ifdef __cplusplus
 extern "C" {
 #endif
 enum { MC_UPDATE_MACOS_ARM64 = 0, MC_UPDATE_WINDOWS_X64 = 1, MC_UPDATE_LINUX_X64 = 2 };
 enum { MC_UPDATE_INVALID = -1, MC_UPDATE_CURRENT = 0, MC_UPDATE_AVAILABLE = 1, MC_UPDATE_INCOMPLETE = 2 };
 enum { MC_UPDATE_VERSION = 0, MC_UPDATE_DOWNLOAD_URL = 1, MC_UPDATE_ASSET_NAME = 2,
-       MC_UPDATE_SHA256 = 3, MC_UPDATE_FEED_URL = 4, MC_UPDATE_RELEASE_URL = 5 };
+       MC_UPDATE_SHA256 = 3, MC_UPDATE_FEED_URL = 4, MC_UPDATE_RELEASE_URL = 5,
+       MC_UPDATE_MIRROR_DOWNLOAD_URL = 6, MC_UPDATE_MIRROR_FEED_URL = 7 };
 /* Main thread only, like the document core. Arguments remain caller-owned;
  * release input strings after the call. Returned strings are owned and must
  * also be moonbit_decref'd by the host.
- * Input is the unauthenticated GitHub /releases array (up to 100 entries).
+ * Input is the GitHub /releases schema, served by R2 or GitHub (up to 100 entries).
  * Stable installs exclude previews; preview installs accept both channels.
  * Drafts, malformed versions, foreign URLs and source archives are rejected.
  * 0 means invalid input or exhausted handles. Dispose every successful handle.

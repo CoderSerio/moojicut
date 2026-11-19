@@ -17,10 +17,10 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from install_sparkle import ROOT, install
-from prepare_update import validate_info, validate_feed
+from prepare_update import MIRROR, REPOSITORY, validate_info, validate_feed
 
 
-def generate(archive, output, previous=None, signing_input=None):
+def generate(archive, output, previous=None, signing_input=None, *, mirror=False):
     sparkle = install()
     config = json.loads((ROOT / "native/macos/updates/feed.json").read_text())
     # The public verifier below detects the wrong signing key without reading
@@ -31,7 +31,8 @@ def generate(archive, output, previous=None, signing_input=None):
     version, _ = validate_info(info, public_key)
     if archive.name != "moojicut-" + version + "-macos-arm64.zip":
         raise RuntimeError("Unexpected release asset filename.")
-    prefix = "https://github.com/CoderSerio/moojicut/releases/download/v" + urllib.parse.quote(version, safe="") + "/"
+    origin = MIRROR + "/v" if mirror else REPOSITORY + "/releases/download/v"
+    prefix = origin + urllib.parse.quote(version, safe="") + "/"
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="appcast-", dir=output.parent) as directory:
         staging = Path(directory)
@@ -59,7 +60,7 @@ def generate(archive, output, previous=None, signing_input=None):
                 # Each immutable Release attachment describes that release only.
                 channel.remove(item)
         tree.write(feed, encoding="utf-8", xml_declaration=True)
-        validate_feed(feed, archive, info)
+        validate_feed(feed, archive, info, mirror=mirror)
         signer = [str(sparkle / "bin/sign_update"), *signing_options]
         subprocess.run([*signer, str(feed)], input=signing_input, check=True)
         subprocess.run(["xcrun", "swift", str(ROOT / "scripts/verify_update.swift"),
@@ -74,6 +75,7 @@ if __name__ == "__main__":
     parser.add_argument("archive", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
+    parser.add_argument("--mirror", action="store_true", help="Sign a separate appcast using the Cloudflare archive URL.")
     parser.add_argument("--key-stdin", action="store_true",
                         help="Read the existing signing key from stdin; never write it to a file or command argument.")
     args = parser.parse_args()
@@ -88,4 +90,4 @@ if __name__ == "__main__":
             sys.exit("Invalid signing key format on stdin.")
         signing_input += b"\n"
     generate(args.archive.resolve(), args.output.resolve(), args.previous.resolve() if args.previous else None,
-             signing_input=signing_input)
+             signing_input=signing_input, mirror=args.mirror)

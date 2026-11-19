@@ -150,13 +150,13 @@ fn update_select(current : UpdateVersion, platform : Int, releases : Array[Json]
     best = Some(version)
     selected = Some(release)
   }
-  let empty : UpdateRelease = { status: 0, fields: ["", "", "", "", "", ""], size: 0 }
+  let empty : UpdateRelease = { status: 0, fields: ["", "", "", "", "", "", "", ""], size: 0 }
   let (version, release) = match (best, selected) {
     (Some(v), Some(r)) => (v, r)
     _ => return empty
   }
   let newer = update_compare(version, current) > 0
-  let fields = [version.label, "", "", "", "", update_string(release, "html_url")]
+  let fields = [version.label, "", "", "", "", update_string(release, "html_url"), "", ""]
   let incomplete : UpdateRelease = { status: if newer { 2 } else { 0 }, fields, size: 0 }
   let assets = match release.get("assets") { Some(Array(a)) if a.length() <= 100 => a; _ => return incomplete }
   let suffix = match platform {
@@ -166,6 +166,7 @@ fn update_select(current : UpdateVersion, platform : Int, releases : Array[Json]
   }
   let name = "moojicut-" + version.label + "-" + suffix
   let prefix = "https://github.com/CoderSerio/moojicut/releases/download/v" + version.label + "/"
+  let mirror = "https://moojicut-downloads.pages.dev/v" + version.label + "/"
   let asset = match update_asset(assets, name, prefix + name) { Some(a) => a; None => return incomplete }
   let size = update_asset_size(asset, 1073741824)
   let digest = update_digest(asset)
@@ -173,9 +174,11 @@ fn update_select(current : UpdateVersion, platform : Int, releases : Array[Json]
   fields[1] = prefix + name
   fields[2] = name
   fields[3] = digest
+  fields[6] = mirror + name
   if platform == 0 {
     if update_asset(assets, "macos.xml", prefix + "macos.xml") is Some(feed) && update_asset_size(feed, 4194304) > 0 {
       fields[4] = prefix + "macos.xml"
+      fields[7] = mirror + "macos.xml"
     }
   }
   { status: if newer { 1 } else { 0 }, fields, size }
@@ -213,7 +216,7 @@ pub fn update_release_status(handle : Int) -> Int {
 ///|
 pub fn update_release_text(handle : Int, field : Int) -> String {
   match update_releases.get(handle) {
-    Some(release) if field >= 0 && field < 6 => release.fields[field]
+    Some(release) if field >= 0 && field < release.fields.length() => release.fields[field]
     _ => ""
   }
 }

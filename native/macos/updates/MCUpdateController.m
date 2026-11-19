@@ -45,6 +45,7 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
 @property (nonatomic, readwrite) BOOL checkingSource;
 @property (nonatomic, readwrite) NSURL *releasePageURL;
 @property NSString *resolvedFeedURL;
+@property NSString *fallbackFeedURL;
 @property NSUInteger sourceGeneration;
 @property BOOL sourceApproved;
 @property BOOL backgroundLookup;
@@ -55,7 +56,7 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
 @implementation MCUpdateController
 - (instancetype)init { return [self initWithBundle:NSBundle.mainBundle]; }
 - (instancetype)initWithBundle:(NSBundle *)bundle {
-    return [self initWithBundle:bundle releaseSource:[MCGitHubReleaseSource new]];
+    return [self initWithBundle:bundle releaseSource:[MCReleaseIndexSource new]];
 }
 - (instancetype)initWithBundle:(NSBundle *)bundle releaseSource:(id<MCReleaseSource>)source {
     if ((self = [super init])) {
@@ -193,13 +194,14 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
 }
 - (NSString *)feedURLStringForUpdater:(__unused SPUUpdater *)updater {
     // The bundle URL only permits Sparkle initialization. mayPerform gates all
-    // downloads until a fresh GitHub response selects a signed release feed.
+    // downloads until a release index selects a signed feed.
     return self.resolvedFeedURL ?: [self.bundle objectForInfoDictionaryKey:@"SUFeedURL"];
 }
 - (void)cancelCheck {
     self.sourceGeneration++;
     self.checkingSource = NO; self.pendingResolvedCheck = 0; self.backgroundLookup = NO;
     self.sourceApproved = NO; self.automaticCycleFinished = NO;
+    self.fallbackFeedURL = nil;
     [self.releaseSource cancel];
     self.message = @"更新检查已取消。";
     [self notifyState];
@@ -210,8 +212,8 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
 - (void)beginReleaseLookupInBackground:(BOOL)background {
     if (self.checkingSource || self.pendingResolvedCheck || self.installationPending) return;
     self.checkingSource = YES; self.backgroundLookup = background;
-    self.sourceApproved = NO; self.resolvedFeedURL = nil; self.releasePageURL = nil;
-    self.message = @"正在从 GitHub 检查更新…";
+    self.sourceApproved = NO; self.resolvedFeedURL = nil; self.fallbackFeedURL = nil; self.releasePageURL = nil;
+    self.message = @"正在检查更新…";
     NSUInteger generation = ++self.sourceGeneration;
     [self notifyState];
     if (self.sourceGeneration != generation || !self.checkingSource) return;
@@ -243,6 +245,7 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
             int32_t status = update_release_status(handle);
             NSString *latest = MCReleaseText(handle, MC_UPDATE_VERSION);
             NSString *feed = MCReleaseText(handle, MC_UPDATE_FEED_URL);
+            NSString *mirrorFeed = MCReleaseText(handle, MC_UPDATE_MIRROR_FEED_URL);
             NSString *page = MCReleaseText(handle, MC_UPDATE_RELEASE_URL);
             update_release_dispose(handle);
             owner.releasePageURL = page.length ? [NSURL URLWithString:page] : nil;
@@ -257,7 +260,8 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
                 owner.message = [NSString stringWithFormat:@"发现 %@，但此版本尚未提供签名更新源。请从发布页面下载安装。", latest];
                 owner.backgroundLookup = NO;
             } else {
-                owner.resolvedFeedURL = feed;
+                owner.resolvedFeedURL = mirrorFeed.length ? mirrorFeed : feed;
+                owner.fallbackFeedURL = mirrorFeed.length ? feed : nil;
                 owner.pendingResolvedCheck = background ? 2 : 1;
                 owner.message = @"已找到更新，正在验证签名更新源…";
                 [owner resumeResolvedCheckIfPossible];
@@ -361,13 +365,26 @@ static NSString *MCReleaseText(int32_t handle, int32_t field) {
     self.pendingInstallation = installHandler;
     [self notifyState]; return YES;
 }
-- (void)updater:(__unused SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(__unused SPUUpdateCheck)check error:(NSError *)error {
+- (void)updater:(__unused SPUUpdater *)updater didFinishUpdateCycleForUpdateCheck:(SPUUpdateCheck)check error:(NSError *)error {
     if ([error.domain isEqual:MCUpdateErrorDomain] && error.code == MCUpdateAwaitingSource) {
         self.automaticCycleFinished = YES;
         [self resumeResolvedCheckIfPossible];
         [self notifyState]; return;
     }
     self.sourceApproved = NO;
+    BOOL mirrorFailure = [error.domain isEqualToString:SUSparkleErrorDomain] &&
+        (error.code == SUAppcastError || error.code == SUAppcastParseError ||
+         error.code == SUDownloadError || error.code == SUSignatureError || error.code == SUValidationError);
+    if (mirrorFailure && self.fallbackFeedURL && !self.installationPending) {
+        self.resolvedFeedURL = self.fallbackFeedURL;
+        self.fallbackFeedURL = nil;
+        self.automaticCycleFinished = YES;
+        self.pendingResolvedCheck = check == SPUUpdateCheckUpdatesInBackground ? 2 : 1;
+        self.message = @"Cloudflare 镜像不可用，正在尝试 GitHub…";
+        [self updaterStateDidChange];
+        return;
+    }
+    self.fallbackFeedURL = nil;
     if (error) {
         self.installationPending = NO; self.pendingInstallation = nil;
         if ([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError)

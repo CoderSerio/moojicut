@@ -8,7 +8,7 @@ typedef void (^MCReleaseSourceCompletion)(NSData * _Nullable body, NSError * _Nu
 - (void)cancel;
 @end
 
-@interface MCGitHubReleaseSource : NSObject <MCReleaseSource>
+@interface MCReleaseIndexSource : NSObject <MCReleaseSource>
 - (instancetype)init;
 // Allows NSURLProtocol fixtures without touching the network or installer.
 - (instancetype)initWithConfiguration:(NSURLSessionConfiguration *)configuration;

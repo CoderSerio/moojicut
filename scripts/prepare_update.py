@@ -25,6 +25,7 @@ APP_NAME = "Mooji Cut.app"
 BUNDLE_ID = "dev.moojicut.native"
 INSTALL_PATH = Path("/Applications") / APP_NAME
 REPOSITORY = "https://github.com/CoderSerio/moojicut"
+MIRROR = "https://moojicut-downloads.pages.dev"
 SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
 
 
@@ -103,16 +104,17 @@ def read_archive(archive, public_key, expected_commit):
     return info, metadata, order
 
 
-def validate_feed(feed, archive, info):
+def validate_feed(feed, archive, info, *, mirror=False):
     # Either generated locally, or verified by verify_update.swift first.
     tree = ET.parse(feed)
     items = tree.findall("./channel/item")
     require(len(items) == 1, "Release feed must contain exactly this candidate, not stale or additional items.")
     item = items[0]
-    expected_url = REPOSITORY + "/releases/download/v" + info["MoojiCutReleaseVersion"] + "/" + archive.name
+    prefix = MIRROR + "/v" if mirror else REPOSITORY + "/releases/download/v"
+    expected_url = prefix + info["MoojiCutReleaseVersion"] + "/" + archive.name
     enclosures = item.findall("enclosure")
     require(len(enclosures) == 1 and enclosures[0].get("url") == expected_url,
-            "Signed feed does not point to the exact GitHub Release archive.")
+            "Signed feed does not point to the expected release archive.")
     require(item.findtext(SPARKLE + "version") == info["CFBundleVersion"] and
             item.findtext(SPARKLE + "shortVersionString") == info["MoojiCutReleaseVersion"],
             "Signed feed and archive versions disagree.")

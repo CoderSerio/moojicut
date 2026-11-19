@@ -26,19 +26,20 @@
 #define PATH_CAPACITY 32768
 #define BODY_LIMIT (4u * 1024u * 1024u)
 #define DOWNLOAD_LIMIT (1024u * 1024u * 1024u)
-static const wchar_t *endpoint =
-    L"https://api.github.com/repos/CoderSerio/moojicut/releases?per_page=100";
+static const wchar_t *endpoint = WIDE(MC_UPDATE_GITHUB_INDEX);
+static const wchar_t *mirror_endpoint = WIDE(MC_UPDATE_MIRROR_INDEX);
 typedef struct {
   HWND destination;
   HANDLE cancel, done, thread;
-  BOOL download, success, cancelled;
+  BOOL download, success, cancelled, retryable;
   DWORD error, http_status, expected_size, generation;
   LONG progress;
-  wchar_t url[8192], path[PATH_CAPACITY], partial[PATH_CAPACITY], digest[65];
+  wchar_t url[8192], fallback[8192], path[PATH_CAPACITY], partial[PATH_CAPACITY], digest[65];
   char *body;
   SIZE_T body_size;
   /* Private smoke transport; production entry points never populate these. */
   const BYTE *fixture;
+  const char *fixture_fallback;
   SIZE_T fixture_size;
   HANDLE fixture_gate, fixture_entered;
   DWORD fixture_status;
@@ -71,7 +72,8 @@ static BOOL allowed_url(const wchar_t *url) {
       parts.dwPasswordLength)
     return FALSE;
   host[parts.dwHostNameLength] = 0;
-  return !_wcsicmp(host, L"api.github.com") || !_wcsicmp(host, L"github.com") ||
+  return !_wcsicmp(host, L"moojicut-downloads.pages.dev") ||
+         !_wcsicmp(host, L"api.github.com") || !_wcsicmp(host, L"github.com") ||
          !_wcsicmp(host, L"release-assets.githubusercontent.com") ||
          !_wcsicmp(host, L"objects.githubusercontent.com");
 }
@@ -155,10 +157,10 @@ static BOOL reader_open(UpdateJob *job, Reader *reader) {
     if (!WinHttpSetOption(reader->request, WINHTTP_OPTION_DISABLE_FEATURE, &disabled,
                           sizeof(disabled)))
       return FALSE;
-    const wchar_t *headers =
-        job->download
-            ? L"Accept: application/octet-stream\r\nX-GitHub-Api-Version: 2022-11-28\r\n"
-            : L"Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
+    const wchar_t *headers = job->download ? L"Accept: application/octet-stream\r\n" :
+        !_wcsicmp(host, L"api.github.com") ?
+            L"Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n" :
+            L"Accept: application/json\r\n";
     if (!WinHttpSendRequest(reader->request, headers, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
       return FALSE;
     if (cancelled(job)) {
@@ -242,12 +244,15 @@ static BOOL transfer(UpdateJob *job) {
   BCRYPT_HASH_HANDLE hash = NULL;
   BYTE *hash_object = NULL;
   BOOL ok = FALSE, created = FALSE;
+  job->retryable = FALSE;
   if (job->download && (!job->expected_size || job->expected_size > DOWNLOAD_LIMIT)) {
     job->error = ERROR_INVALID_DATA;
     return FALSE;
   }
-  if (!reader_open(job, &reader))
+  if (!reader_open(job, &reader)) {
+    job->retryable = TRUE;
     goto done;
+  }
   if (job->download) {
     file =
         CreateFileW(job->partial, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -273,15 +278,19 @@ static BOOL transfer(UpdateJob *job) {
       goto done;
     }
     if (GetTickCount64() - started > (job->download ? 600000u : 60000u)) {
+      job->retryable = TRUE;
       SetLastError(ERROR_TIMEOUT);
       goto done;
     }
     DWORD count = 0;
-    if (!reader_read(job, &reader, buffer, sizeof(buffer), &count))
+    if (!reader_read(job, &reader, buffer, sizeof(buffer), &count)) {
+      job->retryable = TRUE;
       goto done;
+    }
     if (!count)
       break;
     if (count > (job->download ? job->expected_size : BODY_LIMIT) - total) {
+      job->retryable = TRUE;
       SetLastError(ERROR_INVALID_DATA);
       goto done;
     }
@@ -312,12 +321,14 @@ static BOOL transfer(UpdateJob *job) {
     BYTE digest[32];
     wchar_t hex[65];
     if (total != job->expected_size || BCryptFinishHash(hash, digest, sizeof(digest), 0) < 0) {
+      job->retryable = total != job->expected_size;
       SetLastError(ERROR_INVALID_DATA);
       goto done;
     }
     for (int i = 0; i < 32; i++)
       swprintf_s(hex + i * 2, 65 - i * 2, L"%02x", (unsigned)digest[i]);
     if (_wcsicmp(hex, job->digest)) {
+      job->retryable = TRUE;
       SetLastError(ERROR_CRC);
       goto done;
     }
@@ -376,12 +387,12 @@ static BOOL release_text(int field, wchar_t *buffer, SIZE_T capacity) {
   moonbit_decref(value);
   return valid;
 }
-static void parse_release(const char *body, SIZE_T size) {
+static BOOL parse_release(const char *body, SIZE_T size) {
   int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, body, (int)size, NULL, 0);
   wchar_t *wide = length > 0 ? calloc((SIZE_T)length, sizeof(wchar_t)) : NULL;
   if (!wide) {
     wcscpy_s(updates.status, ARRAYSIZE(updates.status), L"发布信息无效，请稍后重试。");
-    return;
+    return FALSE;
   }
   MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, body, (int)size, wide, length);
   moonbit_string_t current =
@@ -408,7 +419,9 @@ static void parse_release(const char *body, SIZE_T size) {
     wcscpy_s(updates.status, ARRAYSIZE(updates.status),
              status == MC_UPDATE_CURRENT ? L"当前已是此更新渠道的最新版本。"
                                          : L"发布信息无效，请稍后重试。");
+  return status != MC_UPDATE_INVALID;
 }
+static BOOL start(UpdateJob *job);
 static void poll(void) {
   UpdateJob *job = updates.job;
   if (!job)
@@ -417,8 +430,32 @@ static void poll(void) {
     return;
   updates.job = NULL;
   KillTimer(updates.window, 1);
-  updates.last_success = job->success;
-  if (job->cancelled)
+  BOOL cancelled_by_user = job->cancelled || cancelled(job);
+  BOOL invalid_index = job->success && !job->download && !cancelled_by_user && !updates.closing &&
+      !parse_release(job->body, job->body_size);
+  BOOL mirror_failed = invalid_index || (!job->success && (!job->download || job->retryable));
+  if (job->fallback[0] && mirror_failed && !cancelled_by_user && !updates.closing) {
+    CloseHandle(job->thread);
+    CloseHandle(job->cancel);
+    CloseHandle(job->done);
+    job->thread = job->cancel = job->done = NULL;
+    free(job->body);
+    job->body = NULL;
+    job->body_size = 0;
+    job->progress = 0;
+    job->error = job->http_status = 0;
+    wcscpy_s(job->url, ARRAYSIZE(job->url), job->fallback);
+    job->fallback[0] = 0;
+    if (job->fixture_fallback) {
+      job->fixture = (const BYTE *)job->fixture_fallback;
+      job->fixture_size = strlen(job->fixture_fallback);
+      job->fixture_status = 200;
+    }
+    start(job);
+    return;
+  }
+  updates.last_success = job->success && !invalid_index && (job->download || !cancelled_by_user);
+  if (cancelled_by_user && !updates.last_success)
     wcscpy_s(updates.status, ARRAYSIZE(updates.status), L"已取消，未保留未完成的下载。");
   else if (!job->success) {
     if (job->error == ERROR_CRC)
@@ -428,7 +465,7 @@ static void poll(void) {
                L"发布记录超过当前支持的 100 条，请从 GitHub Releases 查看更新。");
     else if (job->http_status && job->http_status != 200)
       swprintf_s(updates.status, ARRAYSIZE(updates.status),
-                 L"GitHub 请求失败（HTTP %lu），请稍后重试。", job->http_status);
+                 L"更新源请求失败（HTTP %lu），请稍后重试。", job->http_status);
     else
       swprintf_s(updates.status, ARRAYSIZE(updates.status),
                  L"更新操作失败（%lu），请检查网络或保存位置后重试。", job->error);
@@ -436,8 +473,7 @@ static void poll(void) {
     wcscpy_s(updates.completed, ARRAYSIZE(updates.completed), job->path);
     wcscpy_s(updates.status, ARRAYSIZE(updates.status),
              L"更新包已下载并通过 SHA256 校验。打开文件位置，解压后运行新版本。");
-  } else if (!updates.closing)
-    parse_release(job->body, job->body_size);
+  }
   CloseHandle(job->thread);
   CloseHandle(job->cancel);
   CloseHandle(job->done);
@@ -465,7 +501,7 @@ BOOL mc_updates_initialize(HINSTANCE instance, HWND owner) {
   updates.window =
       CreateWindowExW(0, cls.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, instance, NULL);
   wcscpy_s(updates.status, ARRAYSIZE(updates.status),
-           L"从 GitHub Releases 手动检查更新；不需要登录。");
+           L"手动检查更新。优先使用 Cloudflare 镜像。");
   return updates.window != NULL;
 }
 static BOOL start(UpdateJob *job) {
@@ -492,7 +528,7 @@ static BOOL start(UpdateJob *job) {
   }
   SetTimer(updates.window, 1, 100, NULL);
   wcscpy_s(updates.status, ARRAYSIZE(updates.status),
-           job->download ? L"正在下载并校验更新包…" : L"正在检查 GitHub Releases…");
+           job->download ? L"正在下载并校验更新包…" : L"正在检查更新…");
   notify();
   return TRUE;
 failed:
@@ -509,7 +545,8 @@ BOOL mc_updates_check(void) {
   UpdateJob *job = calloc(1, sizeof(*job));
   if (!job)
     return FALSE;
-  wcscpy_s(job->url, ARRAYSIZE(job->url), endpoint);
+  wcscpy_s(job->url, ARRAYSIZE(job->url), mirror_endpoint);
+  wcscpy_s(job->fallback, ARRAYSIZE(job->fallback), endpoint);
   BOOL started = start(job);
   if (started && updates.release) {
     update_release_dispose(updates.release);
@@ -525,7 +562,8 @@ BOOL mc_updates_download(HWND owner) {
     return FALSE;
   job->download = TRUE;
   job->expected_size = (DWORD)update_release_size(updates.release);
-  if (!release_text(MC_UPDATE_DOWNLOAD_URL, job->url, ARRAYSIZE(job->url)) ||
+  if (!release_text(MC_UPDATE_MIRROR_DOWNLOAD_URL, job->url, ARRAYSIZE(job->url)) ||
+      !release_text(MC_UPDATE_DOWNLOAD_URL, job->fallback, ARRAYSIZE(job->fallback)) ||
       !release_text(MC_UPDATE_SHA256, job->digest, ARRAYSIZE(job->digest)) ||
       !release_text(MC_UPDATE_ASSET_NAME, job->path, ARRAYSIZE(job->path))) {
     free(job);
@@ -725,7 +763,7 @@ BOOL mc_updates_smoke(HINSTANCE instance) {
                                 NULL, instance, NULL);
   if (!observer || !mc_updates_initialize(instance, observer))
     goto done;
-  if (!allowed_url(endpoint) || allowed_url(L"http://github.com/a") ||
+  if (!allowed_url(endpoint) || !allowed_url(mirror_endpoint) || allowed_url(L"http://github.com/a") ||
       allowed_url(L"https://github.com.evil.example/a") ||
       allowed_url(L"https://user:pass@github.com/a"))
     goto done;
@@ -733,6 +771,13 @@ BOOL mc_updates_smoke(HINSTANCE instance) {
   UpdateJob *job = smoke_job(fixture, 200);
   if (!start(job) || !smoke_drain() || !updates.last_success || !mc_updates_available() ||
       !release_text(MC_UPDATE_VERSION, version, ARRAYSIZE(version)) || wcscmp(version, L"99.0.0"))
+    goto done;
+  stage = "invalid mirror falls back to GitHub";
+  job = smoke_job("malformed", 200);
+  if (!job) goto done;
+  job->fixture_fallback = fixture;
+  wcscpy_s(job->fallback, ARRAYSIZE(job->fallback), endpoint);
+  if (!start(job) || !smoke_drain() || !updates.last_success || !mc_updates_available())
     goto done;
   job = smoke_job(fixture, 200);
   if (!job)
