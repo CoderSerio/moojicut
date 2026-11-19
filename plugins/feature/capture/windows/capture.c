@@ -2004,32 +2004,25 @@ static BOOL context_toolbar_smoke(void) {
       if (mask & (1u << field)) CONTEXT_CHECK(choose_style(field,
           tool == TOOL_REDACT && field == MC_STYLE_COLOR ? 0x111111 : editor_style_default(field)));
   }
-  int unavailable=0;
   HWND tooltip=NULL; EnumThreadWindows(GetCurrentThreadId(),smoke_find_toolbar_tip,(LPARAM)&tooltip);
   CONTEXT_CHECK(tooltip);
   CONTEXT_CHECK(smoke_action_enabled(L"pin"));
-  for (int i=0;i<ui_frame_semantic_count(capture.toolbar_frame);i++) {
-    if (ui_frame_semantic_value(capture.toolbar_frame,i,MC_UI_SEM_ENABLED)==1) continue;
-    moonbit_string_t id=ui_frame_semantic_text(capture.toolbar_frame,i,MC_UI_SEM_ID);
-    BOOL contribution=Moonbit_array_length(id)>8 && !memcmp(id,L"builtin.",8*sizeof(wchar_t));
-    moonbit_decref(id); if (!contribution) continue;
-    unavailable++;
-    double scale=(double)GetDpiForWindow(capture.toolbar_view)/96;
-    TTHITTESTINFOW hit={0}; hit.hwnd=capture.toolbar_view; hit.ti.cbSize=sizeof(hit.ti);
-    hit.pt.x=rounded((ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_X)+
-      ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_WIDTH)/2)*scale);
-    hit.pt.y=rounded((ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_Y)+
-      ui_frame_semantic_number(capture.toolbar_frame,i,MC_UI_SEM_HEIGHT)/2)*scale);
-    CONTEXT_CHECK(SendMessageW(tooltip,TTM_HITTESTW,0,(LPARAM)&hit));
-    wchar_t label[256]={0}; TOOLINFOW tip={sizeof(tip)}; tip.hwnd=capture.toolbar_view;
-    tip.uId=hit.ti.uId; tip.lpszText=label;
-    SendMessageW(tooltip,TTM_GETTEXTW,ARRAYSIZE(label),(LPARAM)&tip);
-    moonbit_string_t expected=ui_frame_semantic_text(capture.toolbar_frame,i,MC_UI_SEM_TOOLTIP);
-    BOOL matches=(size_t)Moonbit_array_length(expected)==wcslen(label) &&
-      !memcmp(expected,label,wcslen(label)*sizeof(wchar_t)); moonbit_decref(expected);
-    CONTEXT_CHECK(matches && *label);
-  }
-  CONTEXT_CHECK(unavailable >= 2);
+  int undo=smoke_toolbar_semantic(L"host.undo");
+  CONTEXT_CHECK(undo>=0 && ui_frame_semantic_value(capture.toolbar_frame,undo,MC_UI_SEM_ENABLED)==0);
+  double scale=(double)GetDpiForWindow(capture.toolbar_view)/96;
+  TTHITTESTINFOW hit={0}; hit.hwnd=capture.toolbar_view; hit.ti.cbSize=sizeof(hit.ti);
+  hit.pt.x=rounded((ui_frame_semantic_number(capture.toolbar_frame,undo,MC_UI_SEM_X)+
+    ui_frame_semantic_number(capture.toolbar_frame,undo,MC_UI_SEM_WIDTH)/2)*scale);
+  hit.pt.y=rounded((ui_frame_semantic_number(capture.toolbar_frame,undo,MC_UI_SEM_Y)+
+    ui_frame_semantic_number(capture.toolbar_frame,undo,MC_UI_SEM_HEIGHT)/2)*scale);
+  CONTEXT_CHECK(SendMessageW(tooltip,TTM_HITTESTW,0,(LPARAM)&hit));
+  wchar_t label[256]={0}; TOOLINFOW tip={sizeof(tip)}; tip.hwnd=capture.toolbar_view;
+  tip.uId=hit.ti.uId; tip.lpszText=label;
+  SendMessageW(tooltip,TTM_GETTEXTW,ARRAYSIZE(label),(LPARAM)&tip);
+  moonbit_string_t expected=ui_frame_semantic_text(capture.toolbar_frame,undo,MC_UI_SEM_TOOLTIP);
+  BOOL matches=(size_t)Moonbit_array_length(expected)==wcslen(label) &&
+    !memcmp(expected,label,wcslen(label)*sizeof(wchar_t)); moonbit_decref(expected);
+  CONTEXT_CHECK(matches && *label);
   editor_command(ID_SELECT);
   CONTEXT_CHECK(EqualRect(&initial, &capture.toolbar) && !style_visible(MC_STYLE_COLOR) &&
       !style_visible(MC_STYLE_FONT));
