@@ -15,6 +15,7 @@
 @interface MCImageCanvas : NSView
 @property NSString *selectedID;
 @property NSTextView *textView;
+@property (readonly) NSRect hoveredWindowRect;
 - (NSRect)imageFrame;
 - (BOOL)finishTextEditing:(BOOL)commit;
 - (NSRect)viewRectForImageRect:(NSRect)rect;
@@ -107,6 +108,52 @@ static NSData *fixture(void) {
         p[0] = 24 + x * 80 / 800; p[1] = 34 + y * 65 / 500; p[2] = 58 + (x + y) * 80 / 1300; p[3] = 255;
     }
     return [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+}
+static BOOL windowSnap(CGFloat scale) {
+    BOOL passed = YES;
+    MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
+    [editor prepareOverlayInFrame:NSMakeRect(-900,120,800*scale,500*scale)];
+    NSRect front = NSMakeRect(100*scale,60*scale,360*scale,220*scale);
+    NSRect back = NSMakeRect(40*scale,30*scale,600*scale,400*scale);
+    [editor setWindowCandidates:@[@{@"windowID":@42,@"rect":[NSValue valueWithRect:front]},
+                                   @{@"windowID":@43,@"rect":[NSValue valueWithRect:back]}]];
+    MCImageCanvas *canvas = editor.canvas;
+    NSPoint inside = NSMakePoint(200,100), outside = NSMakePoint(700,450), drag = NSMakePoint(500,300);
+    [canvas mouseMoved:mouse(canvas,NSEventTypeMouseMoved,inside)];
+    CHECK(NSEqualRects(canvas.hoveredWindowRect,front) && !editor.hasCaptureRegion && editor.floatingToolbar.hidden,
+          "hover previews the frontmost overlapping window before entering editing");
+    [canvas mouseDown:mouse(canvas,NSEventTypeLeftMouseDown,outside)];
+    [canvas mouseUp:mouse(canvas,NSEventTypeLeftMouseUp,outside)];
+    CHECK(NSIsEmptyRect(canvas.hoveredWindowRect) && !editor.hasCaptureRegion,
+          "a background click clears the hover and leaves selection open");
+    [canvas mouseDown:mouse(canvas,NSEventTypeLeftMouseDown,inside)];
+    [canvas mouseDragged:mouse(canvas,NSEventTypeLeftMouseDragged,drag)];
+    [canvas mouseDragged:mouse(canvas,NSEventTypeLeftMouseDragged,inside)];
+    [canvas mouseUp:mouse(canvas,NSEventTypeLeftMouseUp,inside)];
+    CHECK(!editor.hasCaptureRegion, "an intentional drag that returns to its anchor does not select a window");
+    [canvas mouseDown:mouse(canvas,NSEventTypeLeftMouseDown,inside)];
+    [canvas mouseDragged:mouse(canvas,NSEventTypeLeftMouseDragged,NSMakePoint(201,101))];
+    [canvas mouseUp:mouse(canvas,NSEventTypeLeftMouseUp,NSMakePoint(201,101))];
+    NSDictionary *viewport = editor.document[@"viewport"];
+    NSBitmapImageRep *output = [NSBitmapImageRep imageRepWithData:[editor renderPNGData:NULL]];
+    CHECK(editor.hasCaptureRegion && !editor.floatingToolbar.hidden && [editor.document[@"undo"] count] == 0 &&
+          [viewport[@"x"] intValue] == 100 && [viewport[@"y"] intValue] == 60 &&
+          output.pixelsWide == 360 && output.pixelsHigh == 220,
+          "clicking a window with pointer jitter establishes its exact frozen-pixel crop and editing baseline");
+    [editor cancel:nil];
+    editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
+    [editor prepareOverlayInFrame:NSMakeRect(-900,120,800*scale,500*scale)];
+    [editor setWindowCandidates:@[@{@"windowID":@42,@"rect":[NSValue valueWithRect:front]}]];
+    canvas = editor.canvas;
+    [canvas mouseDown:mouse(canvas,NSEventTypeLeftMouseDown,inside)];
+    [canvas mouseDragged:mouse(canvas,NSEventTypeLeftMouseDragged,drag)];
+    [canvas mouseUp:mouse(canvas,NSEventTypeLeftMouseUp,drag)];
+    viewport = editor.document[@"viewport"];
+    CHECK(editor.hasCaptureRegion && [viewport[@"x"] intValue] == 200 && [viewport[@"y"] intValue] == 100 &&
+          [viewport[@"width"] intValue] == 300 && [viewport[@"height"] intValue] == 200,
+          "dragging from within a window overrides snapping with a free crop");
+    [editor cancel:nil];
+    return passed;
 }
 static BOOL exercise(CGFloat scale) {
     BOOL passed = YES;
@@ -631,6 +678,8 @@ int main(void) {
         moonbit_init();
         BOOL passed = exercise(.5);
         passed = exercise(1.5) && passed;
+        passed = windowSnap(1) && passed;
+        passed = windowSnap(.5) && passed;
         passed = independentToolStyles() && passed;
         passed = adaptiveOverlay(1) && passed;
         passed = adaptiveOverlay(1.5) && passed;

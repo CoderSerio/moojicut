@@ -3,7 +3,6 @@
 // Native desktop/window selection. Coordinates are display-local, top-left,
 // in points, matching ScreenCaptureKit's sourceRect (never backing pixels).
 @interface MCRecordingSelectionView : MCSelectionSurface
-@property (copy) NSArray<NSDictionary *> *windowCandidates;
 @property NSImage *backdrop;
 @property (copy) void (^onConfirm)(NSRect region, NSNumber *windowID, BOOL audio);
 @property (copy) void (^onCancel)(void);

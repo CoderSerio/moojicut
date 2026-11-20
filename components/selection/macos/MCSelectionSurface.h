@@ -6,16 +6,21 @@
 @interface MCSelectionSurface : NSView
 @property (nonatomic, readonly) MCSelectionGesture regionGesture;
 @property (nonatomic, readonly) BOOL regionDragging;
+@property (copy) NSArray<NSDictionary *> *windowCandidates;
+- (NSDictionary *)windowCandidateAtPoint:(NSPoint)point;
 - (NSRect)selectionContentFrame;
 - (NSSize)selectionContentSize;
 - (NSPoint)selectionPointForEvent:(NSEvent *)event;
 - (NSRect)selectionViewRect:(NSRect)rect;
+- (NSRect)selectionContentRect:(NSRect)viewRect;
 - (BOOL)beginRegion:(NSInteger)operation event:(NSEvent *)event rect:(NSRect)rect;
 - (void)updateRegion:(NSEvent *)event;
 - (BOOL)finishRegion:(NSEvent *)event rect:(NSRect *)rect;
 - (void)cancelRegion;
 - (void)drawRegion:(NSRect)rect dimensions:(NSSize)pixels handles:(BOOL)handles hint:(NSString *)hint;
 @end
+
+BOOL MCSelectionMovedBeyondClick(NSPoint anchor, NSPoint point);
 
 @interface MCSelectionWindow : NSWindow
 - (void)configureForScreenFrame:(NSRect)frame;

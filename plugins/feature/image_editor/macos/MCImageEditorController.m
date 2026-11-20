@@ -288,6 +288,9 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 @interface MCImageCanvas : MCSelectionSurface <NSTextViewDelegate>
 @property (weak) MCImageEditorController *editor;
 @property NSPoint start;
+@property NSPoint windowClickAnchor;
+@property NSRect hoveredWindowRect, pressedWindowRect;
+@property BOOL draggedFromWindow;
 @property NSDictionary *pending;
 @property BOOL dragging;
 @property NSString *selectedID;
@@ -305,6 +308,7 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 - (void)updateTextFrame;
 - (void)deleteSelection;
 - (void)cancelGesture;
+- (void)updateWindowHover:(NSPoint)point;
 @end
 
 @implementation MCInlineTextView
@@ -490,6 +494,21 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 - (BOOL)finishTextEditing:(BOOL)commit { return [self.editor finishSharedText:commit]; }
 // AppKit mutation notifications are consumed by the generic input bridge.
 - (void)textDidChange:(NSNotification *)notification { (void)notification; [self.editor syncSharedText]; }
+- (void)updateWindowHover:(NSPoint)point {
+    if (!self.editor.overlayMode || self.editor.hasCaptureRegion || self.regionDragging) return;
+    NSDictionary *candidate = [self windowCandidateAtPoint:point];
+    NSRect target = candidate ? [candidate[@"rect"] rectValue] : NSZeroRect;
+    if (NSEqualRects(target,self.hoveredWindowRect)) return;
+    self.hoveredWindowRect = target;
+    self.needsDisplay = YES;
+}
+- (void)mouseEntered:(NSEvent *)event { [self mouseMoved:event]; }
+- (void)mouseMoved:(NSEvent *)event { [self updateWindowHover:[self convertPoint:event.locationInWindow fromView:nil]]; }
+- (void)mouseExited:(__unused NSEvent *)event {
+    if (NSIsEmptyRect(self.hoveredWindowRect)) return;
+    self.hoveredWindowRect = NSZeroRect;
+    self.needsDisplay = YES;
+}
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     [NSColor.underPageBackgroundColor setFill]; NSRectFill(self.bounds);
@@ -511,8 +530,16 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     MCDrawImage(self.editor.image, display, self.pending, self.textView ? MCAnnotationRect(self.textDraft) : NSZeroRect);
     [NSGraphicsContext restoreGraphicsState];
     if (self.editor.overlayMode) {
-        NSRect region = [self viewRectForImageRect:[self captureRect]];
-        [self drawRegion:region dimensions:[self captureRect].size handles:YES hint:@"拖动框选截图范围 · Esc 取消"];
+        NSRect capture = [self captureRect];
+        BOOL idle = !self.editor.hasCaptureRegion && !self.regionDragging;
+        BOOL pendingClick = self.regionDragging && !NSIsEmptyRect(self.pressedWindowRect) && !self.draggedFromWindow;
+        NSRect hover = idle ? self.hoveredWindowRect : pendingClick ? self.pressedWindowRect : NSZeroRect;
+        if (!NSIsEmptyRect(hover)) {
+            [self drawRegion:hover dimensions:[self selectionContentRect:hover].size handles:NO hint:nil];
+        } else {
+            NSString *hint = self.windowCandidates.count ? @"拖动框选或单击窗口 · Esc 取消" : @"拖动框选截图范围 · Esc 取消";
+            [self drawRegion:[self viewRectForImageRect:capture] dimensions:capture.size handles:YES hint:hint];
+        }
     }
     if ([self selectedAnnotation]) {
         NSRect selection = [self selectionFrame];
@@ -566,7 +593,13 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     NSInteger operation = self.editor.overlayMode ? MCSelectionHitTest(self.editor.hasCaptureRegion,
         region, [self viewRectForImageRect:region], self.start, local) : MCSelectionNone;
     if (operation != MCSelectionNone) {
+        if (!self.editor.hasCaptureRegion) [self updateWindowHover:local];
         if ([self beginRegion:operation event:event rect:region]) {
+            if (!self.editor.hasCaptureRegion) {
+                self.pressedWindowRect = self.hoveredWindowRect;
+                self.windowClickAnchor = local;
+                self.draggedFromWindow = NO;
+            }
             self.selectedID = nil;
             [self.editor positionFloatingToolbar];
             self.needsDisplay = YES;
@@ -627,6 +660,11 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 }
 - (void)mouseDragged:(NSEvent *)event {
     if (self.regionDragging) {
+        if (!NSIsEmptyRect(self.pressedWindowRect) && !self.draggedFromWindow) {
+            NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+            if (!MCSelectionMovedBeyondClick(self.windowClickAnchor,point)) return;
+            self.draggedFromWindow = YES;
+        }
         [self updateRegion:event];
         self.needsDisplay = YES;
         [self.window invalidateCursorRectsForView:self];
@@ -645,7 +683,21 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 - (void)mouseUp:(NSEvent *)event {
     if (self.regionDragging) {
         NSRect rect;
-        if ([self finishRegion:event rect:&rect]) [self.editor setCaptureRegion:rect];
+        NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+        BOOL valid;
+        if (!NSIsEmptyRect(self.pressedWindowRect) && !self.draggedFromWindow &&
+                !MCSelectionMovedBeyondClick(self.windowClickAnchor,point)) {
+            rect = [self selectionContentRect:self.pressedWindowRect];
+            [self cancelRegion];
+            valid = YES;
+        } else {
+            valid = [self finishRegion:event rect:&rect];
+        }
+        self.pressedWindowRect = NSZeroRect;
+        self.hoveredWindowRect = NSZeroRect;
+        if (valid) [self.editor setCaptureRegion:rect];
+        else [self updateWindowHover:point];
+        self.needsDisplay = YES;
         [self.editor positionFloatingToolbar]; [self updateTextFrame];
         return;
     }
@@ -667,6 +719,7 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
 - (void)cancelGesture {
     [self.editor shapeEvent:@"cancel" point:NSZeroPoint];
     self.dragging = NO; self.pending = nil; self.transformOriginal = nil; self.transformPreview = nil;
+    self.pressedWindowRect = NSZeroRect;
     [self cancelRegion];
     [self.editor positionFloatingToolbar];
     [self updateTextFrame]; [self.editor syncTextControls];
@@ -1268,6 +1321,7 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     NSColorPanel.sharedColorPanel.level = self.window.level + 1;
     self.canvas.needsDisplay = YES;
 }
+- (void)setWindowCandidates:(NSArray<NSDictionary *> *)candidates { self.canvas.windowCandidates = candidates; }
 - (BOOL)setCaptureRegion:(NSRect)rect {
     CGFloat left = floor(rect.origin.x), top = floor(rect.origin.y);
     CGFloat right = MIN([self.document[@"width"] doubleValue], ceil(NSMaxX(rect)));
@@ -1344,6 +1398,7 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     [NSApp activateIgnoringOtherApps:YES];
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.canvas];
+    [self.canvas updateWindowHover:[self.canvas convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil]];
 }
 - (void)refresh {
     if (self.canvas.selectedID && ![self.canvas selectedAnnotation]) self.canvas.selectedID = nil;

@@ -43,6 +43,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)refreshPluginDocumentForSession:(int32_t)session;
 - (void)show;
 - (void)prepareOverlayInFrame:(NSRect)screenFrame;
+- (void)setWindowCandidates:(NSArray<NSDictionary *> *)candidates;
 - (BOOL)applyAnnotation:(NSDictionary *)annotation;
 - (void)undo:(nullable id)sender;
 - (void)redo:(nullable id)sender;

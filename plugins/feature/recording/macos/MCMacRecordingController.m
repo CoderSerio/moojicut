@@ -246,8 +246,7 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
 - (void)showSelectionWithContent:(SCShareableContent *)content {
     NSMutableDictionary<NSNumber *, SCWindow *> *windows = [NSMutableDictionary dictionary];
     for (SCWindow *window in content.windows) windows[@(window.windowID)] = window;
-    // CGWindowList is front-to-back; shareable content doesn't guarantee z-order.
-    NSArray *ordered = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+    NSArray *ordered = MCDesktopOrderedWindows();
     NSMutableArray<NSWindow *> *panels = [NSMutableArray array];
     NSMutableArray<SCDisplay *> *displays = [NSMutableArray array];
     __weak MCMacRecordingController *weakSelf = self;
@@ -260,20 +259,11 @@ static void MCRecordingAlert(NSString *title, NSError *error) {
             self.selectionPanels = panels;
             [self fail:MCRecordingError(@"显示器已断开或暂时无法采集，请重新录屏。")]; return;
         }
-        NSMutableArray *candidates = [NSMutableArray array];
-        for (NSDictionary *info in ordered) {
-            SCWindow *window = windows[info[(NSString *)kCGWindowNumber]];
-            if (!window || window.windowLayer != 0 || window.owningApplication.processID == NSProcessInfo.processInfo.processIdentifier) continue;
-            NSRect intersection = NSIntersectionRect(window.frame, display.frame);
-            if (intersection.size.width < 2 || intersection.size.height < 2) continue;
-            intersection.origin.x -= display.frame.origin.x; intersection.origin.y -= display.frame.origin.y;
-            [candidates addObject:@{@"windowID":@(window.windowID), @"rect":[NSValue valueWithRect:intersection]}];
-        }
         MCSelectionWindow *panel = [[MCSelectionWindow alloc] initWithContentRect:screen.frame
             styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
         panel.releasedWhenClosed = NO; [panel configureForScreenFrame:screen.frame];
         MCRecordingSelectionView *view = [[MCRecordingSelectionView alloc] initWithFrame:NSMakeRect(0,0,screen.frame.size.width,screen.frame.size.height)];
-        view.windowCandidates = candidates;
+        view.windowCandidates = MCDesktopWindowCandidates(windows,ordered,display.frame,nil);
         view.onCancel = ^{ [weakSelf stopRecording]; };
         __weak MCRecordingSelectionView *weakView = view;
         view.onBeginSelection = ^{

@@ -100,6 +100,7 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 - (void)captureDisplaysForSession:(NSString *)session;
 - (NSArray<NSDictionary *> *)screenDescriptors;
 - (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion;
+- (NSArray<NSDictionary *> *)orderedWindowsForSelection;
 - (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
         exceptingWindows:(NSArray<SCWindow *> *)windows
             completion:(void (^)(NSData *, NSError *))completion;
@@ -113,6 +114,7 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @end
 @interface MCFakeDisplay : NSObject
 @property CGDirectDisplayID displayID;
+@property CGRect frame;
 @end
 @implementation MCFakeDisplay
 @end
@@ -131,6 +133,8 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
 @interface MCFakeCaptureWindow : NSObject
 @property CGWindowID windowID;
 @property MCFakeApplication *owningApplication;
+@property NSInteger windowLayer;
+@property CGRect frame;
 @end
 @implementation MCFakeCaptureWindow
 @end
@@ -230,6 +234,12 @@ bool MCFakeRequest(void) { requestCalls++; return requestResult; }
     ];
 }
 - (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion { self.pendingContent = completion; }
+- (NSArray<NSDictionary *> *)orderedWindowsForSelection {
+    NSMutableArray *ordered = [NSMutableArray array];
+    for (NSNumber *number in @[@201,@101,@301,@202,@401,@402])
+        [ordered addObject:@{(__bridge NSString *)kCGWindowNumber:number}];
+    return ordered;
+}
 - (void)captureDisplay:(SCDisplay *)display excludingApplications:(NSArray<SCRunningApplication *> *)applications
         exceptingWindows:(NSArray<SCWindow *> *)windows
             completion:(void (^)(NSData *, NSError *))completion {
@@ -281,6 +291,7 @@ static SCShareableContent *fakeContent(NSArray<NSNumber *> *ids) {
     NSMutableArray *displays = [NSMutableArray array];
     for (NSNumber *identifier in ids) {
         MCFakeDisplay *display = [MCFakeDisplay new]; display.displayID = identifier.unsignedIntValue;
+        display.frame = display.displayID == 27 ? CGRectMake(-1920,0,1920,1080) : CGRectMake(0,0,1440,900);
         [displays addObject:display];
     }
     content.displays = displays;
@@ -289,10 +300,16 @@ static SCShareableContent *fakeContent(NSArray<NSNumber *> *ids) {
     MCFakeApplication *otherApplication = [MCFakeApplication new]; otherApplication.processID = 1;
     content.applications = @[otherApplication, ownApplication];
     NSMutableArray *windows = [NSMutableArray array];
-    // 101: Settings, 201: visible pin, 202: hidden pin, 301: video editor, 401: other app.
-    for (NSNumber *number in @[@101,@201,@202,@301,@401]) {
+    NSDictionary *frames = @{@101:[NSValue valueWithRect:NSMakeRect(40,100,500,500)],
+        @201:[NSValue valueWithRect:NSMakeRect(-2000,275,240,80)], @202:[NSValue valueWithRect:NSMakeRect(-350,80,130,120)],
+        @301:[NSValue valueWithRect:NSMakeRect(200,240,500,300)], @401:[NSValue valueWithRect:NSMakeRect(-100,150,300,240)],
+        @402:[NSValue valueWithRect:NSMakeRect(0,0,1440,25)]};
+    // Settings, visible pin, hidden pin, video editor, ordinary app, and system chrome.
+    for (NSNumber *number in @[@101,@201,@202,@301,@401,@402]) {
         MCFakeCaptureWindow *window = [MCFakeCaptureWindow new]; window.windowID = number.unsignedIntValue;
-        window.owningApplication = number.intValue == 401 ? otherApplication : ownApplication;
+        window.owningApplication = number.intValue >= 400 ? otherApplication : ownApplication;
+        window.frame = [frames[number] rectValue];
+        window.windowLayer = number.intValue == 201 || number.intValue == 402 ? 3 : 0;
         [windows addObject:window];
     }
     content.windows = windows;
@@ -724,6 +741,16 @@ int main(void) {
             CHECK(NSEqualRects([controller.createdSnapshots[1][@"frame"] rectValue], NSMakeRect(-1920,-180,1920,1080)) &&
                   [controller.createdSnapshots[1][@"png"] isEqual:[@"left screen pixels" dataUsingEncoding:NSUTF8StringEncoding]],
                   "secondary display keeps its negative coordinates and corresponding pixels");
+            NSArray *mainCandidates = controller.createdSnapshots[0][@"windows"];
+            NSArray *leftCandidates = controller.createdSnapshots[1][@"windows"];
+            CHECK(([[mainCandidates valueForKey:@"windowID"] isEqual:@[@301,@401]] &&
+                   [[leftCandidates valueForKey:@"windowID"] isEqual:@[@201,@401]]),
+                  "snapshots preserve window order, include the visible floating pin and editor, and exclude host and system chrome");
+            CHECK(mainCandidates.count == 2 && leftCandidates.count == 2 &&
+                  NSEqualRects([mainCandidates[1][@"rect"] rectValue], NSMakeRect(0,150,200,240)) &&
+                  NSEqualRects([leftCandidates[1][@"rect"] rectValue], NSMakeRect(1820,150,100,240)) &&
+                  NSEqualRects([leftCandidates[0][@"rect"] rectValue], NSMakeRect(0,275,160,80)),
+                  "window targets are clipped into each corresponding snapshot's local coordinates");
             CHECK(controller.createdEditors[1].onPinPNGData([@"pin" dataUsingEncoding:NSUTF8StringEncoding]) && pinCalls == 1,
                   "overlay pin actions delegate the final PNG to the application");
             BOOL (^oldPinAction)(NSData *) = controller.createdEditors[1].onPinPNGData;

@@ -1,12 +1,31 @@
 #import "MCSelectionSurface.h"
 #import "components/theme/macos/MCChromeTheme.h"
+#include <math.h>
+
+BOOL MCSelectionMovedBeyondClick(NSPoint anchor, NSPoint point) {
+    return hypot(point.x-anchor.x, point.y-anchor.y) >= 3;
+}
 
 @implementation MCSelectionSurface {
     MCSelectionGesture _regionGesture;
+    NSTrackingArea *_selectionTrackingArea;
 }
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(__unused NSEvent *)event { return YES; }
+- (void)updateTrackingAreas {
+    if (_selectionTrackingArea) [self removeTrackingArea:_selectionTrackingArea];
+    _selectionTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect options:NSTrackingMouseMoved |
+        NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect owner:self userInfo:nil];
+    [self addTrackingArea:_selectionTrackingArea];
+    [super updateTrackingAreas];
+}
+- (NSDictionary *)windowCandidateAtPoint:(NSPoint)point {
+    for (NSDictionary *candidate in self.windowCandidates) {
+        if (NSPointInRect(point, [candidate[@"rect"] rectValue])) return candidate;
+    }
+    return nil;
+}
 - (MCSelectionGesture)regionGesture { return _regionGesture; }
 - (BOOL)regionDragging { return _regionGesture.active; }
 - (NSRect)selectionContentFrame { return self.bounds; }
@@ -23,6 +42,13 @@
     if (size.width <= 0 || size.height <= 0) return NSZeroRect;
     CGFloat sx = frame.size.width/size.width, sy = frame.size.height/size.height;
     return NSMakeRect(frame.origin.x+rect.origin.x*sx,frame.origin.y+rect.origin.y*sy,rect.size.width*sx,rect.size.height*sy);
+}
+- (NSRect)selectionContentRect:(NSRect)viewRect {
+    NSRect frame = self.selectionContentFrame; NSSize size = self.selectionContentSize;
+    if (NSIsEmptyRect(frame) || NSIsEmptyRect(viewRect)) return NSZeroRect;
+    CGFloat sx = size.width/frame.size.width, sy = size.height/frame.size.height;
+    return NSMakeRect((viewRect.origin.x-frame.origin.x)*sx, (viewRect.origin.y-frame.origin.y)*sy,
+                      viewRect.size.width*sx, viewRect.size.height*sy);
 }
 - (BOOL)beginRegion:(NSInteger)operation event:(NSEvent *)event rect:(NSRect)rect {
     [self.window makeFirstResponder:self];

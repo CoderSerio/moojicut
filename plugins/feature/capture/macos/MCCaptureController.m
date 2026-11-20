@@ -281,6 +281,7 @@ static NSError *MCCaptureError(NSString *message) {
 - (void)requestShareableContent:(void (^)(SCShareableContent *, NSError *))completion {
     [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:YES completionHandler:completion];
 }
+- (NSArray<NSDictionary *> *)orderedWindowsForSelection { return MCDesktopOrderedWindows(); }
 - (NSArray<SCWindow *> *)includedWindowsFromContent:(SCShareableContent *)content windowNumbers:(NSSet<NSNumber *> *)numbers {
     NSMutableArray *windows = [NSMutableArray array];
     for (SCWindow *window in content.windows) {
@@ -300,6 +301,7 @@ static NSError *MCCaptureError(NSString *message) {
     if (self.toolConfiguration) [editor applyToolConfiguration:self.toolConfiguration];
     [self configureUserActionsForEditor:editor];
     [editor prepareOverlayInFrame:[snapshot[@"frame"] rectValue]];
+    [editor setWindowCandidates:snapshot[@"windows"]];
     return editor;
 }
 - (void)showFrozenScreens:(NSArray<NSDictionary *> *)snapshots session:(NSString *)session {
@@ -367,11 +369,15 @@ static NSError *MCCaptureError(NSString *message) {
             // Exceptions re-include visible pins and video editors while the app exclusion keeps
             // Settings, controls and any late-created host windows out.
             NSArray<SCWindow *> *includedWindows = [owner includedWindowsFromContent:content windowNumbers:owner.captureWindowNumbers];
+            NSArray *ordered = [owner orderedWindowsForSelection];
+            NSMutableDictionary<NSNumber *, SCWindow *> *windows = [NSMutableDictionary dictionary];
+            for (SCWindow *window in content.windows) windows[@(window.windowID)] = window;
             NSMutableArray *snapshots = [NSMutableArray array];
             for (NSUInteger index = 0; index < screens.count; index++) [snapshots addObject:NSNull.null];
             __block NSUInteger remaining = screens.count;
             [displays enumerateObjectsUsingBlock:^(SCDisplay *display, NSUInteger index, BOOL *stop) {
                 (void)stop;
+                NSArray *candidates = MCDesktopWindowCandidates(windows,ordered,display.frame,owner.captureWindowNumbers);
                 [owner captureDisplay:display excludingApplications:excluded exceptingWindows:includedWindows completion:^(NSData *png, NSError *captureError) {
                     MCSelectionPerformOnMain(^{
                         MCCaptureController *current = weakSelf;
@@ -383,6 +389,7 @@ static NSError *MCCaptureError(NSString *message) {
                         if (snapshots[index] != NSNull.null) return;
                         NSMutableDictionary *snapshot = [screens[index] mutableCopy];
                         snapshot[@"png"] = png;
+                        snapshot[@"windows"] = candidates;
                         snapshots[index] = snapshot;
                         if (--remaining == 0) [current showFrozenScreens:snapshots session:session];
                     });

@@ -1,7 +1,6 @@
 #import "MCRecordingSelectionView.h"
 #include "bindings/c/recording_flow.h"
 #import "components/selection/macos/MCSelection.h"
-#include <math.h>
 
 @implementation MCRecordingOverlayPanel
 - (BOOL)canBecomeKeyWindow { return YES; }
@@ -44,11 +43,6 @@
     return self;
 }
 - (BOOL)isOpaque { return YES; }
-- (void)updateTrackingAreas {
-    for (NSTrackingArea *area in self.trackingAreas.copy) [self removeTrackingArea:area];
-    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect owner:self userInfo:nil]];
-    [super updateTrackingAreas];
-}
 - (void)resetCursorRects {
     [self addCursorRect:self.bounds cursor:NSCursor.crosshairCursor];
     if (!self.controls.hidden) [self addCursorRect:self.controls.frame cursor:NSCursor.arrowCursor];
@@ -79,11 +73,9 @@
     self.needsDisplay = YES; [self.window invalidateCursorRectsForView:self];
 }
 - (void)updateHover:(NSPoint)point {
-    self.hoverRect = self.bounds; self.hoverWindowID = nil;
-    for (NSDictionary *candidate in self.windowCandidates) {
-        NSRect rect = [candidate[@"rect"] rectValue];
-        if (NSPointInRect(point, rect)) { self.hoverRect = rect; self.hoverWindowID = candidate[@"windowID"]; break; }
-    }
+    NSDictionary *candidate = [self windowCandidateAtPoint:point];
+    self.hoverRect = candidate ? [candidate[@"rect"] rectValue] : self.bounds;
+    self.hoverWindowID = candidate[@"windowID"];
     self.needsDisplay = YES;
 }
 - (void)mouseEntered:(NSEvent *)event { [self.window makeKeyWindow]; [self.window makeFirstResponder:self]; [self mouseMoved:event]; }
@@ -101,7 +93,7 @@
 }
 - (void)mouseDragged:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    if (!self.dragging && hypot(point.x-self.anchor.x,point.y-self.anchor.y) < 3) return;
+    if (!self.dragging && !MCSelectionMovedBeyondClick(self.anchor,point)) return;
     self.dragging = YES; self.selectedWindowID = nil;
     [self updateRegion:event];
     self.selection = self.regionGesture.preview; self.selected = YES; self.controls.hidden = YES; self.needsDisplay = YES;
