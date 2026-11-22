@@ -58,18 +58,17 @@ fn property_layout(descriptors : Json) -> Array[PropertyPlacement] {
     if item is Object(descriptor) {
       let label_width = property_number(descriptor, "labelWidth", 0)
       let width = property_number(descriptor, "width", 54)
-      let label_gap = if label_width > 0 { 3.0 } else { 0.0 }
+      let control_x = if label_width > 0 { x + label_width + 3 } else { x }
       placements.push({
         descriptor,
         label_x: x,
-        label_width,
-        x: x + label_width + label_gap,
+        // Leave a point before the control and let CJK font fallback use the
+        // remaining label padding without moving the control or the next group.
+        label_width: @protocol.larger(0, control_x - x - 1),
+        x: control_x,
         width,
       })
-      x += label_width +
-        label_gap +
-        width +
-        editor_style_group_gap().to_double()
+      x = control_x + width + editor_style_group_gap().to_double()
     }
   }
   placements

@@ -371,9 +371,9 @@ int wmain(int argc, wchar_t **argv) {
       L"{\"type\":\"rect\",\"x\":10,\"y\":10,\"width\":30,\"height\":20,\"fill\":\"#ff0000\"},"
       L"{\"type\":\"line\",\"x1\":10,\"y1\":40,\"x2\":50,\"y2\":40,\"color\":\"#0000ff\",\"lineWidth\":2},"
       L"{\"type\":\"text\",\"x\":60,\"y\":10,\"width\":120,\"height\":30,\"text\":\"中 A&B\",\"size\":16,\"color\":\"#ffffff\",\"align\":\"center\",\"valign\":\"center\"},"
-      L"{\"type\":\"text\",\"x\":80,\"y\":52,\"width\":24,\"height\":22,\"text\":\"颜色\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true},"
+      L"{\"type\":\"text\",\"x\":80,\"y\":52,\"width\":26,\"height\":22,\"text\":\"颜色\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true},"
       L"{\"type\":\"text\",\"x\":136,\"y\":52,\"width\":60,\"height\":22,\"text\":\"颜色\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true},"
-      L"{\"type\":\"text\",\"x\":80,\"y\":76,\"width\":35,\"height\":22,\"text\":\"透明度\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true},"
+      L"{\"type\":\"text\",\"x\":80,\"y\":76,\"width\":37,\"height\":22,\"text\":\"透明度\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true},"
       L"{\"type\":\"text\",\"x\":136,\"y\":76,\"width\":60,\"height\":22,\"text\":\"透明度\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true}],"
       L"\"videoRect\":{\"x\":10,\"y\":60,\"width\":60,\"height\":40},\"overlayCommands\":["
       L"{\"type\":\"rect\",\"x\":20,\"y\":70,\"width\":10,\"height\":10,\"fill\":\"#ffffff\"}],\"semantics\":[],\"cursor\":\"default\"}"),
