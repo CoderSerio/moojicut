@@ -36,6 +36,24 @@
           "size": 20151244
         }
       }
+    },
+    {
+      "version": "0.1.0-alpha.25",
+      "origin": "https://moojicut-downloads.pages.dev",
+      "downloads": {
+        "macos": {
+          "sha256": "72d527a7b50ec1d01d87c0e89e6ce202516a0aa72f3321ac53ae717b09965ccd",
+          "size": 9756586
+        },
+        "windows": {
+          "sha256": "38c3e733d0127f9354a54e4fd6029af89bfa3badde2c59546009e7457108eb72",
+          "size": 27088761
+        },
+        "linux": {
+          "sha256": "3ff90763ceb806537d451eb6b6f213aa348c706f9d6e0b4be173637e5bc3385e",
+          "size": 20157596
+        }
+      }
     }
   ]
 }
