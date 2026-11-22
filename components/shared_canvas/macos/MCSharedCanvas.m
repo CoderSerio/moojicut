@@ -55,15 +55,17 @@ static void MCCanvasPaintText(void *context, const MCCanvasText *command) {
     NSDictionary *attributes = @{NSFontAttributeName:font,
         NSForegroundColorAttributeName:MCCanvasRGB(command->color),NSParagraphStyleAttributeName:paragraph};
     NSRect textRect = rect;
-    NSStringDrawingOptions options = command->single_line ? 0 : NSStringDrawingUsesLineFragmentOrigin;
-    if (command->valign == MC_UI_VALIGN_CENTER) {
-        CGFloat height = [text boundingRectWithSize:NSMakeSize(rect.size.width,CGFLOAT_MAX)
-            options:options attributes:attributes].size.height;
+    if (command->single_line || command->valign == MC_UI_VALIGN_CENTER) {
+        CGFloat width = command->single_line ? CGFLOAT_MAX : rect.size.width;
+        CGFloat height = [text boundingRectWithSize:NSMakeSize(width,CGFLOAT_MAX)
+            options:NSStringDrawingUsesLineFragmentOrigin attributes:attributes].size.height;
         if (!isfinite(height) || height <= 0) height = font.ascender-font.descender+font.leading;
-        height = ceil(height); textRect.origin.y += (rect.size.height-height)/2; textRect.size.height = height;
+        height = ceil(height);
+        if (command->valign == MC_UI_VALIGN_CENTER) textRect.origin.y += (rect.size.height-height)/2;
+        textRect.size.height = height;
     }
     [NSGraphicsContext saveGraphicsState]; NSRectClip(rect);
-    [text drawWithRect:textRect options:options | NSStringDrawingTruncatesLastVisibleLine
+    [text drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
         attributes:attributes];
     [NSGraphicsContext restoreGraphicsState];
 }
