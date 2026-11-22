@@ -525,8 +525,11 @@ static BOOL adaptiveOverlay(CGFloat scale) {
     selectTool(editor,3); CGFloat text = NSWidth(editor.floatingToolbar.frame), textProperties = propertyValue(editor,MC_CAPTURE_TEXT_ROW_WIDTH);
     CHECK(coverProperties < shapeProperties && cover <= shape && textProperties <= text && coverProperties <= cover,
           "property groups use their natural widths and fit the measured toolbar");
-    CGFloat naturalFieldWidth = NSWidth(editor.textPropertyInputs[@"style.fontSize"].frame);
-    CHECK(naturalFieldWidth == 36, "the numeric control keeps its 36-point text area beside the stepper");
+    MCSharedTextInputView *fontField = editor.textPropertyInputs[@"style.fontSize"];
+    CGFloat naturalFieldWidth = NSWidth(fontField.frame);
+    CGFloat digitsWidth = [@"128" sizeWithAttributes:@{NSFontAttributeName:fontField.font}].width;
+    CHECK(digitsWidth + 1 <= naturalFieldWidth && naturalFieldWidth < 36,
+          "the compact numeric area fits the maximum font size and its caret beside the stepper");
     __block NSUInteger contentActions = 0;
     editor.onOCR = ^(__unused MCImageEditorController *source) { contentActions++; };
     editor.onTranslate = ^(__unused MCImageEditorController *source) { contentActions++; };
