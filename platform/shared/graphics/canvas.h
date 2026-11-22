@@ -17,6 +17,7 @@ typedef struct {
   size_t length;
   int32_t color, weight, align, valign;
   double size;
+  bool single_line;
 } MCCanvasText;
 
 /* Backend primitives only: the shared MoonBit frame owns geometry, colors,

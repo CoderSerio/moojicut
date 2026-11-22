@@ -161,6 +161,17 @@ static BOOL screenshot(HWND window, const wchar_t *path, int dpi, BOOL fixture) 
     for (int y = MulDiv(10, dpi, 96); y < MulDiv(40, dpi, 96); y++)
       for (int x = MulDiv(60, dpi, 96); x < MulDiv(180, dpi, 96); x++) if (GetPixel(dc, x, y) != RGB(16, 16, 16)) glyphs++;
     ok = ok && glyphs > 15 && GetPixel(dc, MulDiv(185, dpi, 96), MulDiv(20, dpi, 96)) == RGB(16, 16, 16);
+    // Each compact property label must match its full-width reference, including
+    // the last glyph. This catches both wrapping and premature ellipses.
+    unsigned label_ink = 0;
+    for (int y = MulDiv(52, dpi, 96); y < MulDiv(100, dpi, 96); y++) {
+      for (int x = 0; x < MulDiv(48, dpi, 96); x++) {
+        COLORREF full = GetPixel(dc, MulDiv(136, dpi, 96) + x, y);
+        if (full != RGB(16, 16, 16)) label_ink++;
+        if (GetPixel(dc, MulDiv(80, dpi, 96) + x, y) != full) ok = FALSE;
+      }
+    }
+    ok = ok && label_ink > 30;
   }
   GdiFlush();
   BITMAPFILEHEADER header = {0}; header.bfType = 0x4d42;
@@ -359,15 +370,20 @@ int wmain(int argc, wchar_t **argv) {
       L"{\"type\":\"rect\",\"x\":0,\"y\":0,\"width\":200,\"height\":120,\"fill\":\"#101010\"},"
       L"{\"type\":\"rect\",\"x\":10,\"y\":10,\"width\":30,\"height\":20,\"fill\":\"#ff0000\"},"
       L"{\"type\":\"line\",\"x1\":10,\"y1\":40,\"x2\":50,\"y2\":40,\"color\":\"#0000ff\",\"lineWidth\":2},"
-      L"{\"type\":\"text\",\"x\":60,\"y\":10,\"width\":120,\"height\":30,\"text\":\"中 A&B\",\"size\":16,\"color\":\"#ffffff\",\"align\":\"center\",\"valign\":\"center\"}],"
+      L"{\"type\":\"text\",\"x\":60,\"y\":10,\"width\":120,\"height\":30,\"text\":\"中 A&B\",\"size\":16,\"color\":\"#ffffff\",\"align\":\"center\",\"valign\":\"center\"},"
+      L"{\"type\":\"text\",\"x\":80,\"y\":52,\"width\":24,\"height\":22,\"text\":\"颜色\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true},"
+      L"{\"type\":\"text\",\"x\":136,\"y\":52,\"width\":60,\"height\":22,\"text\":\"颜色\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true},"
+      L"{\"type\":\"text\",\"x\":80,\"y\":76,\"width\":35,\"height\":22,\"text\":\"透明度\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true},"
+      L"{\"type\":\"text\",\"x\":136,\"y\":76,\"width\":60,\"height\":22,\"text\":\"透明度\",\"size\":11,\"color\":\"#ffffff\",\"valign\":\"center\",\"singleLine\":true}],"
       L"\"videoRect\":{\"x\":10,\"y\":60,\"width\":60,\"height\":40},\"overlayCommands\":["
       L"{\"type\":\"rect\",\"x\":20,\"y\":70,\"width\":10,\"height\":10,\"fill\":\"#ffffff\"}],\"semantics\":[],\"cursor\":\"default\"}"),
       "primitive fixture is validated by the same immutable frame ABI");
   if (accessible) CHECK(FAILED(IAccessible_accDoDefaultAction(accessible, child_variant(retained_child))), "removed semantic child cannot activate a later frame");
-  swprintf_s(path, MAX_PATH, L"%ls\\primitives-96.bmp", argv[1]);
-  CHECK(screenshot(h.canvas, path, 96, TRUE), "96 DPI pixels validate fills, Unicode text clipping and video/overlay order");
-  swprintf_s(path, MAX_PATH, L"%ls\\primitives-144.bmp", argv[1]);
-  CHECK(screenshot(h.canvas, path, 144, TRUE), "144 DPI uses one consistent logical-to-device transform");
+  const int dpis[] = {96, 120, 144, 192};
+  for (size_t i = 0; i < ARRAYSIZE(dpis); i++) {
+    swprintf_s(path, MAX_PATH, L"%ls\\primitives-%d.bmp", argv[1], dpis[i]);
+    CHECK(screenshot(h.canvas, path, dpis[i], TRUE), "DPI fixture validates full single-line labels, clipping and video/overlay order");
+  }
   CHECK(!mc_win_canvas_set_frame(h.canvas, INT32_MAX), "invalid frame replacement is rejected");
   render(&h);
   if (accessible) {

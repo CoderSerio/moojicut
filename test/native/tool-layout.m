@@ -883,6 +883,7 @@ static BOOL propertySpacing(void) {
             }];
             CGFloat lastRight = 0;
             for (NSUInteger labelIndex = 0; labelIndex < labels.count; labelIndex++) {
+                CHECK([labels[labelIndex][@"singleLine"] boolValue], "each property label requests a single line");
                 CGFloat left = [labels[labelIndex][@"x"] doubleValue];
                 CGFloat next = labelIndex+1<labels.count ? [labels[labelIndex+1][@"x"] doubleValue] : CGFLOAT_MAX;
                 if (labelIndex) CHECK(fabs(left-lastRight-editor_style_group_gap()) < .01,

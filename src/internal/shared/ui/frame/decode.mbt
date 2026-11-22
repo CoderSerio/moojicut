@@ -197,6 +197,7 @@ fn draw(value : Json) -> Draw raise InputError {
           "left",
         )
         integers[6] = enum_string(fields, "valign", ["top", "center"], "top")
+        integers.push(boolean(fields, "singleLine", false))
         text = string(fields, "text", 32768, None)
         numbers[8] = number(fields, "size", 0, 4096, None)
         if numbers[8] <= 0 {

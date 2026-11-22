@@ -55,14 +55,15 @@ static void MCCanvasPaintText(void *context, const MCCanvasText *command) {
     NSDictionary *attributes = @{NSFontAttributeName:font,
         NSForegroundColorAttributeName:MCCanvasRGB(command->color),NSParagraphStyleAttributeName:paragraph};
     NSRect textRect = rect;
+    NSStringDrawingOptions options = command->single_line ? 0 : NSStringDrawingUsesLineFragmentOrigin;
     if (command->valign == MC_UI_VALIGN_CENTER) {
         CGFloat height = [text boundingRectWithSize:NSMakeSize(rect.size.width,CGFLOAT_MAX)
-            options:NSStringDrawingUsesLineFragmentOrigin attributes:attributes].size.height;
+            options:options attributes:attributes].size.height;
         if (!isfinite(height) || height <= 0) height = font.ascender-font.descender+font.leading;
         height = ceil(height); textRect.origin.y += (rect.size.height-height)/2; textRect.size.height = height;
     }
     [NSGraphicsContext saveGraphicsState]; NSRectClip(rect);
-    [text drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+    [text drawWithRect:textRect options:options | NSStringDrawingTruncatesLastVisibleLine
         attributes:attributes];
     [NSGraphicsContext restoreGraphicsState];
 }

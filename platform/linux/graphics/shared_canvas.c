@@ -115,7 +115,8 @@ static void draw_text(void *context, const MCCanvasText *text) {
   pango_layout_set_font_description(layout, font);
   pango_layout_set_text(layout, utf8, -1);
   pango_layout_set_width(layout, (int)(text->rect.width * PANGO_SCALE));
-  pango_layout_set_height(layout, (int)(text->rect.height * PANGO_SCALE));
+  pango_layout_set_single_paragraph_mode(layout, text->single_line);
+  pango_layout_set_height(layout, text->single_line ? -1 : (int)(text->rect.height * PANGO_SCALE));
   pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
   pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
   pango_layout_set_alignment(layout, text->align == MC_UI_ALIGN_CENTER ? PANGO_ALIGN_CENTER

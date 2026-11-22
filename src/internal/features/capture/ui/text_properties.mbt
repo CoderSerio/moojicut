@@ -240,6 +240,7 @@ pub fn text_properties_frame(
     label_command["size"] = Json(11)
     label_command["color"] = Json(label_color)
     label_command["valign"] = Json("center")
+    label_command["singleLine"] = Json(true)
     commands.push(Json::object(label_command))
     let control_width = @protocol.smaller(
       placement.width,

@@ -107,8 +107,11 @@ static void draw_text(void *context, const MCCanvasText *text) {
   IntersectClipRect(paint->dc, clip.left, clip.top, clip.right, clip.bottom);
   SelectObject(paint->dc, font); SetBkMode(paint->dc, TRANSPARENT); SetTextColor(paint->dc, rgb(text->color));
   UINT align = text->align == MC_UI_ALIGN_CENTER ? DT_CENTER : text->align == MC_UI_ALIGN_RIGHT ? DT_RIGHT : DT_LEFT;
-  UINT format = DT_NOPREFIX | DT_WORDBREAK | DT_END_ELLIPSIS | align;
-  if (text->valign == MC_UI_VALIGN_CENTER) {
+  UINT format = DT_NOPREFIX | DT_END_ELLIPSIS | align;
+  format |= text->single_line ? DT_SINGLELINE : DT_WORDBREAK;
+  if (text->single_line && text->valign == MC_UI_VALIGN_CENTER) {
+    format |= DT_VCENTER;
+  } else if (text->valign == MC_UI_VALIGN_CENTER) {
     RECT measured = clip;
     DrawTextW(paint->dc, (const wchar_t *)text->text, (int)text->length, &measured, format | DT_CALCRECT);
     int height = measured.bottom - measured.top;

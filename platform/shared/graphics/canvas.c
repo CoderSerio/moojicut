@@ -39,7 +39,8 @@ bool mc_canvas_draw_layer(int32_t frame, int32_t layer, const MCCanvasPainter *p
         ui_frame_command_value(frame, layer, index, MC_UI_DRAW_WEIGHT),
         ui_frame_command_value(frame, layer, index, MC_UI_DRAW_ALIGN),
         ui_frame_command_value(frame, layer, index, MC_UI_DRAW_VALIGN),
-        ui_frame_command_number(frame, layer, index, MC_UI_DRAW_FONT_SIZE)
+        ui_frame_command_number(frame, layer, index, MC_UI_DRAW_FONT_SIZE),
+        ui_frame_command_value(frame, layer, index, MC_UI_DRAW_SINGLE_LINE) == 1
       };
       painter->text(painter->context, &text);
       moonbit_decref(value);
