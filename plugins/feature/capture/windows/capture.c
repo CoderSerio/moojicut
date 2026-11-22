@@ -1936,17 +1936,18 @@ done:
 #undef HUD_CHECK
   return ok;
 }
-static BOOL centered_field(HWND field) {
+static BOOL number_field_fits(HWND field, const wchar_t *sample) {
   RECT window, client; POINT origin={0,0}; TEXTMETRICW metrics={0};
   if (!GetWindowRect(field,&window) || !GetClientRect(field,&client) || !ClientToScreen(field,&origin)) return FALSE;
   HDC dc=GetDC(field); if (!dc) return FALSE;
   HFONT font=(HFONT)SendMessageW(field,WM_GETFONT,0,0);
   HGDIOBJ previous=SelectObject(dc,font);
-  BOOL measured=GetTextMetricsW(dc,&metrics);
+  SIZE extent;
+  BOOL measured=GetTextMetricsW(dc,&metrics) && GetTextExtentPoint32W(dc,sample,(int)wcslen(sample),&extent);
   SelectObject(dc,previous); ReleaseDC(field,dc);
   int top=origin.y-window.top, bottom=window.bottom-origin.y-client.bottom;
   LRESULT first=SendMessageW(field,EM_POSFROMCHAR,0,0);
-  return measured && top>=0 && bottom>=0 && abs(top-bottom)<=1 &&
+  return measured && extent.cx < client.right && top>=0 && bottom>=0 && abs(top-bottom)<=1 &&
       client.bottom==minimum((int)metrics.tmHeight,window.bottom-window.top) && first!=-1 &&
       (short)HIWORD(first)>=0 && (short)HIWORD(first)<client.bottom;
 }
@@ -1959,16 +1960,19 @@ static BOOL numeric_input_smoke(void) {
   BOOL ok=TRUE;
   double revision=image_session_revision(capture.session);
 #define NUMBER_CHECK(condition) do { if (!(condition)) { fprintf(stderr,"Windows numeric input FAILED line %d: %s\n",__LINE__,#condition); ok=FALSE; goto done; } } while (0)
+  smoke_select_tool(TOOL_TEXT);
+  NUMBER_CHECK(number_field_fits(mc_win_text_inputs_field(capture.property_inputs,L"style.fontSize"),L"128"));
+  NUMBER_CHECK(number_field_fits(mc_win_text_inputs_field(capture.property_inputs,L"style.opacity"),L"100"));
   smoke_select_tool(TOOL_RECT);
   HWND field=mc_win_text_inputs_field(capture.property_inputs,L"style.stroke");
-  NUMBER_CHECK(field && centered_field(field));
+  NUMBER_CHECK(field && number_field_fits(field,L"7.5"));
   SetFocus(field); NUMBER_CHECK(SetWindowTextW(field,L"4"));
   int32_t edit=capture.text_edit;
   wheel_field(field,WHEEL_DELTA);
   NUMBER_CHECK(capture.text_edit==edit && capture.stroke==5 && GetFocus()==field &&
       image_session_revision(capture.session)==revision);
   wheel_field(field,-WHEEL_DELTA);
-  NUMBER_CHECK(capture.stroke==4 && GetFocus()==field && centered_field(field));
+  NUMBER_CHECK(capture.stroke==4 && GetFocus()==field && number_field_fits(field,L"4"));
   SetFocus(capture.editor);
   for (int i=0;i<3;i++) wheel_field(field,WHEEL_DELTA/4);
   NUMBER_CHECK(capture.stroke==4 && GetFocus()==capture.editor);

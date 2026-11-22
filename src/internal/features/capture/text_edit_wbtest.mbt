@@ -746,6 +746,7 @@ test "real capture frames carry shared property geometry and versioned inline in
     assert_eq(@ui_frame.field_text(handle, 0, 0), "style.opacity")
     assert_eq(@ui_frame.field_text(handle, 1, 0), "style.fontSize")
     assert_eq(@ui_frame.field_text(handle, 1, 1), "31.25")
+    assert_true(@ui_frame.field_number(handle, 0, 2) < @ui_frame.field_number(handle, 1, 2))
     assert_eq(@ui_frame.field_value(handle, 1, 6), 0)
     assert_eq(@ui_frame.field_value(handle, 1, 15), 0)
     let m = tx_object(frame)

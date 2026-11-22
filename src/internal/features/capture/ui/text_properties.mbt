@@ -57,7 +57,16 @@ fn property_layout(descriptors : Json) -> Array[PropertyPlacement] {
   for item in descriptors {
     if item is Object(descriptor) {
       let label_width = property_number(descriptor, "labelWidth", 0)
-      let width = property_number(descriptor, "width", 54)
+      let max_width = property_number(descriptor, "width", 54)
+      let width = if property_string(descriptor, "kind", "") == "number" {
+        // Three digits plus room for the caret at the 12-point field font.
+        // Longer edits can use the original width specified by the tool.
+        let length = property_string(descriptor, "displayText", "").length()
+        let text_width = @protocol.larger(3, length.to_double()) * 8
+        @protocol.smaller(max_width, text_width + property_stepper_width + 6)
+      } else {
+        max_width
+      }
       let control_x = if label_width > 0 { x + label_width + 3 } else { x }
       placements.push({
         descriptor,

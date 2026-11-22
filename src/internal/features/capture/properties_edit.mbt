@@ -36,11 +36,20 @@ fn property_visible(e : TextEdit, id : String) -> Bool {
 
 ///|
 fn property_descriptors(e : TextEdit) -> Json {
-  @annotation_tools.property_descriptors(
+  let descriptors = @annotation_tools.property_descriptors(
     e.tool,
     e.preview_shape.to_int(),
     e.contribution_command,
   )
+  if descriptors is Array(items) {
+    for item in items {
+      if item is Object(field) && field.get("kind") == Some(Json("number")) {
+        let id = image_string(field, "id", "")
+        field["displayText"] = Json(text_raw(text_field(e, id)))
+      }
+    }
+  }
+  descriptors
 }
 
 ///|
