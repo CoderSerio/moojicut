@@ -481,6 +481,9 @@ pub fn toolbar_surface_color(dark : Bool) -> Int32 {
 }
 
 ///|
+let light_disabled_icon_color : Int32 = 0x73737b
+
+///|
 pub fn toolbar_frame_json(state : ToolbarState, dark : Bool) -> String {
   let layout = toolbar_layout(state)
   let commands : Array[Json] = []
@@ -518,7 +521,7 @@ pub fn toolbar_frame_json(state : ToolbarState, dark : Bool) -> String {
       if dark {
         0x777777
       } else {
-        0xaaaaaa
+        light_disabled_icon_color
       }
     } else if dark {
       0xf5f5f5

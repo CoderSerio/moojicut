@@ -601,8 +601,6 @@ static NSBitmapImageRep *toolbarPixels(MCImageEditorController *editor) {
     }];
     return bitmap;
 }
-// Compare rendered foreground against its actual neutral surface, not merely
-// whether light and dark PNGs differ. Disabled actions are deliberately exempt.
 static double linearChannel(double value) {
     return value <= .04045 ? value / 12.92 : pow((value + .055) / 1.055, 2.4);
 }
@@ -611,9 +609,11 @@ static double luminance(NSColor *color) {
     return .2126 * linearChannel(color.redComponent) + .7152 * linearChannel(color.greenComponent) + .0722 * linearChannel(color.blueComponent);
 }
 static double iconContrast(NSBitmapImageRep *bitmap, NSRect icon, NSView *surface) {
-    double background = luminance([bitmap colorAtX:bitmap.pixelsWide/2 y:bitmap.pixelsHigh-3]);
     double result = 1;
     CGFloat sx = bitmap.pixelsWide / NSWidth(surface.bounds), sy = bitmap.pixelsHigh / NSHeight(surface.bounds);
+    // The padding beside the glyph includes the selected or hovered button's fill.
+    double background = luminance([bitmap colorAtX:floor((NSMinX(icon)-1)*sx)
+                                                 y:floor((NSHeight(surface.bounds)-NSMidY(icon))*sy)]);
     for (NSInteger y = MAX(0, floor((NSHeight(surface.bounds)-NSMaxY(icon))*sy)); y < MIN(bitmap.pixelsHigh,ceil((NSHeight(surface.bounds)-NSMinY(icon))*sy)); y++)
         for (NSInteger x = MAX(0,floor(NSMinX(icon)*sx)); x < MIN(bitmap.pixelsWide,ceil(NSMaxX(icon)*sx)); x++) {
             double foreground = luminance([bitmap colorAtX:x y:y]);
@@ -644,10 +644,16 @@ static BOOL toolbarAppearance(void) {
         e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
         NSBitmapImageRep *normal = toolbarPixels(e);
         NSData *normalPNG = [normal representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-        NSRect pointer = [e.toolbar convertRect:NSInsetRect(MCToolbarRect(MCToolbarSemantic(e.toolbar,@"host.select")),3,3) toView:e.floatingToolbar];
-        NSRect action = [e.toolbar convertRect:NSInsetRect(MCToolbarRect(MCToolbarSemantic(e.toolbar,@"builtin.capture.ocr")),3,3) toView:e.floatingToolbar];
-        CHECK(iconContrast(normal,pointer,e.floatingToolbar) >= 4.5 && iconContrast(normal,action,e.floatingToolbar) >= 4.5,
-              "enabled shared icons retain readable contrast in light and dark appearances");
+        for (NSDictionary *item in e.toolbar.frameDescription[@"semantics"]) {
+            NSRect icon = [e.toolbar convertRect:NSInsetRect(MCToolbarRect(item),3,3) toView:e.floatingToolbar];
+            double contrast = iconContrast(normal, icon, e.floatingToolbar);
+            double minimum = [item[@"enabled"] boolValue] ? 4.5 : 3.0;
+            if (contrast < minimum) {
+                fprintf(stderr, "FAIL %s toolbar icon %s: %.2f contrast, expected %.1f\n",
+                        mode.UTF8String, [item[@"id"] UTF8String], contrast, minimum);
+                passed = NO;
+            }
+        }
         [e.toolbar mouseMoved:MCToolbarMouse(e.toolbar,@"host.undo",NSEventTypeMouseMoved,.5)];
         CHECK([normalPNG isEqual:[toolbarPixels(e) representationUsingType:NSBitmapImageFileTypePNG properties:@{}]],
               "disabled actions do not acquire an enabled hover background in either appearance");

@@ -173,7 +173,7 @@ fn property_stepper(
     let ink = if enabled {
       if dark { "#bfbfc9" } else { "#5b5b64" }
     } else {
-      if dark { "#686870" } else { "#acacb2" }
+      if dark { "#686870" } else { @icons.color(light_disabled_icon_color) }
     }
     for row in 0..<3 {
       let weight = if increase { row } else { 2 - row }
@@ -342,8 +342,10 @@ pub fn text_properties_frame(
             y + (control_height - 14) / 2,
             if enabled && choices_enabled {
               text_color
-            } else {
+            } else if dark {
               border
+            } else {
+              @icons.color(light_disabled_icon_color)
             },
           )
           let node = property_rect(bx, y, property_choice_width, control_height)
