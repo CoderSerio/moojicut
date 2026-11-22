@@ -109,6 +109,44 @@ static NSData *fixture(void) {
     }
     return [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
 }
+@interface MCSaveTestEditor : MCImageEditorController
+@property NSURL *destination;
+@property NSError *saveError;
+@end
+@implementation MCSaveTestEditor
+- (void)chooseScreenshotDestination:(void (^)(NSURL *))completion { completion(self.destination); }
+- (void)showError:(NSError *)error { self.saveError = error; }
+@end
+
+static BOOL saveScreenshot(void) {
+    BOOL passed = YES;
+    MCSaveTestEditor *editor = [[MCSaveTestEditor alloc] initWithPNGData:fixture() error:NULL];
+    [editor prepareOverlayInFrame:NSMakeRect(0, 0, 800, 500)];
+    [editor setCaptureRegion:NSMakeRect(30, 40, 220, 130)];
+    selectTool(editor, 1);
+    [editor.canvas mouseDown:mouse(editor.canvas,NSEventTypeLeftMouseDown,NSMakePoint(50,65))];
+    [editor.canvas mouseDragged:mouse(editor.canvas,NSEventTypeLeftMouseDragged,NSMakePoint(95,90))];
+    [editor.canvas mouseUp:mouse(editor.canvas,NSEventTypeLeftMouseUp,NSMakePoint(95,90))];
+    NSDictionary *document = editor.document;
+    CHECK([document[@"annotations"] count] == 1, "local PNG fixture contains an annotation");
+    NSData *expected = [editor renderPNGData:NULL];
+    invokeContribution(editor, @"host.save");
+    CHECK(!editor.saveError && [editor.document isEqual:document], "cancelling local save preserves the edit");
+    NSURL *directory = [NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES];
+    NSURL *file = [directory URLByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"png"]];
+    editor.destination = [file URLByAppendingPathComponent:@"missing.png"];
+    invokeContribution(editor, @"host.save");
+    CHECK(editor.saveError && [editor.document isEqual:document], "failed write leaves capture available for retry");
+    editor.destination = file;
+    editor.saveError = nil;
+    invokeContribution(editor, @"host.save");
+    NSData *saved = [NSData dataWithContentsOfURL:file];
+    NSBitmapImageRep *image = saved ? [NSBitmapImageRep imageRepWithData:saved] : nil;
+    CHECK(!editor.saveError && [saved isEqual:expected] && image.pixelsWide == 220 && image.pixelsHigh == 130,
+          "right-group save exports the cropped annotated PNG through the actual toolbar action");
+    [NSFileManager.defaultManager removeItemAtURL:file error:NULL];
+    return passed;
+}
 static BOOL windowSnap(CGFloat scale) {
     BOOL passed = YES;
     MCImageEditorController *editor = [[MCImageEditorController alloc] initWithPNGData:fixture() error:NULL];
@@ -678,6 +716,7 @@ int main(void) {
         moonbit_init();
         BOOL passed = exercise(.5);
         passed = exercise(1.5) && passed;
+        passed = saveScreenshot() && passed;
         passed = windowSnap(1) && passed;
         passed = windowSnap(.5) && passed;
         passed = independentToolStyles() && passed;

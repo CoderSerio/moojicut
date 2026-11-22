@@ -32,7 +32,7 @@ FRAMEWORKS = ["AppKit", "Foundation", "Carbon", "ScreenCaptureKit", "AVKit",
               "AVFoundation", "CoreMedia", "CoreVideo", "CoreGraphics", "QuartzCore", "UniformTypeIdentifiers",
               "Vision", "ImageIO", "SwiftUI", "Translation"]
 TEXT_FRAMEWORKS = ("AppKit", "Foundation", "CoreGraphics", "Vision", "ImageIO", "SwiftUI", "Translation")
-CANVAS_LINK = ("-framework", "AVFoundation", "-framework", "QuartzCore")
+CANVAS_LINK = ("-framework", "AVFoundation", "-framework", "QuartzCore", "-framework", "UniformTypeIdentifiers")
 SWIFT_MINIMUM_MACOS = "26.0"
 
 

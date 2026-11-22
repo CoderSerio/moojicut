@@ -354,7 +354,8 @@
       },
       "feature.capture": {
         "sources": [
-          "plugins/feature/capture/windows/capture.c"
+          "plugins/feature/capture/windows/capture.c",
+          "plugins/feature/capture/windows/save_png.cpp"
         ],
         "requires": [
           "component.hud",
@@ -362,7 +363,8 @@
           "platform.graphics"
         ],
         "files": [
-          "plugins/feature/capture/windows/capture.h"
+          "plugins/feature/capture/windows/capture.h",
+          "plugins/feature/capture/windows/save_png.h"
         ],
         "includes": [
           "shared.bindings",

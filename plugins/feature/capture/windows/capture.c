@@ -7,6 +7,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
 #include "capture.h"
+#include "save_png.h"
 #include "bindings/c/image_session.h"
 #include "bindings/c/capture_edit.h"
 #include "bindings/c/capture_toolbar.h"
@@ -404,6 +405,32 @@ static HGLOBAL candidate_dib(int32_t candidate) {
   viewport.right = viewport.left + rounded(capture_candidate_viewport_value(candidate,2));
   viewport.bottom = viewport.top + rounded(capture_candidate_viewport_value(candidate,3));
   return rendered_dib(viewport);
+}
+static BOOL save_screenshot(int32_t toolbar, int32_t candidate, const wchar_t **error) {
+  SYSTEMTIME time;
+  GetLocalTime(&time);
+  wchar_t path[MAX_PATH];
+  swprintf_s(path, MAX_PATH, L"moojicut_%04u%02u%02u_%02u%02u%02u.png",
+      time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+  OPENFILENAMEW dialog = {0};
+  dialog.lStructSize = sizeof(dialog);
+  dialog.hwndOwner = capture.editor;
+  dialog.lpstrTitle = L"保存到本地";
+  dialog.lpstrFilter = L"PNG (*.png)\0*.png\0";
+  dialog.lpstrDefExt = L"png";
+  dialog.lpstrFile = path;
+  dialog.nMaxFile = MAX_PATH;
+  dialog.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+  if (!GetSaveFileNameW(&dialog)) {
+    if (CommDlgExtendedError()) *error = L"无法打开保存对话框。";
+    return FALSE;
+  }
+  if (capture.toolbar_session != toolbar) return FALSE;
+  HGLOBAL dib = candidate_dib(candidate);
+  BOOL saved = dib && mc_capture_write_png(dib, path);
+  if (dib) GlobalFree(dib);
+  if (!saved) *error = L"无法保存 PNG 图片，请检查目标位置后重试。";
+  return saved;
 }
 static BOOL copy_image(void) {
   HGLOBAL dib = image_dib();
@@ -891,6 +918,10 @@ static void toolbar_effect(void) {
   else if (effect==MC_CAPTURE_TOOLBAR_COPY) {
     toolbar_sync_native(); success=copy_image(); close=success;
     if (!success) error=L"剪贴板暂时被占用，请重试。";
+  } else if (effect==MC_CAPTURE_TOOLBAR_SAVE) {
+    success=save_screenshot(toolbar,(int32_t)capture_toolbar_value(toolbar,MC_CAPTURE_TOOLBAR_CANDIDATE),&error);
+    if (capture.toolbar_session!=toolbar) return;
+    close=success;
   } else if (effect==MC_CAPTURE_TOOLBAR_PIN) {
     int32_t candidate=(int32_t)capture_toolbar_value(toolbar,MC_CAPTURE_TOOLBAR_CANDIDATE);
     HGLOBAL dib=candidate_dib(candidate);
@@ -1543,6 +1574,11 @@ static BOOL save_capture_preview(void) {
     CloseHandle(file);
   }
   surface_free(&preview);
+  path[length] = L'\0';
+  wcscat_s(path, ARRAYSIZE(path), L".saved.png");
+  HGLOBAL dib = image_dib();
+  ok = ok && dib && mc_capture_write_png(dib, path);
+  if (dib) GlobalFree(dib);
   return ok;
 }
 /* Fixture helpers query the actual shared frame and drive native input. */

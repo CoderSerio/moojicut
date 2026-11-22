@@ -364,7 +364,7 @@ fn toolbar_allowed(t : CaptureToolbar, id : String) -> Bool {
   if id == "host.select" {
     return true
   }
-  if id == "host.confirm" {
+  if id == "host.confirm" || id == "host.save" {
     return t.has_region
   }
   match toolbar_entry(t, id) {
@@ -407,7 +407,7 @@ fn toolbar_rejection(t : CaptureToolbar, id : String) -> String {
       return "请先选择截图区域"
     }
   }
-  if id == "host.confirm" && !t.has_region {
+  if (id == "host.confirm" || id == "host.save") && !t.has_region {
     return "请先选择截图区域"
   }
   if id == "host.undo" {
@@ -472,6 +472,7 @@ fn toolbar_items(t : CaptureToolbar) -> Array[@capture_ui.ToolbarItem] {
   }
   items.push(toolbar_item(t, "host.undo", "撤销", "undo", 0))
   items.push(toolbar_item(t, "host.redo", "重做", "redo", 0))
+  items.push(toolbar_item(t, "host.save", "保存到本地", "save", 1))
   for e in t.entries {
     if e.enabled && e.slot == 1 {
       items.push({
@@ -629,6 +630,8 @@ pub fn toolbar_activate(
   let entry = toolbar_entry(t, id)
   let effect = if id == "host.select" {
     1
+  } else if id == "host.save" {
+    9
   } else if id == "host.confirm" {
     2
   } else {
@@ -651,7 +654,8 @@ pub fn toolbar_activate(
     t.error = "属性已改变，请完成输入后重试"
     return 0
   }
-  if effect != 4 && candidate_commit(t.image, candidate) == 0 {
+  let defer_commit = effect == 4 || effect == 9
+  if !defer_commit && candidate_commit(t.image, candidate) == 0 {
     return 0
   }
   if effect == 1 {
@@ -665,7 +669,7 @@ pub fn toolbar_activate(
       Some(e) => e.payload
       None => ""
     },
-    if effect == 4 {
+    if defer_commit {
       candidate
     } else {
       0

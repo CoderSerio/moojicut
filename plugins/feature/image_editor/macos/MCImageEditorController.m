@@ -13,6 +13,7 @@
 #include "bindings/c/capture_toolbar.h"
 #include "bindings/c/tool_registry.h"
 #include <math.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 extern moonbit_string_t image_finalize(moonbit_string_t);
 extern moonbit_string_t image_selection(moonbit_string_t);
@@ -1051,6 +1052,40 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     if (handled) [self handleToolbarEffect];
     else [self positionFloatingToolbar];
 }
+- (void)chooseScreenshotDestination:(void (^)(NSURL *))completion {
+    NSSavePanel *panel = NSSavePanel.savePanel;
+    panel.allowedContentTypes = @[UTTypePNG];
+    panel.canCreateDirectories = YES;
+    NSDateFormatter *format = [NSDateFormatter new];
+    format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    format.dateFormat = @"yyyyMMdd_HHmmss";
+    panel.nameFieldStringValue = [NSString stringWithFormat:@"moojicut_%@.png", [format stringFromDate:NSDate.date]];
+    [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        completion(response == NSModalResponseOK ? panel.URL : nil);
+    }];
+}
+- (void)saveScreenshotForToolbar:(int32_t)toolbar ticket:(int32_t)ticket {
+    [self chooseScreenshotDestination:^(NSURL *url) {
+        if (self.toolbarHandle != toolbar || capture_toolbar_value(toolbar, MC_CAPTURE_TOOLBAR_TICKET) != ticket) return;
+        NSError *error = nil;
+        BOOL saved = NO;
+        if (url) {
+            int32_t candidate = (int32_t)capture_toolbar_value(toolbar, MC_CAPTURE_TOOLBAR_CANDIDATE);
+            NSDictionary *document = MCEditRead(capture_candidate_document(candidate));
+            NSData *png = [self renderDocumentPNGData:document error:&error];
+            saved = [png writeToURL:url options:NSDataWritingAtomic error:&error];
+        }
+        moonbit_string_t detail = MCEditString(error.localizedDescription ?: @"");
+        BOOL accepted = capture_toolbar_ack(toolbar, ticket, saved, detail) == 1;
+        moonbit_decref(detail);
+        if (accepted && saved) {
+            [self.window close];
+        } else {
+            [self positionFloatingToolbar];
+            if (error) [self showError:error];
+        }
+    }];
+}
 - (void)handleToolbarEffect {
     int32_t toolbar = self.toolbarHandle;
     int32_t effect = (int32_t)capture_toolbar_value(toolbar, MC_CAPTURE_TOOLBAR_EFFECT);
@@ -1068,6 +1103,9 @@ static int32_t MCImageToolSnapshot(NSDictionary *candidate) {
     NSError *error = nil;
     BOOL success = YES;
     switch (effect) {
+        case MC_CAPTURE_TOOLBAR_SAVE:
+            [self saveScreenshotForToolbar:toolbar ticket:ticket];
+            return;
         case MC_CAPTURE_TOOLBAR_COPY:
             success = [self writePNG:[self renderDocumentPNGData:self.document error:&error]
                 toPasteboard:NSPasteboard.generalPasteboard error:&error];

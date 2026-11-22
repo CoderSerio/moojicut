@@ -996,6 +996,38 @@ static void sync_toolbar_tool(void) {
   capture.tool_command = core_text(capture_toolbar_text(capture.toolbar_handle, MC_CAPTURE_TOOLBAR_COMMAND));
   if (!*capture.tool_command) g_clear_pointer(&capture.tool_command, g_free);
 }
+static gboolean save_screenshot(int toolbar, int candidate, const char **error) {
+  GtkFileChooserNative *dialog = gtk_file_chooser_native_new("保存到本地", GTK_WINDOW(capture.editor),
+      GTK_FILE_CHOOSER_ACTION_SAVE, "保存", "取消");
+  GtkFileChooser *chooser = GTK_FILE_CHOOSER(dialog);
+  gtk_file_chooser_set_do_overwrite_confirmation(chooser, TRUE);
+  GDateTime *now = g_date_time_new_now_local();
+  char *name = g_date_time_format(now, "moojicut_%Y%m%d_%H%M%S.png");
+  gtk_file_chooser_set_current_name(chooser, name);
+  g_free(name);
+  g_date_time_unref(now);
+  GtkFileFilter *filter = gtk_file_filter_new();
+  gtk_file_filter_set_name(filter, "PNG");
+  gtk_file_filter_add_mime_type(filter, "image/png");
+  gtk_file_chooser_add_filter(chooser, filter);
+  gtk_native_dialog_set_modal(GTK_NATIVE_DIALOG(dialog), TRUE);
+  GFile *file = gtk_native_dialog_run(GTK_NATIVE_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT
+      ? gtk_file_chooser_get_file(chooser) : NULL;
+  g_object_unref(dialog);
+  gboolean saved = FALSE;
+  if (file && capture.toolbar_handle == toolbar) {
+    GdkPixbuf *image = flatten_document(candidate);
+    char *data = NULL;
+    gsize length = 0;
+    saved = image && gdk_pixbuf_save_to_buffer(image, &data, &length, "png", NULL, NULL) &&
+        g_file_replace_contents(file, data, length, NULL, FALSE, G_FILE_CREATE_NONE, NULL, NULL, NULL);
+    if (!saved) *error = "无法保存 PNG 图片，请检查目标位置后重试。";
+    g_free(data);
+    g_clear_object(&image);
+  }
+  g_clear_object(&file);
+  return saved;
+}
 static void handle_toolbar_effect(void) {
   int toolbar = capture.toolbar_handle;
   int effect = (int)capture_toolbar_value(toolbar, MC_CAPTURE_TOOLBAR_EFFECT);
@@ -1022,6 +1054,10 @@ static void handle_toolbar_effect(void) {
       break;
     }
     case MC_CAPTURE_TOOLBAR_CANCEL:
+      break;
+    case MC_CAPTURE_TOOLBAR_SAVE:
+      success = save_screenshot(toolbar, (int)capture_toolbar_value(toolbar, MC_CAPTURE_TOOLBAR_CANDIDATE), &error);
+      if (capture.toolbar_handle != toolbar) return;
       break;
     case MC_CAPTURE_TOOLBAR_COPY:
       sync_crop();
@@ -1063,7 +1099,8 @@ static void handle_toolbar_effect(void) {
   gboolean acknowledged = capture_toolbar_ack(toolbar, ticket, success, detail) == 1;
   moonbit_decref(detail);
   if (success && acknowledged &&
-      (effect == MC_CAPTURE_TOOLBAR_COPY || effect == MC_CAPTURE_TOOLBAR_CANCEL || effect == MC_CAPTURE_TOOLBAR_PIN)) {
+      (effect == MC_CAPTURE_TOOLBAR_COPY || effect == MC_CAPTURE_TOOLBAR_SAVE ||
+       effect == MC_CAPTURE_TOOLBAR_CANCEL || effect == MC_CAPTURE_TOOLBAR_PIN)) {
     mc_linux_capture_close();
   } else {
     if (*error) report(error);

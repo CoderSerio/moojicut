@@ -43,13 +43,13 @@ enum { MC_CAPTURE_TOOLBAR_NONE = 0, MC_CAPTURE_TOOLBAR_REFRESH = 1,
     MC_CAPTURE_TOOLBAR_COPY = 2, MC_CAPTURE_TOOLBAR_CANCEL = 3,
     MC_CAPTURE_TOOLBAR_PIN = 4, MC_CAPTURE_TOOLBAR_OCR = 5,
     MC_CAPTURE_TOOLBAR_TRANSLATE = 6, MC_CAPTURE_TOOLBAR_SCROLL = 7,
-    MC_CAPTURE_TOOLBAR_USER_TOOL = 8 };
+    MC_CAPTURE_TOOLBAR_USER_TOOL = 8, MC_CAPTURE_TOOLBAR_SAVE = 9 };
 double capture_toolbar_value(int32_t toolbar, int32_t key); /* invalid: -1 */
 moonbit_string_t capture_toolbar_text(int32_t toolbar, int32_t key);
 /* REFRESH means root already performed selection/history/publication. Native
  * only tears down retired controls and re-renders. COPY/OCR/TRANSLATE/SCROLL/
  * USER_TOOL publish a valid draft BEFORE the external effect; failure preserves
- * that committed document. PIN renders CANDIDATE without publishing and ACK
+ * that committed document. PIN or SAVE renders CANDIDATE without publishing and ACK
  * success publishes it; failure preserves the uncommitted draft. CANCEL never
  * publishes. The host MUST ACK every effect, including synchronous REFRESH.
  * Late/duplicate ACK rejects. No callback runs inside root publication. */

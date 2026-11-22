@@ -260,11 +260,11 @@ static BOOL validationAndFanout(void) {
     input.string = @"11";
     CHECK([capture canApplyToolConfiguration:none error:NULL] && [first.document isEqual:firstDocument], "valid numeric and text edits preflight without mutation");
     [capture applyToolConfiguration:none];
-    CHECK([first.toolbar.frameDescription[@"semantics"] count] == 5 && [second.toolbar.frameDescription[@"semantics"] count] == 5 && [opened.toolbar.frameDescription[@"semantics"] count] == 5 &&
+    CHECK([first.toolbar.frameDescription[@"semantics"] count] == 6 && [second.toolbar.frameDescription[@"semantics"] count] == 6 && [opened.toolbar.frameDescription[@"semantics"] count] == 6 &&
           first.activeTool == 0 && second.activeTool == 0 && opened.activeTool == 0, "all editors keep only shared host selection/history/finish controls after optional tools close");
     CHECK([second.document[@"annotations"] count] == 1 && [second.document[@"undo"] count] == 1, "multi-screen apply commits the text exactly once");
     MCImageEditorController *late = [capture editorForSnapshot:@{@"png":pixels(), @"frame":[NSValue valueWithRect:NSMakeRect(0,0,800,500)]} error:NULL];
-    CHECK([late.toolbar.frameDescription[@"semantics"] count] == 5 && [late.toolConfiguration isEqual:none], "late frozen-screen editors inherit the latest configuration");
+    CHECK([late.toolbar.frameDescription[@"semantics"] count] == 6 && [late.toolConfiguration isEqual:none], "late frozen-screen editors inherit the latest configuration");
     [capture applyToolConfiguration:base]; choose(first, 2);
     CHECK(property(first,MC_CAPTURE_TEXT_STROKE) == 11 && [first.document isEqual:firstDocument], "committing numeric defaults before disable preserves the style bank without adding undo");
     [capture setValue:nil forKey:@"overlayEditors"]; [capture setValue:nil forKey:@"editor"];
@@ -638,8 +638,8 @@ static BOOL toolbarAppearance(void) {
           MCToolbarPosition(e.toolbar,@"builtin.capture.ocr") < pin &&
           MCToolbarPosition(e.toolbar,@"host.undo") < pin && MCToolbarPosition(e.toolbar,@"host.redo") < pin &&
           MCToolbarPosition(e.toolbar,@"host.cancel") == pin + 1 && MCToolbarPosition(e.toolbar,@"host.confirm") == pin + 2 &&
-          items.count == 11,
-          "exactly two shared groups: editing/OCR/history, then pin/cancel/confirm");
+          MCToolbarPosition(e.toolbar,@"host.save") == pin - 1 && items.count == 12,
+          "exactly two shared groups: editing/OCR/history, then save/pin/cancel/confirm");
     for (NSString *mode in @[@"light", @"dark"]) {
         e.window.appearance = [NSAppearance appearanceNamed:[mode isEqual:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
         NSBitmapImageRep *normal = toolbarPixels(e);
